@@ -1,0 +1,180 @@
+package de.lino.cloud.core.sample;
+
+import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.database.DatabaseClientException;
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
+import de.lino.cloud.api.security.crypto.EncryptedPayload;
+import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
+import de.lino.cloud.api.security.hash.HashAlgorithm;
+import de.lino.cloud.api.security.keys.KeyEncryptionService;
+import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.core.DefaultCloudAPI;
+import de.lino.cloud.core.security.envelope.EnvelopeEncryptionService;
+import de.lino.cloud.core.security.hash.Hasher;
+import de.lino.cloud.core.security.keys.InMemoryKeyEncryptionService;
+import de.lino.cloud.core.security.password.Argon2idPasswordHasher;
+import de.lino.cloud.core.security.secrets.SecretRedactor;
+import de.lino.database.DatabaseRepository;
+import de.lino.database.DatabaseRepositoryRegistry;
+import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.DatabaseSection;
+import de.lino.database.database.DatabaseType;
+import de.lino.database.database.auth.Credentials;
+import de.lino.database.database.entity.Serialized;
+import de.lino.database.database.file.DefaultFileProvider;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Worked example of {@link CloudAPI}: wire up a database-backed {@link
+ * DatabaseSection} (here, the file-based JSON provider from {@code
+ * database-driver-plugin}, so this sample needs no external database
+ * server), initialize {@link CloudAPI} against it, then send and receive a
+ * domain entity through the singleton.
+ *
+ * <p>This class is demo code, not part of the module's published API - it
+ * lives under {@code src/test} so it is never shipped in the built jar. Run
+ * {@link #main} directly to see it end-to-end.
+ */
+public final class CloudAPIUsageSample {
+
+    /**
+     * A minimal {@link Serialized} domain entity. Any application-defined
+     * subclass works the same way - {@link CloudAPI#send} and {@link
+     * CloudAPI#receive} are generic over every {@link Serialized} type.
+     */
+    static final class CustomerRecord extends Serialized {
+
+        private final int id;
+        private final String iban;
+
+        CustomerRecord(final int id, final String iban) {
+            this.id = id;
+            this.iban = iban;
+        }
+
+        @Override
+        public List<String> keysOf() {
+            return List.of(String.valueOf(id));
+        }
+
+        @Override
+        public String toString() {
+            return "CustomerRecord{id=" + id + ", iban='" + iban + "'}";
+        }
+
+        @Override
+        public boolean equals(final Object other) {
+            return other instanceof CustomerRecord that && id == that.id && Objects.equals(iban, that.iban);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(id, iban);
+        }
+    }
+
+    public static void main(final String[] args) throws Exception {
+
+        // --- 1. Wire up a database ------------------------------------------
+        // Any database-driver-plugin DatabaseProvider works here (JSON file
+        // store, H2, MySQL, PostgreSQL, MongoDB, ...); the JSON provider is
+        // used here only because it needs no external server to run this
+        // sample. DefaultFileProvider installs the plugin's file-system
+        // singleton, a one-time bootstrap step the plugin requires before any
+        // file-based provider is constructed.
+        new DefaultFileProvider();
+        new DatabaseRepositoryRegistry(true);
+
+        final Path repositoryRoot = Path.of(System.getProperty("java.io.tmpdir"), "cloud-driver-sample-db");
+        final Credentials credentials = new Credentials(repositoryRoot.resolve("credentials.json"), repositoryRoot.resolve("data"));
+        final DatabaseProvider databaseProvider = DatabaseRepository.getInstance().registerDatabaseProvider(0, DatabaseType.JSON, credentials);
+        final DatabaseSection customersSection = databaseProvider.createSection("customers");
+
+
+        // --- 2. Wire up envelope encryption ---------------------------------
+        // In production, InMemoryKeyEncryptionService is replaced by a client
+        // for a real KMS/HSM - see its Javadoc. Kept as its own variable
+        // (rather than inlined) so step 9 below can rotate it directly.
+        final KeyEncryptionService keyEncryptionService = new InMemoryKeyEncryptionService();
+        final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
+
+        // --- 3. Initialize the CloudAPI singleton ---------------------------
+        final CloudAPI cloudAPI = DefaultCloudAPI.initialize(customersSection, envelopeEncryptionService);
+
+        // --- 4. Send an entity - encrypted before it is written to the database
+        final CustomerRecord customer = new CustomerRecord(42, "DE89370400440532013000");
+        cloudAPI.sendAsync(customer).get();
+        System.out.println("Stored " + customer);
+
+        // --- 5. Receive it back - decrypted after authentication succeeds ---
+        final CustomerRecord recovered = CloudAPI.getInstance().receive("42", CustomerRecord.class);
+        System.out.println("Recovered " + recovered + " (equals original: " + customer.equals(recovered) + ")");
+
+        // --- 6. Sending again under the same id updates the stored record ---
+        final CustomerRecord movedAccount = new CustomerRecord(42, "DE02120300000000202051");
+        cloudAPI.send(movedAccount);
+        System.out.println("Updated to " + cloudAPI.receive("42", CustomerRecord.class));
+
+        // --- 7. An unknown id is rejected, not silently returned as null ----
+        try {
+            cloudAPI.receive("does-not-exist", CustomerRecord.class);
+        } catch (final DatabaseClientException expected) {
+            System.out.println("Unknown id correctly rejected: " + expected.getMessage());
+        }
+
+        // The steps above only exercise the security package indirectly, through
+        // CloudAPI/EntityDatabaseClient. The remaining steps use it directly.
+
+        // --- 8. Hashing (security.hash) - an integrity hash for audit logging,
+        // computed over the entity's own serialized bytes (section 6/7).
+        final byte[] integrityHash = Hasher.digest(HashAlgorithm.SHA_256, movedAccount.toByteArray());
+        System.out.println("SHA-256 of the stored record's serialized bytes: " + HexFormat.of().formatHex(integrityHash));
+
+        // --- 9. Key rotation (security.keys) - activating a new key-encryption
+        // key does not invalidate data already wrapped under the previous one.
+        final String previousKeyEncryptionKeyId = keyEncryptionService.activeKeyEncryptionKeyId();
+        final String rotatedKeyEncryptionKeyId = keyEncryptionService.rotate();
+        System.out.println("Rotated key-encryption key: " + previousKeyEncryptionKeyId + " -> " + rotatedKeyEncryptionKeyId);
+        System.out.println("Entity wrapped under the old key still decrypts: " + cloudAPI.receive("42", CustomerRecord.class));
+
+        // --- 10. Authenticated encryption (security.crypto/envelope) - a payload
+        // tampered with after encryption fails authentication and is rejected,
+        // rather than silently returning corrupted plaintext.
+        final EnvelopeEncryptedPayload envelope = envelopeEncryptionService.encrypt(
+                "internal note, unrelated to any stored entity".getBytes(StandardCharsets.UTF_8),
+                "sample-context".getBytes(StandardCharsets.UTF_8)
+        );
+        final byte[] tamperedCiphertext = envelope.payload().ciphertext();
+        tamperedCiphertext[0] ^= 0x01;
+        final EncryptedPayload tamperedPayload = new EncryptedPayload(
+                envelope.payload().algorithmId(), envelope.payload().nonce(), tamperedCiphertext, envelope.payload().associatedData()
+        );
+        try {
+            envelopeEncryptionService.decrypt(
+                    new EnvelopeEncryptedPayload(envelope.schemaVersion(), envelope.wrappedDataEncryptionKey(), tamperedPayload)
+            );
+            throw new IllegalStateException("expected tampering to be rejected, but decrypt() succeeded");
+        } catch (final AuthenticationFailedException expected) {
+            System.out.println("Tampered payload correctly rejected: " + expected.getMessage());
+        }
+
+        // --- 11. Password hashing (security.password) - only relevant if this
+        // application must store a password itself; prefer OAuth 2.0 client
+        // credentials or mTLS for service-to-service authentication instead.
+        final PasswordHasher passwordHasher = new Argon2idPasswordHasher();
+        final String encodedPasswordHash = passwordHasher.hash("correct horse battery staple".toCharArray());
+        System.out.println("Argon2id hash of a sample admin credential: " + encodedPasswordHash);
+        System.out.println("Verifies against the original password: "
+                + passwordHasher.verify("correct horse battery staple".toCharArray(), encodedPasswordHash));
+
+        // --- 12. Secret redaction (security.secrets) - strip secrets out of
+        // text before it is logged or surfaced in an error message.
+        final String rawLogLine = "Authorization: Bearer sample-secret-token processing request for customer 42";
+        System.out.println("Redacted before logging: " + SecretRedactor.redact(rawLogLine));
+    }
+}

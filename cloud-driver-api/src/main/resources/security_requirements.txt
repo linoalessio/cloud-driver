@@ -1,0 +1,222 @@
+SECURITY REQUIREMENTS
+Cloud System <-> STRATO Web Service
+Version: 1.0
+Date: 2026-08-17
+
+1. PURPOSE
+This document defines the mandatory security architecture and cryptographic algorithms for transmitting, storing, and retrieving sensitive data between the cloud system and the STRATO web service.
+
+2. REQUIRED SECURITY ARCHITECTURE
+
+The system SHALL use two independent protection layers:
+
+A. TRANSPORT SECURITY
+- All communication between the cloud system and STRATO SHALL use HTTPS with TLS 1.3.
+- TLS 1.2 MAY be enabled only where required for STRATO/legacy interoperability and SHALL use strong cipher suites.
+- TLS 1.0, TLS 1.1, SSLv2, and SSLv3 SHALL NOT be used.
+- Plain HTTP SHALL NOT be used for sensitive data.
+- Server certificates SHALL be validated.
+- Certificate validation SHALL NOT be disabled or bypassed.
+- For machine-to-machine communication carrying sensitive data, mutual TLS (mTLS) SHOULD be used where supported.
+- API authentication SHALL use strong machine authentication; OAuth 2.0 client credentials with appropriate token protection or mTLS-based authentication SHOULD be preferred over static passwords.
+
+B. DATA/PAYLOAD SECURITY
+- Sensitive payloads SHOULD additionally be encrypted at the application layer before transmission to STRATO when STRATO or its storage layer must not be able to read the plaintext.
+- Application-level encryption SHALL use authenticated encryption.
+- AES-256-GCM SHALL be the default symmetric encryption algorithm.
+- A unique, unpredictable nonce/IV SHALL be generated for every AES-GCM encryption operation.
+- An AES-GCM nonce/IV SHALL NEVER be reused with the same encryption key.
+- Encryption keys SHALL NOT be stored in application source code, configuration files, databases, logs, or together with plaintext secrets.
+- Encryption keys SHALL be managed using a centralized KMS or HSM where available.
+
+3. RECOMMENDED DATA FLOW
+
+Cloud Application
+    |
+    | 1. Generate/use AES-256 data-encryption key
+    | 2. Encrypt sensitive payload with AES-256-GCM
+    |
+    | 3. HTTPS / TLS 1.3
+    |    + mTLS where supported
+    v
+STRATO Web Service
+    |
+    | Store encrypted payload
+    v
+STRATO Storage
+
+For retrieval:
+
+STRATO Web Service
+    |
+    | HTTPS / TLS 1.3
+    v
+Cloud Application
+    |
+    | Verify/decrypt AES-256-GCM payload
+    v
+Sensitive plaintext
+
+4. KEY MANAGEMENT
+
+- Envelope encryption SHALL be used for high-value or highly sensitive data.
+- A randomly generated data-encryption key (DEK) SHALL encrypt the data.
+- The DEK SHALL be protected/wrapped by a key-encryption key (KEK) managed by a KMS/HSM.
+- Master/KEK material SHALL remain inside the KMS/HSM where supported.
+- Key access SHALL follow least privilege.
+- Key usage SHALL be logged and auditable.
+- Key rotation SHALL be supported.
+- Compromised or suspected-compromised keys SHALL be revoked/replaced.
+- Backups of keys SHALL be protected to the same or higher security level as the production keys.
+
+5. CRYPTOGRAPHIC ALGORITHMS
+
+TRANSPORT:
+- Protocol: TLS 1.3
+- Preferred TLS 1.3 cipher suites:
+  TLS_AES_256_GCM_SHA384
+  TLS_AES_128_GCM_SHA256
+- Preferred key exchange: modern ephemeral key exchange as provided by TLS 1.3
+- Certificate signature algorithms: ECDSA (P-256/P-384) or RSA-PSS with appropriate key sizes
+
+DATA ENCRYPTION:
+- Primary: AES-256-GCM
+- Alternative where appropriate: AES-128-GCM
+- Do not use ECB mode.
+- Do not invent or implement proprietary encryption algorithms.
+
+KEY WRAPPING / KEY MANAGEMENT:
+- Prefer KMS/HSM envelope-encryption mechanisms.
+- Where direct AES key wrapping is required, use an approved AES Key Wrap/Key Wrap with Padding mechanism rather than custom wrapping.
+
+HASHING:
+- SHA-256 or SHA-384 for general cryptographic hashing/integrity use.
+- SHA-512 MAY be used where appropriate.
+- MD5 SHALL NOT be used for security purposes.
+- SHA-1 SHALL NOT be used for new security designs.
+
+PASSWORDS:
+- Passwords SHALL NOT be stored using reversible encryption.
+- If passwords must be stored, use Argon2id with security parameters appropriate to the deployment.
+- Prefer phishing-resistant or strong machine authentication over shared passwords for service-to-service communication.
+
+6. AUTHENTICATED ENCRYPTION AND INTEGRITY
+
+- AES-GCM authentication tags SHALL be verified before decrypted data is accepted.
+- Authentication failures SHALL cause the message to be rejected.
+- Sensitive API requests SHOULD include request identifiers and replay protection where appropriate.
+- If application-level encryption is used, associated authenticated data (AAD) SHOULD protect relevant metadata such as protocol/version identifiers, tenant identifiers, record identifiers, or message context.
+
+7. API SECURITY
+
+- Only HTTPS endpoints SHALL be accepted.
+- API credentials SHALL be stored in a secrets manager or equivalent secure mechanism.
+- API credentials SHALL have the minimum permissions required.
+- Credentials SHALL be rotated.
+- Secrets SHALL NOT appear in source code, logs, URLs, or error messages.
+- Requests and responses SHALL be validated against an explicit schema.
+- Sensitive data SHALL NOT be unnecessarily logged.
+- Rate limiting and abuse protection SHOULD be enabled.
+- Authentication and authorization failures SHALL be logged without exposing secrets.
+
+8. STRATO-SPECIFIC REQUIREMENT
+
+Before production deployment, the exact STRATO web service/API SHALL be checked against this document.
+
+The implementation SHALL verify:
+- Supported TLS versions
+- Supported TLS 1.3 cipher suites
+- Server certificate and CA requirements
+- Whether mTLS is supported
+- Supported API authentication mechanisms
+- Whether application-level encrypted payloads can be stored and retrieved unchanged
+- STRATO-side encryption-at-rest capabilities
+- Backup and deletion behavior
+- Logging and access-control capabilities
+- Data residency and contractual/security requirements
+
+If STRATO does not support TLS 1.3 or mTLS for the selected service, the exception SHALL be documented and the strongest supported secure configuration SHALL be used. No downgrade to insecure protocols is permitted.
+
+9. DATA AT REST
+
+- STRATO storage SHALL use encryption at rest where provided by the service.
+- The cloud system SHALL also use encryption at rest for local databases, object storage, backups, and temporary storage containing sensitive data.
+- Highly sensitive data SHOULD use application-level AES-256-GCM encryption in addition to provider/storage encryption.
+- Temporary files and caches containing sensitive data SHALL be encrypted or securely deleted according to the data lifecycle.
+
+10. POST-QUANTUM READINESS
+
+The architecture SHALL avoid designs that make future cryptographic migration difficult.
+
+The system SHOULD be designed so that:
+- TLS and certificate algorithms can be upgraded without redesigning the application.
+- Encryption algorithm identifiers/version information can be stored with encrypted payloads.
+- Key rotation and algorithm rotation are supported.
+- Migration to NIST post-quantum standards can be performed when required by the threat model or organizational policy.
+
+Relevant NIST post-quantum standards include:
+- FIPS 203: ML-KEM
+- FIPS 204: ML-DSA
+- FIPS 205: SLH-DSA
+
+11. MINIMUM PRODUCTION BASELINE
+
+The following SHALL be treated as the minimum baseline for sensitive data:
+
+[ ] TLS 1.3 for cloud <-> STRATO communication
+[ ] HTTPS only
+[ ] Validated X.509 server certificates
+[ ] Strong API authentication
+[ ] mTLS where supported and appropriate
+[ ] AES-256-GCM for application-level sensitive-data encryption
+[ ] Unique random GCM nonce/IV per encryption operation
+[ ] KMS/HSM-backed key management where available
+[ ] Envelope encryption for high-value data
+[ ] No plaintext secrets in source code/configuration/logs
+[ ] No TLS 1.0/1.1, SSLv2, or SSLv3
+[ ] No FTP/Telnet/plain HTTP for sensitive data
+[ ] SHA-256/SHA-384 or stronger for cryptographic hashing
+[ ] Argon2id for password storage where passwords are unavoidable
+[ ] Security logging and auditability
+[ ] Key rotation and credential rotation
+[ ] STRATO service-specific security capabilities verified before production
+
+12. SECURITY PRINCIPLE
+
+TLS 1.3 protects data IN TRANSIT.
+
+AES-256-GCM application-level encryption protects the DATA ITSELF.
+
+KMS/HSM protects the ENCRYPTION KEYS.
+
+These layers SHALL be treated as complementary, not interchangeable.
+
+13. PREFERRED FINAL DESIGN
+
+Cloud System
+    |
+    | AES-256-GCM application encryption
+    | + authenticated metadata
+    |
+    | TLS 1.3
+    | + mTLS where supported
+    |
+    v
+STRATO Web Service
+    |
+    | encrypted payload stored
+    |
+    v
+STRATO Storage
+
+Key hierarchy:
+
+KMS/HSM
+  |
+  +-- KEK / master key
+        |
+        +-- wrapped DEK
+              |
+              +-- AES-256-GCM encrypted sensitive payload
+
+This architecture is the preferred baseline for sensitive-data exchange with a STRATO web service. Exact STRATO capabilities must be validated for the specific STRATO product/API before the design is declared production-compliant.
