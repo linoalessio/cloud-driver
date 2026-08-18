@@ -5,7 +5,7 @@ import de.lino.cloud.api.security.crypto.CryptoAlgorithm;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import java.util.Arrays;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * A randomly generated data-encryption key (DEK), per section 4 (KEY
@@ -21,8 +21,8 @@ public final class DataEncryptionKey {
     private final byte[] keyMaterial;
 
     public DataEncryptionKey(final CryptoAlgorithm algorithm, final byte[] keyMaterial) {
-        this.algorithm = Objects.requireNonNull(algorithm, "@DataEncryptionKey: algorithm cannot be null");
-        this.keyMaterial = Objects.requireNonNull(keyMaterial, "@DataEncryptionKey: keyMaterial cannot be null");
+        this.algorithm = Asserts.assertNotNull(algorithm, "@DataEncryptionKey: algorithm cannot be null");
+        this.keyMaterial = Asserts.assertNotNull(keyMaterial, "@DataEncryptionKey: keyMaterial cannot be null");
     }
 
     public CryptoAlgorithm algorithm() {

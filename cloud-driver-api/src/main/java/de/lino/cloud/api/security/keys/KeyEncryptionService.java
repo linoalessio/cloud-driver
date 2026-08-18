@@ -10,7 +10,7 @@ import org.jetbrains.annotations.NotNull;
  *
  * <p>Implementations SHOULD delegate the actual wrap/unwrap operation to the
  * KMS/HSM itself (so KEK material never leaves it) rather than fetching raw
- * KEK bytes into the application process. {@link InMemoryKeyEncryptionService}
+ * KEK bytes into the extension process. {@link InMemoryKeyEncryptionService}
  * is the exception - a development/test stand-in only, clearly documented as
  * such.
  */

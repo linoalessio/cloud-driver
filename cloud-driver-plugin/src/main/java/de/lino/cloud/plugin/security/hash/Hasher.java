@@ -5,7 +5,7 @@ import de.lino.cloud.api.security.hash.HashAlgorithm;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * General-purpose cryptographic hashing restricted to the {@link HashAlgorithm
@@ -18,8 +18,8 @@ public final class Hasher {
     }
 
     public static byte[] digest(final HashAlgorithm algorithm, final byte[] data) {
-        Objects.requireNonNull(algorithm, "@Hasher.digest: algorithm cannot be null");
-        Objects.requireNonNull(data, "@Hasher.digest: data cannot be null");
+        Asserts.assertNotNull(algorithm, "@Hasher.digest: algorithm cannot be null");
+        Asserts.assertNotNull(data, "@Hasher.digest: data cannot be null");
 
         try {
             return MessageDigest.getInstance(algorithm.jcaName()).digest(data);

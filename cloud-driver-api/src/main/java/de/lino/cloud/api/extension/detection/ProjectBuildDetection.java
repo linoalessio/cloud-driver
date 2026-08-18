@@ -1,4 +1,4 @@
-package de.lino.cloud.api.application.detection;
+package de.lino.cloud.api.extension.detection;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

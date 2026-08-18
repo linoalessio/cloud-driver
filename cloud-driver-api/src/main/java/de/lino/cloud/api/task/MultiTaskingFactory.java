@@ -2,7 +2,7 @@ package de.lino.cloud.api.task;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
 
@@ -59,7 +59,7 @@ public final class MultiTaskingFactory {
      */
     public <T> Future<T> submitTaskAsync(final Callable<T> callable) {
         return EXECUTOR_SERVICE.submit(
-                Objects.requireNonNull(callable, "@MultiTaskingFactory.submitTaskAsync: Callable cannot be null")
+                Asserts.assertNotNull(callable, "@MultiTaskingFactory.submitTaskAsync: Callable cannot be null")
         );
     }
 
@@ -75,8 +75,8 @@ public final class MultiTaskingFactory {
      */
     public <T> Future<T> submitTaskAsync(final Runnable task, final T result) {
         return EXECUTOR_SERVICE.submit(
-                Objects.requireNonNull(task, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null"),
-                Objects.requireNonNull(result, "@MultiTaskingFactory.submitTaskAsync: Result cannot be null")
+                Asserts.assertNotNull(task, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null"),
+                Asserts.assertNotNull(result, "@MultiTaskingFactory.submitTaskAsync: Result cannot be null")
         );
     }
 
@@ -89,7 +89,7 @@ public final class MultiTaskingFactory {
      */
     public Future<?> submitTaskAsync(final Runnable runnable) {
         return EXECUTOR_SERVICE.submit(
-                Objects.requireNonNull(runnable, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null")
+                Asserts.assertNotNull(runnable, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null")
         );
     }
 
@@ -109,7 +109,7 @@ public final class MultiTaskingFactory {
      */
     public <T> List<Future<T>> submitTasksAsync(final Collection<? extends Callable<T>> tasks) throws InterruptedException {
         return EXECUTOR_SERVICE.invokeAll(
-                Objects.requireNonNull(tasks, "@MultiTaskingFactory.submitTasksAsync: Tasks cannot be null")
+                Asserts.assertNotNull(tasks, "@MultiTaskingFactory.submitTasksAsync: Tasks cannot be null")
         );
     }
 
@@ -123,7 +123,7 @@ public final class MultiTaskingFactory {
      */
     public CompletableFuture<Void> runAsync(final Runnable task) {
         return CompletableFuture.runAsync(
-                Objects.requireNonNull(task, "@MultiTaskingFactory.runAsync: Runnable cannot be null"),
+                Asserts.assertNotNull(task, "@MultiTaskingFactory.runAsync: Runnable cannot be null"),
                 EXECUTOR_SERVICE
         );
     }
@@ -139,7 +139,7 @@ public final class MultiTaskingFactory {
      */
     public <T> CompletableFuture<T> supplyAsync(final Supplier<T> supplier) {
         return CompletableFuture.supplyAsync(
-                Objects.requireNonNull(supplier, "@MultiTaskingFactory.supplyAsync: Supplier cannot be null"),
+                Asserts.assertNotNull(supplier, "@MultiTaskingFactory.supplyAsync: Supplier cannot be null"),
                 EXECUTOR_SERVICE
         );
     }
@@ -152,7 +152,7 @@ public final class MultiTaskingFactory {
      *
      * <p>Once this returns, the shared executor no longer accepts new tasks; every
      * other method in this class will reject further submissions. Only call this from
-     * the application's {@code main(String[])} method, as its final action.
+     * the extension's {@code main(String[])} method, as its final action.
      *
      * @param task the task to run
      * @throws NullPointerException if {@code task} is {@code null}
@@ -160,7 +160,7 @@ public final class MultiTaskingFactory {
     public void runTaskInMainSafety(final Runnable task) {
         try {
 
-            Objects.requireNonNull(
+            Asserts.assertNotNull(
                     task, "@MultiTaskingFactory.runTaskInMainSafety: Runnable cannot be null"
             ).run();
 
@@ -190,7 +190,7 @@ public final class MultiTaskingFactory {
      */
     public boolean awaitTermination(final long timeout, final TimeUnit unit) throws InterruptedException {
         return EXECUTOR_SERVICE.awaitTermination(
-                timeout, Objects.requireNonNull(unit, "@MultiTaskingFactory.awaitTermination: TimeUnit cannot be null")
+                timeout, Asserts.assertNotNull(unit, "@MultiTaskingFactory.awaitTermination: TimeUnit cannot be null")
         );
     }
 

@@ -8,7 +8,7 @@ import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Sends any {@link Serialized} domain entity - the database-driver-api base
@@ -37,7 +37,7 @@ public final class SecureEntityChannel {
     private final EnvelopeEncryptionService envelopeEncryptionService;
 
     public SecureEntityChannel(@NotNull final EnvelopeEncryptionService envelopeEncryptionService) {
-        this.envelopeEncryptionService = Objects.requireNonNull(
+        this.envelopeEncryptionService = Asserts.assertNotNull(
                 envelopeEncryptionService, "@SecureEntityChannel: envelopeEncryptionService cannot be null"
         );
     }
@@ -49,7 +49,7 @@ public final class SecureEntityChannel {
      */
     @NotNull
     public <T extends Serialized> EnvelopeEncryptedPayload send(@NotNull final T entity) throws KeyWrapException {
-        Objects.requireNonNull(entity, "@SecureEntityChannel.send: entity cannot be null");
+        Asserts.assertNotNull(entity, "@SecureEntityChannel.send: entity cannot be null");
 
         final byte[] data = entity.toByteArray();
         final byte[] associatedData = associatedData(entity.getClass(), entity.primaryKey());
@@ -64,8 +64,8 @@ public final class SecureEntityChannel {
     @NotNull
     public <T extends Serialized> T receive(@NotNull final EnvelopeEncryptedPayload envelope, @NotNull final Class<T> expectedType)
             throws KeyWrapException, AuthenticationFailedException {
-        Objects.requireNonNull(envelope, "@SecureEntityChannel.receive: envelope cannot be null");
-        Objects.requireNonNull(expectedType, "@SecureEntityChannel.receive: expectedType cannot be null");
+        Asserts.assertNotNull(envelope, "@SecureEntityChannel.receive: envelope cannot be null");
+        Asserts.assertNotNull(expectedType, "@SecureEntityChannel.receive: expectedType cannot be null");
 
         final String associatedData = new String(envelope.payload().associatedData(), StandardCharsets.UTF_8);
         final String typeNamePrefix = PROTOCOL_VERSION + ":" + expectedType.getName() + ":";

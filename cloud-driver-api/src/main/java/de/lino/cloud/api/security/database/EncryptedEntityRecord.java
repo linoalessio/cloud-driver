@@ -5,13 +5,13 @@ import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.WrappedKey;
 
 import java.util.Base64;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Storage format for an {@link EnvelopeEncryptedPayload}: every binary field
  * is base64-encoded so the envelope can be stored as a plain JSON document
  * under a {@code database-driver-api} {@code DatabaseEntry} (section 9, DATA
- * AT REST - highly sensitive data uses application-level AES-256-GCM
+ * AT REST - highly sensitive data uses extension-level AES-256-GCM
  * encryption in addition to the database's own storage encryption, so the
  * database only ever sees this ciphertext-bearing representation, never
  * plaintext).
@@ -29,7 +29,7 @@ public record EncryptedEntityRecord(
 ) {
 
     public static EncryptedEntityRecord from(final EnvelopeEncryptedPayload envelope) {
-        Objects.requireNonNull(envelope, "@EncryptedEntityRecord.from: envelope cannot be null");
+        Asserts.assertNotNull(envelope, "@EncryptedEntityRecord.from: envelope cannot be null");
 
         final Base64.Encoder base64 = Base64.getEncoder();
         final EncryptedPayload payload = envelope.payload();

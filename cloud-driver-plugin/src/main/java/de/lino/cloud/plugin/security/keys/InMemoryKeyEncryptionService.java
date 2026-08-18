@@ -12,7 +12,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Map;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -48,7 +48,7 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Objects.requireNonNull(dataEncryptionKey, "@InMemoryKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.assertNotNull(dataEncryptionKey, "@InMemoryKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -65,7 +65,7 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Objects.requireNonNull(wrappedKey, "@InMemoryKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.assertNotNull(wrappedKey, "@InMemoryKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {

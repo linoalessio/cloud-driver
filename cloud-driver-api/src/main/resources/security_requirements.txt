@@ -21,17 +21,17 @@ A. TRANSPORT SECURITY
 - API authentication SHALL use strong machine authentication; OAuth 2.0 client credentials with appropriate token protection or mTLS-based authentication SHOULD be preferred over static passwords.
 
 B. DATA/PAYLOAD SECURITY
-- Sensitive payloads SHOULD additionally be encrypted at the application layer before transmission to STRATO when STRATO or its storage layer must not be able to read the plaintext.
-- Application-level encryption SHALL use authenticated encryption.
+- Sensitive payloads SHOULD additionally be encrypted at the extension layer before transmission to STRATO when STRATO or its storage layer must not be able to read the plaintext.
+- Extension-level encryption SHALL use authenticated encryption.
 - AES-256-GCM SHALL be the default symmetric encryption algorithm.
 - A unique, unpredictable nonce/IV SHALL be generated for every AES-GCM encryption operation.
 - An AES-GCM nonce/IV SHALL NEVER be reused with the same encryption key.
-- Encryption keys SHALL NOT be stored in application source code, configuration files, databases, logs, or together with plaintext secrets.
+- Encryption keys SHALL NOT be stored in extension source code, configuration files, databases, logs, or together with plaintext secrets.
 - Encryption keys SHALL be managed using a centralized KMS or HSM where available.
 
 3. RECOMMENDED DATA FLOW
 
-Cloud Application
+Cloud Extension
     |
     | 1. Generate/use AES-256 data-encryption key
     | 2. Encrypt sensitive payload with AES-256-GCM
@@ -51,7 +51,7 @@ STRATO Web Service
     |
     | HTTPS / TLS 1.3
     v
-Cloud Application
+Cloud Extension
     |
     | Verify/decrypt AES-256-GCM payload
     v
@@ -105,7 +105,7 @@ PASSWORDS:
 - AES-GCM authentication tags SHALL be verified before decrypted data is accepted.
 - Authentication failures SHALL cause the message to be rejected.
 - Sensitive API requests SHOULD include request identifiers and replay protection where appropriate.
-- If application-level encryption is used, associated authenticated data (AAD) SHOULD protect relevant metadata such as protocol/version identifiers, tenant identifiers, record identifiers, or message context.
+- If extension-level encryption is used, associated authenticated data (AAD) SHOULD protect relevant metadata such as protocol/version identifiers, tenant identifiers, record identifiers, or message context.
 
 7. API SECURITY
 
@@ -129,7 +129,7 @@ The implementation SHALL verify:
 - Server certificate and CA requirements
 - Whether mTLS is supported
 - Supported API authentication mechanisms
-- Whether application-level encrypted payloads can be stored and retrieved unchanged
+- Whether extension-level encrypted payloads can be stored and retrieved unchanged
 - STRATO-side encryption-at-rest capabilities
 - Backup and deletion behavior
 - Logging and access-control capabilities
@@ -141,7 +141,7 @@ If STRATO does not support TLS 1.3 or mTLS for the selected service, the excepti
 
 - STRATO storage SHALL use encryption at rest where provided by the service.
 - The cloud system SHALL also use encryption at rest for local databases, object storage, backups, and temporary storage containing sensitive data.
-- Highly sensitive data SHOULD use application-level AES-256-GCM encryption in addition to provider/storage encryption.
+- Highly sensitive data SHOULD use extension-level AES-256-GCM encryption in addition to provider/storage encryption.
 - Temporary files and caches containing sensitive data SHALL be encrypted or securely deleted according to the data lifecycle.
 
 10. POST-QUANTUM READINESS
@@ -149,7 +149,7 @@ If STRATO does not support TLS 1.3 or mTLS for the selected service, the excepti
 The architecture SHALL avoid designs that make future cryptographic migration difficult.
 
 The system SHOULD be designed so that:
-- TLS and certificate algorithms can be upgraded without redesigning the application.
+- TLS and certificate algorithms can be upgraded without redesigning the extension.
 - Encryption algorithm identifiers/version information can be stored with encrypted payloads.
 - Key rotation and algorithm rotation are supported.
 - Migration to NIST post-quantum standards can be performed when required by the threat model or organizational policy.
@@ -168,7 +168,7 @@ The following SHALL be treated as the minimum baseline for sensitive data:
 [ ] Validated X.509 server certificates
 [ ] Strong API authentication
 [ ] mTLS where supported and appropriate
-[ ] AES-256-GCM for application-level sensitive-data encryption
+[ ] AES-256-GCM for extension-level sensitive-data encryption
 [ ] Unique random GCM nonce/IV per encryption operation
 [ ] KMS/HSM-backed key management where available
 [ ] Envelope encryption for high-value data
@@ -185,7 +185,7 @@ The following SHALL be treated as the minimum baseline for sensitive data:
 
 TLS 1.3 protects data IN TRANSIT.
 
-AES-256-GCM application-level encryption protects the DATA ITSELF.
+AES-256-GCM extension-level encryption protects the DATA ITSELF.
 
 KMS/HSM protects the ENCRYPTION KEYS.
 
@@ -195,7 +195,7 @@ These layers SHALL be treated as complementary, not interchangeable.
 
 Cloud System
     |
-    | AES-256-GCM application encryption
+    | AES-256-GCM extension encryption
     | + authenticated metadata
     |
     | TLS 1.3

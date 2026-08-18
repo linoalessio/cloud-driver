@@ -11,7 +11,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * {@link AeadEncryptionService} backed by AES-GCM, per section 5 (DATA
@@ -35,14 +35,14 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
     }
 
     public AesGcmEncryptionService(final CryptoAlgorithm algorithm) {
-        this.algorithm = Objects.requireNonNull(algorithm, "@AesGcmEncryptionService: algorithm cannot be null");
+        this.algorithm = Asserts.assertNotNull(algorithm, "@AesGcmEncryptionService: algorithm cannot be null");
         this.secureRandom = new SecureRandom();
     }
 
     @Override
     public EncryptedPayload encrypt(final byte[] plaintext, final SecretKey key, final byte[] associatedData) {
-        Objects.requireNonNull(plaintext, "@AesGcmEncryptionService.encrypt: plaintext cannot be null");
-        Objects.requireNonNull(key, "@AesGcmEncryptionService.encrypt: key cannot be null");
+        Asserts.assertNotNull(plaintext, "@AesGcmEncryptionService.encrypt: plaintext cannot be null");
+        Asserts.assertNotNull(key, "@AesGcmEncryptionService.encrypt: key cannot be null");
 
         // Unique, unpredictable nonce for every operation - never reused with the same key.
         final byte[] nonce = new byte[algorithm.nonceLengthBytes()];
@@ -63,8 +63,8 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
 
     @Override
     public byte[] decrypt(final EncryptedPayload payload, final SecretKey key) throws AuthenticationFailedException {
-        Objects.requireNonNull(payload, "@AesGcmEncryptionService.decrypt: payload cannot be null");
-        Objects.requireNonNull(key, "@AesGcmEncryptionService.decrypt: key cannot be null");
+        Asserts.assertNotNull(payload, "@AesGcmEncryptionService.decrypt: payload cannot be null");
+        Asserts.assertNotNull(key, "@AesGcmEncryptionService.decrypt: key cannot be null");
 
         final CryptoAlgorithm payloadAlgorithm = CryptoAlgorithm.fromId(payload.algorithmId());
 

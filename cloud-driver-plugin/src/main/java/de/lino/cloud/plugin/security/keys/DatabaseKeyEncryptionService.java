@@ -17,7 +17,7 @@ import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Map;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * instead of a local file - so it is not bound to one machine's filesystem
  * and survives being read/written from any process that can reach the
  * configured database (e.g. a replicated Postgres instance behind several
- * application nodes), the same way entity data already does via {@link
+ * extension nodes), the same way entity data already does via {@link
  * de.lino.cloud.plugin.database.EntityDatabaseClient}.
  *
  * <p><strong>NOT for production use</strong>, for the same reason as {@link
@@ -52,7 +52,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
     private volatile String activeKeyId;
 
     public DatabaseKeyEncryptionService(@NotNull final DatabaseSection databaseSection) {
-        this.databaseSection = Objects.requireNonNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
+        this.databaseSection = Asserts.assertNotNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
 
         if (databaseSection.exists(REGISTRY_ENTRY_ID)) {
             load();
@@ -63,7 +63,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Objects.requireNonNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.assertNotNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -80,7 +80,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Objects.requireNonNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.assertNotNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {

@@ -9,7 +9,7 @@ import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 import java.util.Optional;
 
 /**
@@ -27,7 +27,7 @@ public final class DefaultDataFactory extends DataFactory {
     private final EntityDatabaseClient entityDatabaseClient;
 
     public DefaultDataFactory(@NotNull final EntityDatabaseClient entityDatabaseClient) {
-        this.entityDatabaseClient = Objects.requireNonNull(entityDatabaseClient, "@DefaultDataFactory: entityDatabaseClient cannot be null");
+        this.entityDatabaseClient = Asserts.assertNotNull(entityDatabaseClient, "@DefaultDataFactory: entityDatabaseClient cannot be null");
     }
 
     @Override

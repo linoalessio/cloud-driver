@@ -1,5 +1,5 @@
 {
-  "name": "demo-application",
+  "name": "demo-extension",
   "version": "1.0.0",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-plugin"]

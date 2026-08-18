@@ -1,26 +1,26 @@
 package de.lino.cloud.plugin;
 
 import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.factory.ApplicationFactory;
+import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.plugin.database.EntityDatabaseClient;
-import de.lino.cloud.plugin.factory.DefaultApplicationFactory;
+import de.lino.cloud.plugin.factory.DefaultExtensionFactory;
 import de.lino.cloud.plugin.factory.DefaultDataFactory;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * {@link CloudAPI} implementation tying a {@link DefaultDataFactory} (backed
- * by an {@link EntityDatabaseClient}) and a {@link DefaultApplicationFactory}
+ * by an {@link EntityDatabaseClient}) and a {@link DefaultExtensionFactory}
  * together as the two facets {@link CloudAPI} exposes - persistence via
- * {@link #getDataFactory()} and application lifecycle management via {@link
- * #getApplicationFactory()}. Neither facet holds any logic of its own beyond
+ * {@link #getDataFactory()} and extension lifecycle management via {@link
+ * #getExtensionFactory()}. Neither facet holds any logic of its own beyond
  * what it delegates to: {@link DefaultDataFactory} passes through to {@link
  * EntityDatabaseClient}, and every lifecycle-driving method on {@link
- * ApplicationFactory} is implemented generically on the abstract class
+ * ExtensionFactory} is implemented generically on the abstract class
  * itself.
  *
  * <p>Construct via {@link #setInstance}, which also installs this instance as
@@ -29,11 +29,11 @@ import java.util.Objects;
 public final class DefaultCloudAPI extends CloudAPI {
 
     private final DataFactory dataFactory;
-    private final ApplicationFactory applicationFactory;
+    private final ExtensionFactory extensionFactory;
 
-    private DefaultCloudAPI(@NotNull final DataFactory dataFactory, @NotNull final ApplicationFactory applicationFactory) {
-        this.dataFactory = Objects.requireNonNull(dataFactory, "@DefaultCloudAPI: dataFactory cannot be null");
-        this.applicationFactory = Objects.requireNonNull(applicationFactory, "@DefaultCloudAPI: applicationFactory cannot be null");
+    private DefaultCloudAPI(@NotNull final DataFactory dataFactory, @NotNull final ExtensionFactory extensionFactory) {
+        this.dataFactory = Asserts.assertNotNull(dataFactory, "@DefaultCloudAPI: dataFactory cannot be null");
+        this.extensionFactory = Asserts.assertNotNull(extensionFactory, "@DefaultCloudAPI: extensionFactory cannot be null");
     }
 
     /**
@@ -53,7 +53,7 @@ public final class DefaultCloudAPI extends CloudAPI {
     ) {
         final DefaultCloudAPI instance = new DefaultCloudAPI(
                 new DefaultDataFactory(new EntityDatabaseClient(databaseProvider, envelopeEncryptionService)),
-                new DefaultApplicationFactory()
+                new DefaultExtensionFactory()
         );
         INSTANCE = instance;
         return instance;
@@ -65,8 +65,8 @@ public final class DefaultCloudAPI extends CloudAPI {
     }
 
     @Override
-    public ApplicationFactory getApplicationFactory() {
-        return applicationFactory;
+    public ExtensionFactory getExtensionFactory() {
+        return extensionFactory;
     }
 
 }

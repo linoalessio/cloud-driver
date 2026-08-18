@@ -9,6 +9,7 @@ import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.hash.Hasher;
@@ -43,7 +44,7 @@ import java.util.Objects;
 public final class CloudAPIUsageSample {
 
     /**
-     * A minimal {@link Serialized} domain entity. Any application-defined
+     * A minimal {@link Serialized} domain entity. Any extension-defined
      * subclass works the same way - {@link DataFactory#register} and {@link
      * DataFactory#fetch} are generic over every {@link Serialized} type.
      */
@@ -106,8 +107,8 @@ public final class CloudAPIUsageSample {
 
         // --- 3. Initialize the CloudAPI singleton ---------------------------
         final CloudAPI cloudAPI = DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
-        // Entity persistence lives behind CloudAPI#getDataFactory(); application
-        // lifecycle management (not used in this sample) behind #getApplicationFactory().
+        // Entity persistence lives behind CloudAPI#getDataFactory(); extension
+        // lifecycle management (not used in this sample) behind #getExtensionFactory().
         final DataFactory dataFactory = cloudAPI.getDataFactory();
 
         // --- 4. Register an entity - encrypted before it is written to the database
@@ -116,7 +117,9 @@ public final class CloudAPIUsageSample {
         System.out.println("Stored " + customer);
 
         // --- 5. Fetch it back - decrypted after authentication succeeds -----
-        final CustomerRecord recovered = CloudAPI.getInstance().getDataFactory().fetch("42", CustomerRecord.class);
+        // Asserts.assertNotNull(CloudAPI) validates the singleton is installed before
+        // use, giving a clear error instead of a bare NullPointerException if it isn't.
+        final CustomerRecord recovered = Asserts.assertNotNull(CloudAPI.getInstance()).getDataFactory().fetch("42", CustomerRecord.class);
         System.out.println("Recovered " + recovered + " (equals original: " + customer.equals(recovered) + ")");
 
         // --- 6. update() overwrites the existing record under the same id ----
@@ -190,7 +193,7 @@ public final class CloudAPIUsageSample {
         }
 
         // --- 11. Password hashing (security.password) - only relevant if this
-        // application must store a password itself; prefer OAuth 2.0 client
+        // extension must store a password itself; prefer OAuth 2.0 client
         // credentials or mTLS for service-to-service authentication instead.
         final PasswordHasher passwordHasher = new Argon2idPasswordHasher();
         final String encodedPasswordHash = passwordHasher.hash("correct horse battery staple".toCharArray());

@@ -4,7 +4,7 @@ import de.lino.cloud.api.security.crypto.CryptoAlgorithm;
 import de.lino.cloud.api.security.keys.DataEncryptionKey;
 
 import java.security.SecureRandom;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Generates random {@link DataEncryptionKey data-encryption keys} for
@@ -16,7 +16,7 @@ public final class DataEncryptionKeyGenerator {
     private final SecureRandom secureRandom = new SecureRandom ();
 
     public DataEncryptionKey generate(final CryptoAlgorithm algorithm) {
-        Objects.requireNonNull(algorithm, "@DataEncryptionKeyGenerator.generate: algorithm cannot be null");
+        Asserts.assertNotNull(algorithm, "@DataEncryptionKeyGenerator.generate: algorithm cannot be null");
         final byte[] material = new byte[algorithm.keyLengthBytes()];
         secureRandom.nextBytes(material);
         return new DataEncryptionKey(algorithm, material);

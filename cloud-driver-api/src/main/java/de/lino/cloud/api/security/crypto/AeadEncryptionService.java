@@ -3,7 +3,7 @@ package de.lino.cloud.api.security.crypto;
 import javax.crypto.SecretKey;
 
 /**
- * Application-level authenticated encryption per section 2B (DATA/PAYLOAD
+ * Extension-level authenticated encryption per section 2B (DATA/PAYLOAD
  * SECURITY): sensitive payloads are encrypted with an authenticated cipher
  * before transmission, independently of transport-layer TLS.
  */

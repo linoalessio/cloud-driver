@@ -13,7 +13,7 @@ import de.lino.cloud.api.security.keys.WrappedKey;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Envelope-encryption facade tying together {@link DataEncryptionKeyGenerator},
@@ -39,16 +39,16 @@ public final class EnvelopeEncryptionService {
                                       @NotNull final AeadEncryptionService aeadEncryptionService,
                                       @NotNull final KeyEncryptionService keyEncryptionService,
                                       @NotNull final CryptoAlgorithm dataEncryptionKeyAlgorithm) {
-        this.dataEncryptionKeyGenerator = Objects.requireNonNull(
+        this.dataEncryptionKeyGenerator = Asserts.assertNotNull(
                 dataEncryptionKeyGenerator, "@EnvelopeEncryptionService: dataEncryptionKeyGenerator cannot be null"
         );
-        this.aeadEncryptionService = Objects.requireNonNull(
+        this.aeadEncryptionService = Asserts.assertNotNull(
                 aeadEncryptionService, "@EnvelopeEncryptionService: aeadEncryptionService cannot be null"
         );
-        this.keyEncryptionService = Objects.requireNonNull(
+        this.keyEncryptionService = Asserts.assertNotNull(
                 keyEncryptionService, "@EnvelopeEncryptionService: keyEncryptionService cannot be null"
         );
-        this.dataEncryptionKeyAlgorithm = Objects.requireNonNull(
+        this.dataEncryptionKeyAlgorithm = Asserts.assertNotNull(
                 dataEncryptionKeyAlgorithm, "@EnvelopeEncryptionService: dataEncryptionKeyAlgorithm cannot be null"
         );
     }
@@ -83,7 +83,7 @@ public final class EnvelopeEncryptionService {
      */
     @NotNull
     public byte[] decrypt(@NotNull final EnvelopeEncryptedPayload envelope) throws KeyWrapException, AuthenticationFailedException {
-        Objects.requireNonNull(envelope, "@EnvelopeEncryptionService.decrypt: envelope cannot be null");
+        Asserts.assertNotNull(envelope, "@EnvelopeEncryptionService.decrypt: envelope cannot be null");
 
         final DataEncryptionKey dataEncryptionKey = keyEncryptionService.unwrap(envelope.wrappedDataEncryptionKey());
         try {

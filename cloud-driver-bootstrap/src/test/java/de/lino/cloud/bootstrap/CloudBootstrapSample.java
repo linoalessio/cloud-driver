@@ -53,10 +53,25 @@ public class CloudBootstrapSample {
 
         try {
 
-            //cloudAPI.getDataFactory().register(testData);
-            //cloudAPI.getDataFactory().delete("1", TestData.class);
-            final TestData receivedData = cloudAPI.getDataFactory().findById("1", TestData.class).orElseThrow();
-            System.out.println("Received data: " + receivedData);
+            cloudAPI.getDataFactory().findById("1", TestData.class).ifPresentOrElse(receivedData -> {
+
+                try {
+                    System.out.println("Received data to delete: " + receivedData);
+                    cloudAPI.getDataFactory().delete("1", TestData.class);
+                } catch (DatabaseClientException e) {
+                    throw new RuntimeException(e);
+                }
+
+            }, () -> {
+
+                try {
+                    cloudAPI.getDataFactory().register(testData);
+                    System.out.println("Data registered: " + testData);
+                } catch (DatabaseClientException | KeyWrapException e) {
+                    throw new RuntimeException(e);
+                }
+
+            });
 
         } catch (DatabaseClientException | KeyWrapException | AuthenticationFailedException exception) {
             throw new RuntimeException(exception);

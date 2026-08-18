@@ -17,7 +17,7 @@ import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Map;
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -45,7 +45,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
     private volatile String activeKeyId;
 
     public FileKeyEncryptionService(@NotNull final Path path) {
-        this.path = Objects.requireNonNull(path, "@FileKeyEncryptionService: path cannot be null");
+        this.path = Asserts.assertNotNull(path, "@FileKeyEncryptionService: path cannot be null");
 
         if (Files.exists(path)) {
             load();
@@ -56,7 +56,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
 
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Objects.requireNonNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.assertNotNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -73,7 +73,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
 
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Objects.requireNonNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.assertNotNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {

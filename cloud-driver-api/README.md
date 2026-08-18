@@ -9,9 +9,9 @@ The design follows `security_requirements.txt` (bundled as a resource in this mo
 | Module | Contains |
 |---|---|
 | `cloud-driver-api` | Interfaces (`AeadEncryptionService`, `KeyEncryptionService`, `PasswordHasher`), value objects/records (`EncryptedPayload`, `WrappedKey`, `EnvelopeEncryptedPayload`, `EncryptedEntityRecord`), exceptions (`KeyWrapException`, `AuthenticationFailedException`, `DatabaseClientException`), and the abstract `CloudAPI`. |
-| `cloud-driver-plugin` | Every concrete implementation: `AesGcmEncryptionService`, `InMemoryKeyEncryptionService`, `EnvelopeEncryptionService`, `SecureEntityChannel`, `Hasher`, `Argon2idPasswordHasher`, `SecretRedactor`, `EntityDatabaseClient`, `DefaultDataFactory`, `DefaultApplicationFactory`, and `DefaultCloudAPI`. |
+| `cloud-driver-plugin` | Every concrete implementation: `AesGcmEncryptionService`, `InMemoryKeyEncryptionService`, `EnvelopeEncryptionService`, `SecureEntityChannel`, `Hasher`, `Argon2idPasswordHasher`, `SecretRedactor`, `EntityDatabaseClient`, `DefaultDataFactory`, `DefaultExtensionFactory`, and `DefaultCloudAPI`. |
 
-A consuming application depends on both, plus `database-driver-plugin` (for a concrete `DatabaseProvider`, e.g. the JSON file store or H2) and `bcprov-jdk18on` (Argon2id):
+A consuming extension depends on both, plus `database-driver-plugin` (for a concrete `DatabaseProvider`, e.g. the JSON file store or H2) and `bcprov-jdk18on` (Argon2id):
 
 ```xml
 <dependency>
@@ -83,7 +83,7 @@ A complete, runnable version of this (including every security-package feature b
 
 ## The `security` package
 
-Six sub-packages, each a thin layer around the previous one. Application code normally only touches `CloudAPI`/`EntityDatabaseClient` directly (below) — this section is for understanding what happens underneath, or for using a piece standalone.
+Six sub-packages, each a thin layer around the previous one. Extension code normally only touches `CloudAPI`/`EntityDatabaseClient` directly (below) — this section is for understanding what happens underneath, or for using a piece standalone.
 
 ### `security.crypto` — authenticated encryption
 
@@ -139,7 +139,7 @@ String hex = Hasher.hexDigest(HashAlgorithm.SHA_256, data);
 
 ### `security.password` — Argon2id
 
-Only relevant if the application itself must store a password (prefer OAuth 2.0 client credentials or mTLS for service-to-service auth instead).
+Only relevant if the extension itself must store a password (prefer OAuth 2.0 client credentials or mTLS for service-to-service auth instead).
 
 ```java
 PasswordHasher passwordHasher = new Argon2idPasswordHasher(); // OWASP-baseline defaults
@@ -167,7 +167,7 @@ EnvelopeEncryptedPayload envelope = channel.send(customer);
 CustomerRecord recovered = channel.receive(envelope, CustomerRecord.class); // rejects a type/record mismatch
 ```
 
-This is what `EntityDatabaseClient` uses internally - most applications never call it directly.
+This is what `EntityDatabaseClient` uses internally - most extensions never call it directly.
 
 ## The `database` package
 

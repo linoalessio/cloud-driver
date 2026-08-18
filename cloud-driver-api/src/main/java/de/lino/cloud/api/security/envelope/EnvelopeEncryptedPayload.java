@@ -3,7 +3,7 @@ package de.lino.cloud.api.security.envelope;
 import de.lino.cloud.api.security.crypto.EncryptedPayload;
 import de.lino.cloud.api.security.keys.WrappedKey;
 
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * The result of an {@link EnvelopeEncryptionService} encryption operation:
@@ -20,7 +20,7 @@ import java.util.Objects;
 public record EnvelopeEncryptedPayload(int schemaVersion, WrappedKey wrappedDataEncryptionKey, EncryptedPayload payload) {
 
     public EnvelopeEncryptedPayload {
-        Objects.requireNonNull(wrappedDataEncryptionKey, "@EnvelopeEncryptedPayload: wrappedDataEncryptionKey cannot be null");
-        Objects.requireNonNull(payload, "@EnvelopeEncryptedPayload: payload cannot be null");
+        Asserts.assertNotNull(wrappedDataEncryptionKey, "@EnvelopeEncryptedPayload: wrappedDataEncryptionKey cannot be null");
+        Asserts.assertNotNull(payload, "@EnvelopeEncryptedPayload: payload cannot be null");
     }
 }

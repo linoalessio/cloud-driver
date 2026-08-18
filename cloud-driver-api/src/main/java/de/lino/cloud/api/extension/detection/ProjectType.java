@@ -1,8 +1,8 @@
-package de.lino.cloud.api.application.detection;
+package de.lino.cloud.api.extension.detection;
 
 import lombok.Getter;
 
-import java.util.Objects;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * The build tool managing the current project, as detected by
@@ -36,7 +36,7 @@ public enum ProjectType {
      * @throws NullPointerException if {@code name} is {@code null}
      */
     ProjectType(final String name) {
-        this.name = Objects.requireNonNull(name, "@ProjectType.init: name cannot be null");
+        this.name = Asserts.assertNotNull(name, "@ProjectType.init: name cannot be null");
     }
 
 }
