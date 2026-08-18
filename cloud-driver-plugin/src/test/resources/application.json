@@ -1,5 +1,6 @@
 {
   "name": "demo-application",
   "version": "1.0.0",
-  "authors": ["Lino Alessio Kauschinger"]
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-plugin"]
 }

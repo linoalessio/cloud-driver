@@ -21,7 +21,7 @@ import lombok.ToString;
 
 import java.util.List;
 
-public class CloudBootstrap {
+public class CloudBootstrapSample {
 
     @Getter @ToString
     @RequiredArgsConstructor
