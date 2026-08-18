@@ -2,20 +2,31 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>de.lino.cloud.extensions</groupId>
-        <artifactId>cloud-driver-extensions</artifactId>
+        <groupId>de.lino.cloud</groupId>
+        <artifactId>cloud-driver</artifactId>
         <version>1.0.0</version>
     </parent>
 
-    <groupId>de.lino.cloud.extensions.app</groupId>
-    <artifactId>cloud-driver-extensions-app</artifactId>
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>de.lino.cloud.bootstrap</groupId>
+    <artifactId>cloud-driver-bootstrap</artifactId>
+    <packaging>jar</packaging>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+
+    </dependencies>
 
 </project>

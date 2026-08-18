@@ -1,6 +1,6 @@
 # cloud-driver-api
 
-This module defines the cloud-driver's public contract: interfaces, value objects/DTOs, exceptions, and the `CloudAPI` singleton. It has no concrete logic of its own — every implementation lives in **cloud-driver-core**, which depends on this module (never the other way around). This document explains and shows how to use three parts of that contract together: the **`security`** package, the **`database`** package, and **`CloudAPI`**, the facade that ties them into one entry point.
+This module defines the cloud-driver's public contract: interfaces, value objects/DTOs, exceptions, and the `CloudAPI` singleton. It has no concrete logic of its own — every implementation lives in **cloud-driver-plugin**, which depends on this module (never the other way around). This document explains and shows how to use three parts of that contract together: the **`security`** package, the **`database`** package, and **`CloudAPI`**, the facade that ties them into one entry point.
 
 The design follows `security_requirements.txt` (bundled as a resource in this module) — envelope encryption with AES-256-GCM, KMS/HSM-backed key wrapping with rotation, authenticated-tag verification, Argon2id password hashing, and encryption-at-rest for stored data. Section references below (e.g. "section 9") point back to that document.
 
@@ -9,7 +9,7 @@ The design follows `security_requirements.txt` (bundled as a resource in this mo
 | Module | Contains |
 |---|---|
 | `cloud-driver-api` | Interfaces (`AeadEncryptionService`, `KeyEncryptionService`, `PasswordHasher`), value objects/records (`EncryptedPayload`, `WrappedKey`, `EnvelopeEncryptedPayload`, `EncryptedEntityRecord`), exceptions (`KeyWrapException`, `AuthenticationFailedException`, `DatabaseClientException`), and the abstract `CloudAPI`. |
-| `cloud-driver-core` | Every concrete implementation: `AesGcmEncryptionService`, `InMemoryKeyEncryptionService`, `EnvelopeEncryptionService`, `SecureEntityChannel`, `Hasher`, `Argon2idPasswordHasher`, `SecretRedactor`, `EntityDatabaseClient`, and `DefaultCloudAPI`. |
+| `cloud-driver-plugin` | Every concrete implementation: `AesGcmEncryptionService`, `InMemoryKeyEncryptionService`, `EnvelopeEncryptionService`, `SecureEntityChannel`, `Hasher`, `Argon2idPasswordHasher`, `SecretRedactor`, `EntityDatabaseClient`, `DefaultDataFactory`, `DefaultApplicationFactory`, and `DefaultCloudAPI`. |
 
 A consuming application depends on both, plus `database-driver-plugin` (for a concrete `DatabaseProvider`, e.g. the JSON file store or H2) and `bcprov-jdk18on` (Argon2id):
 
@@ -20,8 +20,8 @@ A consuming application depends on both, plus `database-driver-plugin` (for a co
     <version>1.0-SNAPSHOT</version>
 </dependency>
 <dependency>
-    <groupId>de.lino.cloud.core</groupId>
-    <artifactId>cloud-driver-core</artifactId>
+    <groupId>de.lino.cloud.plugin</groupId>
+    <artifactId>cloud-driver-plugin</artifactId>
     <version>1.0-SNAPSHOT</version>
 </dependency>
 ```
