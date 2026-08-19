@@ -5,6 +5,7 @@ import de.lino.cloud.api.security.keys.DataEncryptionKey;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.keys.WrappedKey;
+import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.database.database.DatabaseSection;
 import de.lino.database.database.entity.DatabaseEntry;
 import de.lino.database.json.JsonDocument;
@@ -29,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * and survives being read/written from any process that can reach the
  * configured database (e.g. a replicated Postgres instance behind several
  * extension nodes), the same way entity data already does via {@link
- * de.lino.cloud.plugin.database.EntityDatabaseClient}.
+ * EntityDatabaseClient}.
  *
  * <p><strong>NOT for production use</strong>, for the same reason as {@link
  * FileKeyEncryptionService} and {@link InMemoryKeyEncryptionService}: KEK

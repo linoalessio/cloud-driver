@@ -45,3 +45,4 @@ build/
 ### AI ###
 .claude
 CLAUDE.md
+CHANGE_LOG.md

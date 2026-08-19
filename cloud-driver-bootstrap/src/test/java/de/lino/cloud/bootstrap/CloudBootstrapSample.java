@@ -1,10 +1,14 @@
 package de.lino.cloud.bootstrap;
 
 import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.file.FileIntegrityException;
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
@@ -19,7 +23,12 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.ToString;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 
 public class CloudBootstrapSample {
 
@@ -37,7 +46,7 @@ public class CloudBootstrapSample {
 
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
 
         new DatabaseRepositoryRegistry(false);
 
@@ -48,34 +57,35 @@ public class CloudBootstrapSample {
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         final CloudAPI cloudAPI = DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
+        final FileFactory fileFactory = cloudAPI.getFileFactory();
 
-        final TestData testData = new TestData(1, "Lino Alessio Kauschinger");
+        Asserts.runWallTimeTest(() -> {
 
-        try {
+            try {
 
-            cloudAPI.getDataFactory().findById("1", TestData.class).ifPresentOrElse(receivedData -> {
+                final Path path = Path.of("CLAUDE.md");
+                final StoredFile storedFile = new StoredFile(
+                        UUID.randomUUID().toString(),
+                        path.getFileName().toString(),
+                        Files.readAllBytes(path)
+                );
 
-                try {
-                    System.out.println("Received data to delete: " + receivedData);
-                    cloudAPI.getDataFactory().delete("1", TestData.class);
-                } catch (DatabaseClientException e) {
-                    throw new RuntimeException(e);
-                }
+                fileFactory.upload(storedFile);
+                System.out.println("Uploaded " + storedFile);
 
-            }, () -> {
+                final StoredFile downloaded = fileFactory.download(storedFile.fileId());
+                System.out.println("Downloaded " + downloaded + " (content matches original: "
+                        + Arrays.equals(storedFile.content(), downloaded.content()) + ")");
 
-                try {
-                    cloudAPI.getDataFactory().register(testData);
-                    System.out.println("Data registered: " + testData);
-                } catch (DatabaseClientException | KeyWrapException e) {
-                    throw new RuntimeException(e);
-                }
+                downloaded.downloadToDevice(Path.of(System.getProperty("user.home"), "Downloads"));
 
-            });
+                fileFactory.delete(storedFile.fileId());
 
-        } catch (DatabaseClientException | KeyWrapException | AuthenticationFailedException exception) {
-            throw new RuntimeException(exception);
-        }
+            } catch (DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException | IOException exception) {
+                throw new RuntimeException(exception);
+            }
+
+        });
 
     }
 

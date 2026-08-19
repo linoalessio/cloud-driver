@@ -3,6 +3,9 @@ package de.lino.cloud.plugin.sample;
 import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.file.FileMetadata;
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.crypto.EncryptedPayload;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
@@ -25,7 +28,9 @@ import de.lino.database.database.entity.Serialized;
 import de.lino.database.database.file.DefaultFileProvider;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
@@ -170,6 +175,70 @@ public final class CloudAPIUsageSample {
         } catch (final DatabaseClientException expected) {
             System.out.println("Deleted id correctly rejected: " + expected.getMessage());
         }
+
+        // --- 9c. File upload/download (de.lino.cloud.api.file / FileFactory) -
+        // StoredFile is itself a Serialized entity, so FileFactory persists it
+        // through the very same DataFactory used above (accepting any content
+        // type, envelope-encrypted the same way any other entity is) and adds
+        // only upload/download naming plus a checksum check on every download,
+        // independent of the AES-GCM authentication tag DataFactory#fetch
+        // already verifies.
+        final FileFactory fileFactory = cloudAPI.getFileFactory();
+        final StoredFile report = new StoredFile(
+                "report-1", "quarterly-report.pdf",
+                "not a real PDF, just demo bytes".getBytes(StandardCharsets.UTF_8)
+        );
+        fileFactory.uploadAsync(report).get();
+        System.out.println("Uploaded " + report);
+
+        final StoredFile downloaded = fileFactory.download("report-1");
+        System.out.println("Downloaded " + downloaded
+                + " (content matches original: " + Arrays.equals(report.content(), downloaded.content()) + ")");
+
+        // metadata() returns the same descriptive attributes without holding
+        // the file's decrypted content in memory.
+        final FileMetadata metadata = fileFactory.metadata("report-1").orElseThrow();
+        System.out.println("Metadata only: " + metadata);
+
+        // getEntities() lists and integrity-verifies every currently stored file.
+        System.out.println("getEntities(): " + fileFactory.getEntities());
+
+        // An unknown file id is reported as absence, not an exception.
+        System.out.println("findById(does-not-exist): " + fileFactory.findById("does-not-exist"));
+
+        fileFactory.delete("report-1");
+        try {
+            fileFactory.download("report-1");
+            throw new IllegalStateException("expected the deleted file id to be rejected, but download() succeeded");
+        } catch (final DatabaseClientException expected) {
+            System.out.println("Deleted file id correctly rejected: " + expected.getMessage());
+        }
+
+        // --- 9d. downloadToDevice() - re-creates a StoredFile on disk under its
+        // own file name (preserving its suffix) inside a destination directory,
+        // the inverse of reading a local file's bytes to upload it.
+        fileFactory.upload(report);
+        final Path downloadDirectory = Path.of(System.getProperty("java.io.tmpdir"), "cloud-driver-sample-downloads");
+        final Path downloadedPath = fileFactory.download("report-1").downloadToDevice(downloadDirectory);
+        System.out.println("Downloaded to device: " + downloadedPath
+                + " (bytes match: " + Arrays.equals(report.content(), Files.readAllBytes(downloadedPath)) + ")");
+        Files.deleteIfExists(downloadedPath);
+        Files.deleteIfExists(downloadDirectory);
+
+        // --- 9e. clear()/deleteSection() - clear() empties the StoredFile
+        // section but leaves it in place; deleteSection() removes the section
+        // itself, which a later upload() lazily recreates.
+        fileFactory.upload(new StoredFile("report-2", "second.txt", "more demo bytes".getBytes(StandardCharsets.UTF_8)));
+        fileFactory.clear();
+        System.out.println("findById(report-1) after clear(): " + fileFactory.findById("report-1"));
+        System.out.println("findById(report-2) after clear(): " + fileFactory.findById("report-2"));
+
+        fileFactory.upload(report);
+        fileFactory.deleteSectionAsync().get();
+        System.out.println("findById(report-1) after deleteSection(): " + fileFactory.findById("report-1"));
+        fileFactory.upload(report);
+        System.out.println("Section lazily recreated - re-upload succeeded: " + fileFactory.findById("report-1").isPresent());
+        fileFactory.deleteSection();
 
         // --- 10. Authenticated encryption (security.crypto/envelope) - a payload
         // tampered with after encryption fails authentication and is rejected,

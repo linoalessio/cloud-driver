@@ -130,6 +130,23 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
+     * Retrieves and decrypts every entity of {@code type} currently stored
+     * in the configured database, the same way {@link #fetch(String, Class)}
+     * decrypts a single entity, applied to every entity of {@code type}
+     * that currently exists.
+     *
+     * @param type the concrete entity type to decrypt into
+     * @param <T> the entity type
+     * @return every decrypted entity of {@code type}, in no particular guaranteed order
+     * @throws DatabaseClientException if the persistence operation fails
+     * @throws KeyWrapException if any entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws AuthenticationFailedException if any retrieved payload fails authentication
+     */
+    @NotNull
+    public abstract <T extends Serialized> List<T> getEntities(@NotNull Class<T> type)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
+
+    /**
      * Deletes the entity stored under {@code objectId} from the configured
      * database. {@code type} identifies which {@link
      * de.lino.database.database.DatabaseSection database section} the entity
@@ -157,6 +174,30 @@ public abstract class DataFactory {
      * @throws DatabaseClientException if no entity exists under any of {@code objectIds}, or any persistence operation otherwise fails
      */
     public abstract <T extends Serialized> void delete(@NotNull String[] objectIds, @NotNull Class<T> type) throws DatabaseClientException;
+
+    /**
+     * Clears every entity of {@code type} from the configured database,
+     * leaving the underlying database section itself intact - the entities
+     * are gone, but the section they were stored in still exists and is
+     * ready to receive new ones. Use {@link #deleteSection} instead to
+     * remove the section itself.
+     *
+     * @param type the entity type whose section to clear
+     * @param <T> the entity type
+     */
+    public abstract <T extends Serialized> void clear(@NotNull Class<T> type);
+
+    /**
+     * Deletes the database section {@code type} is stored in entirely - not
+     * just its entries, the section itself. A later {@link #register} of an
+     * entity of {@code type} lazily recreates the section, the same way it
+     * is lazily created the first time any entity of {@code type} is
+     * stored.
+     *
+     * @param type the entity type whose section to delete
+     * @param <T> the entity type
+     */
+    public abstract <T extends Serialized> void deleteSection(@NotNull Class<T> type);
 
     /**
      * Async counterpart of {@link #register(Serialized)}, running on {@link
@@ -264,6 +305,20 @@ public abstract class DataFactory {
     }
 
     /**
+     * Async counterpart of {@link #getEntities(Class)}.
+     */
+    @NotNull
+    public <T extends Serialized> CompletableFuture<List<T>> getEntitiesAsync(@NotNull final Class<T> type) {
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> {
+            try {
+                return this.getEntities(type);
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+
+    /**
      * Async counterpart of {@link #delete(String, Class)}.
      */
     @NotNull
@@ -289,6 +344,23 @@ public abstract class DataFactory {
                 throw new CompletionException(e);
             }
         });
+    }
+
+    /**
+     * Async counterpart of {@link #clear(Class)}, running on {@link
+     * MultiTaskingFactory}'s shared virtual-thread executor.
+     */
+    @NotNull
+    public <T extends Serialized> CompletableFuture<Void> clearAsync(@NotNull final Class<T> type) {
+        return MultiTaskingFactory.getInstance().runAsync(() -> this.clear(type));
+    }
+
+    /**
+     * Async counterpart of {@link #deleteSection(Class)}.
+     */
+    @NotNull
+    public <T extends Serialized> CompletableFuture<Void> deleteSectionAsync(@NotNull final Class<T> type) {
+        return MultiTaskingFactory.getInstance().runAsync(() -> this.deleteSection(type));
     }
 
 }

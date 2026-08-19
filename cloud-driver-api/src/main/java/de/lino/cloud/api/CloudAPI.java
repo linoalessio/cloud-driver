@@ -2,19 +2,27 @@ package de.lino.cloud.api;
 
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.FileFactory;
 import lombok.NonNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.annotation.Nonnull;
 
 /**
- * Facade over the two things a {@code cloud-driver} embedder needs: entity
- * persistence/encryption via {@link #getDataFactory()} and extension
- * lifecycle management via {@link #getExtensionFactory()}. {@link CloudAPI}
- * itself holds no persistence or lifecycle logic - it is deliberately thin,
- * exposing only these two abstract getters plus the shared-instance accessor
- * below; a concrete implementation (e.g. {@code DefaultCloudAPI} in {@code
+ * Facade over the three things a {@code cloud-driver} embedder needs: entity
+ * persistence/encryption via {@link #getDataFactory()}, file upload/download
+ * via {@link #getFileFactory()}, and extension lifecycle management via
+ * {@link #getExtensionFactory()}. {@link CloudAPI} itself holds no
+ * persistence or lifecycle logic - it is deliberately thin, exposing only
+ * these three abstract getters plus the shared-instance accessor below; a
+ * concrete implementation (e.g. {@code DefaultCloudAPI} in {@code
  * cloud-driver-plugin}) supplies the actual factories.
+ *
+ * <p>{@link de.lino.cloud.api.file.StoredFile} - a file of any content type -
+ * is itself a {@code Serialized} domain entity, so {@link #getFileFactory()}
+ * is persisted through the same underlying mechanism as {@link
+ * #getDataFactory()} rather than a second, independent persistence path -
+ * see {@link FileFactory}'s class Javadoc.
  *
  * <p>Exactly one implementation is installed process-wide via a
  * static factory method on that implementation (e.g. {@code
@@ -45,6 +53,13 @@ public abstract class CloudAPI {
      * DataFactory} for the full contract.
      */
     public abstract DataFactory getDataFactory();
+
+    /**
+     * The file-persistence facet of this API: upload/download/delete (single,
+     * batch, and async variants) for encrypted files of any content type. See
+     * {@link FileFactory} for the full contract.
+     */
+    public abstract FileFactory getFileFactory();
 
     /**
      * The extension-lifecycle facet of this API: registers, starts, and

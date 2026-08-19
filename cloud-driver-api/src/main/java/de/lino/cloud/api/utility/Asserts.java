@@ -1,7 +1,11 @@
 package de.lino.cloud.api.utility;
 
 import de.lino.cloud.api.CloudAPI;
+import lombok.NonNull;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
+import java.time.Duration;
 import java.util.function.Supplier;
 
 /**
@@ -83,6 +87,54 @@ public final class Asserts {
         }
 
         return object;
+    }
+
+    /**
+     * Runs {@code action} once and prints the CPU time, memory used, and
+     * wall-clock ("system") time it took, to standard output - a quick,
+     * dependency-free way to spot-check where a {@link Runnable}'s cost
+     * actually goes without pulling in a benchmarking harness.
+     *
+     * <p>CPU time is measured via {@link
+     * ThreadMXBean#getCurrentThreadCpuTime()} for the calling thread only -
+     * if {@code action} hands work off to other threads, their CPU time is
+     * not included, and is reported as unsupported on a JVM that does not
+     * expose per-thread CPU time at all. Memory is the JVM heap's
+     * used-memory delta ({@code totalMemory() - freeMemory()}); no GC is
+     * forced before measuring, so a collection running during {@code
+     * action} can make the reported delta an over- or under-estimate, same
+     * as with any measurement that does not force one. Wall-clock time is
+     * measured via {@link System#currentTimeMillis()}, i.e. real elapsed
+     * time regardless of how many threads {@code action} used.
+     *
+     * @param action the action to time
+     * @throws NullPointerException if {@code action} is {@code null}
+     */
+    public static void runWallTimeTest(@NonNull final Runnable action) {
+
+        final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+        if (threadMXBean.isThreadCpuTimeSupported() && !threadMXBean.isThreadCpuTimeEnabled()) threadMXBean.setThreadCpuTimeEnabled(true);
+        final boolean cpuTimeSupported = threadMXBean.isThreadCpuTimeSupported();
+
+        final long cpuProcessStartTime = cpuTimeSupported ? threadMXBean.getCurrentThreadCpuTime() : -1;
+        final long memProcessStartTime = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+        final long systemStartTime = System.currentTimeMillis();
+
+        action.run();
+
+        final long cpuProcessEndTime = cpuTimeSupported ? threadMXBean.getCurrentThreadCpuTime() : -1;
+        final long memProcessEndTime = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+        final long systemEndTime = System.currentTimeMillis();
+
+        final String[] results = {
+                "CPU-process-time: " + (cpuTimeSupported ? (cpuProcessEndTime - cpuProcessStartTime) / 1_000_000 + " ms" : "unsupported on this JVM")
+                , "Mem-process-time: " + (memProcessEndTime - memProcessStartTime) / 1024 / 1024 + " MB"
+                , "System-process-time: " + (Duration.ofMillis(systemEndTime - systemStartTime).toSeconds()) + " s"
+        };
+
+        System.out.println(" ");
+        for (final String result : results) System.out.println("@Asserts.runWallTimeTest: " + result);
+        System.out.println(" ");
     }
 
 }

@@ -4,7 +4,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.plugin.database.EntityDatabaseClient;
+import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.NotNull;
 
@@ -73,6 +73,13 @@ public final class DefaultDataFactory extends DataFactory {
         return this.entityDatabaseClient.findById(objectId, type);
     }
 
+    @NotNull
+    @Override
+    public <T extends Serialized> List<T> getEntities(@NotNull final Class<T> type)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        return this.entityDatabaseClient.getEntities(type);
+    }
+
     @Override
     public <T extends Serialized> void delete(@NotNull final String objectId, @NotNull final Class<T> type) throws DatabaseClientException {
         this.entityDatabaseClient.delete(objectId, type);
@@ -81,6 +88,16 @@ public final class DefaultDataFactory extends DataFactory {
     @Override
     public <T extends Serialized> void delete(@NotNull final String[] objectIds, @NotNull final Class<T> type) throws DatabaseClientException {
         this.entityDatabaseClient.deleteAll(List.of(objectIds), type);
+    }
+
+    @Override
+    public <T extends Serialized> void clear(@NotNull final Class<T> type) {
+        this.entityDatabaseClient.clear(type);
+    }
+
+    @Override
+    public <T extends Serialized> void deleteSection(@NotNull final Class<T> type) {
+        this.entityDatabaseClient.deleteSection(type);
     }
 
 }

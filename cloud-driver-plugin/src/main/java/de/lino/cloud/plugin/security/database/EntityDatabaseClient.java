@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.database;
+package de.lino.cloud.plugin.security.database;
 
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.database.EncryptedEntityRecord;
@@ -324,6 +324,22 @@ public final class EntityDatabaseClient {
     }
 
     /**
+     * Retrieves and decrypts every entity of {@code type} currently stored
+     * in its database section - every id currently present in the section,
+     * decrypted the same way {@link #retrieve} decrypts a single id,
+     * dispatched concurrently via {@link #retrieveAll} (see the class
+     * Javadoc) since decrypting one entity is independent of every other.
+     */
+    @NotNull
+    public <T extends Serialized> List<T> getEntities(@NotNull final Class<T> type)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        Asserts.assertNotNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
+
+        final List<String> objectIds = sectionFor(type).getEntries().stream().map(DatabaseEntry::getId).toList();
+        return retrieveAll(objectIds, type);
+    }
+
+    /**
      * Deletes the entity stored under {@code objectId} from the {@code type}
      * database section and evicts it from {@code type}'s cache. Deleting a
      * nonexistent id is treated as a failure, not a silent no-op, matching
@@ -367,6 +383,37 @@ public final class EntityDatabaseClient {
         } catch (final DatabaseClientException e) {
             throw new CompletionException(e);
         }
+    }
+
+    /**
+     * Clears every entry from the {@code type} database section, leaving the
+     * section itself intact, and evicts {@code type}'s cache (if one has
+     * been created yet) so no stale decrypted entity is served afterward -
+     * use {@link #deleteSection} instead to remove the section itself.
+     */
+    public <T extends Serialized> void clear(@NotNull final Class<T> type) {
+        Asserts.assertNotNull(type, "@EntityDatabaseClient.clear: type cannot be null");
+
+        sectionFor(type).clear();
+        final Cache<String, ? extends Serialized> cache = caches.get(type);
+        if (cache != null) {
+            cache.invalidateAll();
+        }
+    }
+
+    /**
+     * Deletes the {@code type} database section entirely - not just its
+     * entries - and discards {@code type}'s cached {@link DatabaseSection}
+     * reference and cache (if either has been created yet). A later
+     * operation on {@code type} lazily recreates both, the same way {@link
+     * #sectionFor} already does for any entity type it has not seen before.
+     */
+    public <T extends Serialized> void deleteSection(@NotNull final Class<T> type) {
+        Asserts.assertNotNull(type, "@EntityDatabaseClient.deleteSection: type cannot be null");
+
+        this.databaseProvider.deleteSection(type.getSimpleName());
+        this.sections.remove(type);
+        this.caches.remove(type);
     }
 
     @SuppressWarnings("unchecked") // safe: every cache is both created and looked up keyed by the same Class<T>
