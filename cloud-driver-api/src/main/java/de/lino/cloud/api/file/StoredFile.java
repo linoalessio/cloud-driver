@@ -1,5 +1,7 @@
 package de.lino.cloud.api.file;
 
+import de.lino.cloud.api.file.meta.FileChecksum;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
@@ -17,14 +19,15 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 /**
  * A file of any content type. Being itself a {@link Serialized} domain
- * entity, a {@link StoredFile} is uploaded and downloaded through the same
- * {@link de.lino.cloud.api.factory.DataFactory} any other entity is stored
+ * meta, a {@link StoredFile} is uploaded and downloaded through the same
+ * {@link de.lino.cloud.api.factory.DataFactory} any other meta is stored
  * through - {@code dataFactory.register(storedFile)} to upload, {@code
  * dataFactory.fetch(fileId, StoredFile.class)} to download - so it is
  * envelope-encrypted (AES-256-GCM, section 9, DATA AT REST) under {@link
@@ -230,14 +233,24 @@ public final class StoredFile extends Serialized {
         return List.of(fileId);
     }
 
+    /**
+     * This file's unique id, its {@link #primaryKey()}.
+     */
     public String fileId() {
         return fileId;
     }
 
+    /**
+     * This file's original file name, as uploaded.
+     */
     public String fileName() {
         return fileName;
     }
 
+    /**
+     * This file's MIME content type, inferred from {@link #fileName()}'s
+     * extension - see the class Javadoc.
+     */
     public String contentType() {
         return contentType;
     }
@@ -252,10 +265,16 @@ public final class StoredFile extends Serialized {
         return resolveContent().clone();
     }
 
+    /**
+     * The size, in bytes, of this file's original, uncompressed content.
+     */
     public long sizeBytes() {
         return resolveContent().length;
     }
 
+    /**
+     * The plaintext checksum this file's content must match on every future download - see the class Javadoc.
+     */
     public FileChecksum checksum() {
         return checksum;
     }
@@ -271,10 +290,16 @@ public final class StoredFile extends Serialized {
         return contentCompressed;
     }
 
+    /**
+     * When this file was first uploaded.
+     */
     public Instant createdAt() {
         return Instant.ofEpochMilli(createdAtEpochMilli);
     }
 
+    /**
+     * When this file's content was last changed.
+     */
     public Instant updatedAt() {
         return Instant.ofEpochMilli(updatedAtEpochMilli);
     }
@@ -326,7 +351,11 @@ public final class StoredFile extends Serialized {
         Asserts.assertNotNull(destination, "@StoredFile.downloadToDevice: destination cannot be null");
 
         Files.createDirectories(destination);
-        final Path target = destination.resolve(fileName);
+
+        Path target = destination.resolve(fileName);
+
+        if (Files.exists(target)) target = destination.resolve(UUID.randomUUID() + "_" + fileName);
+
         Files.write(target, resolveContent());
         Files.setLastModifiedTime(target, FileTime.from(updatedAt()));
 
@@ -338,6 +367,16 @@ public final class StoredFile extends Serialized {
         }
 
         return target;
+    }
+
+    /**
+     * {@link #downloadToDevice(Path)}, defaulting {@code destination} to {@link Constraints#USER_DOWNLOADS_PATH}.
+     *
+     * @return the path of the recreated file
+     * @throws IOException if creating the destination directory or writing the file fails
+     */
+    public Path downloadToDevice() throws IOException {
+        return this.downloadToDevice(Constraints.USER_DOWNLOADS_PATH);
     }
 
     /**

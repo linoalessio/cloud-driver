@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * instead of a local file - so it is not bound to one machine's filesystem
  * and survives being read/written from any process that can reach the
  * configured database (e.g. a replicated Postgres instance behind several
- * extension nodes), the same way entity data already does via {@link
+ * extension nodes), the same way meta data already does via {@link
  * EntityDatabaseClient}.
  *
  * <p><strong>NOT for production use</strong>, for the same reason as {@link
@@ -52,6 +52,13 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
     private final Map<String, byte[]> keyEncryptionKeys = new ConcurrentHashMap<>();
     private volatile String activeKeyId;
 
+    /**
+     * Loads existing KEK material from {@code databaseSection} if a {@value #REGISTRY_ENTRY_ID}
+     * entry already exists there, otherwise {@link #rotate()}s a fresh one and persists it there.
+     *
+     * @param databaseSection the section KEK material is persisted to/loaded from
+     * @throws NullPointerException if {@code databaseSection} is {@code null}
+     */
     public DatabaseKeyEncryptionService(@NotNull final DatabaseSection databaseSection) {
         this.databaseSection = Asserts.assertNotNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
 

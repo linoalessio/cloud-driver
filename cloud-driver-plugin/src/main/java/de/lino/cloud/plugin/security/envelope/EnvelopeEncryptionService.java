@@ -35,6 +35,13 @@ public final class EnvelopeEncryptionService {
     private final KeyEncryptionService keyEncryptionService;
     private final CryptoAlgorithm dataEncryptionKeyAlgorithm;
 
+    /**
+     * @param dataEncryptionKeyGenerator generates the fresh DEK for each {@link #encrypt} call
+     * @param aeadEncryptionService encrypts/decrypts payloads under a DEK
+     * @param keyEncryptionService wraps/unwraps DEKs via the KMS/HSM
+     * @param dataEncryptionKeyAlgorithm the algorithm freshly generated DEKs use
+     * @throws NullPointerException if any argument is {@code null}
+     */
     public EnvelopeEncryptionService(@NotNull final DataEncryptionKeyGenerator dataEncryptionKeyGenerator,
                                       @NotNull final AeadEncryptionService aeadEncryptionService,
                                       @NotNull final KeyEncryptionService keyEncryptionService,
@@ -53,6 +60,13 @@ public final class EnvelopeEncryptionService {
         );
     }
 
+    /**
+     * Convenience constructor: a fresh {@link DataEncryptionKeyGenerator} and
+     * {@link AesGcmEncryptionService}, AES-256-GCM DEKs, and the given KMS/HSM.
+     *
+     * @param keyEncryptionService wraps/unwraps DEKs via the KMS/HSM
+     * @throws NullPointerException if {@code keyEncryptionService} is {@code null}
+     */
     public EnvelopeEncryptionService(@NotNull final KeyEncryptionService keyEncryptionService) {
         this(new DataEncryptionKeyGenerator(), new AesGcmEncryptionService(), keyEncryptionService, CryptoAlgorithm.AES_256_GCM);
     }

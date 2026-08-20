@@ -44,6 +44,12 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
     private final Map<String, byte[]> keyEncryptionKeys = new ConcurrentHashMap<>();
     private volatile String activeKeyId;
 
+    /**
+     * Loads existing KEK material from {@code path} if it already exists, otherwise {@link #rotate()}s a fresh one and persists it there.
+     *
+     * @param path the file KEK material is persisted to/loaded from
+     * @throws NullPointerException if {@code path} is {@code null}
+     */
     public FileKeyEncryptionService(@NotNull final Path path) {
         this.path = Asserts.assertNotNull(path, "@FileKeyEncryptionService: path cannot be null");
 

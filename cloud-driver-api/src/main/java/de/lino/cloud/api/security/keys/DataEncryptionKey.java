@@ -20,15 +20,26 @@ public final class DataEncryptionKey {
     private final CryptoAlgorithm algorithm;
     private final byte[] keyMaterial;
 
+    /**
+     * @param algorithm the algorithm this key material is used with
+     * @param keyMaterial the raw key bytes
+     * @throws NullPointerException if {@code algorithm} or {@code keyMaterial} is {@code null}
+     */
     public DataEncryptionKey(final CryptoAlgorithm algorithm, final byte[] keyMaterial) {
         this.algorithm = Asserts.assertNotNull(algorithm, "@DataEncryptionKey: algorithm cannot be null");
         this.keyMaterial = Asserts.assertNotNull(keyMaterial, "@DataEncryptionKey: keyMaterial cannot be null");
     }
 
+    /**
+     * The algorithm this key's material is used with.
+     */
     public CryptoAlgorithm algorithm() {
         return algorithm;
     }
 
+    /**
+     * This key's raw material as a JCA {@link SecretKey}, ready to hand to a {@link javax.crypto.Cipher}.
+     */
     public SecretKey asSecretKey() {
         return new SecretKeySpec(keyMaterial, "AES");
     }

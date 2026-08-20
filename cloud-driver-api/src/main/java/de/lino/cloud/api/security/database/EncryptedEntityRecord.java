@@ -28,6 +28,14 @@ public record EncryptedEntityRecord(
         String wrappedDataEncryptionKey
 ) {
 
+    /**
+     * Converts {@code envelope} into its base64-encoded storage
+     * representation, ready to be written as a plain JSON document.
+     *
+     * @param envelope the envelope to convert
+     * @return the resulting storage record
+     * @throws NullPointerException if {@code envelope} is {@code null}
+     */
     public static EncryptedEntityRecord from(final EnvelopeEncryptedPayload envelope) {
         Asserts.assertNotNull(envelope, "@EncryptedEntityRecord.from: envelope cannot be null");
 
@@ -48,6 +56,12 @@ public record EncryptedEntityRecord(
         );
     }
 
+    /**
+     * Reverses {@link #from(EnvelopeEncryptedPayload)}, base64-decoding this
+     * record's fields back into an {@link EnvelopeEncryptedPayload}.
+     *
+     * @return the decoded envelope
+     */
     public EnvelopeEncryptedPayload toEnvelope() {
         final Base64.Decoder base64 = Base64.getDecoder();
 

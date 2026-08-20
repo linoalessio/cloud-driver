@@ -23,6 +23,10 @@ public record WrappedKey(String keyEncryptionKeyId, byte[] wrappedKeyMaterial, S
         wrappedKeyMaterial = wrappedKeyMaterial.clone();
     }
 
+    /**
+     * A defensive copy of the wrapped key material, so neither the caller
+     * nor this record can mutate shared state after the fact.
+     */
     @Override
     public byte[] wrappedKeyMaterial() {
         return wrappedKeyMaterial.clone();

@@ -11,23 +11,23 @@ import java.nio.charset.StandardCharsets;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * Sends any {@link Serialized} domain entity - the database-driver-api base
+ * Sends any {@link Serialized} domain meta - the database-driver-api base
  * class for persistable entities - through {@link EnvelopeEncryptionService}
- * generically: the same channel handles every entity subclass without a
+ * generically: the same channel handles every meta subclass without a
  * type-specific encrypt/decrypt path. {@link Serialized#toByteArray()} and
  * {@link Serialized#fromByteArray(byte[], Class)} already give a JSON-based
  * wire format; this class adds confidentiality and authenticity on top via
  * AES-256-GCM envelope encryption.
  *
- * <p>The entity's type name and {@link Serialized#primaryKey() primary key}
+ * <p>The meta's type name and {@link Serialized#primaryKey() primary key}
  * are bound into the authenticated associated data (AAD, section 6 of the
  * security requirements: "protocol/version identifiers ... record
  * identifiers"), so a payload cannot be silently swapped for a different
- * entity or record in transit or storage - {@link #receive} rejects a
+ * meta or record in transit or storage - {@link #receive} rejects a
  * mismatch before doing any decryption work.
  *
  * <p>{@link #send} and {@link #receive} are generic per call, not per
- * instance, so a single channel handles heterogeneous entity types - the
+ * instance, so a single channel handles heterogeneous meta types - the
  * shape needed by a global facade such as {@code CloudAPI}.
  */
 public final class SecureEntityChannel {
@@ -36,6 +36,10 @@ public final class SecureEntityChannel {
 
     private final EnvelopeEncryptionService envelopeEncryptionService;
 
+    /**
+     * @param envelopeEncryptionService the envelope-encryption service backing {@link #send}/{@link #receive}
+     * @throws NullPointerException if {@code envelopeEncryptionService} is {@code null}
+     */
     public SecureEntityChannel(@NotNull final EnvelopeEncryptionService envelopeEncryptionService) {
         this.envelopeEncryptionService = Asserts.assertNotNull(
                 envelopeEncryptionService, "@SecureEntityChannel: envelopeEncryptionService cannot be null"
@@ -43,13 +47,13 @@ public final class SecureEntityChannel {
     }
 
     /**
-     * Serializes and envelope-encrypts {@code entity}, ready to hand to the
+     * Serializes and envelope-encrypts {@code meta}, ready to hand to the
      * configured storage backend (e.g. as the payload {@code
      * EntityDatabaseClient} writes to a database).
      */
     @NotNull
     public <T extends Serialized> EnvelopeEncryptedPayload send(@NotNull final T entity) throws KeyWrapException {
-        Asserts.assertNotNull(entity, "@SecureEntityChannel.send: entity cannot be null");
+        Asserts.assertNotNull(entity, "@SecureEntityChannel.send: meta cannot be null");
 
         final byte[] data = entity.toByteArray();
         final byte[] associatedData = associatedData(entity.getClass(), entity.primaryKey());
@@ -58,7 +62,7 @@ public final class SecureEntityChannel {
 
     /**
      * Decrypts a payload produced by {@link #send(Serialized)} and
-     * reconstructs the original entity, rejecting anything that fails
+     * reconstructs the original meta, rejecting anything that fails
      * authentication or does not match {@code expectedType}.
      */
     @NotNull
@@ -71,7 +75,7 @@ public final class SecureEntityChannel {
         final String typeNamePrefix = PROTOCOL_VERSION + ":" + expectedType.getName() + ":";
         if (!associatedData.startsWith(typeNamePrefix)) {
             throw new IllegalArgumentException(
-                    "@SecureEntityChannel.receive: expected entity type " + expectedType.getName()
+                    "@SecureEntityChannel.receive: expected meta type " + expectedType.getName()
                             + " but envelope carries '" + associatedData + "'"
             );
         }

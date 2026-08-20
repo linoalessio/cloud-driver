@@ -34,10 +34,19 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
     private final int parallelism;
     private final SecureRandom secureRandom = new SecureRandom();
 
+    /**
+     * Constructs a hasher using the OWASP Argon2id baseline defaults
+     * ({@link #DEFAULT_MEMORY_KIB}/{@link #DEFAULT_ITERATIONS}/{@link #DEFAULT_PARALLELISM}).
+     */
     public Argon2idPasswordHasher() {
         this(DEFAULT_MEMORY_KIB, DEFAULT_ITERATIONS, DEFAULT_PARALLELISM);
     }
 
+    /**
+     * @param memoryKib memory cost, in KiB
+     * @param iterations number of iterations
+     * @param parallelism degree of parallelism
+     */
     public Argon2idPasswordHasher(final int memoryKib, final int iterations, final int parallelism) {
         this.memoryKib = memoryKib;
         this.iterations = iterations;

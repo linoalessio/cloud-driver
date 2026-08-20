@@ -24,6 +24,50 @@ public final class Constraints {
      */
     public static final Path CONFIGURATION_PATH = Path.of(System.getProperty("user.dir"), "cloud-driver");
 
+    public static final Path USER_DOWNLOADS_PATH = Path.of(System.getProperty("user.home"), "Downloads");
+
+    private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
+    private static final String[] TIME_UNITS = {"ms", "s", "min", "h", "d"};
+    private static final int[] TIME_UNIT_DIVISORS = {1000, 60, 60, 24};
+
+    /**
+     * Formats {@code bytes} in its largest whole {@link #BYTE_UNITS} unit
+     * (e.g. {@code 2048} -> {@code "2.00KB"}), rather than merely labelling
+     * the raw byte count.
+     */
+    public static String resolveBytesToUnit(final long bytes) {
+
+        double value = bytes;
+        int unit = 0;
+
+        while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+            value /= 1024;
+            unit++;
+        }
+
+        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value)) + " " + BYTE_UNITS[unit];
+
+    }
+
+    /**
+     * Formats {@code milliseconds} in its largest whole {@link #TIME_UNITS}
+     * unit (e.g. {@code 90_000} -&gt; {@code "1.50 min"}), the millisecond
+     * counterpart to {@link Constraints#resolveBytesToUnit(long)}.
+     */
+    public static String resolveMilliSecondsToUnit(final long milliseconds) {
+
+        double value = milliseconds;
+        int unit = 0;
+
+        while (unit < TIME_UNIT_DIVISORS.length && value >= TIME_UNIT_DIVISORS[unit]) {
+            value /= TIME_UNIT_DIVISORS[unit];
+            unit++;
+        }
+
+        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value)) + " " + TIME_UNITS[unit];
+
+    }
+
     /**
      * File extension (lowercase, without the leading dot) to MIME content
      * type - used by {@code StoredFile} to infer a file's content type from

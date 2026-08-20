@@ -30,10 +30,17 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
     private final CryptoAlgorithm algorithm;
     private final SecureRandom secureRandom;
 
+    /**
+     * Constructs a service using {@link #DEFAULT_ALGORITHM} (AES-256-GCM).
+     */
     public AesGcmEncryptionService() {
         this(DEFAULT_ALGORITHM);
     }
 
+    /**
+     * @param algorithm the AES-GCM variant to encrypt/decrypt with
+     * @throws NullPointerException if {@code algorithm} is {@code null}
+     */
     public AesGcmEncryptionService(final CryptoAlgorithm algorithm) {
         this.algorithm = Asserts.assertNotNull(algorithm, "@AesGcmEncryptionService: algorithm cannot be null");
         this.secureRandom = new SecureRandom();

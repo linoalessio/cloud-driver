@@ -16,7 +16,15 @@ package de.lino.cloud.api.security.crypto;
  */
 public enum CryptoAlgorithm {
 
+    /**
+     * The mandated default: AES-256-GCM, a 32-byte (256-bit) key.
+     */
     AES_256_GCM("AES-256-GCM", "AES/GCM/NoPadding", 32, 12, 128),
+
+    /**
+     * The documented alternative "where appropriate": AES-128-GCM, a
+     * 16-byte (128-bit) key.
+     */
     AES_128_GCM("AES-128-GCM", "AES/GCM/NoPadding", 16, 12, 128);
 
     private final String id;
@@ -25,6 +33,13 @@ public enum CryptoAlgorithm {
     private final int nonceLengthBytes;
     private final int tagLengthBits;
 
+    /**
+     * @param id the stable identifier persisted alongside encrypted payloads
+     * @param transformation the JCA cipher transformation implementing this algorithm
+     * @param keyLengthBytes the key length, in bytes
+     * @param nonceLengthBytes the nonce/IV length, in bytes, a single encryption operation must use
+     * @param tagLengthBits the GCM authentication tag length, in bits
+     */
     CryptoAlgorithm(final String id, final String transformation, final int keyLengthBytes,
                      final int nonceLengthBytes, final int tagLengthBits) {
         this.id = id;
@@ -48,6 +63,9 @@ public enum CryptoAlgorithm {
         return transformation;
     }
 
+    /**
+     * Length, in bytes, of the key this algorithm uses.
+     */
     public int keyLengthBytes() {
         return keyLengthBytes;
     }
@@ -61,10 +79,20 @@ public enum CryptoAlgorithm {
         return nonceLengthBytes;
     }
 
+    /**
+     * Length, in bits, of the GCM authentication tag this algorithm produces.
+     */
     public int tagLengthBits() {
         return tagLengthBits;
     }
 
+    /**
+     * Looks up the {@link CryptoAlgorithm} whose {@link #id()} equals {@code id}.
+     *
+     * @param id the stable identifier to look up
+     * @return the matching algorithm
+     * @throws IllegalArgumentException if no algorithm has that identifier
+     */
     public static CryptoAlgorithm fromId(final String id) {
         for (final CryptoAlgorithm algorithm : values()) {
             if (algorithm.id.equals(id)) {

@@ -40,6 +40,10 @@ public abstract class Extension {
      */
     private final ProjectType projectBuildType;
 
+    /**
+     * The CLI prefix this extension's own commands are namespaced under, if any.
+     * Empty by default; set explicitly via {@link #setPrefix(String)}.
+     */
     private String prefix = "";
 
     /**

@@ -19,6 +19,9 @@ public final class SecretRedactor {
     private static final Pattern QUERY_STRING_SECRET =
             Pattern.compile("(?i)([?&](?:api[_-]?key|token|secret|password|client_secret)=)[^&\\s]+");
 
+    /**
+     * Not instantiable; all functionality is exposed through static methods.
+     */
     private SecretRedactor() {
     }
 

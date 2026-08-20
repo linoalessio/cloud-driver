@@ -4,7 +4,7 @@ import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.file.FileMetadata;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.crypto.EncryptedPayload;
@@ -40,7 +40,7 @@ import java.util.Objects;
  * DatabaseSection} (here, the file-based JSON provider from {@code
  * database-driver-plugin}, so this sample needs no external database
  * server), initialize {@link CloudAPI} against it, then send and receive a
- * domain entity through the singleton.
+ * domain meta through the singleton.
  *
  * <p>This class is demo code, not part of the module's published API - it
  * lives under {@code src/test} so it is never shipped in the built jar. Run
@@ -49,7 +49,7 @@ import java.util.Objects;
 public final class CloudAPIUsageSample {
 
     /**
-     * A minimal {@link Serialized} domain entity. Any extension-defined
+     * A minimal {@link Serialized} domain meta. Any extension-defined
      * subclass works the same way - {@link DataFactory#register} and {@link
      * DataFactory#fetch} are generic over every {@link Serialized} type.
      */
@@ -100,7 +100,7 @@ public final class CloudAPIUsageSample {
         final Credentials credentials = new Credentials(repositoryRoot.resolve("credentials.json"), repositoryRoot.resolve("data"));
         final DatabaseProvider databaseProvider = DatabaseRepository.getInstance().registerDatabaseProvider(0, DatabaseType.JSON, credentials);
         // No section is created here: EntityDatabaseClient creates (or reuses)
-        // one section per entity type on demand, named after the type - e.g.
+        // one section per meta type on demand, named after the type - e.g.
         // CustomerRecord below ends up in a "CustomerRecord" section.
 
         // --- 2. Wire up envelope encryption ---------------------------------
@@ -116,7 +116,7 @@ public final class CloudAPIUsageSample {
         // lifecycle management (not used in this sample) behind #getExtensionFactory().
         final DataFactory dataFactory = cloudAPI.getDataFactory();
 
-        // --- 4. Register an entity - encrypted before it is written to the database
+        // --- 4. Register an meta - encrypted before it is written to the database
         final CustomerRecord customer = new CustomerRecord(42, "DE89370400440532013000");
         dataFactory.registerAsync(customer).get();
         System.out.println("Stored " + customer);
@@ -155,7 +155,7 @@ public final class CloudAPIUsageSample {
         // CloudAPI/EntityDatabaseClient. The remaining steps use it directly.
 
         // --- 8. Hashing (security.hash) - an integrity hash for audit logging,
-        // computed over the entity's own serialized bytes (section 6/7).
+        // computed over the meta's own serialized bytes (section 6/7).
         final byte[] integrityHash = Hasher.digest(HashAlgorithm.SHA_256, movedAccount.toByteArray());
         System.out.println("SHA-256 of the stored record's serialized bytes: " + HexFormat.of().formatHex(integrityHash));
 
@@ -166,7 +166,7 @@ public final class CloudAPIUsageSample {
         System.out.println("Rotated key-encryption key: " + previousKeyEncryptionKeyId + " -> " + rotatedKeyEncryptionKeyId);
         System.out.println("Entity wrapped under the old key still decrypts: " + dataFactory.fetch("42", CustomerRecord.class));
 
-        // --- 9b. Delete - removes the entity from the database and its cache;
+        // --- 9b. Delete - removes the meta from the database and its cache;
         // a subsequent fetch of the same id is rejected like any unknown id.
         dataFactory.delete("42", CustomerRecord.class);
         try {
@@ -177,9 +177,9 @@ public final class CloudAPIUsageSample {
         }
 
         // --- 9c. File upload/download (de.lino.cloud.api.file / FileFactory) -
-        // StoredFile is itself a Serialized entity, so FileFactory persists it
+        // StoredFile is itself a Serialized meta, so FileFactory persists it
         // through the very same DataFactory used above (accepting any content
-        // type, envelope-encrypted the same way any other entity is) and adds
+        // type, envelope-encrypted the same way any other meta is) and adds
         // only upload/download naming plus a checksum check on every download,
         // independent of the AES-GCM authentication tag DataFactory#fetch
         // already verifies.
@@ -244,7 +244,7 @@ public final class CloudAPIUsageSample {
         // tampered with after encryption fails authentication and is rejected,
         // rather than silently returning corrupted plaintext.
         final EnvelopeEncryptedPayload envelope = envelopeEncryptionService.encrypt(
-                "internal note, unrelated to any stored entity".getBytes(StandardCharsets.UTF_8),
+                "internal note, unrelated to any stored meta".getBytes(StandardCharsets.UTF_8),
                 "sample-context".getBytes(StandardCharsets.UTF_8)
         );
         final byte[] tamperedCiphertext = envelope.payload().ciphertext();

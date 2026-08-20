@@ -14,9 +14,20 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class Hasher {
 
+    /**
+     * Not instantiable; all functionality is exposed through static methods.
+     */
     private Hasher() {
     }
 
+    /**
+     * Hashes {@code data} with {@code algorithm}.
+     *
+     * @param algorithm the hash algorithm to use
+     * @param data the bytes to hash
+     * @return the raw digest bytes
+     * @throws NullPointerException if {@code algorithm} or {@code data} is {@code null}
+     */
     public static byte[] digest(final HashAlgorithm algorithm, final byte[] data) {
         Asserts.assertNotNull(algorithm, "@Hasher.digest: algorithm cannot be null");
         Asserts.assertNotNull(data, "@Hasher.digest: data cannot be null");
@@ -28,6 +39,14 @@ public final class Hasher {
         }
     }
 
+    /**
+     * {@link #digest(HashAlgorithm, byte[])}, formatted as a lowercase hex string.
+     *
+     * @param algorithm the hash algorithm to use
+     * @param data the bytes to hash
+     * @return the digest, as lowercase hex
+     * @throws NullPointerException if {@code algorithm} or {@code data} is {@code null}
+     */
     public static String hexDigest(final HashAlgorithm algorithm, final byte[] data) {
         return HexFormat.of().formatHex(digest(algorithm, data));
     }

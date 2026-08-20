@@ -15,6 +15,13 @@ public final class DataEncryptionKeyGenerator {
 
     private final SecureRandom secureRandom = new SecureRandom ();
 
+    /**
+     * Generates a fresh, random {@link DataEncryptionKey} of {@code algorithm}'s key length.
+     *
+     * @param algorithm the algorithm the generated key's material will be used with
+     * @return the generated key
+     * @throws NullPointerException if {@code algorithm} is {@code null}
+     */
     public DataEncryptionKey generate(final CryptoAlgorithm algorithm) {
         Asserts.assertNotNull(algorithm, "@DataEncryptionKeyGenerator.generate: algorithm cannot be null");
         final byte[] material = new byte[algorithm.keyLengthBytes()];
@@ -22,6 +29,11 @@ public final class DataEncryptionKeyGenerator {
         return new DataEncryptionKey(algorithm, material);
     }
 
+    /**
+     * {@link #generate(CryptoAlgorithm)} for {@link CryptoAlgorithm#AES_256_GCM}.
+     *
+     * @return the generated key
+     */
     public DataEncryptionKey generate() {
         return generate(CryptoAlgorithm.AES_256_GCM);
     }

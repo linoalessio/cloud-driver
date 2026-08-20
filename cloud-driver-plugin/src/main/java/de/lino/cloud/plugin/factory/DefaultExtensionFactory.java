@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class DefaultExtensionFactory extends ExtensionFactory {
 
+    /**
+     * Every registered extension, keyed by {@link ExtensionProperties#getExtensionName()}.
+     */
     private final Map<String, Extension> extensions = new ConcurrentHashMap<>();
 
     @Override

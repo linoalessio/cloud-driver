@@ -5,7 +5,6 @@ import lombok.NonNull;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
-import java.time.Duration;
 import java.util.function.Supplier;
 
 /**
@@ -127,9 +126,9 @@ public final class Asserts {
         final long systemEndTime = System.currentTimeMillis();
 
         final String[] results = {
-                "CPU-process-time: " + (cpuTimeSupported ? (cpuProcessEndTime - cpuProcessStartTime) / 1_000_000 + " ms" : "unsupported on this JVM")
-                , "Mem-process-time: " + (memProcessEndTime - memProcessStartTime) / 1024 / 1024 + " MB"
-                , "System-process-time: " + (Duration.ofMillis(systemEndTime - systemStartTime).toSeconds()) + " s"
+                "CPU-process-time: " + (cpuTimeSupported ? Constraints.resolveMilliSecondsToUnit((cpuProcessEndTime - cpuProcessStartTime) / 1_000_000) : "unsupported on this JVM")
+                , "Mem-process-time: " + Constraints.resolveBytesToUnit(memProcessEndTime - memProcessStartTime)
+                , "System-process-time: " + Constraints.resolveMilliSecondsToUnit(systemEndTime - systemStartTime)
         };
 
         System.out.println(" ");

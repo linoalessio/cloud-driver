@@ -12,77 +12,91 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
+/**
+ * Encrypts, persists, and retrieves {@link Serialized} domain entities -
+ * reached through {@code CloudAPI#getDataFactory()}. Every meta is
+ * envelope-encrypted (AES-256-GCM, section 9, DATA AT REST) before it is
+ * written, so the configured database only ever holds ciphertext.
+ *
+ * <p>Only {@link #register}, {@link #update}, {@link #fetch}, {@link
+ * #findById}, {@link #delete}, {@link #getEntities}, {@link #clear}, and
+ * {@link #deleteSection} (single and batch variants where applicable) are
+ * abstract; every {@code *Async} variant below is implemented here,
+ * generically, in terms of those - the same "abstract primitives + generic
+ * concrete methods" shape {@link FileFactory} and {@link ExtensionFactory}
+ * use.
+ */
 public abstract class DataFactory {
 
         /**
-     * Encrypts {@code entity} and stores it in the configured database, per
+     * Encrypts {@code meta} and stores it in the configured database, per
      * the security requirements (section 9, DATA AT REST): envelope-encrypted
      * with AES-256-GCM before it is written, so the database only ever holds
      * ciphertext.
      *
-     * @param entity the domain entity to store
-     * @param <T> the entity type
+     * @param entity the domain meta to store
+     * @param <T> the meta type
      * @throws DatabaseClientException if the persistence operation fails
-     * @throws KeyWrapException if the entity's data-encryption key cannot be wrapped by the KMS/HSM
+     * @throws KeyWrapException if the meta's data-encryption key cannot be wrapped by the KMS/HSM
      */
     public abstract <T extends Serialized> void register(@NotNull T entity) throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Encrypts and stores every entity in {@code entities}, each under its
+     * Encrypts and stores every meta in {@code entities}, each under its
      * own {@link Serialized#primaryKey() primary key}, the same way {@link
-     * #register(Serialized)} stores a single entity. Implementations dispatch
+     * #register(Serialized)} stores a single meta. Implementations dispatch
      * entities concurrently rather than one at a time - see the concrete
      * implementation's Javadoc for the exact failure semantics of a batch
-     * with more than one failing entity.
+     * with more than one failing meta.
      *
      * @param entities the domain entities to store
-     * @param <T> the entity type
+     * @param <T> the meta type
      * @throws DatabaseClientException if any persistence operation fails
-     * @throws KeyWrapException if any entity's data-encryption key cannot be wrapped by the KMS/HSM
+     * @throws KeyWrapException if any meta's data-encryption key cannot be wrapped by the KMS/HSM
      */
     public abstract <T extends Serialized> void register(@NotNull T... entities) throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Encrypts {@code entity} and overwrites the existing database record
+     * Encrypts {@code meta} and overwrites the existing database record
      * stored under its {@link Serialized#primaryKey() primary key}. Unlike
      * {@link #register(Serialized)}, which inserts-or-updates, this fails if no
      * such record exists yet - use it when the caller means "this already
      * exists and I'm changing it", not "store this, however that happens to
      * work out".
      *
-     * @param entity the domain entity to overwrite the existing record with
-     * @param <T> the entity type
-     * @throws DatabaseClientException if no entity exists under {@code entity}'s primary key, or the persistence operation otherwise fails
-     * @throws KeyWrapException if the entity's data-encryption key cannot be wrapped by the KMS/HSM
+     * @param entity the domain meta to overwrite the existing record with
+     * @param <T> the meta type
+     * @throws DatabaseClientException if no meta exists under {@code meta}'s primary key, or the persistence operation otherwise fails
+     * @throws KeyWrapException if the meta's data-encryption key cannot be wrapped by the KMS/HSM
      */
     public abstract <T extends Serialized> void update(@NotNull T entity) throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Encrypts and overwrites the existing database record of every entity in
+     * Encrypts and overwrites the existing database record of every meta in
      * {@code entities}, each under its own {@link Serialized#primaryKey()
      * primary key}, the same way {@link #update(Serialized)} overwrites a
-     * single entity. Implementations dispatch entities concurrently rather
+     * single meta. Implementations dispatch entities concurrently rather
      * than one at a time - see the concrete implementation's Javadoc for the
-     * exact failure semantics of a batch with more than one failing entity.
+     * exact failure semantics of a batch with more than one failing meta.
      *
      * @param entities the domain entities to overwrite the existing records with
-     * @param <T> the entity type
-     * @throws DatabaseClientException if no entity exists under any entity's primary key, or any persistence operation otherwise fails
-     * @throws KeyWrapException if any entity's data-encryption key cannot be wrapped by the KMS/HSM
+     * @param <T> the meta type
+     * @throws DatabaseClientException if no meta exists under any meta's primary key, or any persistence operation otherwise fails
+     * @throws KeyWrapException if any meta's data-encryption key cannot be wrapped by the KMS/HSM
      */
     public abstract <T extends Serialized> void update(@NotNull T... entities) throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Retrieves the entity stored under {@code objectId} from the database
+     * Retrieves the meta stored under {@code objectId} from the database
      * and decrypts it back into an instance of {@code type}, verifying its
      * authentication tag before returning any plaintext.
      *
-     * @param objectId the entity's {@link Serialized#primaryKey() primary key}
-     * @param type the concrete entity type to decrypt into
-     * @param <T> the entity type
-     * @return the decrypted entity
+     * @param objectId the meta's {@link Serialized#primaryKey() primary key}
+     * @param type the concrete meta type to decrypt into
+     * @param <T> the meta type
+     * @return the decrypted meta
      * @throws DatabaseClientException if the persistence operation fails
-     * @throws KeyWrapException if the entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws KeyWrapException if the meta's data-encryption key cannot be unwrapped by the KMS/HSM
      * @throws AuthenticationFailedException if the retrieved payload fails authentication
      */
     @NotNull
@@ -90,17 +104,17 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
-     * Retrieves every entity stored under {@code objectIds} from the
+     * Retrieves every meta stored under {@code objectIds} from the
      * database and decrypts each one back into an instance of {@code type},
      * in the same order as {@code objectIds}, the same way {@link
-     * #fetch(String, Class)} retrieves a single entity.
+     * #fetch(String, Class)} retrieves a single meta.
      *
      * @param objectIds the entities' {@link Serialized#primaryKey() primary keys}
-     * @param type the concrete entity type to decrypt into
-     * @param <T> the entity type
+     * @param type the concrete meta type to decrypt into
+     * @param <T> the meta type
      * @return the decrypted entities, in the same order as {@code objectIds}
      * @throws DatabaseClientException if any persistence operation fails
-     * @throws KeyWrapException if any entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws KeyWrapException if any meta's data-encryption key cannot be unwrapped by the KMS/HSM
      * @throws AuthenticationFailedException if any retrieved payload fails authentication
      */
     @NotNull
@@ -108,21 +122,21 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
-     * Looks up the entity stored under {@code objectId} the same way {@link
+     * Looks up the meta stored under {@code objectId} the same way {@link
      * #fetch(String, Class)} does (cache first, then database), but returns
-     * {@link Optional#empty()} instead of throwing when no such entity
+     * {@link Optional#empty()} instead of throwing when no such meta
      * exists - for callers that mean "does this exist?" rather than "this
      * must exist". Only a confirmed-absent id becomes {@code empty()}; a
      * corrupted record, an unwrappable key, or a failed authentication check
      * still throw exactly like {@link #fetch(String, Class)} does, since
      * those are real failures, not absence.
      *
-     * @param objectId the entity's {@link Serialized#primaryKey() primary key}
-     * @param type the concrete entity type to decrypt into
-     * @param <T> the entity type
-     * @return the decrypted entity, or {@link Optional#empty()} if no entity exists under {@code objectId}
-     * @throws DatabaseClientException if the entity exists but its record is corrupted
-     * @throws KeyWrapException if the entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @param objectId the meta's {@link Serialized#primaryKey() primary key}
+     * @param type the concrete meta type to decrypt into
+     * @param <T> the meta type
+     * @return the decrypted meta, or {@link Optional#empty()} if no meta exists under {@code objectId}
+     * @throws DatabaseClientException if the meta exists but its record is corrupted
+     * @throws KeyWrapException if the meta's data-encryption key cannot be unwrapped by the KMS/HSM
      * @throws AuthenticationFailedException if the retrieved payload fails authentication
      */
     @NotNull
@@ -130,16 +144,16 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
-     * Retrieves and decrypts every entity of {@code type} currently stored
+     * Retrieves and decrypts every meta of {@code type} currently stored
      * in the configured database, the same way {@link #fetch(String, Class)}
-     * decrypts a single entity, applied to every entity of {@code type}
+     * decrypts a single meta, applied to every meta of {@code type}
      * that currently exists.
      *
-     * @param type the concrete entity type to decrypt into
-     * @param <T> the entity type
-     * @return every decrypted entity of {@code type}, in no particular guaranteed order
+     * @param type the concrete meta type to decrypt into
+     * @param <T> the meta type
+     * @return every decrypted meta of {@code type}, in no particular guaranteed order
      * @throws DatabaseClientException if the persistence operation fails
-     * @throws KeyWrapException if any entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws KeyWrapException if any meta's data-encryption key cannot be unwrapped by the KMS/HSM
      * @throws AuthenticationFailedException if any retrieved payload fails authentication
      */
     @NotNull
@@ -147,55 +161,55 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
-     * Deletes the entity stored under {@code objectId} from the configured
+     * Deletes the meta stored under {@code objectId} from the configured
      * database. {@code type} identifies which {@link
-     * de.lino.database.database.DatabaseSection database section} the entity
+     * de.lino.database.database.DatabaseSection database section} the meta
      * lives in, the same way {@link #fetch(String, Class)}'s {@code type}
      * does.
      *
-     * @param objectId the entity's {@link Serialized#primaryKey() primary key}
-     * @param type the entity type stored under {@code objectId}
-     * @param <T> the entity type
-     * @throws DatabaseClientException if no entity exists under {@code objectId}, or the persistence operation otherwise fails
+     * @param objectId the meta's {@link Serialized#primaryKey() primary key}
+     * @param type the meta type stored under {@code objectId}
+     * @param <T> the meta type
+     * @throws DatabaseClientException if no meta exists under {@code objectId}, or the persistence operation otherwise fails
      */
     public abstract <T extends Serialized> void delete(@NotNull String objectId, @NotNull Class<T> type) throws DatabaseClientException;
 
     /**
-     * Deletes every entity stored under {@code objectIds} from the
+     * Deletes every meta stored under {@code objectIds} from the
      * configured database, the same way {@link #delete(String, Class)}
-     * deletes a single entity. Implementations dispatch ids concurrently
+     * deletes a single meta. Implementations dispatch ids concurrently
      * rather than one at a time - see the concrete implementation's Javadoc
      * for the exact failure semantics of a batch with more than one failing
      * id.
      *
      * @param objectIds the entities' {@link Serialized#primaryKey() primary keys}
-     * @param type the entity type stored under every id in {@code objectIds}
-     * @param <T> the entity type
-     * @throws DatabaseClientException if no entity exists under any of {@code objectIds}, or any persistence operation otherwise fails
+     * @param type the meta type stored under every id in {@code objectIds}
+     * @param <T> the meta type
+     * @throws DatabaseClientException if no meta exists under any of {@code objectIds}, or any persistence operation otherwise fails
      */
     public abstract <T extends Serialized> void delete(@NotNull String[] objectIds, @NotNull Class<T> type) throws DatabaseClientException;
 
     /**
-     * Clears every entity of {@code type} from the configured database,
+     * Clears every meta of {@code type} from the configured database,
      * leaving the underlying database section itself intact - the entities
      * are gone, but the section they were stored in still exists and is
      * ready to receive new ones. Use {@link #deleteSection} instead to
      * remove the section itself.
      *
-     * @param type the entity type whose section to clear
-     * @param <T> the entity type
+     * @param type the meta type whose section to clear
+     * @param <T> the meta type
      */
     public abstract <T extends Serialized> void clear(@NotNull Class<T> type);
 
     /**
      * Deletes the database section {@code type} is stored in entirely - not
      * just its entries, the section itself. A later {@link #register} of an
-     * entity of {@code type} lazily recreates the section, the same way it
-     * is lazily created the first time any entity of {@code type} is
+     * meta of {@code type} lazily recreates the section, the same way it
+     * is lazily created the first time any meta of {@code type} is
      * stored.
      *
-     * @param type the entity type whose section to delete
-     * @param <T> the entity type
+     * @param type the meta type whose section to delete
+     * @param <T> the meta type
      */
     public abstract <T extends Serialized> void deleteSection(@NotNull Class<T> type);
 

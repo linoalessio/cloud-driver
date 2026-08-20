@@ -29,16 +29,25 @@ public record EncryptedPayload(String algorithmId, byte[] nonce, byte[] cipherte
         associatedData = associatedData == null ? new byte[0] : associatedData.clone();
     }
 
+    /**
+     * A defensive copy of the nonce/IV, so neither the caller nor this record can mutate shared state after the fact.
+     */
     @Override
     public byte[] nonce() {
         return nonce.clone();
     }
 
+    /**
+     * A defensive copy of the ciphertext, so neither the caller nor this record can mutate shared state after the fact.
+     */
     @Override
     public byte[] ciphertext() {
         return ciphertext.clone();
     }
 
+    /**
+     * A defensive copy of the associated authenticated data, so neither the caller nor this record can mutate shared state after the fact.
+     */
     @Override
     public byte[] associatedData() {
         return associatedData.clone();

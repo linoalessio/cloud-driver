@@ -9,6 +9,10 @@ package de.lino.cloud.api.security.crypto;
  */
 public final class AuthenticationFailedException extends Exception {
 
+    /**
+     * @param message the detail message describing the verification failure
+     * @param cause the underlying cause, if any
+     */
     public AuthenticationFailedException(final String message, final Throwable cause) {
         super(message, cause);
     }

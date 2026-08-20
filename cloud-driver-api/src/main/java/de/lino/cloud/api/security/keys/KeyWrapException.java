@@ -8,6 +8,10 @@ package de.lino.cloud.api.security.keys;
  */
 public final class KeyWrapException extends Exception {
 
+    /**
+     * @param message the detail message describing the wrap/unwrap failure
+     * @param cause the underlying cause, if any
+     */
     public KeyWrapException(final String message, final Throwable cause) {
         super(message, cause);
     }

@@ -1,5 +1,6 @@
-package de.lino.cloud.api.file;
+package de.lino.cloud.api.file.meta;
 
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.utility.Asserts;
 
 import java.time.Instant;

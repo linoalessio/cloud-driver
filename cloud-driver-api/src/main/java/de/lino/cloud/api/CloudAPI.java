@@ -1,15 +1,14 @@
 package de.lino.cloud.api;
 
-import de.lino.cloud.api.factory.ExtensionFactory;
+import de.lino.cloud.api.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.EventFactory;
+import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import lombok.NonNull;
 import org.jetbrains.annotations.Nullable;
 
-import javax.annotation.Nonnull;
-
 /**
- * Facade over the three things a {@code cloud-driver} embedder needs: entity
+ * Facade over the three things a {@code cloud-driver} embedder needs: meta
  * persistence/encryption via {@link #getDataFactory()}, file upload/download
  * via {@link #getFileFactory()}, and extension lifecycle management via
  * {@link #getExtensionFactory()}. {@link CloudAPI} itself holds no
@@ -19,7 +18,7 @@ import javax.annotation.Nonnull;
  * cloud-driver-plugin}) supplies the actual factories.
  *
  * <p>{@link de.lino.cloud.api.file.StoredFile} - a file of any content type -
- * is itself a {@code Serialized} domain entity, so {@link #getFileFactory()}
+ * is itself a {@code Serialized} domain meta, so {@link #getFileFactory()}
  * is persisted through the same underlying mechanism as {@link
  * #getDataFactory()} rather than a second, independent persistence path -
  * see {@link FileFactory}'s class Javadoc.
@@ -35,6 +34,13 @@ import javax.annotation.Nonnull;
  */
 public abstract class CloudAPI {
 
+    /**
+     * Backing field for {@link #getInstance()}, assigned once by a concrete
+     * implementation's static installer (e.g. {@code
+     * DefaultCloudAPI.setInstance}). {@code volatile} so the installing
+     * thread's write is visible to every other thread's subsequent {@link
+     * #getInstance()} read without further synchronization.
+     */
     protected static volatile CloudAPI INSTANCE;
 
     /**
@@ -48,7 +54,7 @@ public abstract class CloudAPI {
     }
 
     /**
-     * The entity-persistence facet of this API: register/update/fetch/delete
+     * The meta-persistence facet of this API: register/update/fetch/delete
      * (single, batch, and async variants) for encrypted entities. See {@link
      * DataFactory} for the full contract.
      */
@@ -67,5 +73,19 @@ public abstract class CloudAPI {
      * for the full contract.
      */
     public abstract ExtensionFactory getExtensionFactory();
+
+    /**
+     * The outbound-connectivity-reporting facet of this API: whether a
+     * network connection is currently available. See {@link
+     * ConnectivityChecker} for the full contract.
+     */
+    public abstract ConnectivityChecker getConnectivityChecker();
+
+    /**
+     * The event facet of this API: registers, looks up, unregisters, and
+     * dispatches {@code Event} events. See {@link EventFactory} for the full
+     * contract.
+     */
+    public abstract EventFactory getEventFactory();
 
 }

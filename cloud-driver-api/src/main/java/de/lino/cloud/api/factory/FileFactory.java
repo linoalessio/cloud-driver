@@ -1,7 +1,7 @@
 package de.lino.cloud.api.factory;
 
-import de.lino.cloud.api.file.FileIntegrityException;
-import de.lino.cloud.api.file.FileMetadata;
+import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -17,7 +17,7 @@ import java.util.concurrent.CompletionException;
 /**
  * Uploads, downloads, and deletes {@link StoredFile}s of any content type -
  * the file-persistence counterpart of {@link DataFactory}, built the same
- * way: {@link StoredFile} is itself a {@code Serialized} domain entity, so
+ * way: {@link StoredFile} is itself a {@code Serialized} domain meta, so
  * implementations are expected to persist it through a {@link DataFactory}
  * rather than duplicating {@code EntityDatabaseClient}-level persistence
  * logic - see {@code DefaultFileFactory} in {@code cloud-driver-plugin}.

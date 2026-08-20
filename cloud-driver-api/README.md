@@ -26,23 +26,25 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 
 This module itself depends only on `database-driver-api` (pinned to `1.3.10`) and `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface).
 
-## `CloudAPI` - a facade over three factories
+## `CloudAPI` - a facade over three factories and a connectivity facet
 
-`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus three abstract getters. It holds no persistence or lifecycle logic itself.
+`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus four abstract getters. It holds no persistence or lifecycle logic itself.
 
 ```java
 public abstract class CloudAPI {
     public abstract DataFactory getDataFactory();
     public abstract FileFactory getFileFactory();
     public abstract ExtensionFactory getExtensionFactory();
+    public abstract ConnectivityChecker getConnectivityChecker();
 }
 ```
 
 - **`getDataFactory()`** - encrypted entity persistence. See [`DataFactory`](#datafactory---entity-persistence).
 - **`getFileFactory()`** - file upload/download, persisted through the very same mechanism as any other entity. See [`FileFactory`](#filefactory---file-uploaddownload).
 - **`getExtensionFactory()`** - registers, starts, and stops `Extension` extensions. See [`ExtensionFactory`](#the-extension-framework).
+- **`getConnectivityChecker()`** - reports whether outbound network connectivity is currently available. See [Offline-safe file uploads](#offline-safe-file-uploads).
 
-Exactly one implementation is installed process-wide via a static factory method on that implementation - e.g. `DefaultCloudAPI.setInstance(DatabaseProvider, EnvelopeEncryptionService)` in `cloud-driver-plugin` - which assigns the shared instance and makes it retrievable through `CloudAPI.getInstance()`. Nothing may call `getInstance()` before that installation has happened; notably, an `Extension` subclass's constructor needs a registered `CloudAPI` and will fail if constructed too early.
+Exactly one implementation is installed process-wide via a static factory method on that implementation - e.g. `DefaultCloudAPI.setInstance(DatabaseProvider, EnvelopeEncryptionService)` in `cloud-driver-plugin` (or the `setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)` overload, to supply a non-default `ConnectivityChecker`) - which assigns the shared instance and makes it retrievable through `CloudAPI.getInstance()`. Nothing may call `getInstance()` before that installation has happened; notably, an `Extension` subclass's constructor needs a registered `CloudAPI` and will fail if constructed too early.
 
 ```java
 CloudAPI cloudAPI = DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
@@ -139,6 +141,30 @@ report.downloadToDevice(Path.of("/tmp/downloads")); // re-creates the file on th
 ```
 
 `StoredFile` constructors take `fileId`, `fileName`, `content` (`byte[]`) and, optionally, an explicit `FileChecksum`/`createdAt`/`updatedAt` (for re-hydrating a previously-downloaded file). There is no `contentType` parameter - `contentType()` is always inferred from `fileName`'s extension via `Constraints.CONTENT_TYPES`, falling back to `StoredFile.DEFAULT_CONTENT_TYPE` (`application/octet-stream`) if unrecognized or absent, so a file is never rejected merely for having an unrecognized type. The constructor also attempts DEFLATE compression, keeping the compressed bytes only if strictly smaller (`isCompressed()` reports which happened); `checksum()` is always computed over the original, uncompressed plaintext.
+
+`FileChecksum`/`FileMetadata` live under `de.lino.cloud.api.file.meta`; `FileIntegrityException` lives under `de.lino.cloud.api.file.exception`.
+
+### Offline-safe file uploads
+
+`FileFactory.upload` ultimately reaches whatever `DatabaseProvider` was configured - in production, typically a database reached over the network (e.g. PostgreSQL) - so an upload attempted with no internet connection would otherwise just fail. Two interfaces in this module make that failure recoverable instead of fatal; every concrete implementation, same as everywhere else in this module, lives in `cloud-driver-plugin`:
+
+- **`ConnectivityChecker`** (`de.lino.cloud.api.connectivity`) - `isAvailable()`. Deliberately independent of the database driver: a database call failing does not by itself distinguish "no internet connection" from any other persistence failure. `CloudAPI.getConnectivityChecker()` exposes the instance a `CloudAPI` was installed with (`InternetConnectivityChecker` by default - probes a couple of well-known public DNS resolvers via a short-lived socket connection).
+- **`PendingUploadCache`** (`de.lino.cloud.api.file.pending`) - `enqueue`/`remove`/`isEmpty`/`size`/`snapshot`, keyed by `StoredFile#fileId()` (re-enqueuing an id overwrites the previously queued content, the same insert-or-update semantics `upload` itself has).
+
+`DefaultFileFactory` (`cloud-driver-plugin`, behind every `CloudAPI.getFileFactory()`) builds this in directly - no separate decorator class: before delegating to `DataFactory`, `upload` checks a `ConnectivityChecker`, and if connectivity is down, enqueues the file(s) into a `PendingUploadCache` instead of failing outright (checked proactively before the call, and again if the call itself fails). `PendingUploadScheduler` (`cloud-driver-plugin`) periodically retries everything queued there - only once the cache is non-empty and connectivity has returned - via `DataFactory#registerAsync` (not `FileFactory#uploadAsync` - `upload`'s own offline-deferral would otherwise let it silently re-queue a file the scheduler's success handling would then immediately remove).
+
+```java
+FileFactory fileFactory = cloudAPI.getFileFactory(); // already offline-safe - no wrapping needed
+DataFactory dataFactory = cloudAPI.getDataFactory();
+PendingUploadCache pendingUploadCache = ((DefaultFileFactory) fileFactory).getPendingUploadCache();
+
+PendingUploadScheduler scheduler = new PendingUploadScheduler(dataFactory, pendingUploadCache, cloudAPI.getConnectivityChecker());
+scheduler.start(Duration.ofSeconds(30)); // check the pending cache every 30 seconds
+
+fileFactory.upload(report); // deferred into pendingUploadCache instead of thrown if offline right now
+```
+
+`getPendingUploadCache()`/`getConnectivityChecker()` on `DefaultFileFactory` are extra public methods beyond the `FileFactory` contract, exposing the instances `upload` checks against so a scheduler can be wired to the very same ones. See `cloud-driver-bootstrap/src/test/java/de/lino/cloud/bootstrap/CloudBootstrapSample.java` for the full wiring.
 
 ## The `security` package
 

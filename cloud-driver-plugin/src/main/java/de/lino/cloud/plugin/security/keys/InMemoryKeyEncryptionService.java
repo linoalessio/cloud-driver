@@ -42,6 +42,9 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
     private final Map<String, byte[]> keyEncryptionKeys = new ConcurrentHashMap<>();
     private volatile String activeKeyId;
 
+    /**
+     * Generates and activates a fresh in-memory key-encryption key via {@link #rotate()}.
+     */
     public InMemoryKeyEncryptionService() {
         rotate();
     }
