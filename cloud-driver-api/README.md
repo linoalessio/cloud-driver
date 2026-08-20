@@ -26,9 +26,9 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 
 This module itself depends only on `database-driver-api` (pinned to `1.3.10`) and `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface).
 
-## `CloudAPI` - a facade over three factories and a connectivity facet
+## `CloudAPI` - a facade over three factories, a connectivity facet, and an event facet
 
-`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus four abstract getters. It holds no persistence or lifecycle logic itself.
+`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus five abstract getters. It holds no persistence or lifecycle logic itself.
 
 ```java
 public abstract class CloudAPI {
@@ -36,6 +36,7 @@ public abstract class CloudAPI {
     public abstract FileFactory getFileFactory();
     public abstract ExtensionFactory getExtensionFactory();
     public abstract ConnectivityChecker getConnectivityChecker();
+    public abstract EventFactory getEventFactory();
 }
 ```
 
@@ -43,6 +44,7 @@ public abstract class CloudAPI {
 - **`getFileFactory()`** - file upload/download, persisted through the very same mechanism as any other entity. See [`FileFactory`](#filefactory---file-uploaddownload).
 - **`getExtensionFactory()`** - registers, starts, and stops `Extension` extensions. See [`ExtensionFactory`](#the-extension-framework).
 - **`getConnectivityChecker()`** - reports whether outbound network connectivity is currently available. See [Offline-safe file uploads](#offline-safe-file-uploads).
+- **`getEventFactory()`** - registers, looks up, unregisters, and dispatches `Event` events. See [`EventFactory`](#the-event-framework).
 
 Exactly one implementation is installed process-wide via a static factory method on that implementation - e.g. `DefaultCloudAPI.setInstance(DatabaseProvider, EnvelopeEncryptionService)` in `cloud-driver-plugin` (or the `setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)` overload, to supply a non-default `ConnectivityChecker`) - which assigns the shared instance and makes it retrievable through `CloudAPI.getInstance()`. Nothing may call `getInstance()` before that installation has happened; notably, an `Extension` subclass's constructor needs a registered `CloudAPI` and will fail if constructed too early.
 
@@ -263,8 +265,47 @@ A `RuntimeException` from `onLoading`/`onRunning` is caught, the extension's sta
 
 A worked example lives at `cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/ExtensionUsageSample.java` (with its `extension.json` under `cloud-driver-plugin/src/test/resources/`) - it lives in `cloud-driver-plugin`, not here, because `Extension`'s constructor needs a real `CloudAPI` implementation to exist.
 
+## The event framework
+
+A separate concern from persistence/encryption and from the extension framework above, under `de.lino.cloud.api.event` plus `EventFactory` - though it follows the same "abstract primitives + generic concrete `*Async` methods" shape. Unlike `Extension` (where the caller constructs the instance and only registration is deferred to a factory), an `Event` subclass is constructed *by* `EventFactory` itself, reflectively, via its no-arg constructor - so exactly one instance ever exists per registered class, a singleton reused for every future dispatch of that type.
+
+- **`Event`** - abstract base class an event subclasses. One subclass models both an event type *and* its handling logic together:
+
+```java
+public final class OrderPlacedEvent extends Event {
+    @Override
+    public void handle(JsonDocument properties) {
+        String orderId = properties.get("orderId", String.class);
+        // ... react to the order ...
+    }
+}
+```
+
+- **`EventFactory`** (reached via `CloudAPI.getInstance().getEventFactory()`) - `registerEvent`/`unregisterEvent`/`callEvent`/`findEventByClass`/`getEvents` are abstract; every `*Async` variant, plus a batch `callEvent(Class<T>, JsonDocument[])` overload, is concrete on the abstract class itself:
+
+```java
+EventFactory eventFactory = CloudAPI.getInstance().getEventFactory();
+
+eventFactory.registerEvent(OrderPlacedEvent.class); // constructs and stores the one instance for this type
+
+JsonDocument payload = new JsonDocument().append("orderId", "42");
+eventFactory.callEvent(OrderPlacedEvent.class, payload); // dispatches to the registered instance's handle()
+
+Optional<OrderPlacedEvent> maybe = eventFactory.findEventByClass(OrderPlacedEvent.class); // empty() if not registered
+eventFactory.unregisterEvent(OrderPlacedEvent.class); // throws IllegalStateException if not registered
+
+// Batch: dispatch many payloads through the same event type concurrently
+JsonDocument[] batch = { payload1, payload2, payload3 };
+List<OrderPlacedEvent> results = eventFactory.callEvent(OrderPlacedEvent.class, batch);
+
+// *Async counterparts run on MultiTaskingFactory's shared virtual-thread executor
+eventFactory.callEventAsync(OrderPlacedEvent.class, payload);
+```
+
+`registerEvent` throws `IllegalStateException` if `OrderPlacedEvent` is already registered, or has no accessible no-arg constructor. `callEvent`/`unregisterEvent` throw `IllegalStateException` if nothing is registered under that class yet ("this must exist") - use `findEventByClass` first if that isn't guaranteed ("does this exist?"). `getEvents()` returns every currently registered event as a plain `Collection<Event>`.
+
 ## Utilities
 
-- **`MultiTaskingFactory`** (`de.lino.cloud.api.task`) - singleton wrapping one process-wide `ExecutorService` backed by virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`). Every `*Async` method across `DataFactory`, `FileFactory`, and `ExtensionFactory` is built on this. `runTaskInMainSafety(Runnable)` runs a task and then shuts the executor down, blocking until every submitted task finishes - call only from an extension's `main(String[])`, as its final action.
+- **`MultiTaskingFactory`** (`de.lino.cloud.api.task`) - singleton wrapping one process-wide `ExecutorService` backed by virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`). Every `*Async` method across `DataFactory`, `FileFactory`, `ExtensionFactory`, and `EventFactory` is built on this. `runTaskInMainSafety(Runnable)` runs a task and then shuts the executor down, blocking until every submitted task finishes - call only from an extension's `main(String[])`, as its final action.
 - **`Asserts`** (`de.lino.cloud.api.utility`) - shared null-validation helpers (`assertNotNull`, with a dedicated `CloudAPI` overload that fails with a message pointing at `DefaultCloudAPI.setInstance` instead of a bare `NullPointerException`) plus `runWallTimeTest(Runnable)` - runs a `Runnable` once and prints CPU time, memory delta, and wall-clock time to standard out; a quick spot-check, not a substitute for a real benchmarking harness.
 - **`Constraints`** (`de.lino.cloud.api.utility`) - shared constants: `CONFIGURATION_PATH` (a `cloud-driver` subdirectory of the JVM's working directory) and `CONTENT_TYPES`, the file-extension-to-MIME-type lookup table `StoredFile` infers `contentType()` from. Not exhaustive - extend it here if a new extension needs recognizing.
