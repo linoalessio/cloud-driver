@@ -8,12 +8,7 @@ import de.lino.cloud.api.task.MultiTaskingFactory;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -107,16 +102,12 @@ public abstract class ExtensionFactory {
 
     private void visit(final Extension extension, final Set<String> visited, final Set<String> visiting, final List<Extension> ordered) {
         final String name = extension.getExtensionProperties().getExtensionName();
-        if (visited.contains(name)) {
-            return;
-        }
-        if (!visiting.add(name)) {
-            throw new IllegalStateException("@ExtensionFactory: dependency cycle detected involving '" + name + "'");
-        }
 
-        for (final String dependencyName : extension.getExtensionProperties().getDependencies()) {
+        if (visited.contains(name)) return;
+        if (!visiting.add(name)) throw new IllegalStateException("@ExtensionFactory: dependency cycle detected involving '" + name + "'");
+
+        for (final String dependencyName : extension.getExtensionProperties().getDependencies())
             findByName(dependencyName).ifPresent(dependency -> visit(dependency, visited, visiting, ordered));
-        }
 
         visiting.remove(name);
         visited.add(name);

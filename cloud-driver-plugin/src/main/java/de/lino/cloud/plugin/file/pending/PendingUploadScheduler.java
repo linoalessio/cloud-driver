@@ -127,20 +127,17 @@ public final class PendingUploadScheduler {
     }
 
     private void tick() {
-        if (this.pendingUploadCache.isEmpty()) {
-            return;
-        }
-        if (!this.connectivityChecker.isAvailable()) {
-            return;
-        }
-        if (!this.flushing.compareAndSet(false, true)) {
-            return;
-        }
+
+        if (this.pendingUploadCache.isEmpty()) return;
+        if (!this.connectivityChecker.isAvailable()) return;
+        if (!this.flushing.compareAndSet(false, true)) return;
+
         try {
             flushPending();
         } finally {
             this.flushing.set(false);
         }
+
     }
 
     private void flushPending() {

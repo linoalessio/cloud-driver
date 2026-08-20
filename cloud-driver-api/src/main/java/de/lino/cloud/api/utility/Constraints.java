@@ -26,6 +26,18 @@ public final class Constraints {
 
     public static final Path USER_DOWNLOADS_PATH = Path.of(System.getProperty("user.home"), "Downloads");
 
+    /**
+     * The directory {@code cloud-driver-plugin}'s extension-jar scanner looks
+     * in for {@code *.jar} files to load - a top-level {@code extensions}
+     * subdirectory of the JVM's working directory ({@code user.dir}), sibling
+     * to {@link #CONFIGURATION_PATH}. A jar in this directory is only loaded
+     * as an extension if it both declares a concrete {@code Extension}
+     * subclass and ships an {@code extension.json} - see {@code
+     * ExtensionJarLoader}/{@code ExtensionFolderScanner} in {@code
+     * cloud-driver-plugin}.
+     */
+    public static final Path EXTENSIONS_PATH = Path.of(System.getProperty("user.dir"), "extensions");
+
     private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
     private static final String[] TIME_UNITS = {"ms", "s", "min", "h", "d"};
     private static final int[] TIME_UNIT_DIVISORS = {1000, 60, 60, 24};
