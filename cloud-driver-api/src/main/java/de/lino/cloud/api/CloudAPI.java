@@ -5,21 +5,19 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.EventFactory;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.terminal.Terminal;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Facade over the six things a {@code cloud-driver} embedder needs: meta
+ * Facade over the five things a {@code cloud-driver} embedder needs: meta
  * persistence/encryption via {@link #getDataFactory()}, file upload/download
  * via {@link #getFileFactory()}, extension lifecycle management via {@link
  * #getExtensionFactory()}, outbound-connectivity reporting via {@link
- * #getConnectivityChecker()}, event registration/dispatch via {@link
- * #getEventFactory()}, and an interactive admin console via {@link
- * #getTerminal()}. {@link CloudAPI} itself holds no persistence or lifecycle
- * logic - it is deliberately thin, exposing only these six abstract getters
- * plus the shared-instance accessor below; a concrete implementation (e.g.
- * {@code DefaultCloudAPI} in {@code cloud-driver-plugin}) supplies the actual
- * facets.
+ * #getConnectivityChecker()}, and event registration/dispatch via {@link
+ * #getEventFactory()}. {@link CloudAPI} itself holds no persistence or
+ * lifecycle logic - it is deliberately thin, exposing only these five
+ * abstract getters plus the shared-instance accessor below; a concrete
+ * implementation (e.g. {@code DefaultCloudAPI} in {@code cloud-driver-plugin})
+ * supplies the actual facets.
  *
  * <p>{@link de.lino.cloud.api.file.StoredFile} - a file of any content type -
  * is itself a {@code Serialized} domain meta, so {@link #getFileFactory()}
@@ -91,12 +89,5 @@ public abstract class CloudAPI {
      * contract.
      */
     public abstract EventFactory getEventFactory();
-
-    /**
-     * The interactive admin console facet of this API: a fixed, built-in set
-     * of styled commands to inspect and manage extensions, events, and files
-     * at runtime. See {@link Terminal} for the full contract.
-     */
-    public abstract Terminal getTerminal();
 
 }

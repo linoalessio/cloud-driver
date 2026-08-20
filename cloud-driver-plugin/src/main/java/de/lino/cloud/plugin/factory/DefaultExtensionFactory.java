@@ -3,9 +3,12 @@ package de.lino.cloud.plugin.factory;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.factory.ExtensionFactory;
+import de.lino.cloud.api.utility.Constraints;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +31,11 @@ public final class DefaultExtensionFactory extends ExtensionFactory {
      * Every registered extension, keyed by {@link ExtensionProperties#getExtensionName()}.
      */
     private final Map<String, Extension> extensions = new ConcurrentHashMap<>();
+
+    public DefaultExtensionFactory() throws IOException {
+        if (Files.exists(Constraints.EXTENSIONS_PATH)) return;
+        Files.createDirectories(Constraints.EXTENSIONS_PATH);
+    }
 
     @Override
     public void register(@NonNull final Extension extension) {

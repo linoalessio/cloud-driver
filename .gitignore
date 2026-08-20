@@ -6,6 +6,7 @@ target/
 
 ### Local secrets (DB credentials, key-encryption keys) ###
 cloud-driver/database.json
+cloud-driver
 
 ### IntelliJ IDEA ###
 .idea

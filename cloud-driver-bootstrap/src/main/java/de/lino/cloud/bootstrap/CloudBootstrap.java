@@ -9,7 +9,6 @@ import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.task.MultiTaskingFactory;
-import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.plugin.DefaultCloudAPI;
@@ -26,6 +25,7 @@ import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.file.DefaultFileProvider;
 import lombok.NonNull;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,7 +37,7 @@ public final class CloudBootstrap {
 
     private static volatile CloudAPI CLOUD_API;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
 
         CLOUD_API = initiateCloudAPI().orElseThrow();
 
@@ -55,7 +55,6 @@ public final class CloudBootstrap {
                     startPendingUploadScheduler()
                     , startExtensionsBootstrapScheduler(args)
                     , startEventScheduler()
-                    , startTerminal()
             };
 
             final CountDownLatch shutdownLatch = prepareShutdownLatch(runnable).orElseThrow();
@@ -69,7 +68,7 @@ public final class CloudBootstrap {
 
     }
 
-    private static Optional<CloudAPI> initiateCloudAPI() {
+    private static Optional<CloudAPI> initiateCloudAPI() throws IOException {
 
         new DefaultFileProvider();
         new DatabaseRepositoryRegistry(false);
@@ -160,21 +159,6 @@ public final class CloudBootstrap {
         final EventFactory eventFactory = CLOUD_API.getEventFactory();
         Arrays.stream(events).forEach(eventFactory::registerEventAsync);
         return () -> Arrays.stream(events).forEach(eventFactory::unregisterEvent);
-    }
-
-    /**
-     * Runs the styled admin console's blocking REPL loop ({@link Terminal#start()}) on
-     * its own virtual thread via {@link MultiTaskingFactory}, never joined here - the
-     * same "own thread, fire-and-forget" shape every other {@code startX()} method uses.
-     * Returns {@link Terminal#stop()} as the shutdown action, which also closes the
-     * terminal's input source to unblock a {@link Terminal#readLine()} call already in
-     * progress (see {@code DefaultTerminal#stop()}) rather than leaving it parked
-     * indefinitely on a shutdown with nobody at the console to type {@code exit}.
-     */
-    private static Runnable startTerminal() {
-        final Terminal terminal = CLOUD_API.getTerminal();
-        MultiTaskingFactory.getInstance().submitTaskAsync(terminal::start);
-        return terminal::stop;
     }
 
 }
