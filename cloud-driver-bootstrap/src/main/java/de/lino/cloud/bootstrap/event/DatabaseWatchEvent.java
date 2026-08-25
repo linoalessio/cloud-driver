@@ -8,8 +8,6 @@ import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import lombok.SneakyThrows;
 
-import java.nio.file.Path;
-
 public class DatabaseWatchEvent extends Event {
 
     @SneakyThrows
@@ -19,13 +17,9 @@ public class DatabaseWatchEvent extends Event {
         Asserts.assertNotNull(CloudAPI.getInstance());
 
         final String id = properties.getString("id");
-
         if (id.isBlank()) return;
 
         final StoredFile uploadedFile = CloudAPI.getInstance().getFileFactory().findById(id).orElseThrow();
-
-        uploadedFile.downloadToDevice(Path.of("downloads"));
-        CloudAPI.getInstance().getLogger().info(String.format("Downloaded file: %s", uploadedFile.metadata().fileName()));
 
     }
 
