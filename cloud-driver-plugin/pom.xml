@@ -71,6 +71,16 @@
             <version>2.0.16</version>
         </dependency>
 
+        <!-- Transitive dependency of database-driver-plugin (pulled in for its own
+             PostgresDatabaseNotification, de.lino.database.database.sql.postgresql - the former
+             PostgresChangeNotifier, now living upstream in database-driver rather than in this
+             module). Version pinned to match what 1.3.11 currently resolves transitively. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.7</version>
+        </dependency>
+
     </dependencies>
 
 </project>

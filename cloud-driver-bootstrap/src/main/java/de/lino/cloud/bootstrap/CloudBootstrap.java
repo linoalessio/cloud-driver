@@ -8,9 +8,9 @@ import de.lino.cloud.api.factory.EventFactory;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
-import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -22,7 +22,10 @@ import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
+import de.lino.database.database.entity.Serialized;
 import de.lino.database.database.file.DefaultFileProvider;
+import de.lino.database.database.notification.DatabaseNotification;
+import de.lino.database.database.sql.postgresql.PostgresDatabaseNotification;
 import lombok.NonNull;
 
 import java.io.IOException;
@@ -36,6 +39,7 @@ import java.util.concurrent.CountDownLatch;
 public final class CloudBootstrap {
 
     private static volatile CloudAPI CLOUD_API;
+    private static volatile Credentials POSTGRES_CREDENTIALS;
 
     public static void main(String[] args) throws IOException {
 
@@ -57,6 +61,7 @@ public final class CloudBootstrap {
                     startPendingUploadScheduler()
                     , startExtensionsBootstrapScheduler(args)
                     , startEventScheduler()
+                    , startDatabaseChangeNotifier()
             };
 
             final CountDownLatch shutdownLatch = prepareShutdownLatch(runnable).orElseThrow();
@@ -76,6 +81,7 @@ public final class CloudBootstrap {
         new DatabaseRepositoryRegistry(false);
 
         final Credentials credentials = Credentials.of(Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")).orElseThrow();
+        POSTGRES_CREDENTIALS = credentials;
 
         final DatabaseProvider databaseProvider = Asserts.assertNotNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
@@ -161,6 +167,27 @@ public final class CloudBootstrap {
         final EventFactory eventFactory = CLOUD_API.getEventFactory();
         Arrays.stream(events).forEach(eventFactory::registerEventAsync);
         return () -> Arrays.stream(events).forEach(eventFactory::unregisterEvent);
+    }
+
+    /**
+     * Starts a {@link DatabaseNotification}, watching {@code watchedTypes}' tables, on its
+     * own dedicated JDBC connection and listener thread - see that class's Javadoc for what it
+     * actually does and its (significant) limitations, chiefly: it only works against Postgres,
+     * it bypasses {@code DatabaseProvider} entirely, and {@code watchedTypes}' tables must
+     * already exist (i.e. something must already have persisted at least one instance of each
+     * type via {@code DataFactory}, so {@code createSection} has run for it) or trigger
+     * installation fails. Called with no {@code watchedTypes} here, the same "wired but nothing
+     * passed yet" state {@link #startEventScheduler} is in below - pass the entity types this
+     * deployment actually wants push notifications for. The passed callback currently only logs
+     * to standard out; route it through {@code CLOUD_API.getEventFactory()} instead once a
+     * concrete {@link Event} models the reaction this deployment wants.
+     */
+    @SafeVarargs
+    private static Runnable startDatabaseChangeNotifier(@NonNull final Class<? extends Serialized>... watchedTypes) {
+        final DatabaseNotification changeNotifier = new PostgresDatabaseNotification(POSTGRES_CREDENTIALS, "cloud_driver_changes");
+        changeNotifier.watch(watchedTypes);
+        changeNotifier.start(payload -> System.out.println("@CloudBootstrap: database change: " + payload));
+        return changeNotifier::shutdown;
     }
 
 }
