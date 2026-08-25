@@ -51,7 +51,9 @@ public final class CloudBootstrap {
         // returns, so nothing here submits further tasks afterward.
         MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
 
-            final Runnable[] runnable = new Runnable[] {
+            System.out.println(Constraints.CLOUD_DRIVER_BANNER);
+
+            final Runnable[] runnable = new Runnable[]{
                     startPendingUploadScheduler()
                     , startExtensionsBootstrapScheduler(args)
                     , startEventScheduler()

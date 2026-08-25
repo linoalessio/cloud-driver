@@ -26,9 +26,9 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 
 This module itself depends only on `database-driver-api` (pinned to `1.3.11`) and `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface).
 
-## `CloudAPI` - a facade over three factories, a connectivity facet, and an event facet
+## `CloudAPI` - a facade over five factories and a connectivity facet
 
-`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus five abstract getters. It holds no persistence or lifecycle logic itself.
+`CloudAPI` is deliberately thin: a shared-instance accessor (`getInstance()`) plus six abstract getters. It holds no persistence or lifecycle logic itself.
 
 ```java
 public abstract class CloudAPI {
@@ -37,6 +37,7 @@ public abstract class CloudAPI {
     public abstract ExtensionFactory getExtensionFactory();
     public abstract ConnectivityChecker getConnectivityChecker();
     public abstract EventFactory getEventFactory();
+    public abstract RestFactory getRestFactory();
 }
 ```
 
@@ -45,6 +46,7 @@ public abstract class CloudAPI {
 - **`getExtensionFactory()`** - registers, starts, and stops `Extension` extensions. See [`ExtensionFactory`](#the-extension-framework).
 - **`getConnectivityChecker()`** - reports whether outbound network connectivity is currently available. See [Offline-safe file uploads](#offline-safe-file-uploads).
 - **`getEventFactory()`** - registers, looks up, unregisters, and dispatches `Event` events. See [`EventFactory`](#the-event-framework).
+- **`getRestFactory()`** - mounts entities already reachable through `getDataFactory()` onto an HTTP API, **unauthenticated by default**. See [`RestFactory`](#restfactory---rest-exposure-over-datafactory).
 
 Exactly one implementation is installed process-wide via a static factory method on that implementation - e.g. `DefaultCloudAPI.setInstance(DatabaseProvider, EnvelopeEncryptionService)` in `cloud-driver-plugin` (or the `setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)` overload, to supply a non-default `ConnectivityChecker`) - which assigns the shared instance and makes it retrievable through `CloudAPI.getInstance()`. Nothing may call `getInstance()` before that installation has happened; notably, an `Extension` subclass's constructor needs a registered `CloudAPI` and will fail if constructed too early.
 
@@ -58,7 +60,7 @@ CustomerRecord recovered = cloudAPI.getDataFactory().fetch("42", CustomerRecord.
 CloudAPI.getInstance().getDataFactory().fetch("42", CustomerRecord.class);
 ```
 
-A complete, runnable worked example (every feature below, in one `main` method, against the JSON file-based `DatabaseProvider` - needs no external database) lives at `cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/CloudAPIUsageSample.java`.
+A complete, runnable worked example (`DataFactory` and `FileFactory`, in one `main` method, against the JSON file-based `DatabaseProvider` - needs no external database) lives at `cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/CloudAPIUsageSample.java`. `ExtensionFactory` has its own sample (see [below](#the-extension-framework)); `EventFactory` and `RestFactory` currently have none.
 
 ## `DataFactory` - entity persistence
 
@@ -150,7 +152,7 @@ report.downloadToDevice(Path.of("/tmp/downloads")); // re-creates the file on th
 
 `FileFactory.upload` ultimately reaches whatever `DatabaseProvider` was configured - in production, typically a database reached over the network (e.g. PostgreSQL) - so an upload attempted with no internet connection would otherwise just fail. Two interfaces in this module make that failure recoverable instead of fatal; every concrete implementation, same as everywhere else in this module, lives in `cloud-driver-plugin`:
 
-- **`ConnectivityChecker`** (`de.lino.cloud.api.connectivity`) - `isAvailable()`. Deliberately independent of the database driver: a database call failing does not by itself distinguish "no internet connection" from any other persistence failure. `CloudAPI.getConnectivityChecker()` exposes the instance a `CloudAPI` was installed with (`InternetConnectivityChecker` by default - probes a couple of well-known public DNS resolvers via a short-lived socket connection).
+- **`ConnectivityChecker`** (`de.lino.cloud.api.security.connectivity`) - `isAvailable()`. Deliberately independent of the database driver: a database call failing does not by itself distinguish "no internet connection" from any other persistence failure. `CloudAPI.getConnectivityChecker()` exposes the instance a `CloudAPI` was installed with (`InternetConnectivityChecker` by default - probes a couple of well-known public DNS resolvers via a short-lived socket connection).
 - **`PendingUploadCache`** (`de.lino.cloud.api.file.pending`) - `enqueue`/`remove`/`isEmpty`/`size`/`snapshot`, keyed by `StoredFile#fileId()` (re-enqueuing an id overwrites the previously queued content, the same insert-or-update semantics `upload` itself has).
 
 `DefaultFileFactory` (`cloud-driver-plugin`, behind every `CloudAPI.getFileFactory()`) builds this in directly - no separate decorator class: before delegating to `DataFactory`, `upload` checks a `ConnectivityChecker`, and if connectivity is down, enqueues the file(s) into a `PendingUploadCache` instead of failing outright (checked proactively before the call, and again if the call itself fails). `PendingUploadScheduler` (`cloud-driver-plugin`) periodically retries everything queued there - only once the cache is non-empty and connectivity has returned - via `DataFactory#registerAsync` (not `FileFactory#uploadAsync` - `upload`'s own offline-deferral would otherwise let it silently re-queue a file the scheduler's success handling would then immediately remove).
@@ -304,8 +306,52 @@ eventFactory.callEventAsync(OrderPlacedEvent.class, payload);
 
 `registerEvent` throws `IllegalStateException` if `OrderPlacedEvent` is already registered, or has no accessible no-arg constructor. `callEvent`/`unregisterEvent` throw `IllegalStateException` if nothing is registered under that class yet ("this must exist") - use `findEventByClass` first if that isn't guaranteed ("does this exist?"). `getEvents()` returns every currently registered event as a plain `Collection<Event>`.
 
+## `RestFactory` - REST exposure over `DataFactory`
+
+Mounts `Serialized` domain entities already reachable through `getDataFactory()` onto an HTTP API, via [Javalin](https://javalin.io) - reached via `CloudAPI.getInstance().getRestFactory()`. It carries no Javalin dependency of its own - purely `DataFactory`/`Serialized`/`MultiTaskingFactory` - which is exactly why it can live in `cloud-driver-api` (Javalin only ever appears as a dependency in `cloud-driver-plugin`, which supplies the one concrete implementation, `DefaultRestFactory`).
+
+Only `register`/`fetch`/`update`/`delete`/`findByPath`/`getRegisteredPaths`/`start`/`stop` are abstract; every `*Async` variant is implemented once, generically, directly on `RestFactory` itself - the same "abstract primitives + generic concrete `*Async`" shape `DataFactory`/`FileFactory`/`ExtensionFactory`/`EventFactory` use, and deliberately the same primitive names `DataFactory` itself uses, since each one just wires the HTTP verb that carries out that operation: `register` -> `POST`, `fetch` -> `GET`, `update` -> `PUT`, `delete` -> `DELETE`.
+
+```java
+RestFactory restFactory = CloudAPI.getInstance().getRestFactory(); // unauthenticated by default - see below
+
+restFactory.register("/notes", NoteRecord.class); // POST /notes
+restFactory.fetch("/notes", NoteRecord.class);     // GET /notes/{id}, GET /notes
+restFactory.update("/notes", NoteRecord.class);    // PUT /notes/{id}
+restFactory.delete("/notes", NoteRecord.class);    // DELETE /notes/{id}
+
+restFactory.start(8080); // assembles every registered route and starts listening - no further register/fetch/update/delete calls accepted after this
+
+Optional<Class<? extends Serialized>> registeredAt = restFactory.findByPath("/notes");
+Collection<String> paths = restFactory.getRegisteredPaths();
+
+restFactory.stop();
+```
+
+Each verb is independent - calling only `fetch(path, type)` and `delete(path, type)` for a path, without `register`/`update`, exposes a read-and-remove-only resource; there is deliberately no "wire everything at once" convenience. **All four must be called before `start(port)`** - Javalin requires every route to be registered up front in the config block passed to `Javalin.create`, so a resource registered after the server is already listening would never get routes; implementations reject that with `IllegalStateException` instead of silently ignoring it, and reject a duplicate verb/path pair the same way.
+
+`CloudAPI.getInstance().getRestFactory()` is **always unauthenticated** - `DefaultCloudAPI#setInstance` wires it to `DefaultRestFactory`'s single-argument constructor. A caller that needs the API-key gate constructs its own `DefaultRestFactory(dataFactory, apiKey)` directly instead:
+
+```java
+ApiKey apiKey = dataFactory.findById("primary", ApiKey.class)
+        .orElseGet(() -> {
+            ApiKey freshKey = new ApiKey("primary"); // generates the raw key + its SHA-256 digest
+            dataFactory.register(freshKey);
+            System.out.println("New API key: " + freshKey.getApiKeyRaw()); // the only chance to read the plaintext value
+            return freshKey;
+        });
+
+RestFactory guarded = new DefaultRestFactory(dataFactory, apiKey); // cloud-driver-plugin
+// ... register()/fetch()/update()/delete()/start() as above -
+// every request now requires a valid "X-API-Key" header, checked via apiKey.isValid(candidate)
+```
+
+- **`ApiKey`** (`de.lino.cloud.api.security.rest`, Lombok `@Getter`) - the `Serialized` entity backing that check: `id` (its primary key, so a deployment can keep more than one named key), `apiKeyRaw` (the plaintext key, exposed via `getApiKeyRaw()`), and `apiKeyHashHex` (its SHA-256 digest, used for verification). Both fields are persisted - like every `Serialized` entity, the whole record is envelope-encrypted (AES-256-GCM) before it ever reaches the database, so keeping the raw key is still safe at rest; it exists specifically so a caller can read it back once via `getApiKeyRaw()` right after construction (e.g. to hand it to whoever needs it) - `isValid` itself never reads `apiKeyRaw`, only `apiKeyHashHex`. `@ToString(exclude = "apiKeyRaw")` keeps the raw key out of `toString()`/logs; use `getApiKeyRaw()` explicitly when the value itself is needed. `isValid(String)` hashes a candidate once (a fast digest is appropriate here, unlike `PasswordHasher`'s deliberately slow KDF, since this key is high-entropy and machine-generated rather than user-chosen) and compares via `MessageDigest.isEqual` to avoid a timing side-channel. Persist it the same "look it up, create on a miss" way any other entity's lazy-initialization would, through `DataFactory` - it has no `DataFactory` dependency of its own.
+
+No worked example currently exercises `RestFactory`.
+
 ## Utilities
 
-- **`MultiTaskingFactory`** (`de.lino.cloud.api.task`) - singleton wrapping one process-wide `ExecutorService` backed by virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`). Every `*Async` method across `DataFactory`, `FileFactory`, `ExtensionFactory`, and `EventFactory` is built on this. `runTaskInMainSafety(Runnable)` runs a task and then shuts the executor down, blocking until every submitted task finishes - call only from an extension's `main(String[])`, as its final action.
+- **`MultiTaskingFactory`** (`de.lino.cloud.api.utility.task`) - singleton wrapping one process-wide `ExecutorService` backed by virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`). Every `*Async` method across `DataFactory`, `FileFactory`, `ExtensionFactory`, `EventFactory`, and `RestFactory` is built on this. `runTaskInMainSafety(Runnable)` runs a task and then shuts the executor down, blocking until every submitted task finishes - call only from an extension's `main(String[])`, as its final action.
 - **`Asserts`** (`de.lino.cloud.api.utility`) - shared null-validation helpers (`assertNotNull`, with a dedicated `CloudAPI` overload that fails with a message pointing at `DefaultCloudAPI.setInstance` instead of a bare `NullPointerException`) plus `runWallTimeTest(Runnable)` - runs a `Runnable` once and prints CPU time, memory delta, and wall-clock time to standard out; a quick spot-check, not a substitute for a real benchmarking harness.
-- **`Constraints`** (`de.lino.cloud.api.utility`) - shared constants: `CONFIGURATION_PATH` (a `cloud-driver` subdirectory of the JVM's working directory) and `CONTENT_TYPES`, the file-extension-to-MIME-type lookup table `StoredFile` infers `contentType()` from. Not exhaustive - extend it here if a new extension needs recognizing.
+- **`Constraints`** (`de.lino.cloud.api.utility`) - shared constants: `CONFIGURATION_PATH` (a `cloud-driver` subdirectory of the JVM's working directory), `EXTENSIONS_PATH` (a sibling `extensions` subdirectory `cloud-driver-plugin`'s jar scanner loads third-party `Extension`s from), `USER_DOWNLOADS_PATH`, and `CONTENT_TYPES`, the file-extension-to-MIME-type lookup table `StoredFile` infers `contentType()` from. Not exhaustive - extend it here if a new extension needs recognizing.

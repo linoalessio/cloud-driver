@@ -93,10 +93,9 @@ public abstract class CloudAPI {
      * The REST-exposure facet of this API: mounts {@link Serialized}
      * entities already reachable through {@link #getDataFactory()} onto an
      * HTTP API. Unlike the other five facets, the returned {@link
-     * RestFactory} is unauthenticated by default - wrap the {@code
-     * register}/{@code fetch}/{@code update}/{@code delete} calls this
-     * exposes behind an {@code ApiKeyAuthenticator} check (or construct a
-     * {@code DefaultRestFactory} directly with one) before exposing it off
+     * RestFactory} is unauthenticated by default - construct a {@code
+     * DefaultRestFactory} directly with an {@code ApiKey} instead (gating
+     * every route behind an {@code X-API-Key} check) before exposing it off
      * of {@code localhost}. See {@link RestFactory} for the full contract.
      */
     public abstract RestFactory getRestFactory();

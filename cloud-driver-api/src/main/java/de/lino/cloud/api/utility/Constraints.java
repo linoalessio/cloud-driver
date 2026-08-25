@@ -81,14 +81,16 @@ public final class Constraints {
     }
 
     public static final String CLOUD_DRIVER_BANNER =
-            " _____ _                 _______      _                \n" +
-            "/  __ \\ |               | |  _  \\    (_)               \n" +
-            "| /  \\/ | ___  _   _  __| | | | |_ __ ___   _____ _ __ \n" +
-            "| |   | |/ _ \\| | | |/ _` | | | | '__| \\ \\ / / _ \\ '__|\n" +
-            "| \\__/\\ | (_) | |_| | (_| | |/ /| |  | |\\ V /  __/ |   \n" +
-            " \\____/_|\\___/ \\__,_|\\__,_|___/ |_|  |_| \\_/ \\___|_|   \n" +
-            "                                                       \n" +
-            "      https://github.com/linoalessio/cloud-driver        ";
+            """
+                    
+                     _____ _                 _______      _               \s
+                    /  __ \\ |               | |  _  \\    (_)              \s
+                    | /  \\/ | ___  _   _  __| | | | |_ __ ___   _____ _ __\s
+                    | |   | |/ _ \\| | | |/ _` | | | | '__| \\ \\ / / _ \\ '__|
+                    | \\__/\\ | (_) | |_| | (_| | |/ /| |  | |\\ V /  __/ |  \s
+                     \\____/_|\\___/ \\__,_|\\__,_|___/ |_|  |_| \\_/ \\___|_|  \s
+                                                                          \s
+                          https://github.com/linoalessio/cloud-driver       \s""";
 
     /**
      * File extension (lowercase, without the leading dot) to MIME content
