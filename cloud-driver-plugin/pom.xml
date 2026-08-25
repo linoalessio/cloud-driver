@@ -6,24 +6,29 @@
     <parent>
         <groupId>de.lino.cloud</groupId>
         <artifactId>cloud-driver</artifactId>
-        <version>1.0.0</version>
+        <version>1.0.1</version>
     </parent>
 
     <groupId>de.lino.cloud.plugin</groupId>
     <artifactId>cloud-driver-plugin</artifactId>
-
-    <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+    <packaging>jar</packaging>
 
     <dependencies>
 
         <dependency>
             <groupId>de.lino.cloud.api</groupId>
             <artifactId>cloud-driver-api</artifactId>
-            <version>1.0.0</version>
+            <version>1.0.1</version>
+        </dependency>
+
+        <!-- @NonNull on concrete methods across DefaultExtensionFactory/DefaultEventFactory/
+             DefaultRestFactory - provided scope since it's only needed at compile time
+             (annotation processing), never at runtime. -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.38</version>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>

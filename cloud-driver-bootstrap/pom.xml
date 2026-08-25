@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.lino.cloud</groupId>
         <artifactId>cloud-driver</artifactId>
-        <version>1.0.0</version>
+        <version>1.0.1</version>
     </parent>
 
     <modelVersion>4.0.0</modelVersion>
@@ -13,26 +13,12 @@
     <artifactId>cloud-driver-bootstrap</artifactId>
     <packaging>jar</packaging>
 
-    <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
-
     <dependencies>
 
         <dependency>
             <groupId>de.lino.cloud.plugin</groupId>
             <artifactId>cloud-driver-plugin</artifactId>
-            <version>1.0.0</version>
-        </dependency>
-
-        <!-- Reads DB credentials/KEK material out of a gitignored "data.env" file instead of
-             inline in source; see "Local dev secrets" in CLAUDE.md. -->
-        <dependency>
-            <groupId>io.github.cdimascio</groupId>
-            <artifactId>dotenv-java</artifactId>
-            <version>3.2.0</version>
+            <version>1.0.1</version>
         </dependency>
 
     </dependencies>
