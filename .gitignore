@@ -5,7 +5,7 @@ target/
 .kotlin
 
 ### Local secrets (DB credentials, key-encryption keys) ###
-cloud-driver/database.json
+cloud-driver/postgres-database.json
 cloud-driver
 
 ### IntelliJ IDEA ###

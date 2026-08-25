@@ -10,12 +10,14 @@ import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.pending.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
+import de.lino.cloud.plugin.security.keys.FileKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 
+import java.nio.file.Path;
 import java.time.Duration;
 
 public final class CloudBootstrapSample {
@@ -24,12 +26,11 @@ public final class CloudBootstrapSample {
 
         new DatabaseRepositoryRegistry(false);
 
-        final Credentials credentials = new Credentials(Constraints.CONFIGURATION_PATH.resolve("database.json"), "82.165.48.39", "cloud_driver_postgres", "XWd8C5HmN2n3bpI5cAMr", 11042, "cloud_driver");
-        //final Credentials credentials = new Credentials(Constraints.CONFIGURATION_PATH.resolve("database.json"), Constraints.CONFIGURATION_PATH.resolve("data"));
+        final Credentials credentials = new Credentials(Constraints.CONFIGURATION_PATH.resolve("database.json"), Constraints.CONFIGURATION_PATH.resolve("data"));
 
-        final DatabaseProvider databaseProvider = DatabaseRepository.getInstance().registerDatabaseProvider(0, DatabaseType.POSTGRES_SQL, credentials);
+        final DatabaseProvider databaseProvider = DatabaseRepository.getInstance().registerDatabaseProvider(0, DatabaseType.JSON, credentials);
 
-        final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseProvider.createSection("kek"));
+        final KeyEncryptionService keyEncryptionService = new FileKeyEncryptionService(Path.of("encryption-keys.json"));
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         final CloudAPI cloudAPI = DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);

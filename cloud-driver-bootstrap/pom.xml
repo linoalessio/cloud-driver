@@ -27,6 +27,14 @@
             <version>1.0.0</version>
         </dependency>
 
+        <!-- Reads DB credentials/KEK material out of a gitignored "data.env" file instead of
+             inline in source; see "Local dev secrets" in CLAUDE.md. -->
+        <dependency>
+            <groupId>io.github.cdimascio</groupId>
+            <artifactId>dotenv-java</artifactId>
+            <version>3.2.0</version>
+        </dependency>
+
     </dependencies>
 
 </project>

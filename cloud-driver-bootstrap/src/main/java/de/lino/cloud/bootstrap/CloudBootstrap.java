@@ -16,6 +16,7 @@ import de.lino.cloud.plugin.extension.loading.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.pending.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
+import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
 import de.lino.cloud.plugin.security.keys.FileKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
@@ -73,13 +74,13 @@ public final class CloudBootstrap {
         new DefaultFileProvider();
         new DatabaseRepositoryRegistry(false);
 
-        final Credentials credentials = new Credentials(Constraints.CONFIGURATION_PATH.resolve("database.json"), "82.165.48.39", "cloud_driver_postgres", "XWd8C5HmN2n3bpI5cAMr", 11042, "cloud_driver");
+        final Credentials credentials = Credentials.of(Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")).orElseThrow();
 
         final DatabaseProvider databaseProvider = Asserts.assertNotNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
 
-        final KeyEncryptionService keyEncryptionService = new FileKeyEncryptionService(Constraints.CONFIGURATION_PATH.resolve("encryption-keks.json"));
+        final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseProvider.createSection("kek"));
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);

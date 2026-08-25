@@ -24,7 +24,7 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 </dependency>
 ```
 
-This module itself depends only on `database-driver-api` (pinned to `1.3.10`) and `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface).
+This module itself depends only on `database-driver-api` (pinned to `1.3.11`) and `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface).
 
 ## `CloudAPI` - a facade over three factories, a connectivity facet, and an event facet
 
