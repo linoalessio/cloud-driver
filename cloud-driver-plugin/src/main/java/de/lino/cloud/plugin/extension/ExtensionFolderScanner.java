@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.extension.loading;
+package de.lino.cloud.plugin.extension;
 
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.utility.Asserts;

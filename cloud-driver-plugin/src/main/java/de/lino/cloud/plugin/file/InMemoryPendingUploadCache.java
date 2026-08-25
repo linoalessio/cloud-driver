@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.file.pending;
+package de.lino.cloud.plugin.file;
 
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.pending.PendingUploadCache;

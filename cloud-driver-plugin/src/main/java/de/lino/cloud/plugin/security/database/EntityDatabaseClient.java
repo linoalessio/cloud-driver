@@ -5,7 +5,7 @@ import de.lino.cloud.api.security.database.EncryptedEntityRecord;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.plugin.security.entity.SecureEntityChannel;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;

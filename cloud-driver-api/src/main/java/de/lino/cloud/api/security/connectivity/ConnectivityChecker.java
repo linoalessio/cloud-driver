@@ -1,4 +1,4 @@
-package de.lino.cloud.api.connectivity;
+package de.lino.cloud.api.security.connectivity;
 
 /**
  * Reports whether outbound network connectivity is currently available -

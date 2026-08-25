@@ -1,10 +1,11 @@
-package de.lino.cloud.plugin.file.pending;
+package de.lino.cloud.plugin.file;
 
-import de.lino.cloud.api.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *     <li>if the cache is empty, does nothing - no connectivity probe is spent when there is nothing to upload;</li>
  *     <li>otherwise checks {@code connectivityChecker}; if connectivity is still unavailable, does nothing this tick;</li>
  *     <li>otherwise retries every currently queued file concurrently (see {@link
- *     de.lino.cloud.api.task.MultiTaskingFactory}), removing each one from the cache on success and leaving it
+ *     MultiTaskingFactory}), removing each one from the cache on success and leaving it
  *     queued - for the next tick to retry - on failure.</li>
  * </ol>
  *
@@ -51,7 +52,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * rather than looping over {@link PendingUploadCache#snapshot()} and calling
  * the blocking {@link DataFactory#register(de.lino.database.database.entity.Serialized)}
  * one file at a time: {@code registerAsync} already runs each retry on
- * {@link de.lino.cloud.api.task.MultiTaskingFactory}'s shared virtual-thread
+ * {@link MultiTaskingFactory}'s shared virtual-thread
  * executor (see its Javadoc), so every queued file is retried concurrently -
  * the same reasoning {@code EntityDatabaseClient}'s batch operations apply -
  * and a queue built up over a long outage does not retry its entries one
@@ -148,7 +149,7 @@ public final class PendingUploadScheduler {
 
     /**
      * Retries {@code file} via {@link DataFactory#registerAsync} - already
-     * dispatched on {@link de.lino.cloud.api.task.MultiTaskingFactory}'s
+     * dispatched on {@link MultiTaskingFactory}'s
      * shared virtual-thread executor, so no extra dispatch is needed here -
      * removing it from {@code pendingUploadCache} on success. On failure the
      * returned future still completes normally (not exceptionally): {@link

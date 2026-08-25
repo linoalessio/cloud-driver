@@ -6,7 +6,7 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;

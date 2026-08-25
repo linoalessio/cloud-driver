@@ -13,6 +13,7 @@ import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.file.DefaultFileProvider;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
 
@@ -64,7 +65,7 @@ public final class ExtensionUsageSample {
         }
     }
 
-    public static void main(final String[] args) {
+    public static void main(final String[] args) throws IOException {
 
         // --- 1. Install a CloudAPI implementation. Same JSON file-based setup
         // as CloudAPIUsageSample; only the ExtensionFactory half of it is

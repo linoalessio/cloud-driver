@@ -80,6 +80,16 @@ public final class Constraints {
 
     }
 
+    public static final String CLOUD_DRIVER_BANNER =
+            " _____ _                 _______      _                \n" +
+            "/  __ \\ |               | |  _  \\    (_)               \n" +
+            "| /  \\/ | ___  _   _  __| | | | |_ __ ___   _____ _ __ \n" +
+            "| |   | |/ _ \\| | | |/ _` | | | | '__| \\ \\ / / _ \\ '__|\n" +
+            "| \\__/\\ | (_) | |_| | (_| | |/ /| |  | |\\ V /  __/ |   \n" +
+            " \\____/_|\\___/ \\__,_|\\__,_|___/ |_|  |_| \\_/ \\___|_|   \n" +
+            "                                                       \n" +
+            "      https://github.com/linoalessio/cloud-driver        ";
+
     /**
      * File extension (lowercase, without the leading dot) to MIME content
      * type - used by {@code StoredFile} to infer a file's content type from

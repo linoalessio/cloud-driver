@@ -4,7 +4,7 @@ import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 

@@ -1,6 +1,6 @@
 package de.lino.cloud.plugin.factory;
 
-import de.lino.cloud.api.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
@@ -9,10 +9,10 @@ import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
-import de.lino.cloud.plugin.file.pending.InMemoryPendingUploadCache;
+import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;

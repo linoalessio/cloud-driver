@@ -1,7 +1,7 @@
 package de.lino.cloud.api.factory;
 
 import de.lino.cloud.api.event.Event;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;

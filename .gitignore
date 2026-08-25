@@ -4,8 +4,9 @@ target/
 !**/src/test/**/target/
 .kotlin
 
-### Local secrets (DB credentials, key-encryption keys) ###
+### Local secrets (DB credentials, key-encryption keys, API keys) ###
 cloud-driver/postgres-database.json
+cloud-driver/api-key.json
 cloud-driver
 
 ### IntelliJ IDEA ###

@@ -18,4 +18,29 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+
+        <!-- Thin routing layer over Jetty; chosen over Spring Boot to match this
+             repo's hand-rolled, no-DI-container style (see CLAUDE.md). -->
+        <dependency>
+            <groupId>io.javalin</groupId>
+            <artifactId>javalin</artifactId>
+            <version>7.2.3</version>
+        </dependency>
+
+        <!-- Javalin logs through SLF4J; without a binding it only warns to stderr. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.16</version>
+        </dependency>
+
+    </dependencies>
+
 </project>

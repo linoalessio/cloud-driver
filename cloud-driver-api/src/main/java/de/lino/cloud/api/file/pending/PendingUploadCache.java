@@ -1,13 +1,14 @@
 package de.lino.cloud.api.file.pending;
 
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
 /**
  * Holds every {@link StoredFile} an upload was attempted for while no
- * outbound {@link de.lino.cloud.api.connectivity.ConnectivityChecker
+ * outbound {@link ConnectivityChecker
  * connectivity} was available, so it can be retried once connectivity
  * returns - the contract backing {@code cloud-driver-plugin}'s
  * {@code ResilientFileFactory} (which enqueues into it) and

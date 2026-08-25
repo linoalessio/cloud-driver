@@ -2,7 +2,7 @@ package de.lino.cloud.plugin.factory;
 
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.factory.EventFactory;
-import de.lino.cloud.api.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.database.json.JsonDocument;
 import de.lino.database.utils.cache.Cache;
 import de.lino.database.utils.cache.provider.Caches;

@@ -1,20 +1,19 @@
 package de.lino.cloud.api;
 
-import de.lino.cloud.api.connectivity.ConnectivityChecker;
-import de.lino.cloud.api.factory.DataFactory;
-import de.lino.cloud.api.factory.EventFactory;
-import de.lino.cloud.api.factory.ExtensionFactory;
-import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.factory.*;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Facade over the five things a {@code cloud-driver} embedder needs: meta
+ * Facade over the six things a {@code cloud-driver} embedder needs: meta
  * persistence/encryption via {@link #getDataFactory()}, file upload/download
  * via {@link #getFileFactory()}, extension lifecycle management via {@link
  * #getExtensionFactory()}, outbound-connectivity reporting via {@link
- * #getConnectivityChecker()}, and event registration/dispatch via {@link
- * #getEventFactory()}. {@link CloudAPI} itself holds no persistence or
- * lifecycle logic - it is deliberately thin, exposing only these five
+ * #getConnectivityChecker()}, event registration/dispatch via {@link
+ * #getEventFactory()}, and REST exposure of entities via {@link
+ * #getRestFactory()}. {@link CloudAPI} itself holds no persistence or
+ * lifecycle logic - it is deliberately thin, exposing only these six
  * abstract getters plus the shared-instance accessor below; a concrete
  * implementation (e.g. {@code DefaultCloudAPI} in {@code cloud-driver-plugin})
  * supplies the actual facets.
@@ -89,5 +88,17 @@ public abstract class CloudAPI {
      * contract.
      */
     public abstract EventFactory getEventFactory();
+
+    /**
+     * The REST-exposure facet of this API: mounts {@link Serialized}
+     * entities already reachable through {@link #getDataFactory()} onto an
+     * HTTP API. Unlike the other five facets, the returned {@link
+     * RestFactory} is unauthenticated by default - wrap the {@code
+     * register}/{@code fetch}/{@code update}/{@code delete} calls this
+     * exposes behind an {@code ApiKeyAuthenticator} check (or construct a
+     * {@code DefaultRestFactory} directly with one) before exposing it off
+     * of {@code localhost}. See {@link RestFactory} for the full contract.
+     */
+    public abstract RestFactory getRestFactory();
 
 }

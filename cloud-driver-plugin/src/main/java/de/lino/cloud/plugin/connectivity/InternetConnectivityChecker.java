@@ -1,6 +1,6 @@
 package de.lino.cloud.plugin.connectivity;
 
-import de.lino.cloud.api.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.utility.Asserts;
 import org.jetbrains.annotations.NotNull;
 

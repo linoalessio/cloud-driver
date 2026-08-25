@@ -1,4 +1,4 @@
-package de.lino.cloud.api.task;
+package de.lino.cloud.api.utility.task;
 
 import java.util.Collection;
 import java.util.List;
