@@ -40,7 +40,7 @@
             <version>1.3.11</version>
         </dependency>
 
-        <!-- Argon2id password hashing (security_requirements.txt, section 5: PASSWORDS) -->
+        <!-- Argon2id password hashing (SECURITY_REQUIREMENTS.md, section 5: PASSWORDS) -->
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>

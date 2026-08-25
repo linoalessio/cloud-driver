@@ -84,7 +84,7 @@ import java.util.zip.Inflater;
 // every pair of distinct instances unequal regardless of field values,
 // defeating value-based equality entirely.
 @ToString(exclude = {"contentBase64", "decodedContent"})
-@EqualsAndHashCode(exclude = "decodedContent")
+@EqualsAndHashCode(exclude = "decodedContent", callSuper = false)
 public final class StoredFile extends Serialized {
 
     /**
