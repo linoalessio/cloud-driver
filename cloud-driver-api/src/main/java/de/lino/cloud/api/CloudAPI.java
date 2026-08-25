@@ -5,6 +5,8 @@ import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.logging.Logger;
+
 /**
  * Facade over the six things a {@code cloud-driver} embedder needs: meta
  * persistence/encryption via {@link #getDataFactory()}, file upload/download
@@ -52,6 +54,10 @@ public abstract class CloudAPI {
     @Nullable
     public synchronized static CloudAPI getInstance() {
         return INSTANCE;
+    }
+
+    public final Logger getLogger() {
+        return  Logger.getLogger("[CloudDriver] ❯");
     }
 
     /**

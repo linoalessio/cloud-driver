@@ -7,6 +7,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.EventFactory;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
@@ -61,7 +62,7 @@ public final class CloudBootstrap {
                     startPendingUploadScheduler()
                     , startExtensionsBootstrapScheduler(args)
                     , startEventScheduler()
-                    , startDatabaseChangeNotifier()
+                    , startDatabaseChangeNotifier(StoredFile.class)
             };
 
             final CountDownLatch shutdownLatch = prepareShutdownLatch(runnable).orElseThrow();
@@ -176,16 +177,35 @@ public final class CloudBootstrap {
      * it bypasses {@code DatabaseProvider} entirely, and {@code watchedTypes}' tables must
      * already exist (i.e. something must already have persisted at least one instance of each
      * type via {@code DataFactory}, so {@code createSection} has run for it) or trigger
-     * installation fails. Called with no {@code watchedTypes} here, the same "wired but nothing
-     * passed yet" state {@link #startEventScheduler} is in below - pass the entity types this
-     * deployment actually wants push notifications for. The passed callback currently only logs
-     * to standard out; route it through {@code CLOUD_API.getEventFactory()} instead once a
-     * concrete {@link Event} models the reaction this deployment wants.
+     * installation fails. Called here with {@link StoredFile}, whose table is created lazily by
+     * the first ever upload - on a brand-new database {@code watch} fails before that first
+     * upload happens, and empirically that failure isn't reliably swallowed by
+     * {@code PostgresDatabaseNotification}'s own log-and-continue handling (it can propagate
+     * as an uncaught, undeclared checked exception), so it's caught here too rather than let a
+     * missing table crash the whole bootstrap - {@code watch} simply never got called
+     * successfully for that type, and there is no automatic retry once its table does exist.
+     * The passed callback currently only logs to standard out; route it through
+     * {@code CLOUD_API.getEventFactory()} instead once a concrete {@link Event} models the
+     * reaction this deployment wants.
      */
     @SafeVarargs
     private static Runnable startDatabaseChangeNotifier(@NonNull final Class<? extends Serialized>... watchedTypes) {
+
         final DatabaseNotification changeNotifier = new PostgresDatabaseNotification(POSTGRES_CREDENTIALS, "cloud_driver_changes");
-        changeNotifier.watch(watchedTypes);
+
+        try {
+            changeNotifier.watch(watchedTypes);
+        } catch (final Exception exception) {
+            // watch() fails if a watched type's table doesn't exist yet (nothing of that
+            // type has ever been persisted via DataFactory, so DatabaseProvider#createSection
+            // hasn't run for it) - on a fresh database that failure otherwise propagates
+            // straight through this call and crashes the whole bootstrap, so it's caught
+            // here rather than only relying on PostgresDatabaseNotification's own
+            // log-and-continue handling. watch() must be called again for that type once
+            // its table exists - there is no automatic retry here.
+            CLOUD_API.getLogger().warning("watch() failed for one or more watchedTypes - their table may not exist yet");
+        }
+
         changeNotifier.start(payload -> System.out.println("@CloudBootstrap: database change: " + payload));
         return changeNotifier::shutdown;
     }

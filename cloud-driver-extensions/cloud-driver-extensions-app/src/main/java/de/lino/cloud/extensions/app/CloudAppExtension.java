@@ -10,7 +10,7 @@ public class CloudAppExtension extends Extension {
 
     @Override
     public void onLoading() {
-
+        System.out.println("CloudAppExtension.onLoading()");
     }
 
     @Override
@@ -21,6 +21,7 @@ public class CloudAppExtension extends Extension {
     @Override
     public void onRunning(String[] args) {
 
+        System.out.println("CloudAppExtension.onRunning()");
     }
 
     @Override

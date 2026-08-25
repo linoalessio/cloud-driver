@@ -5,9 +5,11 @@ target/
 .kotlin
 
 ### Local secrets (DB credentials, key-encryption keys, API keys) ###
+shell/*.sh
 cloud-driver/postgres-database.json
 cloud-driver/api-key.json
 cloud-driver
+shell
 
 ### IntelliJ IDEA ###
 .idea
@@ -18,6 +20,7 @@ cloud-driver
 *.iws
 *.iml
 *.ipr
+cloud-driver-bootstrap/dependency-reduced-pom.xml
 
 ### Eclipse ###
 .apt_generated
@@ -47,4 +50,3 @@ build/
 ### AI ###
 .claude
 CLAUDE.md
-CHANGE_LOG.md
