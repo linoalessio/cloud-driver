@@ -8,10 +8,16 @@ import de.lino.cloud.api.factory.EventFactory;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
+import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
+import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.bootstrap.event.DatabaseWatchEvent;
+import de.lino.cloud.bootstrap.event.ExtensionRegisterEvent;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -27,14 +33,15 @@ import de.lino.database.database.entity.Serialized;
 import de.lino.database.database.file.DefaultFileProvider;
 import de.lino.database.database.notification.DatabaseNotification;
 import de.lino.database.database.sql.postgresql.PostgresDatabaseNotification;
+import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
 public final class CloudBootstrap {
@@ -47,22 +54,32 @@ public final class CloudBootstrap {
         CLOUD_API = initiateCloudAPI().orElseThrow();
 
         // Blocks the actual main thread (not a disposable virtual thread - see
-        // runTaskInMainSafety's Javadoc) indefinitely, no busy-wait. Every background task
-        // runs on its own thread (PendingUploadScheduler's own ticker thread; the virtual
-        // threads extension/event startup dispatch onto), and every one of those threads is
-        // a daemon thread, so none of them alone keeps the JVM alive, and none of them is
-        // ever joined - only this one latch, on the true main thread, is. Must be main's
-        // final action: runTaskInMainSafety shuts the shared executor down once this
-        // returns, so nothing here submits further tasks afterward.
+        // runTaskInMainSafety's Javadoc) indefinitely, no busy-wait, once every startX()
+        // call below has returned. PendingUploadScheduler runs on its own ticker thread and
+        // PostgresDatabaseNotification.start() blocks its own dedicated listener thread -
+        // both daemon threads, so neither alone keeps the JVM alive - but extension startup
+        // (ExtensionFactory#startAll) and event registration (EventFactory#registerEvent) run
+        // synchronously, on this very thread, before the shutdown latch below is even
+        // constructed. None of the background threads is ever joined - only this one latch,
+        // on the true main thread, is. Must be main's final action: runTaskInMainSafety shuts
+        // the shared executor down once this returns, so nothing here submits further tasks
+        // afterward.
         MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
 
             System.out.println(Constraints.CLOUD_DRIVER_BANNER);
 
-            final Runnable[] runnable = new Runnable[]{
+            loadSecurityRequirements();
+
+            final Runnable[] runnable = new Runnable[] {
+
                     startPendingUploadScheduler()
+
+                    , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class)
+
                     , startExtensionsBootstrapScheduler(args)
-                    , startEventScheduler()
+
                     , startDatabaseChangeNotifier(StoredFile.class)
+
             };
 
             final CountDownLatch shutdownLatch = prepareShutdownLatch(runnable).orElseThrow();
@@ -135,38 +152,50 @@ public final class CloudBootstrap {
     }
 
     /**
-     * Registers {@code extensions} plus every {@link Extension} found by scanning {@link
-     * Constraints#EXTENSIONS_PATH} via {@link ExtensionFolderScanner} - a jar dropped
-     * into that folder is picked up here purely by declaring a concrete {@code
-     * Extension} subclass and shipping an {@code extension.json}, the same way any
-     * extension explicitly passed in is - then starts all of them via {@link
-     * ExtensionFactory#startAllAsync}, dispatched onto {@link MultiTaskingFactory}'s
-     * shared virtual-thread executor, its own thread rather than the caller's, and never
-     * joined here. Returns {@link ExtensionFactory#stopAll} as the shutdown action.
+     * Registers every {@link Extension} found by scanning two folders via {@link
+     * ExtensionFolderScanner} - a jar is picked up purely by declaring a concrete {@code
+     * Extension} subclass and shipping an {@code extension.json}: first {@code user.dir}
+     * (the process's own working directory - where the packaged {@code
+     * cloud-driver-bootstrap} jar itself sits when run via {@code java -jar}, which is how
+     * {@link CloudBootstrapExtension} gets registered now that nothing here constructs it
+     * directly), then {@link Constraints#EXTENSIONS_PATH} (the dedicated folder for
+     * third-party extension jars). Fires {@link ExtensionRegisterEvent} once per registered
+     * extension - in registration order, since {@code ExtensionFactory#getExtensions()} is
+     * backed by a {@code LinkedHashMap} - then starts all of them via {@link
+     * ExtensionFactory#startAll}, deliberately <em>not</em> {@link
+     * ExtensionFactory#startAllAsync}: this call runs synchronously, blocking the calling
+     * thread until every extension has been driven through {@code onLoading()}/{@code
+     * onRunning()}. Returns {@link ExtensionFactory#stopAll} as the shutdown action.
      *
-     * <p>Only the folder scan happens here - the database/{@code CloudAPI} bootstrap in
+     * <p>Only the folder scans happen here - the database/{@code CloudAPI} bootstrap in
      * {@link #initiateCloudAPI()} above cannot itself be pulled into a scanned extension,
      * since {@link ExtensionFactory} (needed to register anything at all) only exists
      * once {@code CloudAPI} does.
      */
-    private static Runnable startExtensionsBootstrapScheduler(@NonNull final String[] args, @NonNull final Extension... extensions) {
+    private static Runnable startExtensionsBootstrapScheduler(@NonNull final String[] args) {
+
         final ExtensionFactory extensionFactory = CLOUD_API.getExtensionFactory();
-        Arrays.stream(extensions).forEach(extensionFactory::register);
+
+        ExtensionFolderScanner.scan(Path.of(System.getProperty("user.dir"))).forEach(extensionFactory::register);
         ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
-        extensionFactory.startAllAsync(args);
+
+        extensionFactory.getExtensions().forEach(extension -> CLOUD_API.getEventFactory().callEvent(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
+        extensionFactory.startAll(args);
+
         return extensionFactory::stopAll;
     }
 
     /**
-     * Registers {@code events} via {@link EventFactory#registerEventAsync} - each
-     * dispatched onto its own virtual thread, never joined here - so every event is live
-     * for the whole run, not just during shutdown. Returns a shutdown action that
-     * unregisters all of them.
+     * Registers {@code events} via {@link EventFactory#registerEvent}, synchronously, so
+     * every event is live for the whole run, not just during shutdown - construction still
+     * happens on {@code DefaultEventFactory}'s own {@code Cache}-backed loader (dispatched
+     * onto a virtual thread internally), but this call itself blocks until that completes.
+     * Returns a shutdown action that unregisters all of them.
      */
     @SafeVarargs
     private static Runnable startEventScheduler(@NonNull final Class<? extends Event>... events) {
         final EventFactory eventFactory = CLOUD_API.getEventFactory();
-        Arrays.stream(events).forEach(eventFactory::registerEventAsync);
+        Arrays.stream(events).forEach(eventFactory::registerEvent);
         return () -> Arrays.stream(events).forEach(eventFactory::unregisterEvent);
     }
 
@@ -177,37 +206,61 @@ public final class CloudBootstrap {
      * it bypasses {@code DatabaseProvider} entirely, and {@code watchedTypes}' tables must
      * already exist (i.e. something must already have persisted at least one instance of each
      * type via {@code DataFactory}, so {@code createSection} has run for it) or trigger
-     * installation fails. Called here with {@link StoredFile}, whose table is created lazily by
-     * the first ever upload - on a brand-new database {@code watch} fails before that first
-     * upload happens, and empirically that failure isn't reliably swallowed by
-     * {@code PostgresDatabaseNotification}'s own log-and-continue handling (it can propagate
-     * as an uncaught, undeclared checked exception), so it's caught here too rather than let a
-     * missing table crash the whole bootstrap - {@code watch} simply never got called
-     * successfully for that type, and there is no automatic retry once its table does exist.
-     * The passed callback currently only logs to standard out; route it through
-     * {@code CLOUD_API.getEventFactory()} instead once a concrete {@link Event} models the
-     * reaction this deployment wants.
+     * installation fails. Called here with {@link StoredFile} - {@code watch()} is called
+     * unguarded (no try/catch, unlike an earlier version of this method) because {@link
+     * #loadSecurityRequirements()}, called earlier in {@code main}'s startup lambda,
+     * unconditionally uploads a fixed-id {@link StoredFile} on every run if one isn't already
+     * present, which guarantees the {@code storedfile} table already exists by the time this
+     * method runs - even on a brand-new database that nothing else has ever uploaded to. Each
+     * notification is routed through {@code CLOUD_API.getEventFactory()} as a {@link
+     * DatabaseWatchEvent}.
      */
     @SafeVarargs
     private static Runnable startDatabaseChangeNotifier(@NonNull final Class<? extends Serialized>... watchedTypes) {
 
         final DatabaseNotification changeNotifier = new PostgresDatabaseNotification(POSTGRES_CREDENTIALS, "cloud_driver_changes");
 
+        changeNotifier.watch(watchedTypes);
+        changeNotifier.start(payload -> CLOUD_API.getEventFactory().callEvent(DatabaseWatchEvent.class, payload));
+
+        return changeNotifier::shutdown;
+    }
+
+    /**
+     * Uploads this repository's {@code SECURITY_REQUIREMENTS.md} (resolved relative to
+     * {@code user.dir}, i.e. shipped alongside the running jar) as a {@link StoredFile} under
+     * the fixed {@link Constraints#REQUIREMENTS_UUID} id, so it is reachable through the same
+     * {@code FileFactory}/{@code RestFactory} surface as any other uploaded file - and,
+     * incidentally, guarantees the {@code storedfile} table already exists before {@link
+     * #startDatabaseChangeNotifier} below calls {@code watch(StoredFile.class)}. A no-op on
+     * every run after the first: {@code findById(...).orElseGet(...)} only uploads when that
+     * fixed id isn't already present, so this file is uploaded once per database, not
+     * re-uploaded on every restart.
+     */
+    private static void loadSecurityRequirements() {
+
         try {
-            changeNotifier.watch(watchedTypes);
-        } catch (final Exception exception) {
-            // watch() fails if a watched type's table doesn't exist yet (nothing of that
-            // type has ever been persisted via DataFactory, so DatabaseProvider#createSection
-            // hasn't run for it) - on a fresh database that failure otherwise propagates
-            // straight through this call and crashes the whole bootstrap, so it's caught
-            // here rather than only relying on PostgresDatabaseNotification's own
-            // log-and-continue handling. watch() must be called again for that type once
-            // its table exists - there is no automatic retry here.
-            CLOUD_API.getLogger().warning("watch() failed for one or more watchedTypes - their table may not exist yet");
+
+            CLOUD_API.getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
+
+                final File file = Path.of("SECURITY_REQUIREMENTS.md").toFile();
+                try {
+
+                    final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), file.getName(), Files.readAllBytes(file.toPath()));
+                    CLOUD_API.getFileFactory().uploadAsync(newStoredFile).join();
+                    return newStoredFile;
+
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+
+            });
+
+        } catch (DatabaseClientException | FileIntegrityException | AuthenticationFailedException |
+                 KeyWrapException e) {
+            throw new RuntimeException(e);
         }
 
-        changeNotifier.start(payload -> System.out.println("@CloudBootstrap: database change: " + payload));
-        return changeNotifier::shutdown;
     }
 
 }

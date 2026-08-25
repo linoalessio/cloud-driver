@@ -5,6 +5,9 @@ import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.database.database.entity.Serialized;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.logging.ConsoleHandler;
+import java.util.logging.Formatter;
+import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 /**
@@ -56,8 +59,41 @@ public abstract class CloudAPI {
         return INSTANCE;
     }
 
+    /**
+     * Backing field for {@link #getLogger()}. The name passed to {@link
+     * Logger#getLogger(String)} is only ever used to key the {@code
+     * LogManager}'s internal registry - the default {@code SimpleFormatter}
+     * output pattern never includes it (it prints the calling class/method
+     * instead), so a display prefix like "[CloudDriver] ❯" must instead be
+     * baked into a custom {@link Formatter} attached to the logger, not
+     * passed as its name.
+     */
+    private static volatile Logger LOGGER;
+
     public final Logger getLogger() {
-        return  Logger.getLogger("[CloudDriver] ❯");
+        Logger logger = LOGGER;
+
+        if (logger == null) {
+
+            synchronized (CloudAPI.class) {
+                logger = LOGGER;
+                if (logger == null) {
+                    logger = Logger.getLogger(CloudAPI.class.getName());
+                    logger.setUseParentHandlers(false);
+                    ConsoleHandler handler = new ConsoleHandler();
+                    handler.setFormatter(new Formatter() {
+                        @Override
+                        public String format(LogRecord record) {
+                            return "[CloudDriver] ❯ " + formatMessage(record) + System.lineSeparator();
+                        }
+                    });
+                    logger.addHandler(handler);
+                    LOGGER = logger;
+                }
+            }
+        }
+
+        return logger;
     }
 
     /**

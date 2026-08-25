@@ -1,5 +1,5 @@
 {
-  "name": "cloud-driver-desktop-app",
+  "name": "cloud-driver-web",
   "version": "1.0.0",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]

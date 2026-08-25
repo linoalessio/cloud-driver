@@ -51,7 +51,7 @@ public abstract class ExtensionFactory {
      * Every currently registered extension, in no particular order.
      */
     @NotNull
-    public abstract Collection<Extension> getExtensions();
+    public abstract List<Extension> getExtensions();
 
     /**
      * Starts every registered extension in dependency order - each

@@ -40,8 +40,11 @@ public final class ExtensionFolderScanner {
 
         final List<Extension> extensions = new ArrayList<>();
         try (Stream<Path> entries = Files.list(folder)) {
-            entries.filter(path -> path.getFileName().toString().endsWith(JAR_SUFFIX))
+
+            entries
+                    .filter(path -> path.getFileName().toString().endsWith(JAR_SUFFIX))
                     .forEach(jarPath -> extensions.addAll(ExtensionJarLoader.load(jarPath)));
+
         } catch (final IOException e) {
             throw new UncheckedIOException("@ExtensionFolderScanner.scan: failed to list '" + folder + "'", e);
         }

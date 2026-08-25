@@ -2,6 +2,7 @@ package de.lino.cloud.api.utility;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Shared constants for {@code cloud-driver}, so consumers resolve
@@ -24,6 +25,13 @@ public final class Constraints {
      */
     public static final Path CONFIGURATION_PATH = Path.of(System.getProperty("user.dir"), "cloud-driver");
 
+    /**
+     * The default {@code destination} {@code StoredFile#downloadToDevice()} (the
+     * no-argument overload) writes a file to: the current user's platform {@code
+     * Downloads} folder ({@code user.home}/Downloads), so a caller isn't required
+     * to pass an explicit destination directory just to save a file somewhere
+     * reasonable.
+     */
     public static final Path USER_DOWNLOADS_PATH = Path.of(System.getProperty("user.home"), "Downloads");
 
     /**
@@ -91,6 +99,15 @@ public final class Constraints {
                      \\____/_|\\___/ \\__,_|\\__,_|___/ |_|  |_| \\_/ \\___|_|  \s
                                                                           \s
                           https://github.com/linoalessio/cloud-driver       \s""";
+
+    /**
+     * Fixed {@code fileId} {@code CloudBootstrap} uploads this repository's own {@code
+     * SECURITY_REQUIREMENTS.md} under, as a {@code StoredFile}, on every startup - hardcoded
+     * (rather than random) so the lookup-before-upload is idempotent across restarts: a
+     * lookup by this same id short-circuits re-uploading the file once it's already present,
+     * instead of duplicating it on every run.
+     */
+    public static final UUID REQUIREMENTS_UUID = UUID.fromString("e54d8aab-cfa0-426c-b40a-1a703db293d4");
 
     /**
      * File extension (lowercase, without the leading dot) to MIME content
