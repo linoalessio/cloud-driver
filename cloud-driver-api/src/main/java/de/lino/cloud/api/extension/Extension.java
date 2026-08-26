@@ -66,18 +66,18 @@ public abstract class Extension {
     public abstract void onLoading();
 
     /**
-     * Called once the extension is shutting down, to release whatever
-     * {@link #onLoading()} acquired.
-     */
-    public abstract void onEnding();
-
-    /**
      * Called once loading has finished, with the arguments passed to the JVM's
      * {@code main(String[])} entry point.
      *
      * @param args the arguments passed from the command line
      */
     public abstract void onRunning(final String[] args);
+
+    /**
+     * Called once the extension is shutting down, to release whatever
+     * {@link #onLoading()} acquired.
+     */
+    public abstract void onEnding();
 
     /**
      * Called when a {@link RuntimeException} occurs while loading or running the

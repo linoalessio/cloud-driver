@@ -51,7 +51,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
      * @throws NullPointerException if {@code path} is {@code null}
      */
     public FileKeyEncryptionService(@NotNull final Path path) {
-        this.path = Asserts.assertNotNull(path, "@FileKeyEncryptionService: path cannot be null");
+        this.path = Asserts.requireNonNull(path, "@FileKeyEncryptionService: path cannot be null");
 
         if (Files.exists(path)) {
             load();
@@ -62,7 +62,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
 
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Asserts.assertNotNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.requireNonNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -79,7 +79,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
 
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Asserts.assertNotNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.requireNonNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {

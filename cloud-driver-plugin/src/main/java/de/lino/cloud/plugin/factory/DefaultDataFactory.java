@@ -31,7 +31,7 @@ public final class DefaultDataFactory extends DataFactory {
      * @throws NullPointerException if {@code entityDatabaseClient} is {@code null}
      */
     public DefaultDataFactory(@NotNull final EntityDatabaseClient entityDatabaseClient) {
-        this.entityDatabaseClient = Asserts.assertNotNull(entityDatabaseClient, "@DefaultDataFactory: entityDatabaseClient cannot be null");
+        this.entityDatabaseClient = Asserts.requireNonNull(entityDatabaseClient, "@DefaultDataFactory: entityDatabaseClient cannot be null");
     }
 
     @Override

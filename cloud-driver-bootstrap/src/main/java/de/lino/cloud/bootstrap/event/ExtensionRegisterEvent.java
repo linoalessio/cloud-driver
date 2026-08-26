@@ -13,11 +13,9 @@ public class ExtensionRegisterEvent extends Event {
     @Override
     public void handle(@NonNull JsonDocument properties) {
 
-        Asserts.assertNotNull(CloudAPI.getInstance());
-
-        final Extension extension = CloudAPI.getInstance().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
+        final Extension extension = this.cloudAPI().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
         final ExtensionProperties extensionProperties = extension.getExtensionProperties();
-        CloudAPI.getInstance().getLogger().info(String.format("Extension '%s' (v%s) successfully loaded.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
+        this.cloudAPI().getLogger().info(String.format("Extension '%s (v%s) successfully loaded.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
 
     }
 

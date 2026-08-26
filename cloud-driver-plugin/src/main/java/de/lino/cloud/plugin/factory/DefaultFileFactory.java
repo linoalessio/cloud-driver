@@ -92,9 +92,9 @@ public final class DefaultFileFactory extends FileFactory {
      */
     public DefaultFileFactory(@NotNull final DataFactory dataFactory, @NotNull final PendingUploadCache pendingUploadCache,
                                @NotNull final ConnectivityChecker connectivityChecker) {
-        this.dataFactory = Asserts.assertNotNull(dataFactory, "@DefaultFileFactory: dataFactory cannot be null");
-        this.pendingUploadCache = Asserts.assertNotNull(pendingUploadCache, "@DefaultFileFactory: pendingUploadCache cannot be null");
-        this.connectivityChecker = Asserts.assertNotNull(connectivityChecker, "@DefaultFileFactory: connectivityChecker cannot be null");
+        this.dataFactory = Asserts.requireNonNull(dataFactory, "@DefaultFileFactory: dataFactory cannot be null");
+        this.pendingUploadCache = Asserts.requireNonNull(pendingUploadCache, "@DefaultFileFactory: pendingUploadCache cannot be null");
+        this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultFileFactory: connectivityChecker cannot be null");
     }
 
     @Override

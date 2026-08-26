@@ -22,12 +22,12 @@ public record FileMetadata(
 ) {
 
     public FileMetadata {
-        Asserts.assertNotNull(fileId, "@FileMetadata: fileId cannot be null");
-        Asserts.assertNotNull(fileName, "@FileMetadata: fileName cannot be null");
-        Asserts.assertNotNull(contentType, "@FileMetadata: contentType cannot be null");
-        Asserts.assertNotNull(checksum, "@FileMetadata: checksum cannot be null");
-        Asserts.assertNotNull(createdAt, "@FileMetadata: createdAt cannot be null");
-        Asserts.assertNotNull(updatedAt, "@FileMetadata: updatedAt cannot be null");
+        Asserts.requireNonNull(fileId, "@FileMetadata: fileId cannot be null");
+        Asserts.requireNonNull(fileName, "@FileMetadata: fileName cannot be null");
+        Asserts.requireNonNull(contentType, "@FileMetadata: contentType cannot be null");
+        Asserts.requireNonNull(checksum, "@FileMetadata: checksum cannot be null");
+        Asserts.requireNonNull(createdAt, "@FileMetadata: createdAt cannot be null");
+        Asserts.requireNonNull(updatedAt, "@FileMetadata: updatedAt cannot be null");
 
         if (sizeBytes < 0) {
             throw new IllegalArgumentException("@FileMetadata: sizeBytes cannot be negative, got " + sizeBytes);

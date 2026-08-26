@@ -15,10 +15,10 @@ public record WrappedKey(String keyEncryptionKeyId, byte[] wrappedKeyMaterial, S
                           String dataEncryptionKeyAlgorithmId) {
 
     public WrappedKey {
-        Asserts.assertNotNull(keyEncryptionKeyId, "@WrappedKey: keyEncryptionKeyId cannot be null");
-        Asserts.assertNotNull(wrappedKeyMaterial, "@WrappedKey: wrappedKeyMaterial cannot be null");
-        Asserts.assertNotNull(wrapAlgorithm, "@WrappedKey: wrapAlgorithm cannot be null");
-        Asserts.assertNotNull(dataEncryptionKeyAlgorithmId, "@WrappedKey: dataEncryptionKeyAlgorithmId cannot be null");
+        Asserts.requireNonNull(keyEncryptionKeyId, "@WrappedKey: keyEncryptionKeyId cannot be null");
+        Asserts.requireNonNull(wrappedKeyMaterial, "@WrappedKey: wrappedKeyMaterial cannot be null");
+        Asserts.requireNonNull(wrapAlgorithm, "@WrappedKey: wrapAlgorithm cannot be null");
+        Asserts.requireNonNull(dataEncryptionKeyAlgorithmId, "@WrappedKey: dataEncryptionKeyAlgorithmId cannot be null");
 
         wrappedKeyMaterial = wrappedKeyMaterial.clone();
     }

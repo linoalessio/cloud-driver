@@ -26,8 +26,8 @@ public final class DataEncryptionKey {
      * @throws NullPointerException if {@code algorithm} or {@code keyMaterial} is {@code null}
      */
     public DataEncryptionKey(final CryptoAlgorithm algorithm, final byte[] keyMaterial) {
-        this.algorithm = Asserts.assertNotNull(algorithm, "@DataEncryptionKey: algorithm cannot be null");
-        this.keyMaterial = Asserts.assertNotNull(keyMaterial, "@DataEncryptionKey: keyMaterial cannot be null");
+        this.algorithm = Asserts.requireNonNull(algorithm, "@DataEncryptionKey: algorithm cannot be null");
+        this.keyMaterial = Asserts.requireNonNull(keyMaterial, "@DataEncryptionKey: keyMaterial cannot be null");
     }
 
     /**

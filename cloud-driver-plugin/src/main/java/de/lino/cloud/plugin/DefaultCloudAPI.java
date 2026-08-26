@@ -79,12 +79,12 @@ public final class DefaultCloudAPI extends CloudAPI {
     private DefaultCloudAPI(@NotNull final DataFactory dataFactory, @NotNull final FileFactory fileFactory,
                              @NotNull final ExtensionFactory extensionFactory, @NotNull final ConnectivityChecker connectivityChecker,
                              @NotNull final EventFactory eventFactory, @NotNull final RestFactory restFactory) {
-        this.dataFactory = Asserts.assertNotNull(dataFactory, "@DefaultCloudAPI: dataFactory cannot be null");
-        this.fileFactory = Asserts.assertNotNull(fileFactory, "@DefaultCloudAPI: fileFactory cannot be null");
-        this.extensionFactory = Asserts.assertNotNull(extensionFactory, "@DefaultCloudAPI: extensionFactory cannot be null");
-        this.connectivityChecker = Asserts.assertNotNull(connectivityChecker, "@DefaultCloudAPI: connectivityChecker cannot be null");
-        this.eventFactory = Asserts.assertNotNull(eventFactory, "@DefaultCloudAPI: eventFactory cannot be null");
-        this.restFactory = Asserts.assertNotNull(restFactory, "@DefaultCloudAPI: restFactory cannot be null");
+        this.dataFactory = Asserts.requireNonNull(dataFactory, "@DefaultCloudAPI: dataFactory cannot be null");
+        this.fileFactory = Asserts.requireNonNull(fileFactory, "@DefaultCloudAPI: fileFactory cannot be null");
+        this.extensionFactory = Asserts.requireNonNull(extensionFactory, "@DefaultCloudAPI: extensionFactory cannot be null");
+        this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultCloudAPI: connectivityChecker cannot be null");
+        this.eventFactory = Asserts.requireNonNull(eventFactory, "@DefaultCloudAPI: eventFactory cannot be null");
+        this.restFactory = Asserts.requireNonNull(restFactory, "@DefaultCloudAPI: restFactory cannot be null");
     }
 
     /**

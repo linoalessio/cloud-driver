@@ -41,7 +41,7 @@ public final class SecureEntityChannel {
      * @throws NullPointerException if {@code envelopeEncryptionService} is {@code null}
      */
     public SecureEntityChannel(@NotNull final EnvelopeEncryptionService envelopeEncryptionService) {
-        this.envelopeEncryptionService = Asserts.assertNotNull(
+        this.envelopeEncryptionService = Asserts.requireNonNull(
                 envelopeEncryptionService, "@SecureEntityChannel: envelopeEncryptionService cannot be null"
         );
     }
@@ -53,7 +53,7 @@ public final class SecureEntityChannel {
      */
     @NotNull
     public <T extends Serialized> EnvelopeEncryptedPayload send(@NotNull final T entity) throws KeyWrapException {
-        Asserts.assertNotNull(entity, "@SecureEntityChannel.send: meta cannot be null");
+        Asserts.requireNonNull(entity, "@SecureEntityChannel.send: meta cannot be null");
 
         final byte[] data = entity.toByteArray();
         final byte[] associatedData = associatedData(entity.getClass(), entity.primaryKey());
@@ -68,8 +68,8 @@ public final class SecureEntityChannel {
     @NotNull
     public <T extends Serialized> T receive(@NotNull final EnvelopeEncryptedPayload envelope, @NotNull final Class<T> expectedType)
             throws KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(envelope, "@SecureEntityChannel.receive: envelope cannot be null");
-        Asserts.assertNotNull(expectedType, "@SecureEntityChannel.receive: expectedType cannot be null");
+        Asserts.requireNonNull(envelope, "@SecureEntityChannel.receive: envelope cannot be null");
+        Asserts.requireNonNull(expectedType, "@SecureEntityChannel.receive: expectedType cannot be null");
 
         final String associatedData = new String(envelope.payload().associatedData(), StandardCharsets.UTF_8);
         final String typeNamePrefix = PROTOCOL_VERSION + ":" + expectedType.getName() + ":";

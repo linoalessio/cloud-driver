@@ -29,8 +29,8 @@ import java.util.Locale;
 public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
 
     public FileChecksum {
-        Asserts.assertNotNull(algorithm, "@FileChecksum: algorithm cannot be null");
-        Asserts.assertNotNull(hexDigest, "@FileChecksum: hexDigest cannot be null");
+        Asserts.requireNonNull(algorithm, "@FileChecksum: algorithm cannot be null");
+        Asserts.requireNonNull(hexDigest, "@FileChecksum: hexDigest cannot be null");
 
         hexDigest = hexDigest.toLowerCase(Locale.ROOT);
         if (hexDigest.length() != hexLength(algorithm) || !isHex(hexDigest)) {
@@ -49,8 +49,8 @@ public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
      * @throws NullPointerException if {@code algorithm} or {@code content} is {@code null}
      */
     public static FileChecksum of(final HashAlgorithm algorithm, final byte[] content) {
-        Asserts.assertNotNull(algorithm, "@FileChecksum.of: algorithm cannot be null");
-        Asserts.assertNotNull(content, "@FileChecksum.of: content cannot be null");
+        Asserts.requireNonNull(algorithm, "@FileChecksum.of: algorithm cannot be null");
+        Asserts.requireNonNull(content, "@FileChecksum.of: content cannot be null");
 
         try {
             final byte[] digest = MessageDigest.getInstance(algorithm.jcaName()).digest(content);

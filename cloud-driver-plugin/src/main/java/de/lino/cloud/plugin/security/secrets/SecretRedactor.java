@@ -31,7 +31,7 @@ public final class SecretRedactor {
      * fixed placeholder.
      */
     public static String redact(final String text) {
-        Asserts.assertNotNull(text, "@SecretRedactor.redact: text cannot be null");
+        Asserts.requireNonNull(text, "@SecretRedactor.redact: text cannot be null");
 
         String redacted = BEARER_TOKEN.matcher(text).replaceAll("$1" + REPLACEMENT);
         redacted = AUTHORIZATION_HEADER.matcher(redacted).replaceAll("$1" + REPLACEMENT);
@@ -45,7 +45,7 @@ public final class SecretRedactor {
      * the call site (e.g. before logging a caught exception's message).
      */
     public static String redactValue(final String text, final String secretValue) {
-        Asserts.assertNotNull(text, "@SecretRedactor.redactValue: text cannot be null");
+        Asserts.requireNonNull(text, "@SecretRedactor.redactValue: text cannot be null");
         if (secretValue == null || secretValue.isEmpty()) {
             return text;
         }

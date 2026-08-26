@@ -6,10 +6,12 @@ import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import lombok.NonNull;
+import lombok.SneakyThrows;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Stores, looks up, and drives the lifecycle of every registered {@link
@@ -27,6 +29,17 @@ import java.util.concurrent.CompletableFuture;
  * constructing one, register it explicitly with {@link #register}.
  */
 public abstract class ExtensionFactory {
+
+    /**
+     * The running {@link Thread} for each currently-{@link
+     * ExtensionStatus#RUNNING running or starting} extension, keyed by
+     * {@link ExtensionProperties#getExtensionName()}. Populated by {@link
+     * #start} and drained by either {@link #stop} (on an explicit stop) or
+     * the thread itself, on its way out, once {@link Extension#onRunning}
+     * returns - so an entry only exists here while that extension's thread
+     * is actually alive.
+     */
+    private final Map<String, Thread> runningThreads = new ConcurrentHashMap<>();
 
     /**
      * Registers {@code extension} under its {@link
@@ -127,22 +140,46 @@ public abstract class ExtensionFactory {
      * Extension#onException} instead of propagating - so one failing
      * extension does not prevent {@link #startAll} from starting the rest.
      *
+     * <p>Runs on its own dedicated, named, daemon {@link Thread} - not {@link
+     * MultiTaskingFactory}'s shared virtual-thread executor - since an
+     * extension may itself run an infinite loop (e.g. a CLI blocked on
+     * {@code System.in}) for as long as it is running. Giving it its own
+     * thread keeps that indefinite work off the shared pool entirely and
+     * makes it identifiable by name in a thread dump; daemon, so an
+     * extension that never returns from {@link Extension#onRunning} does
+     * not by itself keep the JVM alive once everything else has shut down.
+     * The thread is tracked (keyed by {@link
+     * ExtensionProperties#getExtensionName()}) for the rest of its life so
+     * {@link #stop} can later signal it to end - see {@link #stop} for how.
+     *
      * @throws NullPointerException if {@code extension} or {@code args} is {@code null}
      */
     public void start(@NonNull final Extension extension, @NonNull final String[] args) {
+
         final ExtensionProperties properties = extension.getExtensionProperties();
-        try {
-            requireDependenciesRunning(properties);
+        final String name = properties.getExtensionName();
+        final Thread thread = new Thread(() -> {
 
-            properties.updateExtensionStatus(ExtensionStatus.LOADING);
-            extension.onLoading();
+            try {
+                requireDependenciesRunning(properties);
 
-            properties.updateExtensionStatus(ExtensionStatus.RUNNING);
-            extension.onRunning(args);
-        } catch (final RuntimeException reason) {
-            properties.updateExtensionStatus(ExtensionStatus.ERROR);
-            extension.onException(reason);
-        }
+                properties.updateExtensionStatus(ExtensionStatus.LOADING);
+                extension.onLoading();
+
+                properties.updateExtensionStatus(ExtensionStatus.RUNNING);
+                extension.onRunning(args);
+            } catch (final RuntimeException reason) {
+                properties.updateExtensionStatus(ExtensionStatus.ERROR);
+                extension.onException(reason);
+            } finally {
+                this.runningThreads.remove(name, Thread.currentThread());
+            }
+
+        }, "extension-" + name);
+        thread.setDaemon(true);
+        this.runningThreads.put(name, thread);
+        thread.start();
+
     }
 
     /**
@@ -157,18 +194,23 @@ public abstract class ExtensionFactory {
     }
 
     private void requireDependenciesRunning(final ExtensionProperties properties) {
+
         for (final String dependencyName : properties.getDependencies()) {
+
             final Extension dependency = findByName(dependencyName).orElseThrow(() -> new IllegalStateException(
                     "@ExtensionFactory.start: '" + properties.getExtensionName() + "' depends on '"
                             + dependencyName + "', which is not registered"
             ));
+
             if (dependency.getExtensionProperties().getExtensionStatus() != ExtensionStatus.RUNNING) {
                 throw new IllegalStateException(
                         "@ExtensionFactory.start: '" + properties.getExtensionName() + "' depends on '"
                                 + dependencyName + "', which is not running yet"
                 );
             }
+
         }
+
     }
 
     /**
@@ -190,13 +232,31 @@ public abstract class ExtensionFactory {
 
     /**
      * Ends {@code extension}: {@link ExtensionStatus#ENDING} then {@link
-     * Extension#onEnding()}.
+     * Extension#onEnding()}, then - if {@code extension} still has a
+     * {@link #start started} thread running - {@link Thread#interrupt()
+     * interrupts} it and drops it from tracking. {@code onEnding()} is
+     * called first so the extension gets a chance to react and wind down
+     * cooperatively (e.g. clear a flag its own loop checks) before the
+     * interrupt arrives; the interrupt then covers the case where that
+     * alone doesn't unblock it (e.g. a blocked {@link Object#wait()} or
+     * {@link Thread#sleep}). This is still only cooperative, in-process
+     * signaling, not a forceful kill - a thread parked in blocking I/O
+     * (e.g. reading {@code System.in} for a CLI) will not respond to
+     * {@code interrupt()} either, since interrupting a blocked native read
+     * does not unblock it; the thread will only exit once that call itself
+     * returns.
      *
      * @throws NullPointerException if {@code extension} is {@code null}
      */
+    @SneakyThrows
     public void stop(@NonNull final Extension extension) {
-        extension.getExtensionProperties().updateExtensionStatus(ExtensionStatus.ENDING);
+        final ExtensionProperties properties = extension.getExtensionProperties();
+
+        properties.updateExtensionStatus(ExtensionStatus.ENDING);
         extension.onEnding();
+
+        final Thread thread = this.runningThreads.remove(properties.getExtensionName());
+        if (thread != null) thread.interrupt();
     }
 
     /**

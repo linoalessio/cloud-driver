@@ -42,14 +42,14 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
      * @throws NullPointerException if {@code algorithm} is {@code null}
      */
     public AesGcmEncryptionService(final CryptoAlgorithm algorithm) {
-        this.algorithm = Asserts.assertNotNull(algorithm, "@AesGcmEncryptionService: algorithm cannot be null");
+        this.algorithm = Asserts.requireNonNull(algorithm, "@AesGcmEncryptionService: algorithm cannot be null");
         this.secureRandom = new SecureRandom();
     }
 
     @Override
     public EncryptedPayload encrypt(final byte[] plaintext, final SecretKey key, final byte[] associatedData) {
-        Asserts.assertNotNull(plaintext, "@AesGcmEncryptionService.encrypt: plaintext cannot be null");
-        Asserts.assertNotNull(key, "@AesGcmEncryptionService.encrypt: key cannot be null");
+        Asserts.requireNonNull(plaintext, "@AesGcmEncryptionService.encrypt: plaintext cannot be null");
+        Asserts.requireNonNull(key, "@AesGcmEncryptionService.encrypt: key cannot be null");
 
         // Unique, unpredictable nonce for every operation - never reused with the same key.
         final byte[] nonce = new byte[algorithm.nonceLengthBytes()];
@@ -70,8 +70,8 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
 
     @Override
     public byte[] decrypt(final EncryptedPayload payload, final SecretKey key) throws AuthenticationFailedException {
-        Asserts.assertNotNull(payload, "@AesGcmEncryptionService.decrypt: payload cannot be null");
-        Asserts.assertNotNull(key, "@AesGcmEncryptionService.decrypt: key cannot be null");
+        Asserts.requireNonNull(payload, "@AesGcmEncryptionService.decrypt: payload cannot be null");
+        Asserts.requireNonNull(key, "@AesGcmEncryptionService.decrypt: key cannot be null");
 
         final CryptoAlgorithm payloadAlgorithm = CryptoAlgorithm.fromId(payload.algorithmId());
 

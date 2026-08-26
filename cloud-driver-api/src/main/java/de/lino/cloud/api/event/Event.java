@@ -1,6 +1,8 @@
 package de.lino.cloud.api.event;
 
+import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.factory.EventFactory;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
@@ -32,5 +34,10 @@ public abstract class Event {
      * @throws NullPointerException if {@code properties} is {@code null}
      */
     public abstract void handle(@NonNull final JsonDocument properties);
+
+    @NonNull
+    public CloudAPI cloudAPI() {
+        return Asserts.requireNonNull(CloudAPI.getInstance());
+    }
 
 }

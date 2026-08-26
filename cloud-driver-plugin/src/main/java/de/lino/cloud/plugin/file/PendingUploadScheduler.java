@@ -83,9 +83,9 @@ public final class PendingUploadScheduler {
      */
     public PendingUploadScheduler(@NotNull final DataFactory dataFactory, @NotNull final PendingUploadCache pendingUploadCache,
                                    @NotNull final ConnectivityChecker connectivityChecker) {
-        this.dataFactory = Asserts.assertNotNull(dataFactory, "@PendingUploadScheduler: dataFactory cannot be null");
-        this.pendingUploadCache = Asserts.assertNotNull(pendingUploadCache, "@PendingUploadScheduler: pendingUploadCache cannot be null");
-        this.connectivityChecker = Asserts.assertNotNull(connectivityChecker, "@PendingUploadScheduler: connectivityChecker cannot be null");
+        this.dataFactory = Asserts.requireNonNull(dataFactory, "@PendingUploadScheduler: dataFactory cannot be null");
+        this.pendingUploadCache = Asserts.requireNonNull(pendingUploadCache, "@PendingUploadScheduler: pendingUploadCache cannot be null");
+        this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@PendingUploadScheduler: connectivityChecker cannot be null");
         this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
     }
 
@@ -98,7 +98,7 @@ public final class PendingUploadScheduler {
      * @throws NullPointerException if {@code period} is {@code null}
      */
     public synchronized void start(@NotNull final Duration period) {
-        Asserts.assertNotNull(period, "@PendingUploadScheduler.start: period cannot be null");
+        Asserts.requireNonNull(period, "@PendingUploadScheduler.start: period cannot be null");
         if (this.scheduledFuture != null) {
             return;
         }

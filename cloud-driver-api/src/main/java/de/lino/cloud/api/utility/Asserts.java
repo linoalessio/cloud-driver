@@ -29,7 +29,7 @@ public final class Asserts {
      * @return {@code object}, unchanged
      * @throws NullPointerException if {@code object} is {@code null}
      */
-    public static <T> T assertNotNull(final T object) {
+    public static <T> T requireNonNull(final T object) {
         if (object == null) throw new NullPointerException();
         return object;
     }
@@ -43,7 +43,7 @@ public final class Asserts {
      * @return {@code object}, unchanged
      * @throws NullPointerException if {@code object} is {@code null}
      */
-    public static <T> T assertNotNull(final T object, final String message) {
+    public static <T> T requireNonNull(final T object, final String message) {
         if (object == null) throw new NullPointerException(message);
         return object;
     }
@@ -51,7 +51,7 @@ public final class Asserts {
     /**
      * Returns {@code object} if it is not {@code null}. {@code message} is
      * only evaluated when {@code object} is {@code null}, so use this
-     * overload over {@link #assertNotNull(Object, String)} when building the
+     * overload over {@link #requireNonNull(Object, String)} when building the
      * message is expensive.
      *
      * @param object the value to check
@@ -60,7 +60,7 @@ public final class Asserts {
      * @return {@code object}, unchanged
      * @throws NullPointerException if {@code object} is {@code null}
      */
-    public static <T> T assertNotNull(final T object, final Supplier<String> message) {
+    public static <T> T requireNonNull(final T object, final Supplier<String> message) {
         if (object == null) throw new NullPointerException(message.get());
         return object;
     }
@@ -76,7 +76,7 @@ public final class Asserts {
      * @return {@code object}, unchanged
      * @throws NullPointerException if {@code object} is {@code null}, i.e. no {@link CloudAPI} implementation has been installed yet
      */
-    public static CloudAPI assertNotNull(final CloudAPI object) {
+    public static CloudAPI requireNonNull(final CloudAPI object) {
 
         if (object == null) {
             throw new NullPointerException(

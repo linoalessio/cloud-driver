@@ -46,16 +46,16 @@ public final class EnvelopeEncryptionService {
                                       @NotNull final AeadEncryptionService aeadEncryptionService,
                                       @NotNull final KeyEncryptionService keyEncryptionService,
                                       @NotNull final CryptoAlgorithm dataEncryptionKeyAlgorithm) {
-        this.dataEncryptionKeyGenerator = Asserts.assertNotNull(
+        this.dataEncryptionKeyGenerator = Asserts.requireNonNull(
                 dataEncryptionKeyGenerator, "@EnvelopeEncryptionService: dataEncryptionKeyGenerator cannot be null"
         );
-        this.aeadEncryptionService = Asserts.assertNotNull(
+        this.aeadEncryptionService = Asserts.requireNonNull(
                 aeadEncryptionService, "@EnvelopeEncryptionService: aeadEncryptionService cannot be null"
         );
-        this.keyEncryptionService = Asserts.assertNotNull(
+        this.keyEncryptionService = Asserts.requireNonNull(
                 keyEncryptionService, "@EnvelopeEncryptionService: keyEncryptionService cannot be null"
         );
-        this.dataEncryptionKeyAlgorithm = Asserts.assertNotNull(
+        this.dataEncryptionKeyAlgorithm = Asserts.requireNonNull(
                 dataEncryptionKeyAlgorithm, "@EnvelopeEncryptionService: dataEncryptionKeyAlgorithm cannot be null"
         );
     }
@@ -97,7 +97,7 @@ public final class EnvelopeEncryptionService {
      */
     @NotNull
     public byte[] decrypt(@NotNull final EnvelopeEncryptedPayload envelope) throws KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(envelope, "@EnvelopeEncryptionService.decrypt: envelope cannot be null");
+        Asserts.requireNonNull(envelope, "@EnvelopeEncryptionService.decrypt: envelope cannot be null");
 
         final DataEncryptionKey dataEncryptionKey = keyEncryptionService.unwrap(envelope.wrappedDataEncryptionKey());
         try {

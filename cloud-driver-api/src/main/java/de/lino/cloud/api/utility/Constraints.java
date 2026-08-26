@@ -17,13 +17,15 @@ public final class Constraints {
      */
     private Constraints() {}
 
+    public static final Path WORKING_DIRECTORY = Path.of(System.getProperty("user.dir"));
+
     /**
      * The directory local configuration files are resolved against: a {@code
      * cloud-driver} subdirectory of the JVM's working directory ({@code
      * user.dir}). Callers resolve specific files against it, e.g. {@code
      * Constraints.CONFIGURATION_PATH.resolve("database.json")}.
      */
-    public static final Path CONFIGURATION_PATH = Path.of(System.getProperty("user.dir"), "cloud-driver");
+    public static final Path CONFIGURATION_PATH = WORKING_DIRECTORY.resolve("cloud-driver");
 
     /**
      * The default {@code destination} {@code StoredFile#downloadToDevice()} (the
@@ -44,7 +46,7 @@ public final class Constraints {
      * ExtensionJarLoader}/{@code ExtensionFolderScanner} in {@code
      * cloud-driver-plugin}.
      */
-    public static final Path EXTENSIONS_PATH = Path.of(System.getProperty("user.dir"), "extensions");
+    public static final Path EXTENSIONS_PATH = WORKING_DIRECTORY.resolve("extensions");
 
     private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
     private static final String[] TIME_UNITS = {"ms", "s", "min", "h", "d"};

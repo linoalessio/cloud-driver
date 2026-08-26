@@ -20,9 +20,9 @@ import de.lino.cloud.api.utility.Asserts;
 public record EncryptedPayload(String algorithmId, byte[] nonce, byte[] ciphertext, byte[] associatedData) {
 
     public EncryptedPayload {
-        Asserts.assertNotNull(algorithmId, "@EncryptedPayload: algorithmId cannot be null");
-        Asserts.assertNotNull(nonce, "@EncryptedPayload: nonce cannot be null");
-        Asserts.assertNotNull(ciphertext, "@EncryptedPayload: ciphertext cannot be null");
+        Asserts.requireNonNull(algorithmId, "@EncryptedPayload: algorithmId cannot be null");
+        Asserts.requireNonNull(nonce, "@EncryptedPayload: nonce cannot be null");
+        Asserts.requireNonNull(ciphertext, "@EncryptedPayload: ciphertext cannot be null");
 
         nonce = nonce.clone();
         ciphertext = ciphertext.clone();

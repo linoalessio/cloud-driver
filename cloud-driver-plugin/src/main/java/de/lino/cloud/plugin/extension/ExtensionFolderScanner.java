@@ -34,7 +34,7 @@ public final class ExtensionFolderScanner {
      */
     @NotNull
     public static List<Extension> scan(@NotNull final Path folder) {
-        Asserts.assertNotNull(folder, "@ExtensionFolderScanner.scan: folder cannot be null");
+        Asserts.requireNonNull(folder, "@ExtensionFolderScanner.scan: folder cannot be null");
 
         if (!Files.isDirectory(folder)) return List.of();
 

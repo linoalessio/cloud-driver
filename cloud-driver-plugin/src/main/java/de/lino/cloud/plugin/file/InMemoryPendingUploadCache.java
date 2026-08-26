@@ -48,13 +48,13 @@ public final class InMemoryPendingUploadCache implements PendingUploadCache {
 
     @Override
     public void enqueue(@NotNull final StoredFile file) {
-        Asserts.assertNotNull(file, "@InMemoryPendingUploadCache.enqueue: file cannot be null");
+        Asserts.requireNonNull(file, "@InMemoryPendingUploadCache.enqueue: file cannot be null");
         this.cache.put(file.fileId(), file);
     }
 
     @Override
     public void enqueue(@NotNull final StoredFile... files) {
-        Asserts.assertNotNull(files, "@InMemoryPendingUploadCache.enqueue: files cannot be null");
+        Asserts.requireNonNull(files, "@InMemoryPendingUploadCache.enqueue: files cannot be null");
         for (final StoredFile file : files) {
             enqueue(file);
         }
@@ -62,7 +62,7 @@ public final class InMemoryPendingUploadCache implements PendingUploadCache {
 
     @Override
     public void remove(@NotNull final String fileId) {
-        Asserts.assertNotNull(fileId, "@InMemoryPendingUploadCache.remove: fileId cannot be null");
+        Asserts.requireNonNull(fileId, "@InMemoryPendingUploadCache.remove: fileId cannot be null");
         this.cache.invalidate(fileId);
     }
 

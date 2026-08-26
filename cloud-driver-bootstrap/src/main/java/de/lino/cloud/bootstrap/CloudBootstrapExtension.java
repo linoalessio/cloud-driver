@@ -10,12 +10,12 @@ public class CloudBootstrapExtension extends Extension {
     }
 
     @Override
-    public void onEnding() {
+    public void onRunning(String[] args) {
 
     }
 
     @Override
-    public void onRunning(String[] args) {
+    public void onEnding() {
 
     }
 

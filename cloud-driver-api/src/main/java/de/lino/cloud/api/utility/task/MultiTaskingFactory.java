@@ -59,7 +59,7 @@ public final class MultiTaskingFactory {
      */
     public <T> Future<T> submitTaskAsync(final Callable<T> callable) {
         return EXECUTOR_SERVICE.submit(
-                Asserts.assertNotNull(callable, "@MultiTaskingFactory.submitTaskAsync: Callable cannot be null")
+                Asserts.requireNonNull(callable, "@MultiTaskingFactory.submitTaskAsync: Callable cannot be null")
         );
     }
 
@@ -75,8 +75,8 @@ public final class MultiTaskingFactory {
      */
     public <T> Future<T> submitTaskAsync(final Runnable task, final T result) {
         return EXECUTOR_SERVICE.submit(
-                Asserts.assertNotNull(task, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null"),
-                Asserts.assertNotNull(result, "@MultiTaskingFactory.submitTaskAsync: Result cannot be null")
+                Asserts.requireNonNull(task, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null"),
+                Asserts.requireNonNull(result, "@MultiTaskingFactory.submitTaskAsync: Result cannot be null")
         );
     }
 
@@ -89,7 +89,7 @@ public final class MultiTaskingFactory {
      */
     public Future<?> submitTaskAsync(final Runnable runnable) {
         return EXECUTOR_SERVICE.submit(
-                Asserts.assertNotNull(runnable, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null")
+                Asserts.requireNonNull(runnable, "@MultiTaskingFactory.submitTaskAsync: Runnable cannot be null")
         );
     }
 
@@ -109,7 +109,7 @@ public final class MultiTaskingFactory {
      */
     public <T> List<Future<T>> submitTasksAsync(final Collection<? extends Callable<T>> tasks) throws InterruptedException {
         return EXECUTOR_SERVICE.invokeAll(
-                Asserts.assertNotNull(tasks, "@MultiTaskingFactory.submitTasksAsync: Tasks cannot be null")
+                Asserts.requireNonNull(tasks, "@MultiTaskingFactory.submitTasksAsync: Tasks cannot be null")
         );
     }
 
@@ -123,7 +123,7 @@ public final class MultiTaskingFactory {
      */
     public CompletableFuture<Void> runAsync(final Runnable task) {
         return CompletableFuture.runAsync(
-                Asserts.assertNotNull(task, "@MultiTaskingFactory.runAsync: Runnable cannot be null"),
+                Asserts.requireNonNull(task, "@MultiTaskingFactory.runAsync: Runnable cannot be null"),
                 EXECUTOR_SERVICE
         );
     }
@@ -139,7 +139,7 @@ public final class MultiTaskingFactory {
      */
     public <T> CompletableFuture<T> supplyAsync(final Supplier<T> supplier) {
         return CompletableFuture.supplyAsync(
-                Asserts.assertNotNull(supplier, "@MultiTaskingFactory.supplyAsync: Supplier cannot be null"),
+                Asserts.requireNonNull(supplier, "@MultiTaskingFactory.supplyAsync: Supplier cannot be null"),
                 EXECUTOR_SERVICE
         );
     }
@@ -160,7 +160,7 @@ public final class MultiTaskingFactory {
     public void runTaskInMainSafety(final Runnable task) {
         try {
 
-            Asserts.assertNotNull(
+            Asserts.requireNonNull(
                     task, "@MultiTaskingFactory.runTaskInMainSafety: Runnable cannot be null"
             ).run();
 
@@ -190,7 +190,7 @@ public final class MultiTaskingFactory {
      */
     public boolean awaitTermination(final long timeout, final TimeUnit unit) throws InterruptedException {
         return EXECUTOR_SERVICE.awaitTermination(
-                timeout, Asserts.assertNotNull(unit, "@MultiTaskingFactory.awaitTermination: TimeUnit cannot be null")
+                timeout, Asserts.requireNonNull(unit, "@MultiTaskingFactory.awaitTermination: TimeUnit cannot be null")
         );
     }
 

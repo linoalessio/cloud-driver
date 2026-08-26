@@ -37,7 +37,7 @@ public record EncryptedEntityRecord(
      * @throws NullPointerException if {@code envelope} is {@code null}
      */
     public static EncryptedEntityRecord from(final EnvelopeEncryptedPayload envelope) {
-        Asserts.assertNotNull(envelope, "@EncryptedEntityRecord.from: envelope cannot be null");
+        Asserts.requireNonNull(envelope, "@EncryptedEntityRecord.from: envelope cannot be null");
 
         final Base64.Encoder base64 = Base64.getEncoder();
         final EncryptedPayload payload = envelope.payload();

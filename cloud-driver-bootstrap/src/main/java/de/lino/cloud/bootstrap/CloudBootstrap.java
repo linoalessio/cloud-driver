@@ -101,7 +101,7 @@ public final class CloudBootstrap {
         final Credentials credentials = Credentials.of(Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")).orElseThrow();
         POSTGRES_CREDENTIALS = credentials;
 
-        final DatabaseProvider databaseProvider = Asserts.assertNotNull(
+        final DatabaseProvider databaseProvider = Asserts.requireNonNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
 
@@ -176,7 +176,7 @@ public final class CloudBootstrap {
 
         final ExtensionFactory extensionFactory = CLOUD_API.getExtensionFactory();
 
-        ExtensionFolderScanner.scan(Path.of(System.getProperty("user.dir"))).forEach(extensionFactory::register);
+        ExtensionFolderScanner.scan(Constraints.WORKING_DIRECTORY).forEach(extensionFactory::register);
         ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
 
         extensionFactory.getExtensions().forEach(extension -> CLOUD_API.getEventFactory().callEvent(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));

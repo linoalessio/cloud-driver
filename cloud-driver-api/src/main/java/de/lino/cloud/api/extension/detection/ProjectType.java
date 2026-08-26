@@ -36,7 +36,7 @@ public enum ProjectType {
      * @throws NullPointerException if {@code name} is {@code null}
      */
     ProjectType(final String name) {
-        this.name = Asserts.assertNotNull(name, "@ProjectType.init: name cannot be null");
+        this.name = Asserts.requireNonNull(name, "@ProjectType.init: name cannot be null");
     }
 
 }

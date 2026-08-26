@@ -44,8 +44,8 @@ public final class InternetConnectivityChecker implements ConnectivityChecker {
      * @throws NullPointerException if {@code probes} or {@code timeout} is {@code null}
      */
     public InternetConnectivityChecker(@NotNull final List<InetSocketAddress> probes, @NotNull final Duration timeout) {
-        this.probes = Asserts.assertNotNull(probes, "@InternetConnectivityChecker: probes cannot be null");
-        this.timeout = Asserts.assertNotNull(timeout, "@InternetConnectivityChecker: timeout cannot be null");
+        this.probes = Asserts.requireNonNull(probes, "@InternetConnectivityChecker: probes cannot be null");
+        this.timeout = Asserts.requireNonNull(timeout, "@InternetConnectivityChecker: timeout cannot be null");
     }
 
     @Override

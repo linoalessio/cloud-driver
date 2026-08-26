@@ -55,7 +55,7 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
 
     @Override
     public String hash(final char[] password) {
-        Asserts.assertNotNull(password, "@Argon2idPasswordHasher.hash: password cannot be null");
+        Asserts.requireNonNull(password, "@Argon2idPasswordHasher.hash: password cannot be null");
 
         final byte[] salt = new byte[SALT_LENGTH_BYTES];
         secureRandom.nextBytes(salt);
@@ -66,8 +66,8 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
 
     @Override
     public boolean verify(final char[] password, final String encodedHash) {
-        Asserts.assertNotNull(password, "@Argon2idPasswordHasher.verify: password cannot be null");
-        Asserts.assertNotNull(encodedHash, "@Argon2idPasswordHasher.verify: encodedHash cannot be null");
+        Asserts.requireNonNull(password, "@Argon2idPasswordHasher.verify: password cannot be null");
+        Asserts.requireNonNull(encodedHash, "@Argon2idPasswordHasher.verify: encodedHash cannot be null");
 
         final Decoded decoded = decode(encodedHash);
         final byte[] candidate = rawHash(password, decoded.salt, decoded.memoryKib, decoded.iterations, decoded.parallelism);

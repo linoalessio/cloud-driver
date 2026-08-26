@@ -75,7 +75,7 @@ public final class ExtensionJarLoader {
      */
     @NotNull
     public static List<Extension> load(@NotNull final Path jarPath) {
-        Asserts.assertNotNull(jarPath, "@ExtensionJarLoader.load: jarPath cannot be null");
+        Asserts.requireNonNull(jarPath, "@ExtensionJarLoader.load: jarPath cannot be null");
 
         final URLClassLoader classLoader = newClassLoader(jarPath);
         final List<Extension> extensions = new ArrayList<>();

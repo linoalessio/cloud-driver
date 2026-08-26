@@ -20,7 +20,7 @@ import de.lino.cloud.api.utility.Asserts;
 public record EnvelopeEncryptedPayload(int schemaVersion, WrappedKey wrappedDataEncryptionKey, EncryptedPayload payload) {
 
     public EnvelopeEncryptedPayload {
-        Asserts.assertNotNull(wrappedDataEncryptionKey, "@EnvelopeEncryptedPayload: wrappedDataEncryptionKey cannot be null");
-        Asserts.assertNotNull(payload, "@EnvelopeEncryptedPayload: payload cannot be null");
+        Asserts.requireNonNull(wrappedDataEncryptionKey, "@EnvelopeEncryptedPayload: wrappedDataEncryptionKey cannot be null");
+        Asserts.requireNonNull(payload, "@EnvelopeEncryptedPayload: payload cannot be null");
     }
 }

@@ -60,7 +60,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
      * @throws NullPointerException if {@code databaseSection} is {@code null}
      */
     public DatabaseKeyEncryptionService(@NotNull final DatabaseSection databaseSection) {
-        this.databaseSection = Asserts.assertNotNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
+        this.databaseSection = Asserts.requireNonNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
 
         if (databaseSection.exists(REGISTRY_ENTRY_ID)) {
             load();
@@ -71,7 +71,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Asserts.assertNotNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.requireNonNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -88,7 +88,7 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
 
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Asserts.assertNotNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.requireNonNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {

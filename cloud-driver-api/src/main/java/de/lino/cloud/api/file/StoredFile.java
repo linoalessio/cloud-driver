@@ -160,19 +160,19 @@ public final class StoredFile extends Serialized {
     public StoredFile(final String fileId, final String fileName,
                        final byte[] content, final FileChecksum checksum,
                        final Instant createdAt, final Instant updatedAt) {
-        this.fileId = Asserts.assertNotNull(fileId, "@StoredFile: fileId cannot be null");
-        this.fileName = Asserts.assertNotNull(fileName, "@StoredFile: fileName cannot be null");
+        this.fileId = Asserts.requireNonNull(fileId, "@StoredFile: fileId cannot be null");
+        this.fileName = Asserts.requireNonNull(fileName, "@StoredFile: fileName cannot be null");
         this.contentType = normalizeContentType(this.fileName);
 
-        final byte[] contentCopy = Asserts.assertNotNull(content, "@StoredFile: content cannot be null").clone();
+        final byte[] contentCopy = Asserts.requireNonNull(content, "@StoredFile: content cannot be null").clone();
         final byte[] compressed = deflate(contentCopy);
         this.contentCompressed = compressed.length < contentCopy.length;
         this.contentBase64 = Base64.getEncoder().encodeToString(this.contentCompressed ? compressed : contentCopy);
         this.decodedContent = contentCopy; // already have the original bytes in hand - prime the cache instead of discarding them
 
-        this.checksum = Asserts.assertNotNull(checksum, "@StoredFile: checksum cannot be null");
-        this.createdAtEpochMilli = Asserts.assertNotNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
-        this.updatedAtEpochMilli = Asserts.assertNotNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
+        this.checksum = Asserts.requireNonNull(checksum, "@StoredFile: checksum cannot be null");
+        this.createdAtEpochMilli = Asserts.requireNonNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
+        this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
     }
 
     /**
@@ -190,7 +190,7 @@ public final class StoredFile extends Serialized {
     public StoredFile(final String fileId, final String fileName, final byte[] content) {
         this(
                 fileId, fileName,
-                Asserts.assertNotNull(content, "@StoredFile: content cannot be null"),
+                Asserts.requireNonNull(content, "@StoredFile: content cannot be null"),
                 FileChecksum.of(DEFAULT_CHECKSUM_ALGORITHM, content),
                 Instant.now(), Instant.now()
         );
@@ -348,7 +348,7 @@ public final class StoredFile extends Serialized {
      * @throws NullPointerException if {@code destination} is {@code null}
      */
     public Path downloadToDevice(final Path destination) throws IOException {
-        Asserts.assertNotNull(destination, "@StoredFile.downloadToDevice: destination cannot be null");
+        Asserts.requireNonNull(destination, "@StoredFile.downloadToDevice: destination cannot be null");
 
         Files.createDirectories(destination);
 

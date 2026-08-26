@@ -126,9 +126,9 @@ public final class EntityDatabaseClient {
     public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
                                  @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
                                  final Duration cacheTtl, final long cacheMaxSize) {
-        this.databaseProvider = Asserts.assertNotNull(databaseProvider, "@EntityDatabaseClient: databaseProvider cannot be null");
+        this.databaseProvider = Asserts.requireNonNull(databaseProvider, "@EntityDatabaseClient: databaseProvider cannot be null");
         this.secureEntityChannel = new SecureEntityChannel(
-                Asserts.assertNotNull(envelopeEncryptionService, "@EntityDatabaseClient: envelopeEncryptionService cannot be null")
+                Asserts.requireNonNull(envelopeEncryptionService, "@EntityDatabaseClient: envelopeEncryptionService cannot be null")
         );
         this.cacheTtl = cacheTtl;
         this.cacheMaxSize = cacheMaxSize;
@@ -154,7 +154,7 @@ public final class EntityDatabaseClient {
      * under its {@link Serialized#primaryKey()}.
      */
     public <T extends Serialized> void store(@NotNull final T entity) throws DatabaseClientException, KeyWrapException {
-        Asserts.assertNotNull(entity, "@EntityDatabaseClient.store: meta cannot be null");
+        Asserts.requireNonNull(entity, "@EntityDatabaseClient.store: meta cannot be null");
 
         final EnvelopeEncryptedPayload envelope = secureEntityChannel.send(entity);
         final JsonDocument document = new JsonDocument().append(DATA_KEY, EncryptedEntityRecord.from(envelope));
@@ -194,7 +194,7 @@ public final class EntityDatabaseClient {
      * exists yet.
      */
     public <T extends Serialized> void update(@NotNull final T entity) throws DatabaseClientException, KeyWrapException {
-        Asserts.assertNotNull(entity, "@EntityDatabaseClient.update: meta cannot be null");
+        Asserts.requireNonNull(entity, "@EntityDatabaseClient.update: meta cannot be null");
 
         final EnvelopeEncryptedPayload envelope = secureEntityChannel.send(entity);
         final JsonDocument document = new JsonDocument().append(DATA_KEY, EncryptedEntityRecord.from(envelope));
@@ -219,7 +219,7 @@ public final class EntityDatabaseClient {
      * partial-failure semantics as {@link #storeAll} apply.
      */
     public <T extends Serialized> void updateAll(@NotNull final List<T> entities) throws DatabaseClientException, KeyWrapException {
-        Asserts.assertNotNull(entities, "@EntityDatabaseClient.updateAll: entities cannot be null");
+        Asserts.requireNonNull(entities, "@EntityDatabaseClient.updateAll: entities cannot be null");
 
         final List<CompletableFuture<Void>> futures = entities.stream()
                 .map(entity -> MultiTaskingFactory.getInstance().runAsync(() -> updateUnchecked(entity)))
@@ -249,7 +249,7 @@ public final class EntityDatabaseClient {
      * every meta in the batch has been attempted.
      */
     public <T extends Serialized> void storeAll(@NotNull final List<T> entities) throws DatabaseClientException, KeyWrapException {
-        Asserts.assertNotNull(entities, "@EntityDatabaseClient.storeAll: entities cannot be null");
+        Asserts.requireNonNull(entities, "@EntityDatabaseClient.storeAll: entities cannot be null");
 
         final List<CompletableFuture<Void>> futures = entities.stream()
                 .map(entity -> MultiTaskingFactory.getInstance().runAsync(() -> storeUnchecked(entity)))
@@ -278,8 +278,8 @@ public final class EntityDatabaseClient {
     @NotNull
     public <T extends Serialized> T retrieve(@NotNull final String objectId, @NotNull final Class<T> type)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(objectId, "@EntityDatabaseClient.retrieve: objectId cannot be null");
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.retrieve: type cannot be null");
+        Asserts.requireNonNull(objectId, "@EntityDatabaseClient.retrieve: objectId cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.retrieve: type cannot be null");
 
         return unwrap(cacheFor(type).get(objectId));
     }
@@ -293,8 +293,8 @@ public final class EntityDatabaseClient {
     @NotNull
     public <T extends Serialized> List<T> retrieveAll(@NotNull final List<String> objectIds, @NotNull final Class<T> type)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(objectIds, "@EntityDatabaseClient.retrieveAll: objectIds cannot be null");
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.retrieveAll: type cannot be null");
+        Asserts.requireNonNull(objectIds, "@EntityDatabaseClient.retrieveAll: objectIds cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.retrieveAll: type cannot be null");
 
         final Cache<String, T> cache = cacheFor(type);
         final List<CompletableFuture<T>> futures = objectIds.stream().map(cache::get).toList();
@@ -322,8 +322,8 @@ public final class EntityDatabaseClient {
     @NotNull
     public <T extends Serialized> Optional<T> findById(@NotNull final String objectId, @NotNull final Class<T> type)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(objectId, "@EntityDatabaseClient.findById: objectId cannot be null");
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.findById: type cannot be null");
+        Asserts.requireNonNull(objectId, "@EntityDatabaseClient.findById: objectId cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.findById: type cannot be null");
 
         try {
             return Optional.of(retrieve(objectId, type));
@@ -345,7 +345,7 @@ public final class EntityDatabaseClient {
     @NotNull
     public <T extends Serialized> List<T> getEntities(@NotNull final Class<T> type)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
 
         final List<String> objectIds = sectionFor(type).getEntries().stream().map(DatabaseEntry::getId).toList();
         return retrieveAll(objectIds, type);
@@ -358,8 +358,8 @@ public final class EntityDatabaseClient {
      * {@link #retrieve}'s behavior for an unknown id.
      */
     public <T extends Serialized> void delete(@NotNull final String objectId, @NotNull final Class<T> type) throws DatabaseClientException {
-        Asserts.assertNotNull(objectId, "@EntityDatabaseClient.delete: objectId cannot be null");
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.delete: type cannot be null");
+        Asserts.requireNonNull(objectId, "@EntityDatabaseClient.delete: objectId cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.delete: type cannot be null");
 
         try {
             sectionFor(type).delete(objectId);
@@ -379,8 +379,8 @@ public final class EntityDatabaseClient {
      * partial-failure semantics as {@link #storeAll} apply.
      */
     public <T extends Serialized> void deleteAll(@NotNull final List<String> objectIds, @NotNull final Class<T> type) throws DatabaseClientException {
-        Asserts.assertNotNull(objectIds, "@EntityDatabaseClient.deleteAll: objectIds cannot be null");
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.deleteAll: type cannot be null");
+        Asserts.requireNonNull(objectIds, "@EntityDatabaseClient.deleteAll: objectIds cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.deleteAll: type cannot be null");
 
         final List<CompletableFuture<Void>> futures = objectIds.stream()
                 .map(objectId -> MultiTaskingFactory.getInstance().runAsync(() -> deleteUnchecked(objectId, type)))
@@ -404,7 +404,7 @@ public final class EntityDatabaseClient {
      * use {@link #deleteSection} instead to remove the section itself.
      */
     public <T extends Serialized> void clear(@NotNull final Class<T> type) {
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.clear: type cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.clear: type cannot be null");
 
         sectionFor(type).clear();
         final Cache<String, ? extends Serialized> cache = caches.get(type);
@@ -421,7 +421,7 @@ public final class EntityDatabaseClient {
      * #sectionFor} already does for any meta type it has not seen before.
      */
     public <T extends Serialized> void deleteSection(@NotNull final Class<T> type) {
-        Asserts.assertNotNull(type, "@EntityDatabaseClient.deleteSection: type cannot be null");
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.deleteSection: type cannot be null");
 
         this.databaseProvider.deleteSection(type.getSimpleName());
         this.sections.remove(type);

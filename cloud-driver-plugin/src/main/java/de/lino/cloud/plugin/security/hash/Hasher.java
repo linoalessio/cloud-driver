@@ -29,8 +29,8 @@ public final class Hasher {
      * @throws NullPointerException if {@code algorithm} or {@code data} is {@code null}
      */
     public static byte[] digest(final HashAlgorithm algorithm, final byte[] data) {
-        Asserts.assertNotNull(algorithm, "@Hasher.digest: algorithm cannot be null");
-        Asserts.assertNotNull(data, "@Hasher.digest: data cannot be null");
+        Asserts.requireNonNull(algorithm, "@Hasher.digest: algorithm cannot be null");
+        Asserts.requireNonNull(data, "@Hasher.digest: data cannot be null");
 
         try {
             return MessageDigest.getInstance(algorithm.jcaName()).digest(data);

@@ -23,7 +23,7 @@ public final class DataEncryptionKeyGenerator {
      * @throws NullPointerException if {@code algorithm} is {@code null}
      */
     public DataEncryptionKey generate(final CryptoAlgorithm algorithm) {
-        Asserts.assertNotNull(algorithm, "@DataEncryptionKeyGenerator.generate: algorithm cannot be null");
+        Asserts.requireNonNull(algorithm, "@DataEncryptionKeyGenerator.generate: algorithm cannot be null");
         final byte[] material = new byte[algorithm.keyLengthBytes()];
         secureRandom.nextBytes(material);
         return new DataEncryptionKey(algorithm, material);

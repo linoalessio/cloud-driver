@@ -14,12 +14,10 @@ public class DatabaseWatchEvent extends Event {
     @Override
     public void handle(@NonNull JsonDocument properties) {
 
-        Asserts.assertNotNull(CloudAPI.getInstance());
-
         final String id = properties.getString("id");
         if (id.isBlank()) return;
 
-        final StoredFile uploadedFile = CloudAPI.getInstance().getFileFactory().findById(id).orElseThrow();
+        final StoredFile uploadedFile = this.cloudAPI().getFileFactory().findById(id).orElseThrow();
 
     }
 

@@ -55,11 +55,11 @@ public class ExtensionProperties {
      */
     public ExtensionProperties(final String extensionName, final String extensionVersion, final String[] authors, final String... dependencies) {
 
-        this.extensionName = Asserts.assertNotNull(extensionName, "@ExtensionProperties.init: ExtensionName cannot be null");
-        this.extensionVersion = Asserts.assertNotNull(extensionVersion, "@ExtensionProperties.init: ExtensionVersion cannot be null");
+        this.extensionName = Asserts.requireNonNull(extensionName, "@ExtensionProperties.init: ExtensionName cannot be null");
+        this.extensionVersion = Asserts.requireNonNull(extensionVersion, "@ExtensionProperties.init: ExtensionVersion cannot be null");
 
-        Asserts.assertNotNull(authors, "@ExtensionProperties.init: Authors cannot be null");
-        Arrays.stream(authors).forEach(author -> Asserts.assertNotNull(author, "@ExtensionProperties.init: Author cannot be null"));
+        Asserts.requireNonNull(authors, "@ExtensionProperties.init: Authors cannot be null");
+        Arrays.stream(authors).forEach(author -> Asserts.requireNonNull(author, "@ExtensionProperties.init: Author cannot be null"));
         this.authors = List.of(authors);
         this.dependencies = List.of(dependencies);
 
@@ -74,7 +74,7 @@ public class ExtensionProperties {
      * @throws NullPointerException if {@code extensionStatus} is {@code null}
      */
     public void updateExtensionStatus(final ExtensionStatus extensionStatus) {
-        this.extensionStatus = Asserts.assertNotNull(extensionStatus, "@ExtensionProperties.updateExtensionStatus: ExtensionStatus cannot be null");
+        this.extensionStatus = Asserts.requireNonNull(extensionStatus, "@ExtensionProperties.updateExtensionStatus: ExtensionStatus cannot be null");
     }
 
 }
