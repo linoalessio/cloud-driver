@@ -1,28 +1,28 @@
 package de.lino.cloud.plugin;
 
 import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
-import de.lino.cloud.api.factory.EventFactory;
-import de.lino.cloud.api.factory.ExtensionFactory;
-import de.lino.cloud.api.factory.DataFactory;
-import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.factory.RestFactory;
+import de.lino.cloud.api.event.Event;
+import de.lino.cloud.api.extension.Extension;
+import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.terminal.Terminal;
+import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
-import de.lino.cloud.plugin.factory.DefaultEventFactory;
-import de.lino.cloud.plugin.factory.DefaultRestFactory;
+import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
-import de.lino.cloud.plugin.factory.DefaultExtensionFactory;
-import de.lino.cloud.plugin.factory.DefaultDataFactory;
-import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
+import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 
-import de.lino.cloud.api.utility.Asserts;
-
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * {@link CloudAPI} implementation tying a {@link DefaultDataFactory} (backed
@@ -58,6 +58,7 @@ import java.io.IOException;
  * <p>Construct via {@link #setInstance}, which also installs this instance as
  * {@link CloudAPI#getInstance()}.
  */
+@Getter
 public final class DefaultCloudAPI extends CloudAPI {
 
     private final DataFactory dataFactory;
@@ -66,25 +67,35 @@ public final class DefaultCloudAPI extends CloudAPI {
     private final ConnectivityChecker connectivityChecker;
     private final EventFactory eventFactory;
     private final RestFactory restFactory;
+    private final Terminal terminal;
 
     /**
-     * @param dataFactory the meta-persistence facet, backed by an {@link EntityDatabaseClient}
-     * @param fileFactory the file-persistence facet, backed by {@code dataFactory} itself
-     * @param extensionFactory the extension-lifecycle facet
+     * Guards {@link #shutdown()} so a second (or concurrent) call is a
+     * no-op rather than re-running every step - {@code compareAndSet}
+     * makes "have I already started shutting down?" race-free without a
+     * {@code synchronized} block.
+     */
+    private final AtomicBoolean shutdownStarted = new AtomicBoolean(false);
+
+    /**
+     * @param dataFactory         the meta-persistence facet, backed by an {@link EntityDatabaseClient}
+     * @param fileFactory         the file-persistence facet, backed by {@code dataFactory} itself
+     * @param extensionFactory    the extension-lifecycle facet
      * @param connectivityChecker the outbound-connectivity-reporting facet
-     * @param eventFactory the event registration/dispatch facet
-     * @param restFactory the REST-exposure facet, backed by {@code dataFactory} itself
+     * @param eventFactory        the event registration/dispatch facet
+     * @param restFactory         the REST-exposure facet, backed by {@code dataFactory} itself
      * @throws NullPointerException if any argument is {@code null}
      */
     private DefaultCloudAPI(@NotNull final DataFactory dataFactory, @NotNull final FileFactory fileFactory,
-                             @NotNull final ExtensionFactory extensionFactory, @NotNull final ConnectivityChecker connectivityChecker,
-                             @NotNull final EventFactory eventFactory, @NotNull final RestFactory restFactory) {
+                            @NotNull final ExtensionFactory extensionFactory, @NotNull final ConnectivityChecker connectivityChecker,
+                            @NotNull final EventFactory eventFactory, @NotNull final RestFactory restFactory, Terminal terminal) {
         this.dataFactory = Asserts.requireNonNull(dataFactory, "@DefaultCloudAPI: dataFactory cannot be null");
         this.fileFactory = Asserts.requireNonNull(fileFactory, "@DefaultCloudAPI: fileFactory cannot be null");
         this.extensionFactory = Asserts.requireNonNull(extensionFactory, "@DefaultCloudAPI: extensionFactory cannot be null");
         this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultCloudAPI: connectivityChecker cannot be null");
         this.eventFactory = Asserts.requireNonNull(eventFactory, "@DefaultCloudAPI: eventFactory cannot be null");
         this.restFactory = Asserts.requireNonNull(restFactory, "@DefaultCloudAPI: restFactory cannot be null");
+        this.terminal = terminal;
     }
 
     /**
@@ -118,51 +129,105 @@ public final class DefaultCloudAPI extends CloudAPI {
             @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
             @NotNull final ConnectivityChecker connectivityChecker
     ) throws IOException {
+
+        final Terminal terminal = new Terminal(new DefaultPromptProvider());
+        final Logger logger = Logger.getLogger(CloudAPI.class.getSimpleName());
+        terminal.attachLogging(logger);
+
         final DataFactory dataFactory = new DefaultDataFactory(new EntityDatabaseClient(databaseProvider, envelopeEncryptionService));
         final FileFactory fileFactory = new DefaultFileFactory(dataFactory, new InMemoryPendingUploadCache(), connectivityChecker);
         final ExtensionFactory extensionFactory = new DefaultExtensionFactory();
         final EventFactory eventFactory = new DefaultEventFactory();
         final RestFactory restFactory = new DefaultRestFactory(dataFactory);
+
         final DefaultCloudAPI instance = new DefaultCloudAPI(
                 dataFactory,
                 fileFactory,
                 extensionFactory,
                 connectivityChecker,
                 eventFactory,
-                restFactory
+                restFactory,
+                terminal
         );
+
         INSTANCE = instance;
         return instance;
     }
 
+    /**
+     * Tears down every facet this instance owns, in an order that lets a
+     * still-running extension finish cooperatively before the persistence
+     * layer it may depend on disappears underneath it:
+     *
+     * <ol>
+     *     <li>{@link #restFactory} - stops accepting new HTTP requests first,
+     *     so nothing new starts depending on a facet about to be torn down.</li>
+     *     <li>{@link #extensionFactory} - stops every registered extension,
+     *     one {@link ExtensionFactory#stop(de.lino.cloud.api.extension.Extension)}
+     *     call per extension rather than one {@link ExtensionFactory#stopAll()}
+     *     call, so this method's own per-step isolation (see below) applies
+     *     per extension, not just per facet.</li>
+     *     <li>{@link #eventFactory} - unregisters every registered event, the
+     *     same one-call-per-item way.</li>
+     *     <li>{@link #dataFactory} - releases the underlying database
+     *     connection(s)/pool ({@link DataFactory#shutdown()}); covers {@link
+     *     #fileFactory} too, since a {@link StoredFile} is persisted through
+     *     this very same factory and {@code FileFactory} owns no separate
+     *     connection of its own.</li>
+     *     <li>{@link #terminal} - closes the underlying {@code jline}
+     *     terminal, if one was constructed.</li>
+     * </ol>
+     *
+     * <p>Every step above runs independently of whether an earlier one
+     * failed - a failing step is logged via {@link #getLogger()} rather than
+     * thrown, so one broken facet (e.g. a database already unreachable)
+     * cannot prevent every other facet from still being torn down. Each
+     * currently-registered extension/event is likewise given its own
+     * isolated attempt, so one failing extension or event does not stop the
+     * rest of its own step from completing. Idempotent - a second call is a
+     * no-op.
+     */
     @Override
-    public DataFactory getDataFactory() {
-        return this.dataFactory;
+    public void shutdown() {
+
+        if (!this.shutdownStarted.compareAndSet(false, true)) return;
+
+        this.runShutdownStep("RestFactory", this.restFactory::stop);
+
+        for (final Extension extension : List.copyOf(this.extensionFactory.getExtensions())) {
+            this.runShutdownStep(
+                    "Extension '" + extension.getExtensionProperties().getExtensionName() + "'",
+                    () -> this.extensionFactory.stop(extension)
+            );
+        }
+
+        for (final Event event : List.copyOf(this.eventFactory.getEvents())) {
+            this.runShutdownStep(
+                    "Event '" + event.getClass().getSimpleName() + "'",
+                    () -> this.eventFactory.unregisterEvent(event.getClass())
+            );
+        }
+
+        this.runShutdownStep("DataFactory", this.dataFactory::shutdown);
+
+        if (this.terminal != null || this.terminal.isActive())
+            this.runShutdownStep("Terminal", this.terminal::shutdown);
+
+        System.exit(0);
+
     }
 
-    @Override
-    public FileFactory getFileFactory() {
-        return this.fileFactory;
-    }
-
-    @Override
-    public ExtensionFactory getExtensionFactory() {
-        return this.extensionFactory;
-    }
-
-    @Override
-    public ConnectivityChecker getConnectivityChecker() {
-        return this.connectivityChecker;
-    }
-
-    @Override
-    public EventFactory getEventFactory() {
-        return this.eventFactory;
-    }
-
-    @Override
-    public RestFactory getRestFactory() {
-        return this.restFactory;
+    /**
+     * Runs one shutdown step, logging (rather than propagating) a {@link
+     * RuntimeException} so a failure in {@code step} never prevents {@link
+     * #shutdown()}'s remaining steps from still being attempted.
+     */
+    private void runShutdownStep(@NotNull final String stepName, @NotNull final Runnable step) {
+        try {
+            step.run();
+        } catch (final RuntimeException exception) {
+            getLogger().log(Level.WARNING, "@DefaultCloudAPI.shutdown: failed to shut down " + stepName, exception);
+        }
     }
 
 }

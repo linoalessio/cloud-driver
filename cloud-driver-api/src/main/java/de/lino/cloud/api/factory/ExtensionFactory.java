@@ -1,5 +1,6 @@
 package de.lino.cloud.api.factory;
 
+import com.google.common.collect.Maps;
 import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
@@ -12,6 +13,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 /**
  * Stores, looks up, and drives the lifecycle of every registered {@link
@@ -39,7 +41,7 @@ public abstract class ExtensionFactory {
      * returns - so an entry only exists here while that extension's thread
      * is actually alive.
      */
-    private final Map<String, Thread> runningThreads = new ConcurrentHashMap<>();
+    private final Map<String, Thread> runningThreads = Maps.newConcurrentMap();
 
     /**
      * Registers {@code extension} under its {@link
@@ -169,8 +171,10 @@ public abstract class ExtensionFactory {
                 properties.updateExtensionStatus(ExtensionStatus.RUNNING);
                 extension.onRunning(args);
             } catch (final RuntimeException reason) {
+
                 properties.updateExtensionStatus(ExtensionStatus.ERROR);
                 extension.onException(reason);
+
             } finally {
                 this.runningThreads.remove(name, Thread.currentThread());
             }
@@ -215,10 +219,22 @@ public abstract class ExtensionFactory {
 
     /**
      * Ends every registered extension the same way {@link #stop} ends a
-     * single one.
+     * single one. A {@link RuntimeException} from one extension's {@link
+     * #stop} (i.e. from its own {@link Extension#onEnding()}) is caught and
+     * routed to that extension's {@link Extension#onException} instead of
+     * propagating - the same "one failure does not abort the rest" handling
+     * {@link #start} already applies to {@code onLoading()}/{@code
+     * onRunning()} failures - so a single misbehaving extension cannot
+     * prevent every other registered extension from being stopped too.
      */
     public void stopAll() {
-        getExtensions().forEach(this::stop);
+        getExtensions().forEach(extension -> {
+            try {
+                stop(extension);
+            } catch (final RuntimeException reason) {
+                extension.onException(reason);
+            }
+        });
     }
 
     /**
@@ -246,6 +262,11 @@ public abstract class ExtensionFactory {
      * does not unblock it; the thread will only exit once that call itself
      * returns.
      *
+     * <p>The tracked thread is always removed and interrupted - even if
+     * {@link Extension#onEnding()} itself throws - since a thread's
+     * tracking/interruption is this method's own cleanup responsibility, not
+     * something a failing extension should be able to skip and leak.
+     *
      * @throws NullPointerException if {@code extension} is {@code null}
      */
     @SneakyThrows
@@ -253,10 +274,13 @@ public abstract class ExtensionFactory {
         final ExtensionProperties properties = extension.getExtensionProperties();
 
         properties.updateExtensionStatus(ExtensionStatus.ENDING);
-        extension.onEnding();
 
-        final Thread thread = this.runningThreads.remove(properties.getExtensionName());
-        if (thread != null) thread.interrupt();
+        try {
+            extension.onEnding();
+        } finally {
+            final Thread thread = this.runningThreads.remove(properties.getExtensionName());
+            if (thread != null) thread.interrupt();
+        }
     }
 
     /**

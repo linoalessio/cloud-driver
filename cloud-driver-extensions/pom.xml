@@ -18,6 +18,7 @@
         <module>cloud-driver-extensions-app</module>
         <module>cloud-driver-extensions-mobile</module>
         <module>cloud-driver-extensions-watcher</module>
+        <module>cloud-driver-extension-terminal</module>
     </modules>
 
 </project>

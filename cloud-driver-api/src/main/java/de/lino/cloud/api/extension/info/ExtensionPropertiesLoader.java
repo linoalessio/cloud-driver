@@ -46,6 +46,7 @@ public final class ExtensionPropertiesLoader {
     private static final String VERSION_FIELD = "version";
     private static final String AUTHORS_FIELD = "authors";
     private static final String DEPENDENCIES_FIELD = "dependencies";
+    private static final String DESCRIPTION_FIELD = "description";
 
     /**
      * Not instantiable; all functionality is exposed through static methods.
@@ -84,15 +85,16 @@ public final class ExtensionPropertiesLoader {
     private static ExtensionProperties fromDocument(final Class<? extends Extension> extensionClass, final JsonDocument document) {
         final String name = requireField(extensionClass, document, NAME_FIELD);
         final String version = requireField(extensionClass, document, VERSION_FIELD);
+        final String description = requireField(extensionClass, document, DESCRIPTION_FIELD);
 
         final List<String> authors = document.get(AUTHORS_FIELD, new TypeToken<>() {});
         final List<String> dependencies = document.get(DEPENDENCIES_FIELD, new TypeToken<>() {});
 
         return new ExtensionProperties(
                 name, version,
+                description.isBlank() ? "" : description,
                 authors == null ? new String[0] : authors.toArray(new String[0]),
-                dependencies == null ? new String[0] : dependencies.toArray(new String[0])
-        );
+                dependencies == null ? new String[0] : dependencies.toArray(new String[0]));
     }
 
     private static String requireField(final Class<? extends Extension> extensionClass, final JsonDocument document, final String field) {

@@ -1,6 +1,7 @@
 {
   "name": "cloud-driver-watcher",
   "version": "1.0.0",
+  "description": "CloudDriver watcher notifying the system if a new entry was uploaded",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]
 }

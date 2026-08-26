@@ -104,4 +104,9 @@ public final class DefaultDataFactory extends DataFactory {
         this.entityDatabaseClient.deleteSection(type);
     }
 
+    @Override
+    public void shutdown() {
+        this.entityDatabaseClient.shutdown();
+    }
+
 }

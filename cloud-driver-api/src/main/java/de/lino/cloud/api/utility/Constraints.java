@@ -3,6 +3,7 @@ package de.lino.cloud.api.utility;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Shared constants for {@code cloud-driver}, so consumers resolve
@@ -47,6 +48,8 @@ public final class Constraints {
      * cloud-driver-plugin}.
      */
     public static final Path EXTENSIONS_PATH = WORKING_DIRECTORY.resolve("extensions");
+
+    public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 
     private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
     private static final String[] TIME_UNITS = {"ms", "s", "min", "h", "d"};

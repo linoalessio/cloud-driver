@@ -1,5 +1,6 @@
 {
   "name": "cloud-driver-bootstrap",
   "version": "1.0.1",
+  "description": "CloudDriver bootstrap point that initializes the backend",
   "authors": ["Lino Alessio Kauschinger"]
 }

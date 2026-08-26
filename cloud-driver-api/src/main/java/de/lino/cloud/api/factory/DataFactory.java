@@ -19,12 +19,12 @@ import java.util.concurrent.CompletionException;
  * written, so the configured database only ever holds ciphertext.
  *
  * <p>Only {@link #register}, {@link #update}, {@link #fetch}, {@link
- * #findById}, {@link #delete}, {@link #getEntities}, {@link #clear}, and
- * {@link #deleteSection} (single and batch variants where applicable) are
- * abstract; every {@code *Async} variant below is implemented here,
- * generically, in terms of those - the same "abstract primitives + generic
- * concrete methods" shape {@link FileFactory} and {@link ExtensionFactory}
- * use.
+ * #findById}, {@link #delete}, {@link #getEntities}, {@link #clear}, {@link
+ * #deleteSection} (single and batch variants where applicable), and {@link
+ * #shutdown} are abstract; every {@code *Async} variant below is implemented
+ * here, generically, in terms of those - the same "abstract primitives +
+ * generic concrete methods" shape {@link FileFactory} and {@link
+ * ExtensionFactory} use.
  */
 public abstract class DataFactory {
 
@@ -214,6 +214,20 @@ public abstract class DataFactory {
     public abstract <T extends Serialized> void deleteSection(@NotNull Class<T> type);
 
     /**
+     * Releases whatever connection(s)/pool the configured database is
+     * reached through - the persistence half of a full {@code
+     * CloudAPI#shutdown()}. {@link FileFactory} shares this same underlying
+     * connection ({@link de.lino.cloud.api.file.StoredFile} is itself a
+     * {@link Serialized} meta persisted through this same factory), so
+     * shutting this down covers both facets; {@code FileFactory} has no
+     * separate {@code shutdown()} of its own. No further call on this
+     * factory is expected to succeed once this returns - only call it when
+     * this factory itself is being torn down for good, e.g. from a shutdown
+     * hook.
+     */
+    public abstract void shutdown();
+
+    /**
      * Async counterpart of {@link #register(Serialized)}, running on {@link
      * MultiTaskingFactory}'s shared virtual-thread executor so the calling
      * thread never blocks on database or KMS I/O. On failure, the returned
@@ -375,6 +389,15 @@ public abstract class DataFactory {
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> deleteSectionAsync(@NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.deleteSection(type));
+    }
+
+    /**
+     * Async counterpart of {@link #shutdown()}, running on {@link
+     * MultiTaskingFactory}'s shared virtual-thread executor.
+     */
+    @NotNull
+    public CompletableFuture<Void> shutdownAsync() {
+        return MultiTaskingFactory.getInstance().runAsync(this::shutdown);
     }
 
 }

@@ -40,6 +40,20 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Backs de.lino.cloud.api.terminal: raw terminal mode, line editing, tab completion,
+             and Ctrl+C/EOF handling for Terminal/ReadingThread - the same "jline" coordinate
+             PoloCloud's own cli module depends on. No separate native-provider artifact is
+             needed: jline picks its terminal provider at runtime from ffm/jni/exec (verified
+             directly against this exact version/JDK combination) - ffm requires JDK 22+ (this
+             project targets 21, see the root pom's maven.compiler.target) and is skipped
+             automatically, falling through to the JNI-based provider bundled inside this single
+             artifact, which opens a real terminal on JDK 21 with no extra dependency. -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>4.3.1</version>
+        </dependency>
+
     </dependencies>
 
 </project>

@@ -428,6 +428,18 @@ public final class EntityDatabaseClient {
         this.caches.remove(type);
     }
 
+    /**
+     * Shuts the backing {@link DatabaseProvider} down, releasing its
+     * connection(s)/pool - this is the one place in this client that owns a
+     * real, closeable resource (every {@link Cache}/{@link DatabaseSection}
+     * reference above is process-local memory, nothing to release). Once
+     * this returns, no further call on this client is expected to succeed;
+     * only call it when this client itself is being torn down for good.
+     */
+    public void shutdown() {
+        this.databaseProvider.shutdown();
+    }
+
     @SuppressWarnings("unchecked") // safe: every cache is both created and looked up keyed by the same Class<T>
     private <T extends Serialized> Cache<String, T> cacheFor(final Class<T> type) {
         return (Cache<String, T>) caches.computeIfAbsent(

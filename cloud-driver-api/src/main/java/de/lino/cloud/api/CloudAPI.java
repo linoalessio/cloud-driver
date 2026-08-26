@@ -2,12 +2,13 @@ package de.lino.cloud.api;
 
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.terminal.Terminal;
+import de.lino.cloud.api.terminal.logging.TerminalLogFormatter;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.database.entity.Serialized;
 
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Formatter;
-import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 /**
@@ -80,12 +81,7 @@ public abstract class CloudAPI {
                     logger = Logger.getLogger(CloudAPI.class.getName());
                     logger.setUseParentHandlers(false);
                     ConsoleHandler handler = new ConsoleHandler();
-                    handler.setFormatter(new Formatter() {
-                        @Override
-                        public String format(LogRecord record) {
-                            return "[CloudDriver] ❯ " + formatMessage(record) + System.lineSeparator();
-                        }
-                    });
+                    handler.setFormatter(new TerminalLogFormatter());
                     logger.addHandler(handler);
                     LOGGER = logger;
                 }
@@ -140,5 +136,9 @@ public abstract class CloudAPI {
      * of {@code localhost}. See {@link RestFactory} for the full contract.
      */
     public abstract RestFactory getRestFactory();
+
+    public abstract Terminal getTerminal();
+
+    public abstract void shutdown();
 
 }

@@ -1,10 +1,8 @@
-package de.lino.cloud.bootstrap.event;
+package de.lino.cloud.api.event;
 
 import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
-import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
@@ -26,7 +24,7 @@ public class ExtensionRegisterEvent extends Event {
 
         final Extension extension = this.cloudAPI().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
         final ExtensionProperties extensionProperties = extension.getExtensionProperties();
-        this.cloudAPI().getLogger().info(String.format("Extension '%s (v%s) successfully loaded.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
+        this.cloudAPI().getTerminal().display(String.format("Extension '&c%s&7' (v%s) successfully loaded.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
 
     }
 

@@ -17,7 +17,7 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
-import de.lino.cloud.bootstrap.event.ExtensionRegisterEvent;
+import de.lino.cloud.api.event.ExtensionRegisterEvent;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -39,7 +39,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.stream.Stream;
 
@@ -82,17 +85,21 @@ public final class CloudBootstrap {
         // returns, so nothing here submits further tasks afterward.
         MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
 
+            Constraints.CLOUD_START_TIME_STAMP.set(System.currentTimeMillis());
             System.out.println(Constraints.CLOUD_DRIVER_BANNER);
-
             loadSecurityRequirements();
 
             final Runnable[] runnable = new Runnable[] {
 
-                    startPendingUploadScheduler()
+                    startTerminalBootstrap()
+
+                    , startPendingUploadScheduler()
 
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class)
 
                     , startExtensionsBootstrapScheduler(args)
+
+                    , stopTerminal()
 
             };
 
@@ -140,8 +147,10 @@ public final class CloudBootstrap {
 
         final CountDownLatch shutdownLatch = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+
             shutdownActions.forEach(Runnable::run);
             shutdownLatch.countDown();
+
         }, "cloud-bootstrap-shutdown"));
 
         return Optional.of(shutdownLatch);
@@ -193,8 +202,9 @@ public final class CloudBootstrap {
         ExtensionFolderScanner.scan(Constraints.WORKING_DIRECTORY).forEach(extensionFactory::register);
         ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
 
+        CloudAPI.getInstance().getTerminal().emptyLine();
+        extensionFactory.startAllAsync(args);
         extensionFactory.getExtensions().forEach(extension -> CLOUD_API.getEventFactory().callEvent(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
-        extensionFactory.startAll(args);
 
         return extensionFactory::stopAll;
     }
@@ -209,9 +219,17 @@ public final class CloudBootstrap {
     @SafeVarargs
     private static Runnable startEventScheduler(@NonNull final Class<? extends Event>... events) {
         final EventFactory eventFactory = CLOUD_API.getEventFactory();
-        final Stream<Class<? extends Event>> stream = Arrays.stream(events);
-        stream.forEach(eventFactory::registerEvent);
-        return () -> stream.forEach(eventFactory::unregisterEvent);
+        Arrays.stream(events).forEach(eventFactory::registerEventAsync);
+        return () -> {};
+    }
+
+    private static Runnable startTerminalBootstrap() {
+        CloudAPI.getInstance().getTerminal().start();
+        return () -> {};
+    }
+
+    private static Runnable stopTerminal() {
+        return () -> CloudAPI.getInstance().getTerminal().readingThread().interrupt();
     }
 
     private static void loadSecurityRequirements() {

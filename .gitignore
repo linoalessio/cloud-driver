@@ -10,6 +10,7 @@ cloud-driver/postgres-database.json
 cloud-driver/api-key.json
 cloud-driver
 shell
+test
 
 ### IntelliJ IDEA ###
 .idea

@@ -28,6 +28,11 @@ public class ExtensionProperties {
     private final String extensionVersion;
 
     /**
+     * The extension's description
+     */
+    private final String description;
+
+    /**
      * The extension's authors.
      */
     private final List<String> authors;
@@ -48,18 +53,20 @@ public class ExtensionProperties {
      * Constructs the extension's properties, with an initial status of
      * {@link ExtensionStatus#LOADING}.
      *
-     * @param extensionName the extension's name
+     * @param extensionName    the extension's name
      * @param extensionVersion the extension's version
-     * @param authors the extension's authors
+     * @param description
+     * @param authors          the extension's authors
      * @throws NullPointerException if any argument, or any element of {@code authors}, is {@code null}
      */
-    public ExtensionProperties(final String extensionName, final String extensionVersion, final String[] authors, final String... dependencies) {
+    public ExtensionProperties(final String extensionName, final String extensionVersion, String description, final String[] authors, final String... dependencies) {
 
-        this.extensionName = Asserts.requireNonNull(extensionName, "@ExtensionProperties.init: ExtensionName cannot be null");
-        this.extensionVersion = Asserts.requireNonNull(extensionVersion, "@ExtensionProperties.init: ExtensionVersion cannot be null");
+        this.extensionName = Asserts.requireNonNull(extensionName, "@ExtensionProperties.init: ExtensionName must not be null");
+        this.extensionVersion = Asserts.requireNonNull(extensionVersion, "@ExtensionProperties.init: ExtensionVersion must not be null");
+        this.description = Asserts.requireNonNull(description, "@ExtensionProperties.init: Description must not be null");
 
-        Asserts.requireNonNull(authors, "@ExtensionProperties.init: Authors cannot be null");
-        Arrays.stream(authors).forEach(author -> Asserts.requireNonNull(author, "@ExtensionProperties.init: Author cannot be null"));
+        Asserts.requireNonNull(authors, "@ExtensionProperties.init: Authors must not be null");
+        Arrays.stream(authors).forEach(author -> Asserts.requireNonNull(author, "@ExtensionProperties.init: Author must not be null"));
         this.authors = List.of(authors);
         this.dependencies = List.of(dependencies);
 
@@ -74,7 +81,7 @@ public class ExtensionProperties {
      * @throws NullPointerException if {@code extensionStatus} is {@code null}
      */
     public void updateExtensionStatus(final ExtensionStatus extensionStatus) {
-        this.extensionStatus = Asserts.requireNonNull(extensionStatus, "@ExtensionProperties.updateExtensionStatus: ExtensionStatus cannot be null");
+        this.extensionStatus = Asserts.requireNonNull(extensionStatus, "@ExtensionProperties.updateExtensionStatus: ExtensionStatus must not be null");
     }
 
 }

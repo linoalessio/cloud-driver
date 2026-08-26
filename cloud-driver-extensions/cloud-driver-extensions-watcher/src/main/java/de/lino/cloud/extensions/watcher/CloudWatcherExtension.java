@@ -8,6 +8,8 @@ import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.notification.DatabaseNotification;
 import de.lino.database.database.sql.postgresql.PostgresDatabaseNotification;
 
+import java.util.logging.Level;
+
 /**
  * Watches {@link StoredFile}'s table for writes via Postgres {@code LISTEN}/{@code NOTIFY}
  * and routes each notification through {@link DatabaseWatchEvent} - the extension form of what
@@ -84,7 +86,11 @@ public class CloudWatcherExtension extends Extension {
      */
     @Override
     public void onException(RuntimeException reason) {
+
         if (this.notification != null) this.notification.shutdown();
+        this.cloudAPI().getLogger().severe("An error occurred while trying to start the cloud watcher extension.");
+        this.cloudAPI().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
+
     }
 
 }
