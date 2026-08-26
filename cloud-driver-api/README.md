@@ -2,7 +2,7 @@
 
 This module defines `cloud-driver`'s public contract: interfaces, abstract classes, value objects/records, and exceptions. It has **no concrete implementations** - every implementation lives in `cloud-driver-plugin`, which depends on this module (never the other way around).
 
-The cryptographic design follows `SECURITY_REQUIREMENTS.md` (bundled as a resource in this module, under `src/main/resources`) - envelope encryption with AES-256-GCM, KMS/HSM-backed key wrapping with rotation, authenticated-tag verification, Argon2id password hashing. Section references in Javadoc (e.g. "section 9") point back to that document.
+The cryptographic design follows `../architecture/SECURITY_REQUIREMENTS.md` (bundled as a resource in this module, under `src/main/resources`) - envelope encryption with AES-256-GCM, KMS/HSM-backed key wrapping with rotation, authenticated-tag verification, Argon2id password hashing. Section references in Javadoc (e.g. "section 9") point back to that document.
 
 ## Coordinates
 

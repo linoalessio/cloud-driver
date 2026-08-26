@@ -25,7 +25,7 @@ public final class TerminalLogFormatter extends Formatter {
 
         final StringBuilder message = new StringBuilder();
         message.append(AnsiColors.translate(
-                "&7" + time + " &8| " + levelColor + record.getLevel().getName() + "&8: &7" + formatMessage(record) + "\n"
+                "&7" + time + " &8(" + levelColor + record.getLevel().getName() + "&8): &7" + formatMessage(record) + "\n"
         ));
 
         final Throwable thrown = record.getThrown();

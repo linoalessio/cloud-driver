@@ -414,6 +414,25 @@ public final class EntityDatabaseClient {
     }
 
     /**
+     * Discards {@code type}'s {@link DatabaseSection}'s own in-memory view
+     * of its entries and re-reads it from the database (via {@link
+     * DatabaseSection#reload()}), then invalidates {@code type}'s decrypted-
+     * entity cache (if one has been created yet) - see {@link
+     * de.lino.cloud.api.factory.DataFactory#reload} for why this is needed
+     * at all: unlike {@link #clear}, this does not touch the database's
+     * actual contents, only this process's local view of it.
+     */
+    public <T extends Serialized> void reload(@NotNull final Class<T> type) {
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.reload: type cannot be null");
+
+        sectionFor(type).reload();
+        final Cache<String, ? extends Serialized> cache = caches.get(type);
+        if (cache != null) {
+            cache.invalidateAll();
+        }
+    }
+
+    /**
      * Deletes the {@code type} database section entirely - not just its
      * entries - and discards {@code type}'s cached {@link DatabaseSection}
      * reference and cache (if either has been created yet). A later

@@ -55,13 +55,27 @@ public class CloudWatcherExtension extends Extension {
      * synchronously, before any extension is started). Each notification is routed through
      * {@link #cloudAPI()}'s {@code EventFactory} as a {@link DatabaseWatchEvent}.
      *
+     * <p>The callback itself is wrapped in a {@code try/catch} - {@code
+     * PostgresDatabaseNotification#listen} invokes it directly inside its blocking read loop
+     * with no {@code try/catch} of its own, so a {@code RuntimeException} escaping this callback
+     * (whether from {@link DatabaseWatchEvent} or any other registered handler {@code
+     * DatabaseWatchEvent.class} could ever route to) would otherwise kill that loop's dedicated
+     * listener thread permanently - no reconnect logic exists there. Catching here keeps one bad
+     * notification from silently ending change notifications for the rest of the process's life.
+     *
      * @param args the arguments passed from the command line, unused by this extension
      */
     @Override
     public void onRunning(String[] args) {
 
         this.notification.watch(StoredFile.class);
-        this.notification.start(payload -> this.cloudAPI().getEventFactory().callEvent(DatabaseWatchEvent.class, payload));
+        this.notification.start(payload -> {
+            try {
+                this.cloudAPI().getEventFactory().callEvent(DatabaseWatchEvent.class, payload);
+            } catch (final RuntimeException notificationHandlingFailed) {
+                this.cloudAPI().getLogger().log(Level.WARNING, "Failed to handle a database change notification: " + payload, notificationHandlingFailed);
+            }
+        });
 
     }
 

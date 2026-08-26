@@ -1,8 +1,9 @@
 package de.lino.cloud.bootstrap;
 
 import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.event.database.DatabaseWatchEvent;
 import de.lino.cloud.api.event.Event;
+import de.lino.cloud.api.event.database.DatabaseWatchEvent;
+import de.lino.cloud.api.event.extension.ExtensionRegisterEvent;
 import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
@@ -18,7 +19,6 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
-import de.lino.cloud.api.event.extension.ExtensionRegisterEvent;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -40,10 +40,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
 /**
@@ -238,7 +235,7 @@ public final class CloudBootstrap {
 
             CLOUD_API.getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
 
-                final File file = Path.of("SECURITY_REQUIREMENTS.md").toFile();
+                final File file = Constraints.WORKING_DIRECTORY.resolve(Path.of("architecture", "SECURITY_REQUIREMENTS.md")).toFile();
                 try {
 
                     final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), file.getName(), Files.readAllBytes(file.toPath()));
@@ -253,6 +250,24 @@ public final class CloudBootstrap {
 
         } catch (DatabaseClientException | FileIntegrityException | AuthenticationFailedException |
                  KeyWrapException e) {
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    private static void loadDummyFileUpload() {
+
+        try {
+
+            final StoredFile storedFile = new StoredFile(
+                    UUID.randomUUID().toString()
+                    , "pom.xml"
+                    , Files.readAllBytes(Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "pom.xml")))
+            );
+
+            CLOUD_API.getFileFactory().upload(storedFile);
+
+        } catch (IOException | DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(e);
         }
 

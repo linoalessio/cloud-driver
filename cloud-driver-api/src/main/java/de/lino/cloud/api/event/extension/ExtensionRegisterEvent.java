@@ -25,7 +25,7 @@ public class ExtensionRegisterEvent extends Event {
 
         final Extension extension = this.cloudAPI().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
         final ExtensionProperties extensionProperties = extension.getExtensionProperties();
-        this.cloudAPI().getTerminal().displayApproved(String.format("Extension '&b%s&7' (v%s) successfully &aloaded&7.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
+        this.cloudAPI().getTerminal().displayApproved(String.format("&7Extension '&b%s&7' (v%s) successfully &aloaded&7.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
 
     }
 

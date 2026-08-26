@@ -105,6 +105,11 @@ public final class DefaultDataFactory extends DataFactory {
     }
 
     @Override
+    public <T extends Serialized> void reload(@NotNull final Class<T> type) {
+        this.entityDatabaseClient.reload(type);
+    }
+
+    @Override
     public void shutdown() {
         this.entityDatabaseClient.shutdown();
     }

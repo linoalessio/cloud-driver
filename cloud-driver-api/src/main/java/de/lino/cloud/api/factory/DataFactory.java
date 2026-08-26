@@ -214,6 +214,31 @@ public abstract class DataFactory {
     public abstract <T extends Serialized> void deleteSection(@NotNull Class<T> type);
 
     /**
+     * Discards {@code type}'s underlying database section's own in-memory
+     * view of its entries and re-reads it from the database, then evicts
+     * every currently cached decrypted meta of {@code type} - picking up a
+     * write made by some other process (or some other {@code DataFactory}
+     * instance in this same process) that this instance's own caches have
+     * no way to otherwise learn about.
+     *
+     * <p>Necessary because the underlying {@code database-driver-plugin}
+     * section implementations keep every entry mirrored in process-local
+     * memory once loaded and only keep that mirror in sync with writes made
+     * through that very instance - a read never falls back to the database
+     * (see {@code DatabaseSection#reload()}'s own Javadoc) - so a section
+     * that was already loaded before another process's write happened stays
+     * stale indefinitely, with no TTL of its own, regardless of how long
+     * this instance's own (short-TTL) decrypted-entity cache would
+     * otherwise self-heal. This is exactly the situation a Postgres change
+     * notification for an id this process can't {@link #findById find} is
+     * warning about - see {@code DatabaseWatchEvent}.
+     *
+     * @param type the meta type whose section to reload
+     * @param <T> the meta type
+     */
+    public abstract <T extends Serialized> void reload(@NotNull Class<T> type);
+
+    /**
      * Releases whatever connection(s)/pool the configured database is
      * reached through - the persistence half of a full {@code
      * CloudAPI#shutdown()}. {@link FileFactory} shares this same underlying
@@ -389,6 +414,14 @@ public abstract class DataFactory {
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> deleteSectionAsync(@NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.deleteSection(type));
+    }
+
+    /**
+     * Async counterpart of {@link #reload(Class)}.
+     */
+    @NotNull
+    public <T extends Serialized> CompletableFuture<Void> reloadAsync(@NotNull final Class<T> type) {
+        return MultiTaskingFactory.getInstance().runAsync(() -> this.reload(type));
     }
 
     /**

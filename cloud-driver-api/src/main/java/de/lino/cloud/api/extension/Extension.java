@@ -7,10 +7,13 @@ import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionPropertiesLoader;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.utility.Constraints;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.ToString;
+
+import java.nio.file.Path;
 
 /**
  * Base class for an extension: subclass it, implement the lifecycle
@@ -41,12 +44,6 @@ public abstract class Extension {
      * time via {@link ProjectBuildDetection#detectProjectBuildType()}.
      */
     private final ProjectType projectBuildType;
-
-    /**
-     * The CLI prefix this extension's own commands are namespaced under, if any.
-     * Empty by default; set explicitly via {@link #setPrefix(String)}.
-     */
-    private String prefix = "";
 
     /**
      * Loads this extension's {@link ExtensionProperties} and {@link
@@ -108,15 +105,6 @@ public abstract class Extension {
     }
 
     /**
-     * Sets the CLI prefix.
-     *
-     * @param prefix the new prefix
-     */
-    public void setPrefix(@NonNull final String prefix) {
-        this.prefix = prefix;
-    }
-
-    /**
      * Returns the host process's {@link CloudAPI} singleton, for lifecycle hooks that need to
      * reach it (e.g. to persist entities, dispatch events, or read the shared logger) without
      * each repeating {@code Asserts.requireNonNull(CloudAPI.getInstance())} themselves.
@@ -126,6 +114,10 @@ public abstract class Extension {
      */
     public CloudAPI cloudAPI() {
         return Asserts.requireNonNull(CloudAPI.getInstance());
+    }
+
+    public Path getWorkingDirectory() {
+        return Constraints.EXTENSIONS_PATH;
     }
 
 }
