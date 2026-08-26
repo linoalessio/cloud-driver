@@ -43,6 +43,24 @@ import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.stream.Stream;
 
+/**
+ * The module's real (non-sample) entry point: boots a Postgres-backed {@link CloudAPI} and
+ * several independent subsystems, each on its own thread, then blocks only the real main thread
+ * until shutdown - never any of the subsystem threads. Each subsystem is started by its own
+ * {@code startX()} method (see {@link #startPendingUploadScheduler()}, {@link
+ * #startEventScheduler(Class[])}, {@link #startExtensionsBootstrapScheduler(String[])}), called
+ * from {@link #main(String[])}, which starts that subsystem's real work on its own thread and
+ * returns a {@link Runnable} shutdown action rather than blocking the caller; {@link
+ * #prepareShutdownLatch(Runnable...)} collects every one of those into a single {@code
+ * Runtime.addShutdownHook}. Adding another concurrent subsystem means adding another {@code
+ * startX()} method and including it in {@link #main(String[])}'s list - never adding another
+ * blocking loop inside {@link #main(String[])} itself.
+ *
+ * <p>Postgres change notification (watching {@link StoredFile}'s table) is not one of this
+ * class's own subsystems - that logic now lives in {@code cloud-driver-extensions-watcher}'s
+ * {@code CloudWatcherExtension}, started the same way any other extension is, through {@link
+ * #startExtensionsBootstrapScheduler(String[])}.
+ */
 public final class CloudBootstrap {
 
     private static volatile CloudAPI CLOUD_API;
@@ -106,7 +124,7 @@ public final class CloudBootstrap {
 
         DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
 
-        return Optional.ofNullable(CloudAPI.getInstance());
+        return Optional.of(CloudAPI.getInstance());
     }
 
     /**

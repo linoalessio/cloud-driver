@@ -6,7 +6,9 @@ import de.lino.cloud.api.security.keys.WrappedKey;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * The result of an {@link EnvelopeEncryptionService} encryption operation:
+ * The result of an {@code EnvelopeEncryptionService} (in {@code cloud-driver-plugin} - this
+ * class cannot link to it directly, since {@code cloud-driver-api} never depends on {@code
+ * cloud-driver-plugin}) encryption operation:
  * the AES-GCM encrypted payload together with its wrapped data-encryption
  * key, forming the key hierarchy described in section 13 (KMS/HSM -&gt; KEK
  * -&gt; wrapped DEK -&gt; AES-256-GCM encrypted payload).

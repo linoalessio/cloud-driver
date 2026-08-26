@@ -2,8 +2,8 @@ package de.lino.cloud.api;
 
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.database.entity.Serialized;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Formatter;
@@ -54,9 +54,8 @@ public abstract class CloudAPI {
      * implementation has installed itself yet (e.g. {@code
      * DefaultCloudAPI.setInstance} has not been called).
      */
-    @Nullable
     public synchronized static CloudAPI getInstance() {
-        return INSTANCE;
+        return Asserts.requireNonNull(INSTANCE);
     }
 
     /**

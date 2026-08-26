@@ -116,6 +116,14 @@ public abstract class Extension {
         this.prefix = prefix;
     }
 
+    /**
+     * Returns the host process's {@link CloudAPI} singleton, for lifecycle hooks that need to
+     * reach it (e.g. to persist entities, dispatch events, or read the shared logger) without
+     * each repeating {@code Asserts.requireNonNull(CloudAPI.getInstance())} themselves.
+     *
+     * @return the {@link CloudAPI} singleton
+     * @throws NullPointerException if {@link CloudAPI#getInstance()} has not been set up yet
+     */
     public CloudAPI cloudAPI() {
         return Asserts.requireNonNull(CloudAPI.getInstance());
     }
