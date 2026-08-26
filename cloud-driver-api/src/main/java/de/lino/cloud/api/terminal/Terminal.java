@@ -139,7 +139,7 @@ public final class Terminal {
         Asserts.requireNonNull(message, "@Terminal.display: message must not be null");
 
         this.terminal.puts(InfoCmp.Capability.carriage_return);
-        this.terminal.writer().println(this.prompt + AnsiColors.translate(String.format("&b%s", message)));
+        this.terminal.writer().println(this.prompt + AnsiColors.translate(String.format("&7%s", message)));
         this.terminal.flush();
         update();
     }
@@ -154,7 +154,7 @@ public final class Terminal {
     public void displayApproved(@NotNull final String message) {
         Asserts.requireNonNull(message, "@Terminal.displayApproved: message must not be null");
 
-        this.lineReader.printAbove(this.prompt + AnsiColors.translate(String.format("&b%s", message)));
+        this.lineReader.printAbove(this.prompt + AnsiColors.translate(String.format("&7%s", message)));
         update();
     }
 

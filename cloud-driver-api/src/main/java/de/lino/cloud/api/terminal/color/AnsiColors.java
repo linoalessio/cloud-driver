@@ -35,24 +35,37 @@ public enum AnsiColors {
     LIGHT_PURPLE("&d", 5, true),
     YELLOW("&e", 3, true),
     WHITE("&f", 7, true),
-    RESET("&r", null, false);
+
+    RESET("&r", "[0m"),
+    ITALIC("&i", "[3m"),
+    UNDERLINE("&u", "[4m"),
+    BOLD("&l", "[1m"),
+    STRIKETHROUGH("&k", "[9m"),
+    ;
 
     /** The legacy color code this constant is triggered by (e.g. {@code "&a"}). */
     private final String code;
 
     /**
      * Precomputed ANSI SGR escape sequence - {@code "\u001b[0m"} for {@link #RESET},
-     * otherwise {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} depending on {@code bright}.
+     * {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} for a color depending on {@code bright},
+     * or a fixed text-style sequence (e.g. {@code "\u001b[1m"}) for {@link #BOLD} and
+     * the other style constants.
      */
     private final String ansi;
 
     AnsiColors(final String code, final Integer color, final boolean bright) {
         this.code = code;
-        this.ansi = color == null ? "[0m" : "[" + (bright ? "9" : "3") + color + "m";
+        this.ansi = "[" + (bright ? "9" : "3") + color + "m";
+    }
+
+    AnsiColors(final String code, final String ansi) {
+        this.code = code;
+        this.ansi = ansi;
     }
 
     /** Regular expression matching any legacy color code this enum recognizes. */
-    private static final Pattern COLOR_PATTERN = Pattern.compile("&[0-9a-fr]");
+    private static final Pattern COLOR_PATTERN = Pattern.compile("&[0-9a-fiklru]");
 
     /** Lookup from a legacy color code (e.g. {@code "&a"}) to its constant. */
     private static final Map<String, AnsiColors> CODE_LOOKUP = Arrays.stream(values())

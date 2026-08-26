@@ -15,10 +15,10 @@ public class ExitCommand implements Command {
         return "exit";
     }
 
-    /** @return {@code "quit"}, {@code "q"}, {@code "leave"} */
+    /** @return {@code "quit"}, {@code "q"} */
     @Override
     public @NotNull List<String> aliases() {
-        return List.of("quit", "q", "leave");
+        return List.of("quit", "q");
     }
 
     /** @return this command's description */
