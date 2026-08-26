@@ -2,5 +2,5 @@
   "name": "cloud-driver-desktop-app",
   "version": "1.0.0",
   "authors": ["Lino Alessio Kauschinger"],
-  "dependencies": ["cloud-driver-bootstrap"]
+  "dependencies": ["cloud-driver-bootstrap", "cloud-driver-watcher"]
 }

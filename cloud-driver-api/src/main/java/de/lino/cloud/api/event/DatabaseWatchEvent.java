@@ -1,9 +1,6 @@
-package de.lino.cloud.bootstrap.event;
+package de.lino.cloud.api.event;
 
-import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.file.StoredFile;
-import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import lombok.SneakyThrows;

@@ -17,6 +17,7 @@
         <module>cloud-driver-extensions-web</module>
         <module>cloud-driver-extensions-app</module>
         <module>cloud-driver-extensions-mobile</module>
+        <module>cloud-driver-extensions-watcher</module>
     </modules>
 
 </project>

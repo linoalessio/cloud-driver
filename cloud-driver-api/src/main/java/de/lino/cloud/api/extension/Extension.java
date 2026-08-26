@@ -1,10 +1,12 @@
 package de.lino.cloud.api.extension;
 
+import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.extension.detection.ProjectBuildDetection;
 import de.lino.cloud.api.extension.detection.ProjectType;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionPropertiesLoader;
 import de.lino.cloud.api.factory.ExtensionFactory;
+import de.lino.cloud.api.utility.Asserts;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
@@ -112,6 +114,10 @@ public abstract class Extension {
      */
     public void setPrefix(@NonNull final String prefix) {
         this.prefix = prefix;
+    }
+
+    public CloudAPI cloudAPI() {
+        return Asserts.requireNonNull(CloudAPI.getInstance());
     }
 
 }

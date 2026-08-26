@@ -1,6 +1,7 @@
 package de.lino.cloud.bootstrap;
 
 import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.event.DatabaseWatchEvent;
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
@@ -16,7 +17,6 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
-import de.lino.cloud.bootstrap.event.DatabaseWatchEvent;
 import de.lino.cloud.bootstrap.event.ExtensionRegisterEvent;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
@@ -27,12 +27,10 @@ import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.DatabaseSection;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
-import de.lino.database.database.entity.Serialized;
 import de.lino.database.database.file.DefaultFileProvider;
-import de.lino.database.database.notification.DatabaseNotification;
-import de.lino.database.database.sql.postgresql.PostgresDatabaseNotification;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
@@ -43,11 +41,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
+import java.util.stream.Stream;
 
 public final class CloudBootstrap {
 
     private static volatile CloudAPI CLOUD_API;
-    private static volatile Credentials POSTGRES_CREDENTIALS;
 
     public static void main(String[] args) throws IOException {
 
@@ -56,14 +54,14 @@ public final class CloudBootstrap {
         // Blocks the actual main thread (not a disposable virtual thread - see
         // runTaskInMainSafety's Javadoc) indefinitely, no busy-wait, once every startX()
         // call below has returned. PendingUploadScheduler runs on its own ticker thread and
-        // PostgresDatabaseNotification.start() blocks its own dedicated listener thread -
-        // both daemon threads, so neither alone keeps the JVM alive - but extension startup
-        // (ExtensionFactory#startAll) and event registration (EventFactory#registerEvent) run
-        // synchronously, on this very thread, before the shutdown latch below is even
-        // constructed. None of the background threads is ever joined - only this one latch,
-        // on the true main thread, is. Must be main's final action: runTaskInMainSafety shuts
-        // the shared executor down once this returns, so nothing here submits further tasks
-        // afterward.
+        // the cloud-driver-extensions-watcher extension's PostgresDatabaseNotification blocks
+        // its own dedicated listener thread on its own extension thread - all daemon threads,
+        // so none alone keeps the JVM alive - but extension startup (ExtensionFactory#startAll)
+        // and event registration (EventFactory#registerEvent) run synchronously, on this very
+        // thread, before the shutdown latch below is even constructed. None of the background
+        // threads is ever joined - only this one latch, on the true main thread, is. Must be
+        // main's final action: runTaskInMainSafety shuts the shared executor down once this
+        // returns, so nothing here submits further tasks afterward.
         MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
 
             System.out.println(Constraints.CLOUD_DRIVER_BANNER);
@@ -77,8 +75,6 @@ public final class CloudBootstrap {
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class)
 
                     , startExtensionsBootstrapScheduler(args)
-
-                    , startDatabaseChangeNotifier(StoredFile.class)
 
             };
 
@@ -99,13 +95,13 @@ public final class CloudBootstrap {
         new DatabaseRepositoryRegistry(false);
 
         final Credentials credentials = Credentials.of(Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")).orElseThrow();
-        POSTGRES_CREDENTIALS = credentials;
 
         final DatabaseProvider databaseProvider = Asserts.requireNonNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
+        final DatabaseSection databaseSection = databaseProvider.createSectionAsync("kek").join();
 
-        final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseProvider.createSection("kek"));
+        final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
@@ -195,48 +191,11 @@ public final class CloudBootstrap {
     @SafeVarargs
     private static Runnable startEventScheduler(@NonNull final Class<? extends Event>... events) {
         final EventFactory eventFactory = CLOUD_API.getEventFactory();
-        Arrays.stream(events).forEach(eventFactory::registerEvent);
-        return () -> Arrays.stream(events).forEach(eventFactory::unregisterEvent);
+        final Stream<Class<? extends Event>> stream = Arrays.stream(events);
+        stream.forEach(eventFactory::registerEvent);
+        return () -> stream.forEach(eventFactory::unregisterEvent);
     }
 
-    /**
-     * Starts a {@link DatabaseNotification}, watching {@code watchedTypes}' tables, on its
-     * own dedicated JDBC connection and listener thread - see that class's Javadoc for what it
-     * actually does and its (significant) limitations, chiefly: it only works against Postgres,
-     * it bypasses {@code DatabaseProvider} entirely, and {@code watchedTypes}' tables must
-     * already exist (i.e. something must already have persisted at least one instance of each
-     * type via {@code DataFactory}, so {@code createSection} has run for it) or trigger
-     * installation fails. Called here with {@link StoredFile} - {@code watch()} is called
-     * unguarded (no try/catch, unlike an earlier version of this method) because {@link
-     * #loadSecurityRequirements()}, called earlier in {@code main}'s startup lambda,
-     * unconditionally uploads a fixed-id {@link StoredFile} on every run if one isn't already
-     * present, which guarantees the {@code storedfile} table already exists by the time this
-     * method runs - even on a brand-new database that nothing else has ever uploaded to. Each
-     * notification is routed through {@code CLOUD_API.getEventFactory()} as a {@link
-     * DatabaseWatchEvent}.
-     */
-    @SafeVarargs
-    private static Runnable startDatabaseChangeNotifier(@NonNull final Class<? extends Serialized>... watchedTypes) {
-
-        final DatabaseNotification changeNotifier = new PostgresDatabaseNotification(POSTGRES_CREDENTIALS, "cloud_driver_changes");
-
-        changeNotifier.watch(watchedTypes);
-        changeNotifier.start(payload -> CLOUD_API.getEventFactory().callEvent(DatabaseWatchEvent.class, payload));
-
-        return changeNotifier::shutdown;
-    }
-
-    /**
-     * Uploads this repository's {@code SECURITY_REQUIREMENTS.md} (resolved relative to
-     * {@code user.dir}, i.e. shipped alongside the running jar) as a {@link StoredFile} under
-     * the fixed {@link Constraints#REQUIREMENTS_UUID} id, so it is reachable through the same
-     * {@code FileFactory}/{@code RestFactory} surface as any other uploaded file - and,
-     * incidentally, guarantees the {@code storedfile} table already exists before {@link
-     * #startDatabaseChangeNotifier} below calls {@code watch(StoredFile.class)}. A no-op on
-     * every run after the first: {@code findById(...).orElseGet(...)} only uploads when that
-     * fixed id isn't already present, so this file is uploaded once per database, not
-     * re-uploaded on every restart.
-     */
     private static void loadSecurityRequirements() {
 
         try {
