@@ -70,7 +70,7 @@ public final class Constraints {
             unit++;
         }
 
-        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value)) + " " + BYTE_UNITS[unit];
+        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value).replace(",", ".")) + " " + BYTE_UNITS[unit];
 
     }
 
@@ -89,7 +89,7 @@ public final class Constraints {
             unit++;
         }
 
-        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value)) + " " + TIME_UNITS[unit];
+        return (unit == 0 ? String.valueOf((long) value) : String.format("%.2f", value).replace(",", ".")) + " " + TIME_UNITS[unit];
 
     }
 

@@ -1,5 +1,6 @@
-package de.lino.cloud.api.event;
+package de.lino.cloud.api.event.database;
 
+import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;

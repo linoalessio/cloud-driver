@@ -1,6 +1,6 @@
 package de.lino.cloud.extensions.watcher;
 
-import de.lino.cloud.api.event.DatabaseWatchEvent;
+import de.lino.cloud.api.event.database.DatabaseWatchEvent;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.utility.Constraints;

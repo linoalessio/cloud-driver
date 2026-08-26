@@ -1,6 +1,7 @@
-package de.lino.cloud.api.event;
+package de.lino.cloud.api.event.extension;
 
 import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.database.json.JsonDocument;
@@ -11,7 +12,7 @@ import lombok.NonNull;
  * in registration order, before {@code ExtensionFactory#startAll} runs - purely to log a
  * confirmation line per extension via {@link CloudAPI#getLogger()}. Carries no other side effect.
  */
-public class ExtensionRegisterEvent extends Event {
+public class ExtensionUnregisterEvent extends Event {
 
     /**
      * Looks the just-registered extension back up by name and logs its name/version.
@@ -24,7 +25,7 @@ public class ExtensionRegisterEvent extends Event {
 
         final Extension extension = this.cloudAPI().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
         final ExtensionProperties extensionProperties = extension.getExtensionProperties();
-        this.cloudAPI().getTerminal().display(String.format("Extension '&c%s&7' (v%s) successfully loaded.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
+        this.cloudAPI().getTerminal().displayApproved(String.format("Extension '&b%s&7' (v%s) successfully &cshutdown&7.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion()));
 
     }
 

@@ -2,6 +2,7 @@ package de.lino.cloud.plugin;
 
 import de.lino.cloud.api.CloudAPI;
 import de.lino.cloud.api.event.Event;
+import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.file.StoredFile;
@@ -15,6 +16,7 @@ import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
+import de.lino.database.json.JsonDocument;
 import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 
@@ -197,7 +199,10 @@ public final class DefaultCloudAPI extends CloudAPI {
         for (final Extension extension : List.copyOf(this.extensionFactory.getExtensions())) {
             this.runShutdownStep(
                     "Extension '" + extension.getExtensionProperties().getExtensionName() + "'",
-                    () -> this.extensionFactory.stop(extension)
+                    () -> {
+                        this.eventFactory.callEvent(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName()));
+                        this.extensionFactory.stop(extension);
+                    }
             );
         }
 

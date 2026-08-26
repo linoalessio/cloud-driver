@@ -1,8 +1,9 @@
 package de.lino.cloud.bootstrap;
 
 import de.lino.cloud.api.CloudAPI;
-import de.lino.cloud.api.event.DatabaseWatchEvent;
+import de.lino.cloud.api.event.database.DatabaseWatchEvent;
 import de.lino.cloud.api.event.Event;
+import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.EventFactory;
@@ -17,7 +18,7 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
-import de.lino.cloud.api.event.ExtensionRegisterEvent;
+import de.lino.cloud.api.event.extension.ExtensionRegisterEvent;
 import de.lino.cloud.plugin.DefaultCloudAPI;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -44,7 +45,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
-import java.util.stream.Stream;
 
 /**
  * The module's real (non-sample) entry point: boots a Postgres-backed {@link CloudAPI} and
@@ -95,7 +95,7 @@ public final class CloudBootstrap {
 
                     , startPendingUploadScheduler()
 
-                    , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class)
+                    , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
 
                     , startExtensionsBootstrapScheduler(args)
 
