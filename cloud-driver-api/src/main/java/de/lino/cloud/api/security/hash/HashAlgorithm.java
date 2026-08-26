@@ -1,10 +1,8 @@
 package de.lino.cloud.api.security.hash;
 
 /**
- * Approved hashing algorithms per section 5 (HASHING) of the security
- * requirements. MD5 and SHA-1 are intentionally not offered here: "MD5 SHALL
- * NOT be used for security purposes" and "SHA-1 SHALL NOT be used for new
- * security designs."
+ * Approved hashing algorithms: SHA-256/384/512 only. MD5 and SHA-1 are
+ * intentionally not representable.
  */
 public enum HashAlgorithm {
 

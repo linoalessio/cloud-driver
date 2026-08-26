@@ -7,9 +7,7 @@ import java.time.Instant;
 
 /**
  * A {@link StoredFile}'s descriptive attributes without its content - see
- * {@link StoredFile#metadata()} - for callers that only need to know what a
- * file is (name, type, size, checksum, timestamps) without holding its full,
- * decrypted content in memory.
+ * {@link StoredFile#metadata()}.
  */
 public record FileMetadata(
         String fileId,

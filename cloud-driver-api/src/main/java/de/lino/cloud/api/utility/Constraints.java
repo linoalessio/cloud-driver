@@ -13,42 +13,29 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class Constraints {
 
-    /**
-     * Not instantiable; all functionality is exposed through static fields.
-     */
+    /** Not instantiable; all functionality is exposed through static fields. */
     private Constraints() {}
 
+    /** The JVM's working directory ({@code user.dir}). */
     public static final Path WORKING_DIRECTORY = Path.of(System.getProperty("user.dir"));
 
     /**
-     * The directory local configuration files are resolved against: a {@code
-     * cloud-driver} subdirectory of the JVM's working directory ({@code
-     * user.dir}). Callers resolve specific files against it, e.g. {@code
-     * Constraints.CONFIGURATION_PATH.resolve("database.json")}.
+     * Directory local configuration files are resolved against: a {@code cloud-driver}
+     * subdirectory of {@link #WORKING_DIRECTORY}.
      */
     public static final Path CONFIGURATION_PATH = WORKING_DIRECTORY.resolve("cloud-driver");
 
-    /**
-     * The default {@code destination} {@code StoredFile#downloadToDevice()} (the
-     * no-argument overload) writes a file to: the current user's platform {@code
-     * Downloads} folder ({@code user.home}/Downloads), so a caller isn't required
-     * to pass an explicit destination directory just to save a file somewhere
-     * reasonable.
-     */
+    /** Default destination for {@code StoredFile#downloadToDevice()}: the user's Downloads folder. */
     public static final Path USER_DOWNLOADS_PATH = Path.of(System.getProperty("user.home"), "Downloads");
 
     /**
-     * The directory {@code cloud-driver-plugin}'s extension-jar scanner looks
-     * in for {@code *.jar} files to load - a top-level {@code extensions}
-     * subdirectory of the JVM's working directory ({@code user.dir}), sibling
-     * to {@link #CONFIGURATION_PATH}. A jar in this directory is only loaded
-     * as an extension if it both declares a concrete {@code Extension}
-     * subclass and ships an {@code extension.json} - see {@code
-     * ExtensionJarLoader}/{@code ExtensionFolderScanner} in {@code
-     * cloud-driver-plugin}.
+     * Directory {@code cloud-driver-plugin}'s extension-jar scanner looks in for {@code
+     * *.jar} files - a top-level {@code extensions} subdirectory, sibling to
+     * {@link #CONFIGURATION_PATH}.
      */
     public static final Path EXTENSIONS_PATH = WORKING_DIRECTORY.resolve("extensions");
 
+    /** Timestamp the process started at, set once during bootstrap. */
     public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 
     private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
@@ -56,9 +43,10 @@ public final class Constraints {
     private static final int[] TIME_UNIT_DIVISORS = {1000, 60, 60, 24};
 
     /**
-     * Formats {@code bytes} in its largest whole {@link #BYTE_UNITS} unit
-     * (e.g. {@code 2048} -> {@code "2.00KB"}), rather than merely labelling
-     * the raw byte count.
+     * Formats {@code bytes} in its largest whole unit (e.g. {@code 2048} -> {@code "2.00KB"}).
+     *
+     * @param bytes the byte count to format
+     * @return the formatted string
      */
     public static String resolveBytesToUnit(final long bytes) {
 
@@ -75,9 +63,11 @@ public final class Constraints {
     }
 
     /**
-     * Formats {@code milliseconds} in its largest whole {@link #TIME_UNITS}
-     * unit (e.g. {@code 90_000} -&gt; {@code "1.50 min"}), the millisecond
-     * counterpart to {@link Constraints#resolveBytesToUnit(long)}.
+     * Formats {@code milliseconds} in its largest whole unit (e.g. {@code 90_000} -&gt;
+     * {@code "1.50 min"}).
+     *
+     * @param milliseconds the duration to format
+     * @return the formatted string
      */
     public static String resolveMilliSecondsToUnit(final long milliseconds) {
 
@@ -93,6 +83,7 @@ public final class Constraints {
 
     }
 
+    /** ASCII banner printed at startup. */
     public static final String CLOUD_DRIVER_BANNER =
             """
                     
@@ -106,23 +97,15 @@ public final class Constraints {
                           https://github.com/linoalessio/cloud-driver       \s""";
 
     /**
-     * Fixed {@code fileId} {@code CloudBootstrap} uploads this repository's own {@code
-     * SECURITY_REQUIREMENTS.md} under, as a {@code StoredFile}, on every startup - hardcoded
-     * (rather than random) so the lookup-before-upload is idempotent across restarts: a
-     * lookup by this same id short-circuits re-uploading the file once it's already present,
-     * instead of duplicating it on every run.
+     * Fixed {@code fileId} {@code CloudBootstrap} uploads {@code SECURITY_REQUIREMENTS.md}
+     * under on every startup - hardcoded so the upload is idempotent across restarts.
      */
     public static final UUID REQUIREMENTS_UUID = UUID.fromString("e54d8aab-cfa0-426c-b40a-1a703db293d4");
 
     /**
-     * File extension (lowercase, without the leading dot) to MIME content
-     * type - used by {@code StoredFile} to infer a file's content type from
-     * its file name whenever a caller does not supply one explicitly. Not
-     * exhaustive - no fixed table of file extensions ever could be - but
-     * covers the common cases across documents, images, audio, video,
-     * archives, fonts, and source/markup files; anything not listed here
-     * still uploads fine, it just falls back to {@code
-     * StoredFile.DEFAULT_CONTENT_TYPE} instead of a specific type.
+     * File extension (lowercase, no leading dot) to MIME content type, used by {@code
+     * StoredFile} to infer content type from a file name. Not exhaustive; unlisted
+     * extensions fall back to {@code StoredFile.DEFAULT_CONTENT_TYPE}.
      */
     public static final Map<String, String> CONTENT_TYPES = Map.<String, String>ofEntries(
             // text / documents

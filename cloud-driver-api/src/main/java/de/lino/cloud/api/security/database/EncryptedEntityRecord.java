@@ -9,12 +9,17 @@ import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Storage format for an {@link EnvelopeEncryptedPayload}: every binary field
- * is base64-encoded so the envelope can be stored as a plain JSON document
- * under a {@code database-driver-api} {@code DatabaseEntry} (section 9, DATA
- * AT REST - highly sensitive data uses extension-level AES-256-GCM
- * encryption in addition to the database's own storage encryption, so the
- * database only ever sees this ciphertext-bearing representation, never
- * plaintext).
+ * is base64-encoded so the envelope can be stored as a plain JSON document.
+ *
+ * @param schemaVersion envelope format version
+ * @param algorithm identifier of the {@link EncryptedPayload}'s algorithm
+ * @param nonce base64-encoded nonce/IV
+ * @param ciphertext base64-encoded ciphertext
+ * @param associatedData base64-encoded associated authenticated data
+ * @param keyEncryptionKeyId identifier of the KEK version that wrapped the DEK
+ * @param wrapAlgorithm algorithm used to wrap the DEK
+ * @param dataEncryptionKeyAlgorithmId identifier of the unwrapped DEK's algorithm
+ * @param wrappedDataEncryptionKey base64-encoded wrapped DEK material
  */
 public record EncryptedEntityRecord(
         int schemaVersion,
@@ -29,8 +34,7 @@ public record EncryptedEntityRecord(
 ) {
 
     /**
-     * Converts {@code envelope} into its base64-encoded storage
-     * representation, ready to be written as a plain JSON document.
+     * Converts {@code envelope} into its base64-encoded storage representation.
      *
      * @param envelope the envelope to convert
      * @return the resulting storage record

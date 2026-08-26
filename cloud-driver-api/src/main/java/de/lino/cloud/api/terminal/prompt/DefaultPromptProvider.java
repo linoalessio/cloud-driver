@@ -7,10 +7,13 @@ import java.util.UUID;
 
 /**
  * The {@link PromptProvider} {@link Terminal} falls back to when none is given explicitly:
- * a static {@code cloud-driver@cli »} prompt.
+ * a {@code cloud-driver@<random>} prompt with a fresh random suffix on every call.
  */
 public final class DefaultPromptProvider implements PromptProvider {
 
+    /**
+     * @return a {@code cloud-driver@<random>} prompt with a fresh random suffix
+     */
     @Override
     public @NotNull String prompt() {
         return String.format("%scloud-driver%s@%s%s %s❯ %s", "&b", "&8", "&b", UUID.randomUUID().toString().substring(0, 7), "&8", "&7");

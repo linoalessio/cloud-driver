@@ -20,43 +20,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Periodically retries every {@link StoredFile} queued in a {@link
- * PendingUploadCache} - the counterpart to {@code DefaultFileFactory}'s
- * {@code upload}, which only ever adds to that cache, never drains it.
- * Concrete infrastructure with no {@code cloud-driver-api} contract of its
- * own, the same reasoning as {@code EntityDatabaseClient}: it runs real I/O
- * (uploads, a connectivity probe, a background thread) rather than defining
- * a swappable behavior.
+ * PendingUploadCache}. Each tick: does nothing if the cache is empty or
+ * connectivity is still unavailable; otherwise retries every queued file
+ * concurrently via {@link DataFactory#registerAsync}, removing each on
+ * success and leaving failures queued for the next tick.
  *
- * <p>Each tick (see {@link #start(Duration)}):
- * <ol>
- *     <li>if the cache is empty, does nothing - no connectivity probe is spent when there is nothing to upload;</li>
- *     <li>otherwise checks {@code connectivityChecker}; if connectivity is still unavailable, does nothing this tick;</li>
- *     <li>otherwise retries every currently queued file concurrently (see {@link
- *     MultiTaskingFactory}), removing each one from the cache on success and leaving it
- *     queued - for the next tick to retry - on failure.</li>
- * </ol>
- *
- * <p>Retries go through {@link DataFactory#registerAsync(de.lino.database.database.entity.Serialized)}
- * directly, not {@code DefaultFileFactory#upload} - deliberately: {@code
- * upload} defers back into {@code pendingUploadCache} instead of throwing
- * when connectivity is (still, or again) unavailable, which is exactly right
- * for a fresh, direct call but wrong for a scheduler-driven retry, whose own
- * success/failure handling below already assumes "no exception thrown" means
- * "actually persisted". Composing the two would let {@code upload} silently
- * re-queue a file and this scheduler remove that very entry a moment later,
- * losing it. {@code register} has no such softening - it either persists or
- * throws - so it is the right primitive for an unconditional retry attempt.
- *
- * <p><b>Async / big-data handling.</b> A flush dispatches every currently
- * queued file's retry through {@link DataFactory#registerAsync(de.lino.database.database.entity.Serialized)}
- * rather than looping over {@link PendingUploadCache#snapshot()} and calling
- * the blocking {@link DataFactory#register(de.lino.database.database.entity.Serialized)}
- * one file at a time: {@code registerAsync} already runs each retry on
- * {@link MultiTaskingFactory}'s shared virtual-thread
- * executor (see its Javadoc), so every queued file is retried concurrently -
- * the same reasoning {@code EntityDatabaseClient}'s batch operations apply -
- * and a queue built up over a long outage does not retry its entries one
- * network round-trip at a time.
+ * <p>Retries go through {@code registerAsync} directly, not {@code
+ * DefaultFileFactory#upload} - {@code upload} would silently re-queue a
+ * still-failing file into the very cache this scheduler is draining;
+ * {@code register} either persists or throws.
  */
 public final class PendingUploadScheduler {
 
@@ -65,14 +37,10 @@ public final class PendingUploadScheduler {
     private final ConnectivityChecker connectivityChecker;
     private final ScheduledExecutorService scheduledExecutorService;
 
-    /**
-     * Guards against overlapping flushes: if a tick's flush is still running
-     * (e.g. the database is slow to respond) when the next tick fires, the
-     * next tick is skipped rather than starting a second, concurrent flush
-     * of the same cache.
-     */
+    /** Guards against a tick starting a second, concurrent flush while one is still running. */
     private final AtomicBoolean flushing = new AtomicBoolean(false);
 
+    /** The active tick schedule, or {@code null} while stopped. */
     private volatile ScheduledFuture<?> scheduledFuture;
 
     /**
@@ -148,15 +116,9 @@ public final class PendingUploadScheduler {
     }
 
     /**
-     * Retries {@code file} via {@link DataFactory#registerAsync} - already
-     * dispatched on {@link MultiTaskingFactory}'s
-     * shared virtual-thread executor, so no extra dispatch is needed here -
-     * removing it from {@code pendingUploadCache} on success. On failure the
-     * returned future still completes normally (not exceptionally): {@link
-     * CompletableFuture#allOf} in {@link #flushPending()} should wait for
-     * every retry to finish either way, not abort the whole flush's join the
-     * moment the first file's retry fails, so the failure is swallowed here -
-     * the file simply stays queued for the next tick to retry.
+     * Retries {@code file} via {@link DataFactory#registerAsync}, removing it
+     * from the cache on success. Failures are swallowed (the future still
+     * completes normally) so one failing retry doesn't abort the whole flush.
      */
     private CompletableFuture<Void> retryUpload(final StoredFile file) {
         return this.dataFactory.registerAsync(file)

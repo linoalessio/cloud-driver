@@ -10,16 +10,11 @@ import java.util.Base64;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * {@link PasswordHasher} implementation using Argon2id, per section 5
- * (PASSWORDS). Defaults follow the OWASP Password Storage Cheat Sheet
- * Argon2id baseline (19 MiB memory, 2 iterations, 1 degree of parallelism);
- * tune via the constructor for the target deployment's hardware and latency
- * budget.
- *
- * <p>Encodes as a PHC-style string, e.g.
- * {@code $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>}, so the parameters
- * used to produce a given hash travel with it and can be changed over time
- * without invalidating previously stored hashes.
+ * {@link PasswordHasher} implementation using Argon2id. Defaults follow the
+ * OWASP baseline (19 MiB memory, 2 iterations, 1 degree of parallelism);
+ * tune via the constructor. Encodes as a PHC-style string (e.g. {@code
+ * $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>}), so its parameters travel
+ * with the hash and can change over time without invalidating old hashes.
  */
 public final class Argon2idPasswordHasher implements PasswordHasher {
 
@@ -53,6 +48,13 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
         this.parallelism = parallelism;
     }
 
+    /**
+     * Hashes {@code password} with a fresh random salt.
+     *
+     * @param password the password to hash
+     * @return the PHC-encoded hash
+     * @throws NullPointerException if {@code password} is {@code null}
+     */
     @Override
     public String hash(final char[] password) {
         Asserts.requireNonNull(password, "@Argon2idPasswordHasher.hash: password cannot be null");
@@ -64,6 +66,15 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
         return encode(salt, hash, memoryKib, iterations, parallelism);
     }
 
+    /**
+     * Verifies {@code password} against a previously hashed value, using the parameters encoded in it.
+     *
+     * @param password the password to check
+     * @param encodedHash a PHC-encoded hash produced by {@link #hash}
+     * @return {@code true} if {@code password} matches {@code encodedHash}
+     * @throws NullPointerException if {@code password} or {@code encodedHash} is {@code null}
+     * @throws IllegalArgumentException if {@code encodedHash} is not a valid argon2id encoded hash
+     */
     @Override
     public boolean verify(final char[] password, final String encodedHash) {
         Asserts.requireNonNull(password, "@Argon2idPasswordHasher.verify: password cannot be null");

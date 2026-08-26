@@ -8,19 +8,10 @@ import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 
 /**
- * Routes {@link LogRecord}s through a {@link Terminal}, so log output never corrupts
- * whatever the user is currently typing at the prompt.
- *
- * <p>While the terminal is still {@link Terminal#isActive() active}, every record is
- * formatted (via {@link TerminalLogFormatter}, the handler's default) and printed through
- * {@link Terminal#displayApproved(String)}. Once the terminal has been shut down, records
- * instead fall back to a plain {@code System.out} print - {@code displayApproved} requires a
- * live {@code jline} reader, which no longer exists once {@link Terminal#shutdown()} has
- * run, so shutdown-time log output (e.g. from a shutdown hook) still reaches the console
- * instead of being silently dropped or throwing.
- *
- * <p>Install via {@link Terminal#attachLogging(java.util.logging.Logger)} rather than
- * constructing and attaching this directly, unless a non-exclusive handler setup is needed.
+ * Routes {@link LogRecord}s through a {@link Terminal} via {@link
+ * Terminal#displayApproved(String)}, so log output never corrupts what the user is typing.
+ * Falls back to plain {@code System.out} once the terminal is no longer {@link
+ * Terminal#isActive() active}. Install via {@link Terminal#attachLogging(java.util.logging.Logger)}.
  */
 public final class TerminalLogHandler extends Handler {
 
@@ -35,6 +26,12 @@ public final class TerminalLogHandler extends Handler {
         setFormatter(new TerminalLogFormatter());
     }
 
+    /**
+     * Formats and prints {@code record} through the terminal, or {@code System.out} once the
+     * terminal is no longer active.
+     *
+     * @param record the record to publish
+     */
     @Override
     public void publish(final LogRecord record) {
         if (!isLoggable(record)) return;
@@ -48,14 +45,14 @@ public final class TerminalLogHandler extends Handler {
         }
     }
 
+    /** No-op - every {@link #publish(LogRecord)} call writes through immediately. */
     @Override
     public void flush() {
-        // Nothing buffered - every publish() call writes through immediately.
     }
 
+    /** No-op - owns no resources; {@link Terminal#shutdown()} closes the underlying terminal. */
     @Override
     public void close() {
-        // Owns no resources of its own; Terminal#shutdown() closes the underlying terminal.
     }
 
 }

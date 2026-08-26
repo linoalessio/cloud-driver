@@ -1,6 +1,6 @@
 package de.lino.cloud.api.terminal.thread;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.command.CommandService;
 import de.lino.cloud.api.utility.Asserts;
@@ -11,27 +11,13 @@ import org.jline.reader.UserInterruptException;
 
 import java.util.Arrays;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * Background thread that continuously reads input from a {@link Terminal} and dispatches it
  * through a {@link CommandService} - the interactive loop at the center of the terminal engine.
- *
- * <p>Deliberately <b>not</b> a daemon thread, unlike every other background thread elsewhere in
- * this codebase ({@code PendingUploadScheduler}, {@code ExtensionFactory#start}'s per-extension
- * threads, {@code PostgresDatabaseNotification}'s listener thread): those all run alongside a
- * real, non-daemon main thread that is itself the thing keeping the JVM alive. A terminal
- * usually has no such thread - its entire purpose is interacting with a human at the console -
- * so this thread being non-daemon is what keeps the process alive for as long as the terminal
- * is open, the same way {@code PoloCloud}'s own reading thread does.
- *
- * <p>Each line is split on whitespace: the first token is looked up (case-insensitively, by
- * name or alias) via {@link CommandService#dispatchAsync(String, String[])}, so a slow command
- * never delays the next line being read; the remaining tokens are passed as {@code args}. A
- * blank line is silently skipped. {@code Ctrl+C} ({@link UserInterruptException}) and
- * {@code Ctrl+D}/EOF ({@link EndOfFileException}) both end the loop; any other exception is
- * logged and the loop continues, so one bad input or a misbehaving command can never silently
- * kill the reading thread.
+ * Deliberately not a daemon thread, since it is typically what keeps the process alive. Each
+ * line is split on whitespace and dispatched via {@link CommandService#dispatchAsync(String,
+ * String[])}; a blank line is skipped, and {@code Ctrl+C}/{@code Ctrl+D} end the loop.
  */
 public final class ReadingThread extends Thread {
 
@@ -40,9 +26,13 @@ public final class ReadingThread extends Thread {
     private final CommandService commandService;
 
     /**
-     * Constructed exclusively by {@link Terminal} itself, against its own {@code jline}
-     * reader and {@link CommandService} - obtain an instance via {@link
+     * Constructed exclusively by {@link Terminal}; obtain an instance via {@link
      * Terminal#readingThread()} rather than constructing one directly.
+     *
+     * @param terminal       the owning terminal
+     * @param lineReader     the {@code jline} reader to block on
+     * @param commandService the registry to dispatch input through
+     * @throws NullPointerException if any parameter is {@code null}
      */
     public ReadingThread(@NotNull final Terminal terminal, @NotNull final LineReader lineReader, @NotNull final CommandService commandService) {
         super("cli-reading-thread");
@@ -51,6 +41,7 @@ public final class ReadingThread extends Thread {
         this.commandService = Asserts.requireNonNull(commandService, "@ReadingThread: commandService must not be null");
     }
 
+    /** Reads and dispatches lines until interrupted or {@code Ctrl+C}/{@code Ctrl+D} is seen. */
     @Override
     public void run() {
 
@@ -79,7 +70,7 @@ public final class ReadingThread extends Thread {
                 // Ctrl+D / stdin closed - nothing further to read.
                 break;
             } catch (final Throwable throwable) {
-                CloudAPI.getInstance().getLogger().log(Level.SEVERE, "@ReadingThread.run: input handling failed", throwable);
+                CloudDriver.getInstance().getLogger().log(Level.SEVERE, "@ReadingThread.run: input handling failed", throwable);
             }
 
         }

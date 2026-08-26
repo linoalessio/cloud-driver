@@ -25,12 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * File-backed {@link KeyEncryptionService} for local development: same
  * wrap/unwrap mechanics as {@link InMemoryKeyEncryptionService}, but KEK
  * material is persisted as a {@link JsonDocument} at a given path so it
- * survives JVM restarts (e.g. so a fetch-only run can still unwrap data
- * written by an earlier run).
- *
- * <p><strong>NOT for production use</strong>, for the same reason as {@link
- * InMemoryKeyEncryptionService}: KEK material sits in a plaintext file on
- * disk rather than in a KMS/HSM.
+ * survives JVM restarts. <strong>Not for production use</strong> - KEK
+ * material sits in a plaintext file rather than a KMS/HSM.
  */
 public final class FileKeyEncryptionService implements KeyEncryptionService {
 
@@ -60,6 +56,14 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
         }
     }
 
+    /**
+     * Wraps {@code dataEncryptionKey} under the active KEK.
+     *
+     * @param dataEncryptionKey the key to wrap
+     * @return the wrapped key
+     * @throws NullPointerException if {@code dataEncryptionKey} is {@code null}
+     * @throws KeyWrapException if wrapping fails
+     */
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
         Asserts.requireNonNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
@@ -77,6 +81,14 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
         }
     }
 
+    /**
+     * Unwraps {@code wrappedKey} under its recorded KEK.
+     *
+     * @param wrappedKey the key to unwrap
+     * @return the unwrapped key
+     * @throws NullPointerException if {@code wrappedKey} is {@code null}
+     * @throws KeyWrapException if the KEK id is unknown or unwrapping fails
+     */
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
         Asserts.requireNonNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
@@ -100,11 +112,18 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
         }
     }
 
+    /** @return the id of the currently active key-encryption key */
     @Override
     public String activeKeyEncryptionKeyId() {
         return activeKeyId;
     }
 
+    /**
+     * Generates a fresh KEK, activates it, and persists the updated registry.
+     * Previously wrapped keys stay unwrappable - their KEK id is retained.
+     *
+     * @return the new key's id
+     */
     @Override
     public synchronized String rotate() {
         final byte[] material = new byte[KEY_ENCRYPTION_KEY_LENGTH_BYTES];

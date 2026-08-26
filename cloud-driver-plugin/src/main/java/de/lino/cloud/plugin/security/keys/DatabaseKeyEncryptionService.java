@@ -23,21 +23,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Database-backed {@link KeyEncryptionService}: same wrap/unwrap mechanics as
- * {@link FileKeyEncryptionService}, but key-encryption key (KEK) material is
- * persisted as a single {@link DatabaseEntry} in a {@link DatabaseSection}
- * instead of a local file - so it is not bound to one machine's filesystem
- * and survives being read/written from any process that can reach the
- * configured database (e.g. a replicated Postgres instance behind several
- * extension nodes), the same way meta data already does via {@link
- * EntityDatabaseClient}.
- *
- * <p><strong>NOT for production use</strong>, for the same reason as {@link
- * FileKeyEncryptionService} and {@link InMemoryKeyEncryptionService}: KEK
- * material still sits in plaintext (in a database row rather than a file),
- * not behind a KMS/HSM boundary. Prefer a real KMS/HSM client wherever one is
- * available; use this only where none is, and a shared, restart-durable KEK
- * store is still needed.
+ * Database-backed {@link KeyEncryptionService}: same wrap/unwrap mechanics
+ * as {@link FileKeyEncryptionService}, but key-encryption key (KEK)
+ * material is persisted as a single {@link DatabaseEntry} in a {@link
+ * DatabaseSection}, shared across every process reaching that database
+ * instead of bound to one file. <strong>Not for production use</strong> -
+ * KEK material still sits in plaintext, not behind a KMS/HSM.
  */
 public final class DatabaseKeyEncryptionService implements KeyEncryptionService {
 
@@ -69,6 +60,14 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /**
+     * Wraps {@code dataEncryptionKey} under the active KEK.
+     *
+     * @param dataEncryptionKey the key to wrap
+     * @return the wrapped key
+     * @throws NullPointerException if {@code dataEncryptionKey} is {@code null}
+     * @throws KeyWrapException if wrapping fails
+     */
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
         Asserts.requireNonNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
@@ -86,6 +85,14 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /**
+     * Unwraps {@code wrappedKey} under its recorded KEK.
+     *
+     * @param wrappedKey the key to unwrap
+     * @return the unwrapped key
+     * @throws NullPointerException if {@code wrappedKey} is {@code null}
+     * @throws KeyWrapException if the KEK id is unknown or unwrapping fails
+     */
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
         Asserts.requireNonNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
@@ -109,11 +116,18 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /** @return the id of the currently active key-encryption key */
     @Override
     public String activeKeyEncryptionKeyId() {
         return activeKeyId;
     }
 
+    /**
+     * Generates a fresh KEK, activates it, and persists the updated registry.
+     * Previously wrapped keys stay unwrappable - their KEK id is retained.
+     *
+     * @return the new key's id
+     */
     @Override
     public synchronized String rotate() {
         final byte[] material = new byte[KEY_ENCRYPTION_KEY_LENGTH_BYTES];

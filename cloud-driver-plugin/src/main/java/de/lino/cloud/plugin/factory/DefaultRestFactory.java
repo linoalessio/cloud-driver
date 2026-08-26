@@ -28,40 +28,20 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * {@link RestFactory} backed by <a href="https://javalin.io">Javalin</a>:
- * each of {@link #register}/{@link #fetch}/{@link #update}/{@link #delete}
- * wires exactly one HTTP verb for a {@code (path, type)} pair directly
- * onto a {@link DataFactory} - Javalin only ever serializes/deserializes
- * JSON at the edge, {@code DataFactory} still does the actual envelope-
- * encrypted persistence. Every operation is
- * tracked in its own {@link ConcurrentHashMap} registry, keyed by path -
- * the same "safe to register from multiple threads without external
- * synchronization, {@code putIfAbsent} for atomic duplicate detection"
- * shape {@link DefaultExtensionFactory} uses for its own registry, and
- * deliberately not {@code database-driver-api}'s {@code Cache} the way
- * {@link DefaultEventFactory}/{@code InMemoryPendingUploadCache} store
- * theirs: those benefit from {@code Cache}'s async, stampede-protected
- * loader (constructing a class reflectively) or its amortized-scale
- * put/invalidate/snapshot characteristics for a queue that can grow large;
- * a handful of REST paths registered once at startup and never constructed
- * on demand needs neither. A path can carry any subset of the four
- * operations (e.g. {@code fetch} + {@code delete} for a read-and-remove-
- * only resource). Routes are only assembled once {@link #start} is called,
- * from every registry as it stands at that point - see {@link
- * RestFactory}'s Javadoc for why.
+ * {@link #register}/{@link #fetch}/{@link #update}/{@link #delete} each wire
+ * one HTTP verb for a {@code (path, type)} pair onto a {@link DataFactory},
+ * tracked in its own {@link ConcurrentHashMap} registry keyed by path. A
+ * path can carry any subset of the four operations. Routes are assembled
+ * once {@link #start} is called.
  *
- * <p>Each route handler reads/writes the request synchronously (parsing
- * the body, path params) but hands the actual {@link DataFactory} call to
- * its {@code *Async} counterpart, wired through {@link Context#future},
- * so a Jetty worker thread is never blocked on the encryption/database I/O
- * {@link DataFactory} performs - the same reasoning {@link
- * MultiTaskingFactory} exists for everywhere else in this codebase,
- * applied at the one place this class does I/O inside a request handler.
+ * <p>Each route hands the actual {@link DataFactory} call to its {@code
+ * *Async} counterpart via {@link Context#future}, so a Jetty worker thread
+ * is never blocked on the underlying I/O.
  *
  * <p>Optionally gates every route behind a static API key, checked in a
  * Javalin {@code before} filter against the {@code X-API-Key} header - see
- * {@link ApiKey}. The single-argument constructor leaves every
- * route open; only use it for local development, never for anything
- * reachable off of {@code localhost}.
+ * {@link ApiKey}. The single-argument constructor leaves every route open;
+ * only use it for local development.
  */
 public final class DefaultRestFactory extends RestFactory {
 
@@ -76,6 +56,7 @@ public final class DefaultRestFactory extends RestFactory {
     private final Map<String, Class<? extends Serialized>> updateResources = new ConcurrentHashMap<>();
     private final Map<String, Class<? extends Serialized>> deleteResources = new ConcurrentHashMap<>();
 
+    /** The running Javalin app, or {@code null} before {@link #start} / after {@link #stop}. */
     private volatile Javalin app;
 
     /**
@@ -101,32 +82,36 @@ public final class DefaultRestFactory extends RestFactory {
         this.apiKey = apiKey;
     }
 
+    /** Registers a {@code POST} handler for {@code path}, via {@link #registerOperation}. */
     @Override
     public <T extends Serialized> void register(@NonNull final String path, @NonNull final Class<T> type) {
         this.registerOperation(this.registerResources, path, type, "register");
     }
 
+    /** Registers a {@code GET} handler for {@code path}, via {@link #registerOperation}. */
     @Override
     public <T extends Serialized> void fetch(@NonNull final String path, @NonNull final Class<T> type) {
         this.registerOperation(this.fetchResources, path, type, "fetch");
     }
 
+    /** Registers a {@code PUT} handler for {@code path}, via {@link #registerOperation}. */
     @Override
     public <T extends Serialized> void update(@NonNull final String path, @NonNull final Class<T> type) {
         this.registerOperation(this.updateResources, path, type, "update");
     }
 
+    /** Registers a {@code DELETE} handler for {@code path}, via {@link #registerOperation}. */
     @Override
     public <T extends Serialized> void delete(@NonNull final String path, @NonNull final Class<T> type) {
         this.registerOperation(this.deleteResources, path, type, "delete");
     }
 
     /**
-     * Shared registration primitive backing {@link #register}/{@link
-     * #fetch}/{@link #update}/{@link #delete}: {@link Map#putIfAbsent}
-     * makes the duplicate-path check atomic - never a {@code containsKey}-
-     * then-{@code put} pair, which would leave a race window between two
-     * threads registering the same path concurrently.
+     * Shared registration primitive backing {@link #register}/{@link #fetch}/{@link
+     * #update}/{@link #delete}; {@link Map#putIfAbsent} makes the duplicate-path
+     * check atomic.
+     *
+     * @throws IllegalStateException if called after {@link #start}, or if {@code path} already has a handler for this operation
      */
     private <T extends Serialized> void registerOperation(final Map<String, Class<? extends Serialized>> operationResources,
                                                             final String path, final Class<T> type, final String operationName) {
@@ -139,6 +124,7 @@ public final class DefaultRestFactory extends RestFactory {
         }
     }
 
+    /** Checks all four operation registries for {@code path}. */
     @Override
     @NotNull
     public Optional<Class<? extends Serialized>> findByPath(@NonNull final String path) {
@@ -152,6 +138,7 @@ public final class DefaultRestFactory extends RestFactory {
         return Optional.empty();
     }
 
+    /** Union of every path registered under any of the four operations. */
     @Override
     @NotNull
     public Collection<String> getRegisteredPaths() {
@@ -163,6 +150,7 @@ public final class DefaultRestFactory extends RestFactory {
         return Collections.unmodifiableSet(paths);
     }
 
+    /** Builds the Javalin app from every route registered so far and starts listening on {@code port}. */
     @Override
     public void start(final int port) {
         if (this.app != null) {
@@ -184,6 +172,7 @@ public final class DefaultRestFactory extends RestFactory {
         this.app.start(port);
     }
 
+    /** Stops the running Javalin app, if any. Idempotent. */
     @Override
     public void stop() {
         if (this.app != null) {
@@ -192,6 +181,11 @@ public final class DefaultRestFactory extends RestFactory {
         }
     }
 
+    /**
+     * Javalin {@code before} filter checking the {@code X-API-Key} header against {@link #apiKey}.
+     *
+     * @throws UnauthorizedResponse if the header is missing or invalid
+     */
     private void requireValidApiKey(@NotNull final Context ctx) {
         final String providedKey = ctx.header(API_KEY_HEADER);
         if (providedKey == null || providedKey.isBlank()) {
@@ -263,15 +257,14 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Every {@code DataFactory#*Async} failure arrives here wrapped in a
-     * {@link CompletionException} (see e.g. {@link DataFactory#fetchAsync}'s
-     * Javadoc); unwrap it and translate a {@link DatabaseClientException} -
-     * "no such record" - into {@link NotFoundResponse}, the same mapping
-     * the pre-{@code RestFactory} hand-wired sample used. Anything else
-     * (a real {@code KeyWrapException}/{@code AuthenticationFailedException}
-     * failure) is rethrown as-is so it still reaches Javalin's default
-     * exception handling (500), unchanged from before this class wired
-     * requests through {@link Context#future} instead of a blocking call.
+     * Unwraps a {@code DataFactory#*Async} failure's {@link CompletionException} and
+     * translates a {@link DatabaseClientException} into {@link NotFoundResponse}; any
+     * other cause is rethrown as-is to reach Javalin's default (500) handling.
+     *
+     * @param failure the raw failure from a {@code *Async} call
+     * @param type the entity type being handled
+     * @param id the entity id being handled
+     * @return the exception to throw from the route handler
      */
     private static RuntimeException notFoundOrPropagate(final Throwable failure, final Class<?> type, final String id) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;

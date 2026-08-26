@@ -18,20 +18,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * In-memory {@link KeyEncryptionService} for local development and tests.
- *
- * <p><strong>NOT for production use.</strong> Per sections 4 and 8 of the
- * security requirements, master/key-encryption-key material SHALL be managed
- * by a KMS or HSM in production, and STRATO-specific capabilities SHALL be
- * verified before production deployment. This class keeps key-encryption key
- * (KEK) material as plain byte arrays in process memory - it exists only to
- * exercise the {@link KeyEncryptionService} contract end-to-end before a real
- * KMS/HSM integration (e.g. AWS KMS, Azure Key Vault, HashiCorp Vault, or a
- * PKCS#11 HSM) is wired in for the target deployment.
- *
- * <p>Wrapping uses AES Key Wrap with Padding (RFC 5649 / NIST SP 800-38F,
- * JCA transformation {@code AESWrapPad}), the approved key-wrap mechanism
- * called for in section 5 (KEY WRAPPING / KEY MANAGEMENT) when a KMS/HSM
- * envelope-encryption call is not available.
+ * Key-encryption key (KEK) material is kept as plain byte arrays in process
+ * memory, lost on restart. <strong>Not for production use</strong> - wrap a
+ * real KMS/HSM instead. Wrapping uses AES Key Wrap with Padding (JCA
+ * transformation {@code AESWrapPad}).
  */
 public final class InMemoryKeyEncryptionService implements KeyEncryptionService {
 
@@ -49,6 +39,14 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
         rotate();
     }
 
+    /**
+     * Wraps {@code dataEncryptionKey} under the active KEK.
+     *
+     * @param dataEncryptionKey the key to wrap
+     * @return the wrapped key
+     * @throws NullPointerException if {@code dataEncryptionKey} is {@code null}
+     * @throws KeyWrapException if wrapping fails
+     */
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
         Asserts.requireNonNull(dataEncryptionKey, "@InMemoryKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
@@ -66,6 +64,14 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /**
+     * Unwraps {@code wrappedKey} under its recorded KEK.
+     *
+     * @param wrappedKey the key to unwrap
+     * @return the unwrapped key
+     * @throws NullPointerException if {@code wrappedKey} is {@code null}
+     * @throws KeyWrapException if the KEK id is unknown or unwrapping fails
+     */
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
         Asserts.requireNonNull(wrappedKey, "@InMemoryKeyEncryptionService.unwrap: wrappedKey cannot be null");
@@ -89,11 +95,18 @@ public final class InMemoryKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /** @return the id of the currently active key-encryption key */
     @Override
     public String activeKeyEncryptionKeyId() {
         return activeKeyId;
     }
 
+    /**
+     * Generates a fresh KEK and activates it. Previously wrapped keys stay
+     * unwrappable - their KEK id is retained.
+     *
+     * @return the new key's id
+     */
     @Override
     public String rotate() {
         final byte[] material = new byte[KEY_ENCRYPTION_KEY_LENGTH_BYTES];

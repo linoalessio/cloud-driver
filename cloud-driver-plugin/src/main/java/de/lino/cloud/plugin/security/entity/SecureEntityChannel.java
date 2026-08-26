@@ -11,24 +11,12 @@ import java.nio.charset.StandardCharsets;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * Sends any {@link Serialized} domain meta - the database-driver-api base
- * class for persistable entities - through {@link EnvelopeEncryptionService}
- * generically: the same channel handles every meta subclass without a
- * type-specific encrypt/decrypt path. {@link Serialized#toByteArray()} and
- * {@link Serialized#fromByteArray(byte[], Class)} already give a JSON-based
- * wire format; this class adds confidentiality and authenticity on top via
- * AES-256-GCM envelope encryption.
- *
- * <p>The meta's type name and {@link Serialized#primaryKey() primary key}
- * are bound into the authenticated associated data (AAD, section 6 of the
- * security requirements: "protocol/version identifiers ... record
- * identifiers"), so a payload cannot be silently swapped for a different
- * meta or record in transit or storage - {@link #receive} rejects a
- * mismatch before doing any decryption work.
- *
- * <p>{@link #send} and {@link #receive} are generic per call, not per
- * instance, so a single channel handles heterogeneous meta types - the
- * shape needed by a global facade such as {@code CloudAPI}.
+ * Sends any {@link Serialized} domain entity through {@link
+ * EnvelopeEncryptionService}, generically across entity types. Binds the
+ * entity's type name and {@link Serialized#primaryKey() primary key} into
+ * the authenticated associated data, so a payload can't be silently swapped
+ * for a different entity/record - {@link #receive} rejects a mismatch
+ * before decrypting.
  */
 public final class SecureEntityChannel {
 
@@ -47,9 +35,13 @@ public final class SecureEntityChannel {
     }
 
     /**
-     * Serializes and envelope-encrypts {@code meta}, ready to hand to the
-     * configured storage backend (e.g. as the payload {@code
-     * EntityDatabaseClient} writes to a database).
+     * Serializes and envelope-encrypts {@code entity}, ready for the
+     * configured storage backend.
+     *
+     * @param entity the entity to encrypt
+     * @return the resulting envelope
+     * @throws NullPointerException if {@code entity} is {@code null}
+     * @throws KeyWrapException if wrapping the data-encryption key fails
      */
     @NotNull
     public <T extends Serialized> EnvelopeEncryptedPayload send(@NotNull final T entity) throws KeyWrapException {
@@ -61,9 +53,17 @@ public final class SecureEntityChannel {
     }
 
     /**
-     * Decrypts a payload produced by {@link #send(Serialized)} and
-     * reconstructs the original meta, rejecting anything that fails
-     * authentication or does not match {@code expectedType}.
+     * Decrypts a payload produced by {@link #send} and reconstructs the
+     * original entity, rejecting anything that fails authentication or does
+     * not match {@code expectedType}.
+     *
+     * @param envelope the envelope to decrypt
+     * @param expectedType the entity type the envelope must carry
+     * @return the reconstructed entity
+     * @throws NullPointerException if {@code envelope} or {@code expectedType} is {@code null}
+     * @throws IllegalArgumentException if the envelope's associated data does not match {@code expectedType}
+     * @throws KeyWrapException if unwrapping the data-encryption key fails
+     * @throws AuthenticationFailedException if authentication tag verification fails
      */
     @NotNull
     public <T extends Serialized> T receive(@NotNull final EnvelopeEncryptedPayload envelope, @NotNull final Class<T> expectedType)

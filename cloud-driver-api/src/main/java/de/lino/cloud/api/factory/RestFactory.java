@@ -11,32 +11,18 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Exposes {@link Serialized} domain entities already reachable through a
  * {@link DataFactory} over a REST HTTP API. Unlike {@code DataFactory}/
- * {@code FileFactory}, this has no {@code CloudAPI} facet: its only backing
- * HTTP toolkit (Javalin) is a dependency exclusive to this module, so a
- * caller constructs a concrete implementation directly rather than
- * reaching it through {@code CloudAPI.getInstance()}.
+ * {@code FileFactory}, this has no {@code CloudDriver} facet - its Javalin
+ * dependency is exclusive to the implementing module, so a caller
+ * constructs a concrete implementation directly.
  *
- * <p>Only {@link #register}, {@link #fetch}, {@link #update}, {@link
- * #delete}, {@link #findByPath}, {@link #getRegisteredPaths}, {@link
- * #start}, and {@link #stop} are abstract; every {@code *Async} variant
- * below is implemented here, generically, in terms of those four
- * primitives - the same "abstract primitives + generic concrete methods"
- * shape {@code DataFactory}/{@code FileFactory}/{@code ExtensionFactory}/
- * {@code EventFactory} use, and deliberately the same primitive names
- * {@code DataFactory} itself uses (each one just wires the HTTP verb that
- * carries it out: {@code register} → {@code POST}, {@code fetch} → {@code
- * GET}, {@code update} → {@code PUT}, {@code delete} → {@code DELETE}).
- *
- * <p>{@link #register}/{@link #fetch}/{@link #update}/{@link #delete} must
- * all be called before {@link #start}: Javalin requires every route to be
- * registered up front, in the config block passed to {@code
- * Javalin.create}, so a resource registered after the server has already
- * started would never get routes - implementations reject that with
- * {@link IllegalStateException} instead of silently ignoring it. There is
- * deliberately no "wire everything at once" convenience - a resource
- * composes exactly the operations it needs, e.g. {@code fetch(path, type)}
- * then {@code delete(path, type)} for a read-and-remove-only resource,
- * without wiring the write operations it never wanted.
+ * <p>{@link #register}, {@link #fetch}, {@link #update}, {@link #delete},
+ * {@link #findByPath}, {@link #getRegisteredPaths}, {@link #start}, and
+ * {@link #stop} are abstract; every {@code *Async} variant below is
+ * implemented here generically in terms of those, using {@code
+ * DataFactory}'s own primitive names since each just wires the HTTP verb
+ * that carries it out ({@code register} → {@code POST}, {@code fetch} →
+ * {@code GET}, {@code update} → {@code PUT}, {@code delete} → {@code
+ * DELETE}). All four must be called before {@link #start}.
  */
 public abstract class RestFactory {
 
@@ -65,8 +51,7 @@ public abstract class RestFactory {
 
     /**
      * Mounts {@code PUT path/{id}} for {@code type}: overwrites an existing
-     * entity via {@link DataFactory#update}, reading it from the request
-     * body.
+     * entity via {@link DataFactory#update}, reading it from the request body.
      *
      * @param path the base path to mount {@code type} at, e.g. {@code "/notes"}
      * @param type the entity type to expose
@@ -88,9 +73,7 @@ public abstract class RestFactory {
 
     /**
      * Looks up which entity type, if any, is registered at {@code path}
-     * under any operation - the same "does this exist?" shape {@code
-     * ExtensionFactory#findByName}/{@code EventFactory#findEventByClass}
-     * use.
+     * under any operation.
      *
      * @param path the path to look up
      * @return the entity type registered at {@code path}, or {@link Optional#empty()} if none is
@@ -98,9 +81,7 @@ public abstract class RestFactory {
     @NotNull
     public abstract Optional<Class<? extends Serialized>> findByPath(@NotNull String path);
 
-    /**
-     * Every path currently registered under any operation.
-     */
+    /** Every path currently registered under any operation. */
     @NotNull
     public abstract Collection<String> getRegisteredPaths();
 
@@ -115,56 +96,40 @@ public abstract class RestFactory {
      */
     public abstract void start(int port);
 
-    /**
-     * Stops the underlying HTTP server started by {@link #start}. A no-op
-     * if the server was never started.
-     */
+    /** Stops the underlying HTTP server started by {@link #start}. A no-op if never started. */
     public abstract void stop();
 
-    /**
-     * Async counterpart of {@link #register(String, Class)}, running on
-     * {@link MultiTaskingFactory}'s shared virtual-thread executor.
-     */
+    /** Async counterpart of {@link #register(String, Class)}. */
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> registerAsync(@NotNull final String path, @NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.register(path, type));
     }
 
-    /**
-     * Async counterpart of {@link #fetch(String, Class)}.
-     */
+    /** Async counterpart of {@link #fetch(String, Class)}. */
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> fetchAsync(@NotNull final String path, @NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.fetch(path, type));
     }
 
-    /**
-     * Async counterpart of {@link #update(String, Class)}.
-     */
+    /** Async counterpart of {@link #update(String, Class)}. */
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> updateAsync(@NotNull final String path, @NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.update(path, type));
     }
 
-    /**
-     * Async counterpart of {@link #delete(String, Class)}.
-     */
+    /** Async counterpart of {@link #delete(String, Class)}. */
     @NotNull
     public <T extends Serialized> CompletableFuture<Void> deleteAsync(@NotNull final String path, @NotNull final Class<T> type) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.delete(path, type));
     }
 
-    /**
-     * Async counterpart of {@link #start(int)}.
-     */
+    /** Async counterpart of {@link #start(int)}. */
     @NotNull
     public CompletableFuture<Void> startAsync(final int port) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.start(port));
     }
 
-    /**
-     * Async counterpart of {@link #stop()}.
-     */
+    /** Async counterpart of {@link #stop()}. */
     @NotNull
     public CompletableFuture<Void> stopAsync() {
         return MultiTaskingFactory.getInstance().runAsync(this::stop);

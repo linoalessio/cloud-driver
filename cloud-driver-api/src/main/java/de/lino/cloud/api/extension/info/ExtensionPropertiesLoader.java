@@ -12,10 +12,8 @@ import java.io.InputStream;
 import java.util.List;
 
 /**
- * Reads an {@link Extension} extension's {@code extension.json} classpath
- * resource - shipped in that extension's own {@code resources} folder - into
- * an {@link ExtensionProperties} instance, so an extension never has to
- * assemble its own properties in Java code.
+ * Reads an {@link Extension}'s {@code extension.json} classpath resource into
+ * an {@link ExtensionProperties} instance.
  *
  * <p>Expected shape:
  * <pre>{@code
@@ -27,12 +25,10 @@ import java.util.List;
  * }
  * }</pre>
  *
- * <p>{@code authors} and {@code dependencies} are optional and default to an
- * empty list; {@code name} and {@code version} are required. {@code
- * dependencies} names other extensions' {@link ExtensionProperties#getExtensionName()
- * extension name} - {@link ExtensionFactory}
- * checks that each one is registered and already running before starting an
- * extension that declares it.
+ * <p>{@code name} and {@code version} are required; {@code authors} and
+ * {@code dependencies} are optional and default to an empty list.
+ * {@code dependencies} names other extensions {@link ExtensionFactory} checks
+ * are registered and running before this one starts.
  */
 public final class ExtensionPropertiesLoader {
 

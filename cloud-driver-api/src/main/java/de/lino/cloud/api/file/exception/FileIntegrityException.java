@@ -4,14 +4,9 @@ import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.file.StoredFile;
 
 /**
- * Signals that a downloaded {@link StoredFile}'s decrypted plaintext content
- * does not match its recorded {@link FileChecksum} - the content has changed
- * since it was uploaded, even though the AES-256-GCM authentication tag over
- * the stored ciphertext itself checked out (see {@link FileChecksum#matches}).
- * Checked, so code that raises it on a failed checksum check cannot have that
- * failure silently swallowed, the same way {@link
- * de.lino.cloud.api.security.crypto.AuthenticationFailedException} cannot be
- * silently ignored on the ciphertext level.
+ * Signals that a downloaded {@link StoredFile}'s decrypted plaintext
+ * content does not match its recorded {@link FileChecksum}, even though the
+ * ciphertext's authentication tag checked out.
  */
 public final class FileIntegrityException extends Exception {
 

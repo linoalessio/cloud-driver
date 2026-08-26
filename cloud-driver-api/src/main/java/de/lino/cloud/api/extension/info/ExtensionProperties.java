@@ -28,7 +28,7 @@ public class ExtensionProperties {
     private final String extensionVersion;
 
     /**
-     * The extension's description
+     * The extension's description.
      */
     private final String description;
 
@@ -38,7 +38,8 @@ public class ExtensionProperties {
     private final List<String> authors;
 
     /**
-     * Before loading the module, that system checks IF the dependencies are loaded (Other Extensions)
+     * Names of other extensions this one depends on; {@link de.lino.cloud.api.factory.ExtensionFactory}
+     * checks these are registered and running before starting this extension.
      */
     private final List<String> dependencies;
 
@@ -55,8 +56,9 @@ public class ExtensionProperties {
      *
      * @param extensionName    the extension's name
      * @param extensionVersion the extension's version
-     * @param description
+     * @param description      the extension's description
      * @param authors          the extension's authors
+     * @param dependencies     names of other extensions this one depends on
      * @throws NullPointerException if any argument, or any element of {@code authors}, is {@code null}
      */
     public ExtensionProperties(final String extensionName, final String extensionVersion, String description, final String[] authors, final String... dependencies) {

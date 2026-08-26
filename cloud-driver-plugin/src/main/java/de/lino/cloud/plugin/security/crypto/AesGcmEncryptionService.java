@@ -14,14 +14,9 @@ import java.security.SecureRandom;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * {@link AeadEncryptionService} backed by AES-GCM, per section 5 (DATA
- * ENCRYPTION): AES-256-GCM by default, AES-128-GCM as the documented
- * alternative. Every {@link #encrypt} call draws a fresh nonce from a
- * {@link SecureRandom}, so the same key never sees a repeated nonce/IV.
- *
- * <p>Instances are safe for concurrent use: the only mutable state is the
- * {@link SecureRandom}, and {@link SecureRandom#nextBytes(byte[])} is
- * thread-safe.
+ * {@link AeadEncryptionService} backed by AES-GCM (AES-256-GCM by default).
+ * Every {@link #encrypt} call draws a fresh nonce, so the same key never
+ * sees a repeated nonce/IV. Safe for concurrent use.
  */
 public final class AesGcmEncryptionService implements AeadEncryptionService {
 
@@ -46,6 +41,15 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
         this.secureRandom = new SecureRandom();
     }
 
+    /**
+     * Encrypts {@code plaintext} under {@code key} with a freshly generated nonce.
+     *
+     * @param plaintext the bytes to encrypt
+     * @param key the key to encrypt with
+     * @param associatedData additional data to authenticate but not encrypt; may be {@code null}
+     * @return the resulting payload
+     * @throws NullPointerException if {@code plaintext} or {@code key} is {@code null}
+     */
     @Override
     public EncryptedPayload encrypt(final byte[] plaintext, final SecretKey key, final byte[] associatedData) {
         Asserts.requireNonNull(plaintext, "@AesGcmEncryptionService.encrypt: plaintext cannot be null");
@@ -68,6 +72,15 @@ public final class AesGcmEncryptionService implements AeadEncryptionService {
         }
     }
 
+    /**
+     * Decrypts {@code payload} under {@code key}, verifying the authentication tag.
+     *
+     * @param payload the payload to decrypt
+     * @param key the key to decrypt with
+     * @return the recovered plaintext
+     * @throws NullPointerException if {@code payload} or {@code key} is {@code null}
+     * @throws AuthenticationFailedException if the authentication tag verification fails
+     */
     @Override
     public byte[] decrypt(final EncryptedPayload payload, final SecretKey key) throws AuthenticationFailedException {
         Asserts.requireNonNull(payload, "@AesGcmEncryptionService.decrypt: payload cannot be null");

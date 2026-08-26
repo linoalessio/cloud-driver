@@ -16,15 +16,11 @@ import org.jetbrains.annotations.Nullable;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * Envelope-encryption facade tying together {@link DataEncryptionKeyGenerator},
- * an {@link AeadEncryptionService}, and a {@link KeyEncryptionService}-backed
- * KMS/HSM, per sections 4 and 13: a fresh data-encryption key (DEK) protects
- * each payload with AES-256-GCM, and the DEK itself is wrapped by a
- * key-encryption key (KEK) held by the KMS/HSM - "Envelope encryption SHALL
- * be used for high-value or highly sensitive data."
- *
- * <p>The DEK's raw material is zeroed via {@link DataEncryptionKey#destroy()}
- * as soon as each operation completes, whether it succeeds or fails.
+ * Envelope-encryption facade: a fresh data-encryption key (DEK) protects
+ * each payload, and the DEK itself is wrapped by a key-encryption key (KEK)
+ * held by a {@link KeyEncryptionService}-backed KMS/HSM. The DEK's raw
+ * material is zeroed via {@link DataEncryptionKey#destroy()} as soon as
+ * each operation completes.
  */
 public final class EnvelopeEncryptionService {
 

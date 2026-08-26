@@ -1,30 +1,18 @@
 package de.lino.cloud.api.security.crypto;
 
 /**
- * Approved authenticated-encryption algorithms per section 5 (DATA ENCRYPTION)
- * of the security requirements. {@link #AES_256_GCM} is the mandated default;
- * {@link #AES_128_GCM} is kept only as the documented alternative "where
- * appropriate". Every algorithm here uses AES-GCM (authenticated encryption);
- * ECB and proprietary schemes are intentionally not representable.
- *
- * <p>The {@link #id()} is stored alongside encrypted payloads (see
- * {@link EncryptedPayload}) rather than relying on positional/implicit
- * encoding, so that the algorithm used for a given payload can always be
- * recovered and future algorithm/version migrations - including a future
- * move to NIST post-quantum primitives - do not require redesigning stored
- * data formats.
+ * Approved AES-GCM authenticated-encryption algorithms. {@link #AES_256_GCM}
+ * is the mandated default; {@link #AES_128_GCM} is kept as an alternative.
+ * The {@link #id()} is stored alongside encrypted payloads (see
+ * {@link EncryptedPayload}) so the algorithm used for a given payload can
+ * always be recovered.
  */
 public enum CryptoAlgorithm {
 
-    /**
-     * The mandated default: AES-256-GCM, a 32-byte (256-bit) key.
-     */
+    /** AES-256-GCM, a 32-byte (256-bit) key. */
     AES_256_GCM("AES-256-GCM", "AES/GCM/NoPadding", 32, 12, 128),
 
-    /**
-     * The documented alternative "where appropriate": AES-128-GCM, a
-     * 16-byte (128-bit) key.
-     */
+    /** AES-128-GCM, a 16-byte (128-bit) key. */
     AES_128_GCM("AES-128-GCM", "AES/GCM/NoPadding", 16, 12, 128);
 
     private final String id;
@@ -49,39 +37,27 @@ public enum CryptoAlgorithm {
         this.tagLengthBits = tagLengthBits;
     }
 
-    /**
-     * Stable identifier persisted with encrypted payloads for crypto agility.
-     */
+    /** Stable identifier persisted with encrypted payloads for crypto agility. */
     public String id() {
         return id;
     }
 
-    /**
-     * The JCA cipher transformation implementing this algorithm.
-     */
+    /** The JCA cipher transformation implementing this algorithm. */
     public String transformation() {
         return transformation;
     }
 
-    /**
-     * Length, in bytes, of the key this algorithm uses.
-     */
+    /** Length, in bytes, of the key this algorithm uses. */
     public int keyLengthBytes() {
         return keyLengthBytes;
     }
 
-    /**
-     * Length, in bytes, of the nonce/IV a single encryption operation must use.
-     * A fresh, unpredictable nonce of this length SHALL be generated for every
-     * encryption and SHALL NEVER be reused with the same key.
-     */
+    /** Length, in bytes, of the nonce/IV; a fresh one is required per encryption, never reused with the same key. */
     public int nonceLengthBytes() {
         return nonceLengthBytes;
     }
 
-    /**
-     * Length, in bits, of the GCM authentication tag this algorithm produces.
-     */
+    /** Length, in bits, of the GCM authentication tag this algorithm produces. */
     public int tagLengthBits() {
         return tagLengthBits;
     }

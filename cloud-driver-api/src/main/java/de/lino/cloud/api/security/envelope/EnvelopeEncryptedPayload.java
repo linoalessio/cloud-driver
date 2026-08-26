@@ -6,21 +6,19 @@ import de.lino.cloud.api.security.keys.WrappedKey;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * The result of an {@code EnvelopeEncryptionService} (in {@code cloud-driver-plugin} - this
- * class cannot link to it directly, since {@code cloud-driver-api} never depends on {@code
- * cloud-driver-plugin}) encryption operation:
- * the AES-GCM encrypted payload together with its wrapped data-encryption
- * key, forming the key hierarchy described in section 13 (KMS/HSM -&gt; KEK
- * -&gt; wrapped DEK -&gt; AES-256-GCM encrypted payload).
+ * The result of an {@code EnvelopeEncryptionService} (in {@code cloud-driver-plugin})
+ * encryption operation: the AES-GCM encrypted payload together with its
+ * wrapped data-encryption key (KEK -&gt; wrapped DEK -&gt; encrypted payload).
  *
- * <p>{@link #schemaVersion()} is carried alongside the cryptographic
- * algorithm identifiers already present on {@link EncryptedPayload} and
- * {@link WrappedKey}, so the on-the-wire/on-disk envelope format itself can
- * evolve - e.g. to add post-quantum key-encapsulation metadata - without
- * breaking the ability to read older envelopes.
+ * @param schemaVersion envelope format version, allowing the format to evolve later
+ * @param wrappedDataEncryptionKey the DEK, wrapped under the active KEK
+ * @param payload the AES-GCM encrypted payload
  */
 public record EnvelopeEncryptedPayload(int schemaVersion, WrappedKey wrappedDataEncryptionKey, EncryptedPayload payload) {
 
+    /**
+     * @throws NullPointerException if {@code wrappedDataEncryptionKey} or {@code payload} is {@code null}
+     */
     public EnvelopeEncryptedPayload {
         Asserts.requireNonNull(wrappedDataEncryptionKey, "@EnvelopeEncryptedPayload: wrappedDataEncryptionKey cannot be null");
         Asserts.requireNonNull(payload, "@EnvelopeEncryptedPayload: payload cannot be null");

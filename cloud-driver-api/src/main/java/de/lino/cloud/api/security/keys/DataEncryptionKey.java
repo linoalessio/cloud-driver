@@ -8,12 +8,10 @@ import java.util.Arrays;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * A randomly generated data-encryption key (DEK), per section 4 (KEY
- * MANAGEMENT). A DEK is short-lived: it protects a single payload (or a
- * single envelope-encryption operation), is wrapped by a
- * {@link KeyEncryptionService}-managed key-encryption key (KEK) for storage
- * or transmission, and its raw material SHOULD be discarded as soon as it is
- * no longer needed - see {@link #destroy()}.
+ * A randomly generated, short-lived data-encryption key (DEK) protecting a
+ * single payload. Wrapped by a {@link KeyEncryptionService}-managed
+ * key-encryption key (KEK) for storage; its raw material should be
+ * {@link #destroy() destroyed} once no longer needed.
  */
 public final class DataEncryptionKey {
 

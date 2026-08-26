@@ -10,21 +10,11 @@ import java.util.HexFormat;
 import java.util.Locale;
 
 /**
- * A content checksum over a {@link StoredFile}'s plaintext bytes, independent
- * of the AES-256-GCM authentication tag {@link
- * de.lino.cloud.api.security.crypto.AuthenticationFailedException} already
- * guards on the stored ciphertext (section 6, AUTHENTICATED ENCRYPTION AND
- * INTEGRITY). The authentication tag proves the stored envelope was not
- * tampered with; this proves the decrypted plaintext content still matches
- * what was uploaded - two related but distinct guarantees. A caller
- * downloading a {@link StoredFile} via {@link
- * de.lino.cloud.api.factory.DataFactory#fetch} can check both: an
- * authentication failure throws automatically during decryption, while
- * {@link #matches(byte[])} lets the caller additionally verify the
- * downloaded content against this checksum.
- *
- * <p>Restricted to {@link HashAlgorithm}'s approved algorithms, the same as
- * every other hash computed by {@code cloud-driver}.
+ * A content checksum over a {@link StoredFile}'s plaintext bytes,
+ * independent of the AES-256-GCM authentication tag already guarding the
+ * stored ciphertext: the tag proves the envelope wasn't tampered with, this
+ * proves the decrypted content still matches what was uploaded. Restricted
+ * to {@link HashAlgorithm}'s approved algorithms.
  */
 public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
 

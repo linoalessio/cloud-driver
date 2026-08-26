@@ -32,6 +32,8 @@ public enum ProjectType {
     private final String name;
 
     /**
+     * Constructs a project type with its display name.
+     *
      * @param name this project type's formatted, human-readable name
      * @throws NullPointerException if {@code name} is {@code null}
      */

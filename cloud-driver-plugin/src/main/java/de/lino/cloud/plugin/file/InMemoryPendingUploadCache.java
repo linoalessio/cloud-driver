@@ -12,46 +12,34 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * {@link PendingUploadCache} backed by {@code database-driver-api}'s own
- * {@link Cache} - the same thread-safe, {@code O(1)}-amortized {@link
- * Cache#put}/{@link Cache#invalidate}, non-blocking-{@link Cache#get} async
- * contract {@code EntityDatabaseClient} already builds its read-through
- * caches on (see {@code EntityDatabaseClient#cacheFor}), rather than a
- * hand-rolled map - so a deployment with many files queued at once (the
- * "big data" case: a long outage followed by a large batch of retries) gets
- * the same amortized-{@code O(1)} put/invalidate and full-scan-only-on-{@link
- * #snapshot()} performance characteristics {@link Cache}'s own Javadoc
- * documents, for free.
- *
- * <p>Constructed with no TTL and no size bound: unlike a read-through cache,
- * where a stale or oversize entry is fine to evict (it just gets reloaded),
- * an entry here represents an upload nothing else remembers - it must stay
- * queued indefinitely until an explicit {@link #remove} (a successful retry)
- * takes it out, never expire or get evicted on its own. The {@link Cache}'s
- * loader is consequently unreachable in normal operation: every method this
- * class implements ({@link #enqueue}, {@link #remove}, {@link #isEmpty},
- * {@link #size}, {@link #snapshot}) uses {@link Cache#put}/{@link
- * Cache#invalidate}/{@link Cache#size}/{@link Cache#snapshot} directly and
- * never calls {@link Cache#get} - there is no meaningful value to
- * asynchronously load for a file id that was never enqueued.
- *
- * <p>Process-local and lost on restart, the same "not for production
- * hardening, just makes the feature work" trade-off {@code
- * InMemoryKeyEncryptionService} makes for key material. A deployment that
- * needs queued uploads to survive a restart should provide its own {@link
- * PendingUploadCache} (e.g. persisted to a local file or a database section)
- * instead.
+ * {@link Cache}, with no TTL/size bound - an entry stays queued until an
+ * explicit {@link #remove}, never expires on its own. Process-local and
+ * lost on restart, the same trade-off {@code InMemoryKeyEncryptionService}
+ * makes for key material.
  */
 public final class InMemoryPendingUploadCache implements PendingUploadCache {
 
     private final Cache<String, StoredFile> cache =
             Caches.newCache(InMemoryPendingUploadCache::unreachableLoader, null, -1);
 
+    /**
+     * Queues {@code file} for upload, overwriting any previously queued content for the same id.
+     *
+     * @param file the file to queue
+     * @throws NullPointerException if {@code file} is {@code null}
+     */
     @Override
     public void enqueue(@NotNull final StoredFile file) {
         Asserts.requireNonNull(file, "@InMemoryPendingUploadCache.enqueue: file cannot be null");
         this.cache.put(file.fileId(), file);
     }
 
+    /**
+     * Queues every file in {@code files}.
+     *
+     * @param files the files to queue
+     * @throws NullPointerException if {@code files} is {@code null}
+     */
     @Override
     public void enqueue(@NotNull final StoredFile... files) {
         Asserts.requireNonNull(files, "@InMemoryPendingUploadCache.enqueue: files cannot be null");
@@ -60,22 +48,31 @@ public final class InMemoryPendingUploadCache implements PendingUploadCache {
         }
     }
 
+    /**
+     * Removes {@code fileId} from the queue, e.g. after a successful retry.
+     *
+     * @param fileId the id to remove
+     * @throws NullPointerException if {@code fileId} is {@code null}
+     */
     @Override
     public void remove(@NotNull final String fileId) {
         Asserts.requireNonNull(fileId, "@InMemoryPendingUploadCache.remove: fileId cannot be null");
         this.cache.invalidate(fileId);
     }
 
+    /** @return {@code true} if nothing is currently queued */
     @Override
     public boolean isEmpty() {
         return this.cache.size() == 0;
     }
 
+    /** @return the number of files currently queued */
     @Override
     public int size() {
         return this.cache.size();
     }
 
+    /** @return an immutable snapshot of every currently queued file */
     @NotNull
     @Override
     public List<StoredFile> snapshot() {
@@ -83,11 +80,9 @@ public final class InMemoryPendingUploadCache implements PendingUploadCache {
     }
 
     /**
-     * Never actually invoked - see the class Javadoc's "loader is
-     * unreachable" note. Fails loudly instead of e.g. returning {@code null}
-     * so a future caller who mistakenly starts calling {@link Cache#get} on
-     * this cache gets an immediate, clear signal rather than a silent
-     * {@code null}.
+     * Never actually invoked - a file only ever enters this cache via
+     * {@link #enqueue}. Fails loudly rather than returning {@code null}, in
+     * case a future caller mistakenly calls {@link Cache#get} on this cache.
      */
     private static CompletableFuture<StoredFile> unreachableLoader(final String fileId) {
         return CompletableFuture.failedFuture(new UnsupportedOperationException(

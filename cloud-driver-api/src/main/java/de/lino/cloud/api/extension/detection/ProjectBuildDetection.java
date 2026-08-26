@@ -9,50 +9,30 @@ import java.nio.file.Path;
  */
 public final class ProjectBuildDetection {
 
-    /**
-     * Path to the {@code pom.xml} a standard Maven project would have in its root.
-     */
+    /** Path to the root {@code pom.xml} of a standard Maven project. */
     private static final Path PROJECT_MAVEN_PATH = Path.of(System.getProperty("user.dir"), "pom.xml");
 
-    /**
-     * Path to the {@code build.gradle} a standard Groovy-DSL Gradle project would have in its root.
-     */
+    /** Path to the root {@code build.gradle} of a standard Groovy-DSL Gradle project. */
     private static final Path PROJECT_GRADLE_PATH = Path.of(System.getProperty("user.dir"), "build.gradle");
 
-    /**
-     * Path to the {@code build.gradle.kts} a standard Kotlin-DSL Gradle project would have in its root.
-     */
+    /** Path to the root {@code build.gradle.kts} of a standard Kotlin-DSL Gradle project. */
     private static final Path PROJECT_GRADLE_KTS_PATH = Path.of(System.getProperty("user.dir"), "build.gradle.kts");
 
-    /**
-     * Not instantiable; all functionality is exposed through static methods.
-     */
+    /** Not instantiable; all functionality is exposed through static methods. */
     private ProjectBuildDetection() {
     }
 
-    /**
-     * Checks whether the current working directory is a Maven project.
-     *
-     * @return {@code true} if {@code pom.xml} is found, {@code false} otherwise
-     */
+    /** @return {@code true} if {@code pom.xml} is found */
     private static boolean isMavenDetected() {
         return Files.exists(PROJECT_MAVEN_PATH);
     }
 
-    /**
-     * Checks whether the current working directory is a Groovy-DSL Gradle project.
-     *
-     * @return {@code true} if {@code build.gradle} is found, {@code false} otherwise
-     */
+    /** @return {@code true} if {@code build.gradle} is found */
     private static boolean isGradleDetected() {
         return Files.exists(PROJECT_GRADLE_PATH);
     }
 
-    /**
-     * Checks whether the current working directory is a Kotlin-DSL Gradle project.
-     *
-     * @return {@code true} if {@code build.gradle.kts} is found, {@code false} otherwise
-     */
+    /** @return {@code true} if {@code build.gradle.kts} is found */
     private static boolean isGradleKtsDetected() {
         return Files.exists(PROJECT_GRADLE_KTS_PATH);
     }

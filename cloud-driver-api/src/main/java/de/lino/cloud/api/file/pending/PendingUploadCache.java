@@ -8,19 +8,13 @@ import java.util.List;
 
 /**
  * Holds every {@link StoredFile} an upload was attempted for while no
- * outbound {@link ConnectivityChecker
- * connectivity} was available, so it can be retried once connectivity
- * returns - the contract backing {@code cloud-driver-plugin}'s
- * {@code ResilientFileFactory} (which enqueues into it) and
- * {@code PendingUploadScheduler} (which periodically drains it). Keyed by
- * {@link StoredFile#fileId()}: enqueuing a file id already pending overwrites
- * the previously queued content rather than duplicating it, the same
- * insert-or-update semantics {@link de.lino.cloud.api.factory.FileFactory#upload}
- * itself has.
- *
- * <p>Implementations must be safe to call concurrently - a file can be
- * enqueued from a caller thread at the same moment the scheduler is draining
- * the cache on its own thread.
+ * outbound {@link ConnectivityChecker connectivity} was available, so it
+ * can be retried once connectivity returns - the contract backing {@code
+ * cloud-driver-plugin}'s {@code DefaultFileFactory} (which enqueues into
+ * it) and {@code PendingUploadScheduler} (which periodically drains it).
+ * Keyed by {@link StoredFile#fileId()}: enqueuing an id already pending
+ * overwrites the previously queued content. Implementations must be safe to
+ * call concurrently.
  */
 public interface PendingUploadCache {
 

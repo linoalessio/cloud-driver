@@ -3,24 +3,20 @@ package de.lino.cloud.api.security.keys;
 import org.jetbrains.annotations.NotNull;
 
 /**
- * Abstraction over a centralized KMS or HSM managing key-encryption keys
- * (KEKs), per section 4 (KEY MANAGEMENT): "The DEK SHALL be protected/wrapped
- * by a key-encryption key (KEK) managed by a KMS/HSM." and "Key rotation
- * SHALL be supported."
- *
- * <p>Implementations SHOULD delegate the actual wrap/unwrap operation to the
- * KMS/HSM itself (so KEK material never leaves it) rather than fetching raw
- * KEK bytes into the extension process. {@code InMemoryKeyEncryptionService}
- * (in {@code cloud-driver-plugin} - this interface cannot link to it directly,
- * since {@code cloud-driver-api} never depends on {@code cloud-driver-plugin})
- * is the exception - a development/test stand-in only, clearly documented as
- * such.
+ * Abstraction over a centralized KMS/HSM managing key-encryption keys (KEKs)
+ * that wrap/unwrap DEKs and support key rotation. Implementations should
+ * delegate the actual wrap/unwrap to the KMS/HSM itself, so KEK material
+ * never leaves it.
  */
 public interface KeyEncryptionService {
 
     /**
      * Wraps (encrypts) a {@link DataEncryptionKey} under the currently active
      * key-encryption key.
+     *
+     * @param dataEncryptionKey the key to wrap
+     * @return the wrapped key
+     * @throws KeyWrapException if wrapping fails
      */
     @NotNull
     WrappedKey wrap(@NotNull DataEncryptionKey dataEncryptionKey) throws KeyWrapException;
@@ -29,13 +25,19 @@ public interface KeyEncryptionService {
      * Unwraps (decrypts) a previously {@link #wrap(DataEncryptionKey) wrapped}
      * key, using whichever key-encryption key version wrapped it - including
      * versions superseded by a later {@link #rotate()}.
+     *
+     * @param wrappedKey the key to unwrap
+     * @return the unwrapped key
+     * @throws KeyWrapException if unwrapping fails
      */
     @NotNull
     DataEncryptionKey unwrap(@NotNull WrappedKey wrappedKey) throws KeyWrapException;
 
     /**
-     * The identifier of the key-encryption key version currently used for new
-     * {@link #wrap(DataEncryptionKey)} calls.
+     * Returns the identifier of the key-encryption key version currently used
+     * for new {@link #wrap(DataEncryptionKey)} calls.
+     *
+     * @return the active key-encryption key identifier
      */
     @NotNull
     String activeKeyEncryptionKeyId();
@@ -45,7 +47,7 @@ public interface KeyEncryptionService {
      * #wrap(DataEncryptionKey)} calls, without invalidating the ability to
      * {@link #unwrap(WrappedKey)} data wrapped under earlier versions.
      *
-     * @return the identifier of the newly active key-encryption key
+     * @return the newly active key-encryption key identifier
      */
     @NotNull
     String rotate();

@@ -22,49 +22,22 @@ import java.util.concurrent.CompletionException;
 
 /**
  * {@link FileFactory} implementation backed by a {@link DataFactory}: since
- * {@link StoredFile} is itself a {@code Serialized} domain meta, {@link
- * #download}/{@link #findById}/{@link #delete} are a thin pass-through to it -
- * {@code fetch}/{@code findById}/{@code delete} do every envelope-encryption,
- * concurrency, caching, and persistence-error-handling concern (see {@code
- * EntityDatabaseClient} behind {@link DataFactory}), so none of that is
- * duplicated here. The one thing added on top of those is {@link
- * #verifyIntegrity}: after {@link DataFactory} decrypts a file and confirms
- * its AES-256-GCM authentication tag, this additionally checks the decrypted
- * bytes against {@link StoredFile#checksum()} before handing the file back,
- * throwing {@link FileIntegrityException} on a mismatch - see {@link
- * FileFactory}'s class Javadoc for why both checks happen.
+ * {@link StoredFile} is itself a {@code Serialized} entity, {@link
+ * #download}/{@link #findById}/{@link #delete} are a thin pass-through to
+ * it, plus a {@link #verifyIntegrity} checksum check on top of {@link
+ * DataFactory}'s own AES-256-GCM authentication.
  *
- * <p><b>Offline-safe {@link #upload}.</b> {@link DataFactory#register}
- * ultimately reaches whatever {@code DatabaseProvider} was configured - in
- * production, typically a database reached over the network - so an upload
- * attempted with no internet connection would otherwise just fail. Before
- * delegating to {@code dataFactory}, {@link #upload} checks {@code
- * connectivityChecker}, and if connectivity is currently down, queues the
- * file(s) into {@code pendingUploadCache} instead of attempting (and waiting
- * out a timeout on) a database call that has no realistic chance of
- * succeeding - a {@code PendingUploadScheduler} sharing the same {@link
- * PendingUploadCache} is expected to drain it once connectivity returns,
- * this class only ever adds to it, never drains it itself. Connectivity can
- * also drop mid-call, after the proactive check passed: {@link #upload}
- * additionally catches {@link DatabaseClientException} from {@code
- * dataFactory} and re-checks {@code connectivityChecker}, treating a
- * still-down connection as another "queue it for later" case rather than
- * propagating it; otherwise it is a genuine persistence failure and is
- * rethrown unchanged. {@link #getPendingUploadCache()}/{@link
- * #getConnectivityChecker()} expose the instances this factory checks
- * against, so external infrastructure (e.g. {@code PendingUploadScheduler})
- * can be wired against the very same ones.
+ * <p><b>Offline-safe {@link #upload}.</b> If {@code connectivityChecker}
+ * reports no connectivity, the file(s) are queued into {@code
+ * pendingUploadCache} instead of attempting a database call - a {@code
+ * PendingUploadScheduler} sharing the same cache is expected to drain it
+ * later. A {@link DatabaseClientException} thrown mid-call is treated the
+ * same way if connectivity has since dropped, otherwise it is rethrown.
  *
- * <p>{@code *Async} variants need no override at all - they are inherited
- * directly from {@link FileFactory}, which implements them generically in
- * terms of the abstract sync methods this class provides, dispatched onto
- * {@link MultiTaskingFactory}'s shared virtual-thread executor. That matters
- * specifically for {@link #upload}: {@code connectivityChecker}'s probe
- * blocks the calling thread for up to its configured timeout, and running
- * that probe on a virtual thread (via {@code uploadAsync}) means it parks
- * cheaply instead of tying up a platform thread - the same reasoning {@code
- * EntityDatabaseClient}'s class Javadoc gives for using virtual threads on
- * I/O-bound calls in the first place.
+ * <p>{@code *Async} variants need no override - they're inherited from
+ * {@link FileFactory}, implemented generically on top of the sync methods
+ * here, dispatched onto {@link MultiTaskingFactory}'s virtual-thread
+ * executor.
  */
 public final class DefaultFileFactory extends FileFactory {
 
@@ -73,9 +46,8 @@ public final class DefaultFileFactory extends FileFactory {
     private final ConnectivityChecker connectivityChecker;
 
     /**
-     * Convenience constructor defaulting {@link #getPendingUploadCache()} to
-     * a fresh {@link InMemoryPendingUploadCache} and {@link
-     * #getConnectivityChecker()} to a fresh {@link InternetConnectivityChecker}.
+     * Defaults {@link #getPendingUploadCache()} to a fresh {@link InMemoryPendingUploadCache}
+     * and {@link #getConnectivityChecker()} to a fresh {@link InternetConnectivityChecker}.
      *
      * @param dataFactory the {@link DataFactory} {@link StoredFile}s are persisted through
      * @throws NullPointerException if {@code dataFactory} is {@code null}
@@ -97,6 +69,7 @@ public final class DefaultFileFactory extends FileFactory {
         this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultFileFactory: connectivityChecker cannot be null");
     }
 
+    /** Delegates to {@link DataFactory#register(Serialized)}, deferring to {@link #pendingUploadCache} while offline. */
     @Override
     public void upload(@NotNull final StoredFile file) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
@@ -114,6 +87,7 @@ public final class DefaultFileFactory extends FileFactory {
         }
     }
 
+    /** Delegates to {@link DataFactory#register(Serialized...)}, deferring to {@link #pendingUploadCache} while offline. */
     @Override
     public void upload(@NotNull final StoredFile... files) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
@@ -154,6 +128,7 @@ public final class DefaultFileFactory extends FileFactory {
         return this.connectivityChecker;
     }
 
+    /** Fetches via {@link #dataFactory} and checks the result's checksum. */
     @NotNull
     @Override
     public StoredFile download(@NotNull final String fileId)
@@ -161,6 +136,7 @@ public final class DefaultFileFactory extends FileFactory {
         return verifyIntegrity(this.dataFactory.fetch(fileId, StoredFile.class));
     }
 
+    /** Fetches via {@link #dataFactory} and checks every result's checksum, concurrently. */
     @NotNull
     @Override
     public List<StoredFile> download(@NotNull final String[] fileIds)
@@ -168,6 +144,7 @@ public final class DefaultFileFactory extends FileFactory {
         return verifyAll(this.dataFactory.fetch(fileIds, StoredFile.class));
     }
 
+    /** Looks up via {@link #dataFactory} and checks the result's checksum, if present. */
     @NotNull
     @Override
     public Optional<StoredFile> findById(@NotNull final String fileId)
@@ -179,6 +156,7 @@ public final class DefaultFileFactory extends FileFactory {
         return file;
     }
 
+    /** Lists via {@link #dataFactory} and checks every result's checksum, concurrently. */
     @NotNull
     @Override
     public List<StoredFile> getEntities()
@@ -186,34 +164,31 @@ public final class DefaultFileFactory extends FileFactory {
         return verifyAll(this.dataFactory.getEntities(StoredFile.class));
     }
 
+    /** Delegates to {@link DataFactory#delete(String, Class)}. */
     @Override
     public void delete(@NotNull final String fileId) throws DatabaseClientException {
         this.dataFactory.delete(fileId, StoredFile.class);
     }
 
+    /** Delegates to {@link DataFactory#delete(String[], Class)}. */
     @Override
     public void delete(@NotNull final String[] fileIds) throws DatabaseClientException {
         this.dataFactory.delete(fileIds, StoredFile.class);
     }
 
+    /** Delegates to {@link DataFactory#clear}. */
     @Override
     public void clear() {
         this.dataFactory.clear(StoredFile.class);
     }
 
+    /** Delegates to {@link DataFactory#deleteSection}. */
     @Override
     public void deleteSection() {
         this.dataFactory.deleteSection(StoredFile.class);
     }
 
-    /**
-     * Verifies every file in {@code files} the same way {@link
-     * #verifyIntegrity} verifies a single one, dispatched concurrently
-     * (each file's checksum is independent, CPU-bound work) rather than
-     * hashing every file sequentially after they have all already been
-     * fetched - used by both {@link #download(String[])} and {@link
-     * #getEntities()}.
-     */
+    /** Verifies every file in {@code files} via {@link #verifyIntegrity}, concurrently. */
     private static List<StoredFile> verifyAll(final List<StoredFile> files) throws FileIntegrityException {
         final List<CompletableFuture<Void>> verifications = files.stream()
                 .map(file -> MultiTaskingFactory.getInstance().runAsync(() -> verifyIntegrityUnchecked(file)))
@@ -222,6 +197,11 @@ public final class DefaultFileFactory extends FileFactory {
         return files;
     }
 
+    /**
+     * Checks {@code file}'s content against its recorded checksum.
+     *
+     * @throws FileIntegrityException if the content does not match
+     */
     private static StoredFile verifyIntegrity(final StoredFile file) throws FileIntegrityException {
         if (!file.verifyChecksum()) {
             throw new FileIntegrityException(

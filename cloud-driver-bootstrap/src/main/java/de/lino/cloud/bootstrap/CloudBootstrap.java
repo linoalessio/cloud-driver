@@ -1,6 +1,6 @@
 package de.lino.cloud.bootstrap;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.event.database.DatabaseWatchEvent;
 import de.lino.cloud.api.event.extension.ExtensionRegisterEvent;
@@ -19,7 +19,7 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
-import de.lino.cloud.plugin.DefaultCloudAPI;
+import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
@@ -44,30 +44,27 @@ import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * The module's real (non-sample) entry point: boots a Postgres-backed {@link CloudAPI} and
- * several independent subsystems, each on its own thread, then blocks only the real main thread
- * until shutdown - never any of the subsystem threads. Each subsystem is started by its own
- * {@code startX()} method (see {@link #startPendingUploadScheduler()}, {@link
- * #startEventScheduler(Class[])}, {@link #startExtensionsBootstrapScheduler(String[])}), called
- * from {@link #main(String[])}, which starts that subsystem's real work on its own thread and
- * returns a {@link Runnable} shutdown action rather than blocking the caller; {@link
- * #prepareShutdownLatch(Runnable...)} collects every one of those into a single {@code
- * Runtime.addShutdownHook}. Adding another concurrent subsystem means adding another {@code
- * startX()} method and including it in {@link #main(String[])}'s list - never adding another
- * blocking loop inside {@link #main(String[])} itself.
- *
- * <p>Postgres change notification (watching {@link StoredFile}'s table) is not one of this
- * class's own subsystems - that logic now lives in {@code cloud-driver-extensions-watcher}'s
- * {@code CloudWatcherExtension}, started the same way any other extension is, through {@link
- * #startExtensionsBootstrapScheduler(String[])}.
+ * Real entry point: boots a Postgres-backed {@link CloudDriver} and starts every subsystem
+ * (each on its own thread via a {@code startX()} method), then blocks the real main thread on
+ * one shared shutdown latch. Postgres change notification lives in {@code
+ * cloud-driver-extensions-watcher}'s {@code CloudWatcherExtension}, started like any other
+ * extension via {@link #startExtensionsBootstrapScheduler(String[])}.
  */
 public final class CloudBootstrap {
 
-    private static volatile CloudAPI CLOUD_API;
+    /** The installed {@link CloudDriver} singleton, read by every {@code startX()} method. */
+    private static volatile CloudDriver CLOUD_DRIVER;
 
+    /**
+     * Boots the {@link CloudDriver}, starts every subsystem, and blocks the real main thread
+     * on one shared shutdown latch until the process is told to stop.
+     *
+     * @param args command-line arguments, forwarded to every started extension
+     * @throws IOException if reading local configuration/security-requirement files fails
+     */
     public static void main(String[] args) throws IOException {
 
-        CLOUD_API = initiateCloudAPI().orElseThrow();
+        CLOUD_DRIVER = initiateCloudDriver().orElseThrow();
 
         // Blocks the actual main thread (not a disposable virtual thread - see
         // runTaskInMainSafety's Javadoc) indefinitely, no busy-wait, once every startX()
@@ -111,7 +108,14 @@ public final class CloudBootstrap {
 
     }
 
-    private static Optional<CloudAPI> initiateCloudAPI() throws IOException {
+    /**
+     * Wires a Postgres {@link DatabaseProvider} and envelope encryption service, then installs
+     * the {@link CloudDriver} singleton.
+     *
+     * @return the installed {@link CloudDriver}, wrapped in an {@link Optional}
+     * @throws IOException if {@code postgres-database.json} cannot be read
+     */
+    private static Optional<CloudDriver> initiateCloudDriver() throws IOException {
 
         new DefaultFileProvider();
         new DatabaseRepositoryRegistry(false);
@@ -126,17 +130,17 @@ public final class CloudBootstrap {
         final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
-        DefaultCloudAPI.setInstance(databaseProvider, envelopeEncryptionService);
+        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
 
-        return Optional.of(CloudAPI.getInstance());
+        return Optional.of(CloudDriver.getInstance());
     }
 
     /**
-     * Starts every background task this process runs and wires one shutdown hook that
-     * stops all of them (in registration order) before releasing the returned latch.
-     * {@code main} only ever awaits this single latch - add a new concurrent task by
-     * starting it in its own method here and appending its shutdown action to {@code
-     * shutdownActions}, not by adding another blocking loop to {@code main} itself.
+     * Wires one shutdown hook that runs every given action, in registration order, before
+     * releasing the returned latch.
+     *
+     * @param tasks shutdown actions to run, one per started subsystem
+     * @return the latch {@code main} awaits until shutdown
      */
     private static Optional<CountDownLatch> prepareShutdownLatch(@NonNull final Runnable... tasks) {
 
@@ -154,17 +158,17 @@ public final class CloudBootstrap {
     }
 
     /**
-     * A periodic worker: its own thread, ticking on a real timer via {@link
-     * PendingUploadScheduler#start}, never a busy {@code while(true)} loop. Returns its
-     * shutdown action for {@link #prepareShutdownLatch(Runnable...)} to run on JVM shutdown.
+     * Starts a {@link PendingUploadScheduler} on its own ticker thread.
+     *
+     * @return the scheduler's shutdown action
      */
     private static Runnable startPendingUploadScheduler() {
 
-        final FileFactory fileFactory = CLOUD_API.getFileFactory();
-        final DataFactory dataFactory = CLOUD_API.getDataFactory();
+        final FileFactory fileFactory = CLOUD_DRIVER.getFileFactory();
+        final DataFactory dataFactory = CLOUD_DRIVER.getDataFactory();
 
         final PendingUploadScheduler pendingUploadScheduler = new PendingUploadScheduler(
-                dataFactory, ((DefaultFileFactory) fileFactory).getPendingUploadCache(), CLOUD_API.getConnectivityChecker()
+                dataFactory, ((DefaultFileFactory) fileFactory).getPendingUploadCache(), CLOUD_DRIVER.getConnectivityChecker()
         );
         pendingUploadScheduler.start(Duration.ofMinutes(1));
 
@@ -172,74 +176,75 @@ public final class CloudBootstrap {
     }
 
     /**
-     * Registers every {@link Extension} found by scanning two folders via {@link
-     * ExtensionFolderScanner} - a jar is picked up purely by declaring a concrete {@code
-     * Extension} subclass and shipping an {@code extension.json}: first {@code user.dir}
-     * (the process's own working directory - where the packaged {@code
-     * cloud-driver-bootstrap} jar itself sits when run via {@code java -jar}, which is how
-     * {@link CloudBootstrapExtension} gets registered now that nothing here constructs it
-     * directly), then {@link Constraints#EXTENSIONS_PATH} (the dedicated folder for
-     * third-party extension jars). Fires {@link ExtensionRegisterEvent} once per registered
-     * extension - in registration order, since {@code ExtensionFactory#getExtensions()} is
-     * backed by a {@code LinkedHashMap} - then starts all of them via {@link
-     * ExtensionFactory#startAll}, deliberately <em>not</em> {@link
-     * ExtensionFactory#startAllAsync}: this call runs synchronously, blocking the calling
-     * thread until every extension has been driven through {@code onLoading()}/{@code
-     * onRunning()}. Returns {@link ExtensionFactory#stopAll} as the shutdown action.
+     * Registers every {@link Extension} found under {@code user.dir} (where {@link
+     * CloudBootstrapExtension} lives) and {@link Constraints#EXTENSIONS_PATH}, fires an {@link
+     * ExtensionRegisterEvent} per registered extension, then starts all of them via {@link
+     * ExtensionFactory#startAllAsync}.
      *
-     * <p>Only the folder scans happen here - the database/{@code CloudAPI} bootstrap in
-     * {@link #initiateCloudAPI()} above cannot itself be pulled into a scanned extension,
-     * since {@link ExtensionFactory} (needed to register anything at all) only exists
-     * once {@code CloudAPI} does.
+     * @param args arguments forwarded to each extension's {@code onRunning}
+     * @return {@link ExtensionFactory#stopAll} as the shutdown action
      */
     private static Runnable startExtensionsBootstrapScheduler(@NonNull final String[] args) {
 
-        final ExtensionFactory extensionFactory = CLOUD_API.getExtensionFactory();
+        final ExtensionFactory extensionFactory = CLOUD_DRIVER.getExtensionFactory();
 
         ExtensionFolderScanner.scan(Constraints.WORKING_DIRECTORY).forEach(extensionFactory::register);
         ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
 
-        CloudAPI.getInstance().getTerminal().emptyLine();
+        CloudDriver.getInstance().getTerminal().emptyLine();
         extensionFactory.startAllAsync(args);
-        extensionFactory.getExtensions().forEach(extension -> CLOUD_API.getEventFactory().callEvent(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
+        extensionFactory.getExtensions().forEach(extension -> CLOUD_DRIVER.getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
 
         return extensionFactory::stopAll;
     }
 
     /**
-     * Registers {@code events} via {@link EventFactory#registerEvent}, synchronously, so
-     * every event is live for the whole run, not just during shutdown - construction still
-     * happens on {@code DefaultEventFactory}'s own {@code Cache}-backed loader (dispatched
-     * onto a virtual thread internally), but this call itself blocks until that completes.
-     * Returns a shutdown action that unregisters all of them.
+     * Registers {@code events} via {@link EventFactory#registerEventAsync}.
+     *
+     * @param events event classes to register at startup
+     * @return a no-op shutdown action
      */
     @SafeVarargs
     private static Runnable startEventScheduler(@NonNull final Class<? extends Event>... events) {
-        final EventFactory eventFactory = CLOUD_API.getEventFactory();
+        final EventFactory eventFactory = CLOUD_DRIVER.getEventFactory();
         Arrays.stream(events).forEach(eventFactory::registerEventAsync);
         return () -> {};
     }
 
+    /**
+     * Starts the terminal's reading loop.
+     *
+     * @return a no-op shutdown action; see {@link #stopTerminal()}
+     */
     private static Runnable startTerminalBootstrap() {
-        CloudAPI.getInstance().getTerminal().start();
+        CloudDriver.getInstance().getTerminal().start();
         return () -> {};
     }
 
+    /**
+     * @return a shutdown action that interrupts the terminal's reading thread
+     */
     private static Runnable stopTerminal() {
-        return () -> CloudAPI.getInstance().getTerminal().readingThread().interrupt();
+        return () -> CloudDriver.getInstance().getTerminal().readingThread().interrupt();
     }
 
+    /**
+     * Uploads {@code architecture/SECURITY_REQUIREMENTS.md} as a {@link StoredFile} under a
+     * fixed id, if not already present.
+     *
+     * @throws RuntimeException wrapping any I/O, database, or encryption failure
+     */
     private static void loadSecurityRequirements() {
 
         try {
 
-            CLOUD_API.getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
+            CLOUD_DRIVER.getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
 
                 final File file = Constraints.WORKING_DIRECTORY.resolve(Path.of("architecture", "SECURITY_REQUIREMENTS.md")).toFile();
                 try {
 
                     final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), file.getName(), Files.readAllBytes(file.toPath()));
-                    CLOUD_API.getFileFactory().uploadAsync(newStoredFile).join();
+                    CLOUD_DRIVER.getFileFactory().uploadAsync(newStoredFile).join();
                     return newStoredFile;
 
                 } catch (IOException e) {
@@ -255,6 +260,11 @@ public final class CloudBootstrap {
 
     }
 
+    /**
+     * Smoke-test upload of the repo's own root {@code pom.xml} under a fresh random id.
+     *
+     * @throws RuntimeException wrapping any I/O, database, or encryption failure
+     */
     private static void loadDummyFileUpload() {
 
         try {
@@ -265,7 +275,7 @@ public final class CloudBootstrap {
                     , Files.readAllBytes(Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "pom.xml")))
             );
 
-            CLOUD_API.getFileFactory().upload(storedFile);
+            CLOUD_DRIVER.getFileFactory().upload(storedFile);
 
         } catch (IOException | DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(e);

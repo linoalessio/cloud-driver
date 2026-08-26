@@ -14,11 +14,8 @@ import java.util.stream.Stream;
 
 /**
  * Scans one folder's top-level {@code *.jar} files (non-recursive) and loads
- * every {@link Extension} out of each via {@link ExtensionJarLoader}, once,
- * at call time - there is no folder-watching/hot-reload here; re-scan by
- * calling {@link #scan(Path)} again. A missing folder yields an empty list
- * rather than throwing, since "no extensions folder yet" is a normal, not
- * exceptional, state for a fresh deployment.
+ * every {@link Extension} out of each via {@link ExtensionJarLoader}. A
+ * missing folder yields an empty list rather than throwing.
  */
 public final class ExtensionFolderScanner {
 

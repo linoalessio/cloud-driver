@@ -1,33 +1,42 @@
 package de.lino.cloud.extensions.terminal.command;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.command.Command;
 import de.lino.cloud.api.utility.Constraints;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
+/** Clears the terminal screen and reprints the banner. */
 public class ClearCommand implements Command {
 
+    /** @return {@code "clear"} */
     @Override
     public @NotNull String name() {
         return "clear";
     }
 
+    /** @return {@code "clc"} */
     @Override
     public @NotNull List<String> aliases() {
         return List.of("clc");
     }
 
+    /** @return this command's description */
     @Override
     public @NotNull String description() {
         return "Clearing the terminal window";
     }
 
+    /**
+     * Clears the screen and reprints the banner.
+     *
+     * @param args unused
+     */
     @Override
     public void execute(@NotNull String[] args) {
 
-        final CloudAPI cloudAPI = CloudAPI.getInstance();
+        final CloudDriver cloudDriver = CloudDriver.getInstance();
 
         this.terminal().clearScreen();
         this.terminal().emptyLine();

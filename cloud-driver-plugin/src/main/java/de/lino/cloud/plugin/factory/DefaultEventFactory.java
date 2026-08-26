@@ -10,42 +10,26 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Constructor;
-import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 /**
- * {@link EventFactory} implementation storing registered events in {@code
- * database-driver-api}'s own {@link Cache}, keyed by the event's own {@code
- * Class} - the same thread-safe, amortized-{@code O(1)} {@link
- * Cache#put}/{@link Cache#invalidate} contract {@code EntityDatabaseClient}
- * and {@code InMemoryPendingUploadCache} already build on, rather than a
- * hand-rolled map or list.
- *
- * <p>Unlike those two, this class actively uses {@link Cache#get}'s async,
- * stampede-protected loader: {@link #registerEvent} resolves through it
- * rather than constructing {@code eventClass} itself, so if two threads race
- * to register the very same, not-yet-registered event type concurrently,
- * {@code database-driver-api}'s {@link Cache} guarantees the loader - and
- * therefore {@code eventClass}'s no-arg constructor - runs at most once, and
- * both callers observe the same resulting instance, rather than each
- * constructing (and one silently overwriting the other's) instance. {@link
- * #findEventByClass}/{@link #callEvent}/{@link #unregisterEvent}/{@link
- * #getEvents}, in contrast, must never trigger construction of an event that
- * was never registered, so they read {@link Cache#snapshot()} directly and
- * never call {@link Cache#get}.
- *
- * <p>Constructed with no TTL and no size bound: a registered event is a
- * long-lived singleton, not something that should silently expire or be
- * evicted while still in use.
+ * {@link EventFactory} implementation storing registered events in a
+ * {@link Cache} keyed by the event's own {@code Class}, with no TTL/size
+ * bound - a registered event is a long-lived singleton. {@link
+ * #registerEvent} resolves through {@link Cache#get}'s stampede-protected
+ * loader so two threads racing to register the same class construct it at
+ * most once; every other method reads {@link Cache#snapshot()} directly and
+ * never triggers construction.
  */
 public final class DefaultEventFactory extends EventFactory {
 
     private final Cache<Class<? extends Event>, Event> events =
             Caches.newCache(DefaultEventFactory::construct, null, -1);
 
+    /** Constructs and caches one instance of {@code eventClass} via {@link #events}'s loader. */
     @NotNull
     @Override
     public <T extends Event> T registerEvent(@NonNull final Class<T> eventClass) {
@@ -57,6 +41,7 @@ public final class DefaultEventFactory extends EventFactory {
         return eventClass.cast(join(this.events.get(eventClass)));
     }
 
+    /** Invalidates the cached instance of {@code eventClass}. */
     @NotNull
     @Override
     public <T extends Event> T unregisterEvent(@NonNull final Class<T> eventClass) {
@@ -65,14 +50,16 @@ public final class DefaultEventFactory extends EventFactory {
         return event;
     }
 
+    /** Looks up the registered instance and calls its {@link Event#handle(JsonDocument)}. */
     @NotNull
     @Override
-    public <T extends Event> T callEvent(@NonNull final Class<T> eventClass, @NonNull final JsonDocument properties) {
+    public <T extends Event> T dispatch(@NonNull final Class<T> eventClass, @NonNull final JsonDocument properties) {
         final T event = requireRegistered(eventClass);
         event.handle(properties);
         return event;
     }
 
+    /** Reads the cached instance directly, never triggering construction. */
     @NotNull
     @Override
     public <T extends Event> Optional<T> findEventByClass(@NonNull final Class<T> eventClass) {
@@ -81,10 +68,15 @@ public final class DefaultEventFactory extends EventFactory {
 
     @NotNull
     @Override
-    public Collection<Event> getEvents() {
+    public List<Event> getEvents() {
         return List.copyOf(this.events.snapshot().values());
     }
 
+    /**
+     * Looks up {@code eventClass}'s registered instance.
+     *
+     * @throws IllegalStateException if no event of that type is registered
+     */
     @NotNull
     private <T extends Event> T requireRegistered(final Class<T> eventClass) {
         return findEventByClass(eventClass).orElseThrow(() -> new IllegalStateException(
@@ -93,12 +85,9 @@ public final class DefaultEventFactory extends EventFactory {
     }
 
     /**
-     * The {@link #events} cache's loader: constructs {@code eventClass} via
-     * its no-arg constructor (see {@link Event}'s class Javadoc), dispatched
-     * on {@link MultiTaskingFactory}'s shared virtual-thread executor - a
-     * {@link Cache} loader must never block the calling thread (see {@link
-     * Cache}'s class Javadoc), and reflective construction, while normally
-     * fast, is arbitrary code as far as this class is concerned.
+     * The {@link #events} cache's loader: constructs {@code eventClass} via its no-arg
+     * constructor, dispatched on {@link MultiTaskingFactory}'s virtual-thread executor
+     * since a {@link Cache} loader must never block the calling thread.
      */
     private static CompletableFuture<Event> construct(final Class<? extends Event> eventClass) {
         return MultiTaskingFactory.getInstance().supplyAsync(() -> {
@@ -114,6 +103,7 @@ public final class DefaultEventFactory extends EventFactory {
         });
     }
 
+    /** Joins {@code future}, unwrapping a {@link CompletionException} back to its {@link RuntimeException} cause. */
     private static <T> T join(final CompletableFuture<T> future) {
         try {
             return future.join();

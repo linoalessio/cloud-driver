@@ -7,44 +7,21 @@ import java.util.concurrent.*;
 import java.util.function.Supplier;
 
 /**
- * Multitasking facility built around a single, process-wide {@link ExecutorService}.
- *
- * <p>Tasks run on virtual threads - one per submitted task, see
- * {@link Executors#newVirtualThreadPerTaskExecutor()} - rather than on a fixed or
- * cached pool of platform threads. Virtual threads are cheap to create and unmount
- * automatically while blocked on I/O, so this scales to a very large number of
- * concurrently submitted tasks, such as the short-lived, I/O-bound calls a database
- * driver issues, without the creation cost or pool-sizing trade-offs of platform
- * threads.
- *
- * <p>This class is a singleton; obtain the shared instance via {@link #getInstance()}.
- * All state, including the underlying {@link ExecutorService}, is shared across every
- * call site in the process.
+ * Singleton multitasking facility built around one process-wide {@link ExecutorService} that
+ * runs each submitted task on its own virtual thread ({@link
+ * Executors#newVirtualThreadPerTaskExecutor()}). Obtain the shared instance via
+ * {@link #getInstance()}.
  */
 public final class MultiTaskingFactory {
 
-    /**
-     * Shared {@link ExecutorService} backing every task submitted through this class.
-     *
-     * <p>Runs each task on its own virtual thread instead of a pooled platform
-     * thread, which avoids pool-sizing trade-offs entirely and keeps per-task
-     * overhead low even under heavy, I/O-bound concurrent load.
-     */
+    /** Shared {@link ExecutorService} backing every task submitted through this class. */
     private static final ExecutorService EXECUTOR_SERVICE = Executors.newVirtualThreadPerTaskExecutor();
 
-    /**
-     * Private constructor; instances are only ever created by {@link InstanceHolder}.
-     */
+    /** Private constructor; instances are only ever created by {@link InstanceHolder}. */
     private MultiTaskingFactory() {
     }
 
-    /**
-     * Holder for the lazily-initialized singleton instance.
-     *
-     * <p>Relies on the JVM's class-initialization guarantees to provide thread-safe,
-     * lazy initialization without {@code synchronized} or {@code volatile} on the read
-     * path (the initialization-on-demand holder idiom).
-     */
+    /** Lazily-initialized singleton holder (initialization-on-demand holder idiom). */
     private static final class InstanceHolder {
         private static final MultiTaskingFactory INSTANCE = new MultiTaskingFactory();
     }
@@ -94,12 +71,8 @@ public final class MultiTaskingFactory {
     }
 
     /**
-     * Submits a batch of {@link Callable} tasks at once and waits for all of them to
-     * finish, successfully or not.
-     *
-     * <p>Prefer this over repeated calls to {@link #submitTaskAsync(Callable)} when
-     * dispatching many related tasks: every task is scheduled up front and runs
-     * concurrently, rather than only starting once the previous submission returns.
+     * Submits a batch of {@link Callable} tasks at once, scheduled concurrently, and waits
+     * for all of them to finish, successfully or not.
      *
      * @param tasks the tasks to run
      * @param <T> the type of each task's result
@@ -145,14 +118,9 @@ public final class MultiTaskingFactory {
     }
 
     /**
-     * Runs a task on the calling thread and always shuts the shared
-     * {@link ExecutorService} down afterward, blocking until every task submitted
-     * through this class - including {@code task} itself and anything submitted
-     * before it - has finished.
-     *
-     * <p>Once this returns, the shared executor no longer accepts new tasks; every
-     * other method in this class will reject further submissions. Only call this from
-     * the extension's {@code main(String[])} method, as its final action.
+     * Runs {@code task} on the calling thread, then shuts the shared executor down and
+     * blocks until every submitted task has finished. Only call this from {@code
+     * main(String[])}, as its final action - no further submissions are accepted after.
      *
      * @param task the task to run
      * @throws NullPointerException if {@code task} is {@code null}

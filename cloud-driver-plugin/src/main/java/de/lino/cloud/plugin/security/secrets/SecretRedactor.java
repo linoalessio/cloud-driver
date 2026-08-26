@@ -4,11 +4,9 @@ import de.lino.cloud.api.utility.Asserts;
 import java.util.regex.Pattern;
 
 /**
- * Best-effort redaction of secrets from human-readable text (log lines, error
- * messages) per section 7 (API SECURITY): "Secrets SHALL NOT appear in source
- * code, logs, URLs, or error messages." This is a defense-in-depth safety
- * net for text that is about to be logged or surfaced in an error - it is
- * not a substitute for not logging secrets in the first place.
+ * Best-effort redaction of secrets from human-readable text (log lines,
+ * error messages). A defense-in-depth safety net, not a substitute for not
+ * logging secrets in the first place.
  */
 public final class SecretRedactor {
 
@@ -29,6 +27,10 @@ public final class SecretRedactor {
      * Replaces recognizable secret material (bearer tokens, {@code
      * Authorization} headers, common secret query-string parameters) with a
      * fixed placeholder.
+     *
+     * @param text the text to redact
+     * @return the redacted text
+     * @throws NullPointerException if {@code text} is {@code null}
      */
     public static String redact(final String text) {
         Asserts.requireNonNull(text, "@SecretRedactor.redact: text cannot be null");
@@ -43,6 +45,11 @@ public final class SecretRedactor {
      * Replaces every literal occurrence of {@code secretValue} in {@code text}
      * with a fixed placeholder. Use when the exact secret value is known at
      * the call site (e.g. before logging a caught exception's message).
+     *
+     * @param text the text to redact
+     * @param secretValue the known secret to replace; a no-op if {@code null} or empty
+     * @return the redacted text
+     * @throws NullPointerException if {@code text} is {@code null}
      */
     public static String redactValue(final String text, final String secretValue) {
         Asserts.requireNonNull(text, "@SecretRedactor.redactValue: text cannot be null");

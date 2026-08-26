@@ -6,35 +6,49 @@ import de.lino.cloud.extensions.terminal.command.*;
 
 import java.util.logging.Level;
 
+/**
+ * Registers the built-in terminal {@link de.lino.cloud.api.terminal.command.Command}s
+ * ({@code exit}, {@code help}, {@code clear}, {@code extensions}, {@code about}) on the host
+ * {@link de.lino.cloud.api.CloudDriver}'s {@link CommandService}.
+ */
 public class CloudTerminalExtension extends Extension {
 
-    private final CommandService commandService = this.cloudAPI().getTerminal().getCommandService();
+    /** The host terminal's command registry, resolved once at construction. */
+    private final CommandService commandService = this.cloudDriver().getTerminal().getCommandService();
 
+    /** No-op. */
     @Override
     public void onLoading() {
 
     }
 
+    /**
+     * Registers every built-in terminal command.
+     *
+     * @param args unused
+     */
     @Override
     public void onRunning(String[] args) {
 
-        this.commandService.register(new ExitCommand());
-        this.commandService.register(new HelpCommand());
-        this.commandService.register(new ClearCommand());
-        this.commandService.register(new ExtensionCommand());
-        this.commandService.register(new AboutCommand());
+        this.commandService.register(new ExitCommand(), new HelpCommand(), new ClearCommand(), new ExtensionCommand(), new AboutCommand());
 
     }
 
+    /** No-op. */
     @Override
     public void onEnding() {
     }
 
+    /**
+     * Logs the failure.
+     *
+     * @param reason the exception that occurred
+     */
     @Override
     public void onException(RuntimeException reason) {
 
-        this.cloudAPI().getLogger().severe("An error occurred while trying to start the cloud terminal extension.");
-        this.cloudAPI().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
+        this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud terminal extension.");
+        this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 
     }
 

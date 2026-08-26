@@ -30,50 +30,24 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Persists and retrieves {@link Serialized} domain entities in {@link
- * DatabaseSection}s of a {@link DatabaseProvider} from the {@code
- * database-driver-api}/{@code database-driver-plugin} stack: each meta is
+ * Persists and retrieves {@link Serialized} domain entities in per-type
+ * {@link DatabaseSection}s of a {@link DatabaseProvider}: each entity is
  * envelope-encrypted via {@link SecureEntityChannel} before it is written,
  * then stored as an {@link EncryptedEntityRecord} JSON document under its
- * {@link Serialized#primaryKey() primary key} (section 9, DATA AT REST).
+ * {@link Serialized#primaryKey() primary key}. The one class in this driver
+ * that actually performs database I/O - everything else under {@code
+ * security} only prepares data for it.
  *
- * <p>Entities are routed to a section per meta type - see {@link
- * #sectionFor}, resolved lazily and cached the same way the read-through
- * caches below are, so callers work against a single client for every meta
- * type instead of wiring up one client per {@link DatabaseSection}.
+ * <p><b>Concurrency.</b> Safe to share and call from multiple threads.
+ * {@link #store} inserts first and falls back to an update on collision
+ * (never an {@code exists()}-then-branch check, which would race). Batch
+ * operations dispatch each entity/id concurrently on {@link
+ * MultiTaskingFactory}'s shared virtual-thread executor.
  *
- * <p>This is the one class in the driver that actually performs I/O against
- * the configured database; every other class in {@code security} only
- * prepares data for that persistence.
- *
- * <p>{@link #store} and {@link #retrieve} are generic per call, not per
- * instance, so a single client handles heterogeneous meta types - the
- * shape needed by a global facade such as {@code CloudAPI}.
- *
- * <p><b>Concurrency.</b> Instances are stateless beyond the internal caches
- * (below) and are safe to share and call from multiple threads. {@link
- * #store} inserts first and only falls back to an update on collision,
- * rather than checking {@code exists()} first and branching on the result -
- * a check-then-act would leave a race window in which a concurrent {@link
- * #store} of the same id, between the check and the write, could make the
- * check stale by the time this call actually writes. Batch operations ({@link
- * #storeAll}, {@link #retrieveAll}) dispatch each meta/id concurrently on
- * {@link MultiTaskingFactory}'s shared virtual-thread executor, appropriate
- * here because encrypting/decrypting and writing/reading one meta is
- * independent, I/O-bound work with respect to every other meta in the same
- * batch - the dominant cost at scale ("big data" batches) is waiting on the
- * database and KMS, not CPU, which is exactly the workload virtual threads
- * are suited for.
- *
- * <p><b>Caching.</b> Each requested meta type gets its own read-through,
- * write-through {@link Cache}, created lazily. A cache hit skips the KMS
- * unwrap and AES-256-GCM decrypt entirely. Entries are short-lived and
- * size-bounded by default (see {@link #DEFAULT_CACHE_TTL}/{@link
- * #DEFAULT_CACHE_MAX_SIZE}) deliberately: unlike the database, which only
- * ever holds ciphertext, this cache holds decrypted plaintext in process
- * memory (section 9, DATA AT REST - minimize how long and how widely
- * plaintext exists). Tune or disable via the second constructor if that
- * trade-off is wrong for a given deployment.
+ * <p><b>Caching.</b> Each entity type gets its own read-through,
+ * write-through {@link Cache}, bounded by default to {@link
+ * #DEFAULT_CACHE_TTL}/{@link #DEFAULT_CACHE_MAX_SIZE} since it holds
+ * decrypted plaintext in memory. Tune via the second constructor.
  */
 public final class EntityDatabaseClient {
 
@@ -86,20 +60,10 @@ public final class EntityDatabaseClient {
     private final Duration cacheTtl;
     private final long cacheMaxSize;
 
-    /**
-     * One cache per requested meta type, created on first use via {@link
-     * #cacheFor}. A {@code ConcurrentHashMap} so concurrent first-uses of
-     * different types never contend, and {@code computeIfAbsent} guarantees
-     * at most one {@link Cache} is ever created per type even under
-     * concurrent access.
-     */
+    /** One cache per entity type, created lazily via {@link #cacheFor}. */
     private final Map<Class<? extends Serialized>, Cache<String, ? extends Serialized>> caches = new ConcurrentHashMap<>();
 
-    /**
-     * One {@link DatabaseSection} per requested meta type, created on first
-     * use via {@link #sectionFor}. Same {@code ConcurrentHashMap} +
-     * {@code computeIfAbsent} reasoning as {@link #caches}.
-     */
+    /** One {@link DatabaseSection} per entity type, created lazily via {@link #sectionFor}. */
     private final Map<Class<?>, DatabaseSection> sections = new ConcurrentHashMap<>();
 
     /**
@@ -134,14 +98,7 @@ public final class EntityDatabaseClient {
         this.cacheMaxSize = cacheMaxSize;
     }
 
-    /**
-     * The {@link DatabaseSection} entities of {@code type} are stored in,
-     * named after {@code type}'s simple class name, created lazily on the
-     * backing {@link DatabaseProvider} the first time {@code type} is seen
-     * and reused (via {@link #sections}) on every call after that - so each
-     * meta type gets its own section without the caller having to create
-     * or wire one up manually.
-     */
+    /** Returns {@code type}'s {@link DatabaseSection} (named after its simple class name), creating it if needed. */
     private DatabaseSection sectionFor(final Class<?> type) {
         return sections.computeIfAbsent(type, key -> {
             final String sectionName = key.getSimpleName();
@@ -150,8 +107,12 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Encrypts {@code meta} and inserts or updates it in the database
-     * under its {@link Serialized#primaryKey()}.
+     * Encrypts {@code entity} and inserts or updates it under its primary key.
+     *
+     * @param entity the entity to store
+     * @throws NullPointerException if {@code entity} is {@code null}
+     * @throws DatabaseClientException if the write fails
+     * @throws KeyWrapException if wrapping the data-encryption key fails
      */
     public <T extends Serialized> void store(@NotNull final T entity) throws DatabaseClientException, KeyWrapException {
         Asserts.requireNonNull(entity, "@EntityDatabaseClient.store: meta cannot be null");
@@ -187,11 +148,13 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Encrypts {@code meta} and overwrites the existing database record
-     * under its {@link Serialized#primaryKey()}. Unlike {@link #store},
-     * which inserts-or-updates, this fails - via the underlying {@link
-     * DatabaseSection#update}'s {@code NoSuchEntryFound} - if no such record
-     * exists yet.
+     * Encrypts {@code entity} and overwrites its existing record. Unlike
+     * {@link #store}, fails if no record exists yet under its primary key.
+     *
+     * @param entity the entity to update
+     * @throws NullPointerException if {@code entity} is {@code null}
+     * @throws DatabaseClientException if no existing record is found, or the write fails
+     * @throws KeyWrapException if wrapping the data-encryption key fails
      */
     public <T extends Serialized> void update(@NotNull final T entity) throws DatabaseClientException, KeyWrapException {
         Asserts.requireNonNull(entity, "@EntityDatabaseClient.update: meta cannot be null");
@@ -213,10 +176,14 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Encrypts and overwrites the existing database record of every meta
-     * in {@code entities}, the same way {@link #update} overwrites a single
-     * meta, dispatched concurrently (see the class Javadoc). The same
-     * partial-failure semantics as {@link #storeAll} apply.
+     * Encrypts and overwrites the existing record of every entity in {@code
+     * entities}, dispatched concurrently. Throws the first failure
+     * encountered once every entity has been attempted.
+     *
+     * @param entities the entities to update
+     * @throws NullPointerException if {@code entities} is {@code null}
+     * @throws DatabaseClientException if any update fails
+     * @throws KeyWrapException if wrapping a data-encryption key fails
      */
     public <T extends Serialized> void updateAll(@NotNull final List<T> entities) throws DatabaseClientException, KeyWrapException {
         Asserts.requireNonNull(entities, "@EntityDatabaseClient.updateAll: entities cannot be null");
@@ -240,13 +207,14 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Encrypts and stores every meta in {@code entities}, the same way
-     * {@link #store} stores a single meta, dispatched concurrently (see
-     * the class Javadoc). Unlike a sequential loop, a failure part-way
-     * through does not prevent the remaining entities from being attempted -
-     * they are already running concurrently by the time any one of them
-     * fails. The first failure encountered is what this method throws, once
-     * every meta in the batch has been attempted.
+     * Encrypts and stores every entity in {@code entities}, dispatched
+     * concurrently. Throws the first failure encountered once every entity
+     * has been attempted.
+     *
+     * @param entities the entities to store
+     * @throws NullPointerException if {@code entities} is {@code null}
+     * @throws DatabaseClientException if any store fails
+     * @throws KeyWrapException if wrapping a data-encryption key fails
      */
     public <T extends Serialized> void storeAll(@NotNull final List<T> entities) throws DatabaseClientException, KeyWrapException {
         Asserts.requireNonNull(entities, "@EntityDatabaseClient.storeAll: entities cannot be null");
@@ -270,10 +238,17 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Fetches the meta stored under {@code objectId} and decrypts it back
-     * into an instance of {@code type} - from the type's cache if present
-     * and not expired, otherwise from the database, verifying the
+     * Fetches and decrypts the entity stored under {@code objectId} - from
+     * cache if present, otherwise from the database, verifying the
      * authentication tag before returning any plaintext.
+     *
+     * @param objectId the primary key to look up
+     * @param type the entity type
+     * @return the decrypted entity
+     * @throws NullPointerException if {@code objectId} or {@code type} is {@code null}
+     * @throws DatabaseClientException if no such entity exists or the record is corrupted
+     * @throws KeyWrapException if unwrapping the data-encryption key fails
+     * @throws AuthenticationFailedException if authentication tag verification fails
      */
     @NotNull
     public <T extends Serialized> T retrieve(@NotNull final String objectId, @NotNull final Class<T> type)
@@ -285,10 +260,16 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Fetches and decrypts every meta stored under {@code objectIds}, in
-     * the same order, the same way {@link #retrieve} fetches a single
-     * meta, dispatched concurrently (see the class Javadoc) - each id's
-     * cache lookup/database read is independent of every other id's.
+     * Fetches and decrypts every entity stored under {@code objectIds}, in
+     * the same order, dispatched concurrently.
+     *
+     * @param objectIds the primary keys to look up
+     * @param type the entity type
+     * @return the decrypted entities, in the same order as {@code objectIds}
+     * @throws NullPointerException if {@code objectIds} or {@code type} is {@code null}
+     * @throws DatabaseClientException if any lookup fails
+     * @throws KeyWrapException if unwrapping a data-encryption key fails
+     * @throws AuthenticationFailedException if any authentication tag verification fails
      */
     @NotNull
     public <T extends Serialized> List<T> retrieveAll(@NotNull final List<String> objectIds, @NotNull final Class<T> type)
@@ -306,18 +287,18 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Looks up the meta stored under {@code objectId} the same way {@link
-     * #retrieve} does (cache first, then database), but returns {@link
-     * Optional#empty()} instead of throwing when no such meta exists.
+     * Looks up the entity stored under {@code objectId}, like {@link
+     * #retrieve}, but returns {@link Optional#empty()} on a genuine miss
+     * instead of throwing - a confirmed-present-but-corrupted record is
+     * still rethrown.
      *
-     * <p>Optimized for the cache-hit path, which is expected to be the
-     * common case: it always attempts {@link #retrieve} first, so a hit
-     * costs exactly what {@link #retrieve} already costs, with no extra
-     * lookup. Only on a {@link DatabaseClientException} does it pay one
-     * extra, cheap {@link DatabaseSection#exists} check to tell a genuine
-     * miss apart from a corrupted record - so an id that turns out to be
-     * confirmed-present-but-broken is rethrown rather than silently
-     * swallowed into {@code empty()}.
+     * @param objectId the primary key to look up
+     * @param type the entity type
+     * @return the decrypted entity, or empty if no such entity exists
+     * @throws NullPointerException if {@code objectId} or {@code type} is {@code null}
+     * @throws DatabaseClientException if the record exists but is corrupted
+     * @throws KeyWrapException if unwrapping the data-encryption key fails
+     * @throws AuthenticationFailedException if authentication tag verification fails
      */
     @NotNull
     public <T extends Serialized> Optional<T> findById(@NotNull final String objectId, @NotNull final Class<T> type)
@@ -336,11 +317,14 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Retrieves and decrypts every meta of {@code type} currently stored
-     * in its database section - every id currently present in the section,
-     * decrypted the same way {@link #retrieve} decrypts a single id,
-     * dispatched concurrently via {@link #retrieveAll} (see the class
-     * Javadoc) since decrypting one meta is independent of every other.
+     * Retrieves and decrypts every entity of {@code type} currently stored, via {@link #retrieveAll}.
+     *
+     * @param type the entity type
+     * @return every decrypted entity of {@code type}
+     * @throws NullPointerException if {@code type} is {@code null}
+     * @throws DatabaseClientException if any lookup fails
+     * @throws KeyWrapException if unwrapping a data-encryption key fails
+     * @throws AuthenticationFailedException if any authentication tag verification fails
      */
     @NotNull
     public <T extends Serialized> List<T> getEntities(@NotNull final Class<T> type)
@@ -352,10 +336,12 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Deletes the meta stored under {@code objectId} from the {@code type}
-     * database section and evicts it from {@code type}'s cache. Deleting a
-     * nonexistent id is treated as a failure, not a silent no-op, matching
-     * {@link #retrieve}'s behavior for an unknown id.
+     * Deletes the entity stored under {@code objectId} and evicts it from cache.
+     *
+     * @param objectId the primary key to delete
+     * @param type the entity type
+     * @throws NullPointerException if {@code objectId} or {@code type} is {@code null}
+     * @throws DatabaseClientException if no such entity exists
      */
     public <T extends Serialized> void delete(@NotNull final String objectId, @NotNull final Class<T> type) throws DatabaseClientException {
         Asserts.requireNonNull(objectId, "@EntityDatabaseClient.delete: objectId cannot be null");
@@ -373,10 +359,14 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Deletes every meta stored under {@code objectIds} from the {@code
-     * type} database section, the same way {@link #delete} deletes a single
-     * id, dispatched concurrently (see the class Javadoc). The same
-     * partial-failure semantics as {@link #storeAll} apply.
+     * Deletes every entity stored under {@code objectIds}, dispatched
+     * concurrently. Throws the first failure encountered once every id has
+     * been attempted.
+     *
+     * @param objectIds the primary keys to delete
+     * @param type the entity type
+     * @throws NullPointerException if {@code objectIds} or {@code type} is {@code null}
+     * @throws DatabaseClientException if any deletion fails
      */
     public <T extends Serialized> void deleteAll(@NotNull final List<String> objectIds, @NotNull final Class<T> type) throws DatabaseClientException {
         Asserts.requireNonNull(objectIds, "@EntityDatabaseClient.deleteAll: objectIds cannot be null");
@@ -398,10 +388,12 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Clears every entry from the {@code type} database section, leaving the
-     * section itself intact, and evicts {@code type}'s cache (if one has
-     * been created yet) so no stale decrypted meta is served afterward -
-     * use {@link #deleteSection} instead to remove the section itself.
+     * Clears every entry from {@code type}'s section (leaving the section
+     * itself intact) and invalidates its cache. Use {@link #deleteSection}
+     * to remove the section itself.
+     *
+     * @param type the entity type
+     * @throws NullPointerException if {@code type} is {@code null}
      */
     public <T extends Serialized> void clear(@NotNull final Class<T> type) {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.clear: type cannot be null");
@@ -414,13 +406,13 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Discards {@code type}'s {@link DatabaseSection}'s own in-memory view
-     * of its entries and re-reads it from the database (via {@link
-     * DatabaseSection#reload()}), then invalidates {@code type}'s decrypted-
-     * entity cache (if one has been created yet) - see {@link
-     * de.lino.cloud.api.factory.DataFactory#reload} for why this is needed
-     * at all: unlike {@link #clear}, this does not touch the database's
-     * actual contents, only this process's local view of it.
+     * Re-reads {@code type}'s section from the database (via {@link
+     * DatabaseSection#reload()}) and invalidates its cache - refreshes this
+     * process's local view without touching the database's contents, unlike
+     * {@link #clear}. See {@link de.lino.cloud.api.factory.DataFactory#reload}.
+     *
+     * @param type the entity type
+     * @throws NullPointerException if {@code type} is {@code null}
      */
     public <T extends Serialized> void reload(@NotNull final Class<T> type) {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.reload: type cannot be null");
@@ -433,11 +425,12 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Deletes the {@code type} database section entirely - not just its
-     * entries - and discards {@code type}'s cached {@link DatabaseSection}
-     * reference and cache (if either has been created yet). A later
-     * operation on {@code type} lazily recreates both, the same way {@link
-     * #sectionFor} already does for any meta type it has not seen before.
+     * Deletes {@code type}'s database section entirely (not just its
+     * entries) and discards its cached section/cache references. A later
+     * operation on {@code type} lazily recreates both.
+     *
+     * @param type the entity type
+     * @throws NullPointerException if {@code type} is {@code null}
      */
     public <T extends Serialized> void deleteSection(@NotNull final Class<T> type) {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.deleteSection: type cannot be null");
@@ -447,14 +440,7 @@ public final class EntityDatabaseClient {
         this.caches.remove(type);
     }
 
-    /**
-     * Shuts the backing {@link DatabaseProvider} down, releasing its
-     * connection(s)/pool - this is the one place in this client that owns a
-     * real, closeable resource (every {@link Cache}/{@link DatabaseSection}
-     * reference above is process-local memory, nothing to release). Once
-     * this returns, no further call on this client is expected to succeed;
-     * only call it when this client itself is being torn down for good.
-     */
+    /** Shuts the backing {@link DatabaseProvider} down, releasing its connection(s)/pool. */
     public void shutdown() {
         this.databaseProvider.shutdown();
     }

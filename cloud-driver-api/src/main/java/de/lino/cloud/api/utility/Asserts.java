@@ -1,6 +1,6 @@
 package de.lino.cloud.api.utility;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import lombok.NonNull;
 
 import java.lang.management.ManagementFactory;
@@ -8,17 +8,12 @@ import java.lang.management.ThreadMXBean;
 import java.util.function.Supplier;
 
 /**
- * Shared null-validation helpers for parameters and shared state across
- * {@code cloud-driver} - the codebase's alternative to scattering {@code
- * Objects.requireNonNull} calls throughout. Each {@code assertNotNull}
- * overload returns {@code object} unchanged so a check can be inlined at the
- * point of use (e.g. {@code this.field = Asserts.assertNotNull(param, "...")}).
+ * Shared null-validation helpers for parameters and shared state across {@code cloud-driver}.
+ * Each overload returns {@code object} unchanged, so a check can be inlined at the point of use.
  */
 public final class Asserts {
 
-    /**
-     * Not instantiable; all functionality is exposed through static methods.
-     */
+    /** Not instantiable; all functionality is exposed through static methods. */
     private Asserts() {}
 
     /**
@@ -66,22 +61,20 @@ public final class Asserts {
     }
 
     /**
-     * Returns {@code object} if it is not {@code null}. A dedicated overload
-     * for {@link CloudAPI} - typically wrapping {@link CloudAPI#getInstance()}
-     * - so a missing installation fails with a message pointing at {@code
-     * DefaultCloudAPI.setInstance} instead of a bare {@link
-     * NullPointerException}.
+     * Returns {@code object} if it is not {@code null}. Dedicated overload for {@link
+     * CloudDriver}, so a missing installation fails with a message pointing at {@code
+     * DefaultCloudDriver.setInstance}.
      *
-     * @param object the {@link CloudAPI} instance to check, e.g. {@code CloudAPI.getInstance()}
+     * @param object the {@link CloudDriver} instance to check, e.g. {@code CloudDriver.getInstance()}
      * @return {@code object}, unchanged
-     * @throws NullPointerException if {@code object} is {@code null}, i.e. no {@link CloudAPI} implementation has been installed yet
+     * @throws NullPointerException if {@code object} is {@code null}
      */
-    public static CloudAPI requireNonNull(final CloudAPI object) {
+    public static CloudDriver requireNonNull(final CloudDriver object) {
 
         if (object == null) {
             throw new NullPointerException(
-                    "@Asserts.assertNotNull: no CloudAPI implementation is installed yet - install one "
-                            + "(e.g. via DefaultCloudAPI.setInstance) before using it"
+                    "@Asserts.assertNotNull: no CloudDriver implementation is installed yet - install one "
+                            + "(e.g. via DefaultCloudDriver.setInstance) before using it"
             );
         }
 
@@ -89,22 +82,9 @@ public final class Asserts {
     }
 
     /**
-     * Runs {@code action} once and prints the CPU time, memory used, and
-     * wall-clock ("system") time it took, to standard output - a quick,
-     * dependency-free way to spot-check where a {@link Runnable}'s cost
-     * actually goes without pulling in a benchmarking harness.
-     *
-     * <p>CPU time is measured via {@link
-     * ThreadMXBean#getCurrentThreadCpuTime()} for the calling thread only -
-     * if {@code action} hands work off to other threads, their CPU time is
-     * not included, and is reported as unsupported on a JVM that does not
-     * expose per-thread CPU time at all. Memory is the JVM heap's
-     * used-memory delta ({@code totalMemory() - freeMemory()}); no GC is
-     * forced before measuring, so a collection running during {@code
-     * action} can make the reported delta an over- or under-estimate, same
-     * as with any measurement that does not force one. Wall-clock time is
-     * measured via {@link System#currentTimeMillis()}, i.e. real elapsed
-     * time regardless of how many threads {@code action} used.
+     * Runs {@code action} once and prints its CPU time (calling thread only), heap memory
+     * delta, and wall-clock time to standard output - a quick spot-check, not a substitute
+     * for a real benchmarking harness (no warm-up, no forced GC).
      *
      * @param action the action to time
      * @throws NullPointerException if {@code action} is {@code null}

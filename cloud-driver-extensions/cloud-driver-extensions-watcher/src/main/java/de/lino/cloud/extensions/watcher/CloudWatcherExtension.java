@@ -11,29 +11,19 @@ import de.lino.database.database.sql.postgresql.PostgresDatabaseNotification;
 import java.util.logging.Level;
 
 /**
- * Watches {@link StoredFile}'s table for writes via Postgres {@code LISTEN}/{@code NOTIFY}
- * and routes each notification through {@link DatabaseWatchEvent} - the extension form of what
- * used to be {@code CloudBootstrap}'s own {@code startDatabaseChangeNotifier} method. Declares a
- * dependency on {@code "cloud-driver-bootstrap"} in its {@code extension.json} (see
- * {@link Extension} for how dependency ordering works), so {@link
- * de.lino.cloud.api.factory.ExtensionFactory#start} always starts the host bootstrap's own
- * placeholder extension first.
- *
- * <p>Resolves its own {@link Credentials} from {@code postgres-database.json} independently of
- * whatever already loaded them elsewhere in the host process - an {@link Extension} is only ever
- * constructed via a no-arg constructor, so it has no way to receive an already-loaded {@code
- * Credentials} instance from its host.
+ * Watches {@link StoredFile}'s table for writes via Postgres {@code LISTEN}/{@code NOTIFY} and
+ * routes each notification through {@link DatabaseWatchEvent}. Declares a dependency on {@code
+ * "cloud-driver-bootstrap"} in its {@code extension.json}.
  */
 @SuppressWarnings("unchecked")
 public class CloudWatcherExtension extends Extension {
 
+    /** The active Postgres change-notification listener; {@code null} until {@link #onLoading()} runs. */
     private DatabaseNotification notification;
 
     /**
      * Resolves {@link Credentials} from {@code postgres-database.json} and constructs this
      * instance's {@link PostgresDatabaseNotification} on channel {@code "cloud_driver_watcher"}.
-     * Does not yet install any trigger or open the {@code LISTEN} connection - see
-     * {@link #onRunning(String[])}.
      *
      * @throws java.util.NoSuchElementException if {@code postgres-database.json} is missing or malformed
      */
@@ -47,23 +37,11 @@ public class CloudWatcherExtension extends Extension {
 
     /**
      * Installs the change-notification trigger on {@link StoredFile}'s table and starts
-     * listening. {@code watch(StoredFile.class)} is called unguarded (no try/catch) because
-     * {@link PostgresDatabaseNotification#watch} swallows and logs its own {@code SQLException}
-     * internally rather than throwing - safe to call even before the table exists, though it
-     * only takes effect once the table is actually there (guaranteed in the {@code
-     * cloud-driver-bootstrap} flow by {@code CloudBootstrap#loadSecurityRequirements} running,
-     * synchronously, before any extension is started). Each notification is routed through
-     * {@link #cloudAPI()}'s {@code EventFactory} as a {@link DatabaseWatchEvent}.
+     * listening, dispatching each notification as a {@link DatabaseWatchEvent}. A {@code
+     * RuntimeException} from the callback is caught and logged rather than propagated, since it
+     * would otherwise permanently kill the underlying listener thread.
      *
-     * <p>The callback itself is wrapped in a {@code try/catch} - {@code
-     * PostgresDatabaseNotification#listen} invokes it directly inside its blocking read loop
-     * with no {@code try/catch} of its own, so a {@code RuntimeException} escaping this callback
-     * (whether from {@link DatabaseWatchEvent} or any other registered handler {@code
-     * DatabaseWatchEvent.class} could ever route to) would otherwise kill that loop's dedicated
-     * listener thread permanently - no reconnect logic exists there. Catching here keeps one bad
-     * notification from silently ending change notifications for the rest of the process's life.
-     *
-     * @param args the arguments passed from the command line, unused by this extension
+     * @param args unused
      */
     @Override
     public void onRunning(String[] args) {
@@ -71,39 +49,31 @@ public class CloudWatcherExtension extends Extension {
         this.notification.watch(StoredFile.class);
         this.notification.start(payload -> {
             try {
-                this.cloudAPI().getEventFactory().callEvent(DatabaseWatchEvent.class, payload);
+                this.cloudDriver().getEventFactory().dispatch(DatabaseWatchEvent.class, payload);
             } catch (final RuntimeException notificationHandlingFailed) {
-                this.cloudAPI().getLogger().log(Level.WARNING, "Failed to handle a database change notification: " + payload, notificationHandlingFailed);
+                this.cloudDriver().getLogger().log(Level.WARNING, "Failed to handle a database change notification: " + payload, notificationHandlingFailed);
             }
         });
 
     }
 
-    /**
-     * Shuts the listener down, if it was ever started. Null-guarded because {@link #onLoading()}
-     * can itself throw before {@link #notification} is assigned - {@link
-     * de.lino.cloud.api.factory.ExtensionFactory#stop} calls this method unconditionally,
-     * regardless of whether loading ever succeeded.
-     */
+    /** Shuts the listener down, if it was ever started. */
     @Override
     public void onEnding() {
         if (this.notification != null) this.notification.shutdown();
     }
 
     /**
-     * Shuts the listener down the same way {@link #onEnding()} does, for the same null-guarded
-     * reason - a failure in {@link #onLoading()} routes here with {@link #notification} still
-     * {@code null}.
+     * Shuts the listener down, if it was ever started, and logs the failure.
      *
-     * @param reason the exception that occurred; not otherwise acted on, since {@code
-     *               PostgresDatabaseNotification} has no reconnect logic to trigger on failure
+     * @param reason the exception that occurred
      */
     @Override
     public void onException(RuntimeException reason) {
 
         if (this.notification != null) this.notification.shutdown();
-        this.cloudAPI().getLogger().severe("An error occurred while trying to start the cloud watcher extension.");
-        this.cloudAPI().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
+        this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud watcher extension.");
+        this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 
     }
 

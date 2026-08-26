@@ -22,36 +22,11 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Wraps a {@code jline} terminal and provides a high-level API for displaying output, managing
- * the input prompt, and coordinating command reading - the terminal engine itself, not any
- * concrete command. See {@code TerminalUsageSample} for how this class is meant to be used end
- * to end.
- *
- * <p>On construction, connects to the system console with UTF-8 encoding and configures a
- * {@link LineReaderImpl} with tab-completion ({@link TabCompleter}, backed by this instance's
- * own {@link CommandService}) and sensible defaults for an interactive CLI. Nothing is read
- * until {@link #readingThread()}'s returned {@link ReadingThread} is started explicitly - a
- * {@link Terminal} can display output and accept {@link #confirm(String)} answers before
- * that, e.g. while an embedding application is still starting up.
- *
- * <p><b>Requires a real terminal.</b> The underlying {@code jline} builder is constructed with
- * {@code .dumb(false)} - deliberately, matching {@code PoloCloud}'s own {@code Terminal}
- * exactly: rather than silently degrading into a line-buffered "dumb" terminal (no raw input
- * mode, no live tab-completion, no in-place prompt redraw) when no real pseudo-terminal is
- * available, construction fails loudly instead ({@link UncheckedIOException}/{@link
- * IllegalStateException} from {@code jline} itself). This means an actual terminal emulator
- * (a real shell window, or an SSH session) is required - an IDE's Run/Console tool window pipes
- * stdout/stdin rather than allocating a real pty, so constructing a {@link Terminal} there
- * fails the same way; that failure is expected, not a bug.
- *
- * <p><b>Usability.</b> {@link #display(String)}/{@link #displayApproved(String)} both print
- * without corrupting whatever the user is currently typing, {@link #confirm(String)} blocks for
- * a yes/no answer, and {@link #updatePrompt(String)} lets an embedder reflect application state
- * (e.g. a connection name) directly in the prompt.
- *
- * <p><b>ConsoleColoring.</b> Every string this class accepts (prompts, {@link #display(String)}/
- * {@link #displayApproved(String)} output) is translated through {@link AnsiColors#translate},
- * so callers write {@code &x} legacy color codes rather than raw ANSI escapes.
+ * Wraps a {@code jline} terminal, providing output display, prompt management, and command
+ * reading - the terminal engine itself, not any concrete command. Requires a real terminal
+ * ({@code .dumb(false)}); construction fails in environments with no real pty (e.g. an IDE's
+ * console). Every displayed string accepts {@code &x} legacy color codes, translated via
+ * {@link AnsiColors#translate}.
  */
 public final class Terminal {
 
@@ -61,38 +36,29 @@ public final class Terminal {
     private final ReadingThread readingThread;
     private final PromptProvider promptProvider;
 
-    /**
-     * {@code true} from construction until {@link #shutdown()} - checked by {@link
-     * TerminalLogHandler} to decide whether it is still safe to route a log line through this
-     * terminal's prompt-aware {@link #displayApproved(String)}, or whether it must fall back to
-     * a plain {@code System.out} print because the terminal has already been closed.
-     */
+    /** {@code true} from construction until {@link #shutdown()}. */
     private final AtomicBoolean active = new AtomicBoolean(true);
 
-    /**
-     * The currently displayed prompt, already translated by {@link AnsiColors#translate}.
-     */
+    /** The currently displayed prompt, already ANSI-translated. */
     private volatile String prompt;
 
     /**
      * Constructs a terminal using {@link DefaultPromptProvider}.
      *
      * @throws UncheckedIOException  if the underlying {@code jline} terminal fails to open
-     * @throws IllegalStateException if {@code jline} cannot find a working terminal provider
-     *                                for the current process (see this class's Javadoc on why a
-     *                                real terminal is required)
+     * @throws IllegalStateException if no working terminal provider is available
      */
     public Terminal() {
         this(new DefaultPromptProvider());
     }
 
     /**
+     * Constructs a terminal with an explicit prompt provider.
+     *
      * @param promptProvider builds the prompt this terminal starts with and can be reset to
-     * @throws NullPointerException if {@code promptProvider} is {@code null}
+     * @throws NullPointerException  if {@code promptProvider} is {@code null}
      * @throws UncheckedIOException  if the underlying {@code jline} terminal fails to open
-     * @throws IllegalStateException if {@code jline} cannot find a working terminal provider
-     *                                for the current process (see this class's Javadoc on why a
-     *                                real terminal is required)
+     * @throws IllegalStateException if no working terminal provider is available
      */
     public Terminal(@NotNull final PromptProvider promptProvider) {
         this.promptProvider = Asserts.requireNonNull(promptProvider, "@Terminal: promptProvider must not be null");
@@ -134,8 +100,7 @@ public final class Terminal {
     }
 
     /**
-     * @return the background thread that reads and dispatches input once started - not started
-     * automatically by this constructor, see {@link ReadingThread#start()}
+     * @return the reading thread; not started automatically, see {@link ReadingThread#start()}
      */
     @NotNull
     public ReadingThread readingThread() {
@@ -157,20 +122,15 @@ public final class Terminal {
         return this.prompt;
     }
 
-    /**
-     * Clears the entire terminal screen.
-     */
+    /** Clears the entire terminal screen. */
     public void clearScreen() {
         this.terminal.puts(InfoCmp.Capability.clear_screen);
         this.terminal.flush();
     }
 
     /**
-     * Prints {@code message} (translated via {@link AnsiColors#translate}), moving the cursor
-     * to the beginning of the line first to avoid overlapping whatever prompt is currently
-     * displayed, then forces a prompt redraw. Prefer {@link #displayApproved(String)} once
-     * {@link #readingThread()} is running - this method exists for output printed before the
-     * reading loop has started.
+     * Prints {@code message} above the current prompt line, then redraws it. Prefer
+     * {@link #displayApproved(String)} once {@link #readingThread()} is running.
      *
      * @param message the message to display, using {@code &x} legacy color codes
      * @throws NullPointerException if {@code message} is {@code null}
@@ -179,16 +139,14 @@ public final class Terminal {
         Asserts.requireNonNull(message, "@Terminal.display: message must not be null");
 
         this.terminal.puts(InfoCmp.Capability.carriage_return);
-        this.terminal.writer().println(this.prompt + AnsiColors.translate(message));
+        this.terminal.writer().println(this.prompt + AnsiColors.translate(String.format("&b%s", message)));
         this.terminal.flush();
         update();
     }
 
     /**
-     * Prints {@code message} (translated via {@link AnsiColors#translate}) above the current
-     * input line, without disturbing whatever the user is currently typing. Safe to call while
-     * {@link #readingThread()} is actively blocked reading a line - this is what {@link
-     * TerminalLogHandler} routes every log line through.
+     * Prints {@code message} above the current input line without disturbing what the user is
+     * typing. Safe to call while {@link #readingThread()} is blocked reading a line.
      *
      * @param message the message to display, using {@code &x} legacy color codes
      * @throws NullPointerException if {@code message} is {@code null}
@@ -196,25 +154,22 @@ public final class Terminal {
     public void displayApproved(@NotNull final String message) {
         Asserts.requireNonNull(message, "@Terminal.displayApproved: message must not be null");
 
-        this.lineReader.printAbove(this.prompt + AnsiColors.translate(message));
+        this.lineReader.printAbove(this.prompt + AnsiColors.translate(String.format("&b%s", message)));
         update();
     }
 
-    /**
-     * Prints a single blank line above the current input line.
-     */
+    /** Prints a single blank line above the current input line. */
     public void emptyLine() {
         this.lineReader.printAbove(" ");
     }
 
     /**
-     * Prompts the user with a yes/no {@code message} and blocks the calling thread until
-     * answered. Only {@code y}/{@code yes} (case-insensitive) counts as confirmation - any
-     * other input, including blank input, is treated as a rejection. Intended for guarding
-     * destructive actions behind an explicit confirmation step.
+     * Prompts with a yes/no {@code message} and blocks until answered. Only {@code y}/{@code
+     * yes} (case-insensitive) counts as confirmation; anything else, including blank input, is
+     * a rejection.
      *
      * @param message the confirmation question to display, e.g. {@code "&eProceed? (y/n)"}
-     * @return {@code true} if the user confirmed, {@code false} otherwise
+     * @return {@code true} if confirmed, {@code false} otherwise
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public boolean confirm(@NotNull final String message) {
@@ -225,10 +180,7 @@ public final class Terminal {
         return trimmed.equalsIgnoreCase("y") || trimmed.equalsIgnoreCase("yes");
     }
 
-    /**
-     * Forces the {@code jline} prompt to redraw if the reader is currently active. Called
-     * automatically after every display operation - callers do not need to call this directly.
-     */
+    /** Redraws the prompt if the reader is currently active. Called after every display. */
     void update() {
         if (this.lineReader.isReading()) {
             this.lineReader.callWidget(LineReader.REDRAW_LINE);
@@ -251,19 +203,15 @@ public final class Terminal {
         update();
     }
 
-    /**
-     * Resets the prompt to whatever this terminal's {@link PromptProvider} currently returns.
-     */
+    /** Resets the prompt to this terminal's {@link PromptProvider}. */
     public void resetPrompt() {
         updatePrompt(this.promptProvider.prompt());
     }
 
     /**
-     * Attaches a {@link TerminalLogHandler} to {@code logger}, removing every handler already
-     * installed on it and disabling parent handler delegation first - the same "single,
-     * exclusive handler" approach {@code CloudAPI#getLogger()} takes for its own console
-     * handler, applied here so log records are routed through this terminal (colored, prompt-
-     * safe) instead of a second, competing plain-text handler.
+     * Attaches a {@link TerminalLogHandler} to {@code logger} as its sole handler, removing any
+     * already installed and disabling parent delegation, so log records route through this
+     * terminal instead of a plain console handler.
      *
      * @param logger the logger to route through this terminal
      * @throws NullPointerException if {@code logger} is {@code null}
@@ -276,16 +224,14 @@ public final class Terminal {
         logger.addHandler(new TerminalLogHandler(this));
     }
 
+    /** Starts {@link #readingThread()}, beginning the interactive reading loop. */
     public void start() {
         this.readingThread.start();
     }
 
     /**
      * Closes the underlying {@code jline} terminal and interrupts {@link #readingThread()}.
-     * Idempotent - calling this more than once has no further effect. A failure closing the
-     * underlying terminal is logged and otherwise ignored - by the time {@code shutdown} is
-     * called, the terminal is being torn down regardless, so there is nothing a caller could
-     * usefully do with that exception.
+     * Idempotent; a failure closing the terminal is logged and otherwise ignored.
      */
     public void shutdown() {
 

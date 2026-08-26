@@ -13,47 +13,34 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Registers, looks up, and dispatches every registered {@link Event} - the
- * single place responsible for <em>all</em> events, as opposed to {@link
- * Event} itself, which only models one. Reached through {@code
- * CloudAPI#getEventFactory()}.
+ * Registers, looks up, and dispatches every registered {@link Event} -
+ * reached through {@code CloudDriver#getEventFactory()}. Exactly one
+ * instance exists per registered event class, constructed by {@link
+ * #registerEvent} and reused for every {@link #dispatch}.
  *
- * <p>Only {@link #registerEvent}, {@link #unregisterEvent}, {@link
- * #callEvent}, {@link #findEventByClass}, and {@link #getEvents} - the
- * actual storage and dispatch of registered events - are abstract; every
- * {@code *Async} variant below is implemented here, generically, in terms of
- * those, the same "abstract primitives + generic concrete methods" shape
- * {@link DataFactory}, {@link FileFactory}, and {@link ExtensionFactory} use.
- *
- * <p>Unlike {@link ExtensionFactory#register}, which takes an
- * already-constructed {@link de.lino.cloud.api.extension.Extension}, {@link
- * #registerEvent} takes a {@code Class} - construction is this factory's
- * responsibility, so exactly one instance ever exists per registered event
- * type (a singleton per class), reused for every {@link #callEvent} of that
- * type.
+ * <p>{@link #registerEvent}, {@link #unregisterEvent}, {@link #dispatch},
+ * {@link #findEventByClass}, and {@link #getEvents} are abstract; every
+ * {@code *Async} variant below is implemented here generically in terms of
+ * those.
  */
 public abstract class EventFactory {
 
     /**
-     * Registers an event of type {@code eventClass}: constructs one
-     * instance (via its no-arg constructor - see {@link Event}'s class
-     * Javadoc) and stores it, keyed by {@code eventClass}, for every future
-     * {@link #callEvent}/{@link #findEventByClass}/{@link #unregisterEvent}
-     * of the same type to reuse.
+     * Constructs (via its no-arg constructor) and registers one instance of
+     * {@code eventClass}, reused by every future {@link #dispatch}/{@link
+     * #findEventByClass}/{@link #unregisterEvent} of the same type.
      *
      * @param eventClass the concrete {@link Event} type to register
      * @param <T> the event type
      * @return the newly constructed and registered instance
      * @throws NullPointerException if {@code eventClass} is {@code null}
-     * @throws IllegalStateException if an event of type {@code eventClass} is already registered, or {@code eventClass} has no accessible no-arg constructor
+     * @throws IllegalStateException if {@code eventClass} is already registered, or has no accessible no-arg constructor
      */
     @NotNull
     public abstract <T extends Event> T registerEvent(@NotNull Class<T> eventClass);
 
     /**
-     * Unregisters the event of type {@code eventClass} - unlike {@link
-     * #findEventByClass}, this means "this must currently be registered",
-     * not "does this exist?".
+     * Unregisters the event of type {@code eventClass}.
      *
      * @param eventClass the concrete {@link Event} type to unregister
      * @param <T> the event type
@@ -76,32 +63,26 @@ public abstract class EventFactory {
      * @throws IllegalStateException if no event of type {@code eventClass} is registered
      */
     @NotNull
-    public abstract <T extends Event> T callEvent(@NotNull Class<T> eventClass, @NotNull JsonDocument properties);
+    public abstract <T extends Event> T dispatch(@NotNull Class<T> eventClass, @NotNull JsonDocument properties);
 
     /**
-     * Looks up the registered event of type {@code eventClass} the same way
-     * {@link #callEvent} would dispatch to it, but returns {@link
-     * Optional#empty()} instead of throwing when none is registered - for
-     * callers that mean "does this exist?" rather than "this must exist".
+     * Looks up the registered event of type {@code eventClass}, returning
+     * {@link Optional#empty()} instead of throwing when none is registered.
      *
      * @param eventClass the concrete {@link Event} type to look up
      * @param <T> the event type
-     * @return the registered instance, or {@link Optional#empty()} if no event of type {@code eventClass} is registered
+     * @return the registered instance, or {@link Optional#empty()} if none is registered
      * @throws NullPointerException if {@code eventClass} is {@code null}
      */
     @NotNull
     public abstract <T extends Event> Optional<T> findEventByClass(@NotNull Class<T> eventClass);
 
-    /**
-     * Every currently registered event, in no particular order.
-     */
+    /** Every currently registered event, in no particular order. */
     @NotNull
-    public abstract Collection<Event> getEvents();
+    public abstract List<Event> getEvents();
 
     /**
-     * Async counterpart of {@link #registerEvent(Class)}, running on {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor so the calling
-     * thread never blocks on {@code eventClass}'s construction.
+     * Async counterpart of {@link #registerEvent(Class)}.
      *
      * @throws NullPointerException if {@code eventClass} is {@code null}
      */
@@ -111,8 +92,7 @@ public abstract class EventFactory {
     }
 
     /**
-     * Async counterpart of {@link #unregisterEvent(Class)}, running on
-     * {@link MultiTaskingFactory}'s shared virtual-thread executor.
+     * Async counterpart of {@link #unregisterEvent(Class)}.
      *
      * @throws NullPointerException if {@code eventClass} is {@code null}
      */
@@ -122,33 +102,19 @@ public abstract class EventFactory {
     }
 
     /**
-     * Async counterpart of {@link #callEvent(Class, JsonDocument)}, running
-     * on {@link MultiTaskingFactory}'s shared virtual-thread executor so the
-     * calling thread never blocks on {@link Event#handle(JsonDocument)},
-     * which may itself do arbitrary, potentially blocking work.
+     * Async counterpart of {@link #dispatch(Class, JsonDocument)}.
      *
      * @throws NullPointerException if {@code eventClass} or {@code properties} is {@code null}
      */
     @NotNull
-    public <T extends Event> CompletableFuture<T> callEventAsync(@NonNull final Class<T> eventClass, @NonNull final JsonDocument properties) {
-        return MultiTaskingFactory.getInstance().supplyAsync(() -> callEvent(eventClass, properties));
+    public <T extends Event> CompletableFuture<T> dispatchAsync(@NonNull final Class<T> eventClass, @NonNull final JsonDocument properties) {
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> dispatch(eventClass, properties));
     }
 
     /**
-     * Batch counterpart of {@link #callEvent(Class, JsonDocument)}: dispatches
-     * every payload in {@code propertiesBatch} to the registered event of
-     * type {@code eventClass}, one {@link Event#handle(JsonDocument)} call
-     * per payload, concurrently on {@link MultiTaskingFactory}'s shared
-     * virtual-thread executor rather than one at a time - for a caller
-     * processing a large volume of payloads through the same event type
-     * ("big data"), this keeps per-payload latency from being paid
-     * serially, the same reasoning {@code EntityDatabaseClient}'s and {@link
-     * DataFactory}'s batch operations apply. Every payload is dispatched to
-     * the very same registered singleton instance (see {@link Event}'s class
-     * Javadoc) - concurrent {@code handle} calls on that one instance are
-     * therefore only as thread-safe as {@code eventClass}'s own
-     * implementation makes them; {@link Event} itself makes no thread-safety
-     * guarantee beyond that.
+     * Dispatches every payload in {@code propertiesBatch} to the registered
+     * event of type {@code eventClass}, one {@link
+     * Event#handle(JsonDocument)} call per payload, concurrently.
      *
      * @param eventClass the concrete {@link Event} type to dispatch to
      * @param propertiesBatch the payloads passed to {@link Event#handle(JsonDocument)}, one call each
@@ -158,28 +124,25 @@ public abstract class EventFactory {
      * @throws IllegalStateException if no event of type {@code eventClass} is registered
      */
     @NotNull
-    public <T extends Event> List<T> callEvent(@NonNull final Class<T> eventClass, @NonNull final JsonDocument[] propertiesBatch) {
+    public <T extends Event> List<T> dispatch(@NonNull final Class<T> eventClass, @NonNull final JsonDocument[] propertiesBatch) {
         final List<CompletableFuture<T>> dispatches = Arrays.stream(propertiesBatch)
-                .map(properties -> MultiTaskingFactory.getInstance().supplyAsync(() -> callEvent(eventClass, properties)))
+                .map(properties -> MultiTaskingFactory.getInstance().supplyAsync(() -> dispatch(eventClass, properties)))
                 .toList();
         return dispatches.stream().map(CompletableFuture::join).toList();
     }
 
     /**
-     * Async counterpart of {@link #callEvent(Class, JsonDocument[])}, running
-     * on {@link MultiTaskingFactory}'s shared virtual-thread executor so the
-     * calling thread never blocks waiting for the whole batch to finish.
+     * Async counterpart of {@link #dispatch(Class, JsonDocument[])}.
      *
      * @throws NullPointerException if {@code eventClass} or {@code propertiesBatch} is {@code null}
      */
     @NotNull
-    public <T extends Event> CompletableFuture<List<T>> callEventAsync(@NonNull final Class<T> eventClass, @NonNull final JsonDocument[] propertiesBatch) {
-        return MultiTaskingFactory.getInstance().supplyAsync(() -> callEvent(eventClass, propertiesBatch));
+    public <T extends Event> CompletableFuture<List<T>> dispatchAsync(@NonNull final Class<T> eventClass, @NonNull final JsonDocument[] propertiesBatch) {
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> dispatch(eventClass, propertiesBatch));
     }
 
     /**
-     * Async counterpart of {@link #findEventByClass(Class)}, running on
-     * {@link MultiTaskingFactory}'s shared virtual-thread executor.
+     * Async counterpart of {@link #findEventByClass(Class)}.
      *
      * @throws NullPointerException if {@code eventClass} is {@code null}
      */
@@ -188,12 +151,9 @@ public abstract class EventFactory {
         return MultiTaskingFactory.getInstance().supplyAsync(() -> findEventByClass(eventClass));
     }
 
-    /**
-     * Async counterpart of {@link #getEvents()}, running on {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor.
-     */
+    /** Async counterpart of {@link #getEvents()}. */
     @NotNull
-    public CompletableFuture<Collection<Event>> getEventsAsync() {
+    public CompletableFuture<List<Event>> getEventsAsync() {
         return MultiTaskingFactory.getInstance().supplyAsync(this::getEvents);
     }
 

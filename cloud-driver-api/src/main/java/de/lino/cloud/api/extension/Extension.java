@@ -1,6 +1,6 @@
 package de.lino.cloud.api.extension;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.extension.detection.ProjectBuildDetection;
 import de.lino.cloud.api.extension.detection.ProjectType;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
@@ -9,26 +9,18 @@ import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import lombok.Getter;
-import lombok.NonNull;
 import lombok.Setter;
 import lombok.ToString;
 
 import java.nio.file.Path;
+import java.util.logging.Logger;
 
 /**
- * Base class for an extension: subclass it, implement the lifecycle
- * hooks below, and ship an {@code extension.json} in the subclass's own {@code
- * resources} folder (see {@link ExtensionPropertiesLoader} for its shape).
- *
- * <p>A subclass does not register itself. After constructing one, register
- * it explicitly with {@link ExtensionFactory#register(Extension)} (e.g.
- * {@code CloudAPI.getInstance().getExtensionFactory().register(new
- * DemoExtension())}) - there is no automatic registration.
- *
- * <p>{@link #getExtensionProperties()} and {@link #getProjectBuildType()} are
- * resolved once, at construction time, from {@code extension.json} and the
- * working directory's build descriptor respectively, so a subclass never
- * assembles either itself.
+ * Base class for an extension: subclass it, implement the lifecycle hooks
+ * below, and ship an {@code extension.json} in the subclass's own {@code
+ * resources} folder (see {@link ExtensionPropertiesLoader} for its shape). A
+ * subclass does not register itself - register it explicitly with {@link
+ * ExtensionFactory#register(Extension)} after construction.
  */
 @Getter @Setter @ToString
 public abstract class Extension {
@@ -46,10 +38,8 @@ public abstract class Extension {
     private final ProjectType projectBuildType;
 
     /**
-     * Loads this extension's {@link ExtensionProperties} and {@link
-     * ProjectType}. Does not register {@code this} - call {@link
-     * ExtensionFactory#register(Extension)} explicitly once construction is
-     * complete.
+     * Loads this extension's {@link ExtensionProperties} and {@link ProjectType}. Does not
+     * register {@code this}.
      *
      * @throws IllegalStateException if this class has no {@code extension.json} resource, or it is malformed
      */
@@ -105,19 +95,23 @@ public abstract class Extension {
     }
 
     /**
-     * Returns the host process's {@link CloudAPI} singleton, for lifecycle hooks that need to
-     * reach it (e.g. to persist entities, dispatch events, or read the shared logger) without
-     * each repeating {@code Asserts.requireNonNull(CloudAPI.getInstance())} themselves.
+     * Returns the host process's {@link CloudDriver} singleton.
      *
-     * @return the {@link CloudAPI} singleton
-     * @throws NullPointerException if {@link CloudAPI#getInstance()} has not been set up yet
+     * @return the {@link CloudDriver} singleton
+     * @throws NullPointerException if {@link CloudDriver#getInstance()} has not been set up yet
      */
-    public CloudAPI cloudAPI() {
-        return Asserts.requireNonNull(CloudAPI.getInstance());
+    public CloudDriver cloudDriver() {
+        return Asserts.requireNonNull(CloudDriver.getInstance());
     }
 
+    /** @return the extensions folder path */
     public Path getWorkingDirectory() {
         return Constraints.EXTENSIONS_PATH;
+    }
+
+    /** @return the host {@link CloudDriver}'s shared logger */
+    public Logger getLogger() {
+        return this.cloudDriver().getLogger();
     }
 
 }

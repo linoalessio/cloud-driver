@@ -4,16 +4,20 @@ import de.lino.cloud.api.utility.Asserts;
 
 /**
  * A {@link DataEncryptionKey} after being wrapped (encrypted) by a
- * key-encryption key (KEK) held in a {@link KeyEncryptionService}. Records
- * which KEK version wrapped it ({@link #keyEncryptionKeyId()}) so the correct
- * KEK can be located again for unwrapping even after {@link
- * KeyEncryptionService#rotate() rotation}, and which algorithm the unwrapped
- * DEK itself uses ({@link #dataEncryptionKeyAlgorithmId()}) for crypto
- * agility.
+ * key-encryption key (KEK) held in a {@link KeyEncryptionService}.
+ *
+ * @param keyEncryptionKeyId identifier of the KEK version that wrapped this key,
+ *                            so the correct KEK can be located again after {@link KeyEncryptionService#rotate() rotation}
+ * @param wrappedKeyMaterial the wrapped (encrypted) DEK material
+ * @param wrapAlgorithm algorithm used to wrap the DEK
+ * @param dataEncryptionKeyAlgorithmId identifier of the algorithm the unwrapped DEK itself uses
  */
 public record WrappedKey(String keyEncryptionKeyId, byte[] wrappedKeyMaterial, String wrapAlgorithm,
                           String dataEncryptionKeyAlgorithmId) {
 
+    /**
+     * @throws NullPointerException if any component is {@code null}
+     */
     public WrappedKey {
         Asserts.requireNonNull(keyEncryptionKeyId, "@WrappedKey: keyEncryptionKeyId cannot be null");
         Asserts.requireNonNull(wrappedKeyMaterial, "@WrappedKey: wrappedKeyMaterial cannot be null");
@@ -23,10 +27,7 @@ public record WrappedKey(String keyEncryptionKeyId, byte[] wrappedKeyMaterial, S
         wrappedKeyMaterial = wrappedKeyMaterial.clone();
     }
 
-    /**
-     * A defensive copy of the wrapped key material, so neither the caller
-     * nor this record can mutate shared state after the fact.
-     */
+    /** @return a defensive copy of the wrapped key material */
     @Override
     public byte[] wrappedKeyMaterial() {
         return wrappedKeyMaterial.clone();

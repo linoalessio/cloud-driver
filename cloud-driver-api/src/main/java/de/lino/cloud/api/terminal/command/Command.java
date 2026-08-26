@@ -1,21 +1,14 @@
 package de.lino.cloud.api.terminal.command;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
 /**
- * A single command a {@link CommandService} can dispatch input to.
- *
- * <p>This is intentionally the entire contract - a name, optional aliases, a description, and
- * an {@link #execute(String[])} action. There is no typed-argument/syntax layer here (unlike,
- * say, a full argument-parsing DSL): {@code de.lino.cloud.api.terminal} only implements the
- * terminal engine itself (reading, coloring, prompt handling, dispatch, tab-completing
- * registered names), not a catalog of concrete commands or how individual commands should
- * parse their own arguments - see {@code TerminalUsageSample} for how a caller wires this up
- * without any concrete {@link Command} implementations registered at all.
+ * A single command a {@link CommandService} can dispatch input to: a name, optional aliases, a
+ * description, and an {@link #execute(String[])} action. No typed-argument/syntax layer.
  */
 public interface Command {
 
@@ -45,8 +38,11 @@ public interface Command {
      */
     void execute(@NotNull String[] args);
 
+    /**
+     * @return the host application's {@link Terminal}
+     */
     default Terminal terminal() {
-        return CloudAPI.getInstance().getTerminal();
+        return CloudDriver.getInstance().getTerminal();
     }
 
 }

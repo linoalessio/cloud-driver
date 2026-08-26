@@ -1,7 +1,7 @@
 package de.lino.cloud.api.factory;
 
 import com.google.common.collect.Maps;
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
@@ -12,42 +12,32 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
 
 /**
  * Stores, looks up, and drives the lifecycle of every registered {@link
- * Extension} extension - the single place responsible for <em>all</em>
- * extensions, as opposed to {@link Extension} itself, which only models
- * one. Reached through {@link CloudAPI#getExtensionFactory()}.
+ * Extension} - reached through {@link CloudDriver#getExtensionFactory()}. An
+ * {@link Extension} is not registered automatically on construction; call
+ * {@link #register} explicitly once it is built.
  *
- * <p>Only {@link #register}, {@link #findByName}, and {@link #getExtensions} -
- * the actual storage of registered extensions - are abstract; every
- * lifecycle-driving method below is implemented here, generically, in terms
- * of those three, the same way {@link DataFactory}'s {@code *Async} methods
- * are implemented in terms of its abstract sync ones.
- *
- * <p>An {@link Extension} subclass is not registered automatically - after
- * constructing one, register it explicitly with {@link #register}.
+ * <p>{@link #register}, {@link #findByName}, and {@link #getExtensions} are
+ * abstract; every lifecycle-driving method below is implemented here
+ * generically in terms of those three.
  */
 public abstract class ExtensionFactory {
 
     /**
-     * The running {@link Thread} for each currently-{@link
-     * ExtensionStatus#RUNNING running or starting} extension, keyed by
-     * {@link ExtensionProperties#getExtensionName()}. Populated by {@link
-     * #start} and drained by either {@link #stop} (on an explicit stop) or
-     * the thread itself, on its way out, once {@link Extension#onRunning}
-     * returns - so an entry only exists here while that extension's thread
-     * is actually alive.
+     * The running {@link Thread} for each currently-running or -starting
+     * extension, keyed by extension name. Populated by {@link #start},
+     * drained by {@link #stop} or by the thread itself once {@link
+     * Extension#onRunning} returns.
      */
     private final Map<String, Thread> runningThreads = Maps.newConcurrentMap();
 
     /**
      * Registers {@code extension} under its {@link
-     * ExtensionProperties#getExtensionName() extension name}. Call this
-     * explicitly once {@code extension} has been fully constructed.
+     * ExtensionProperties#getExtensionName() extension name}.
      *
+     * @param extension the fully-constructed extension to register
      * @throws NullPointerException if {@code extension} is {@code null}
      * @throws IllegalStateException if an extension with the same name is already registered
      */
@@ -57,24 +47,23 @@ public abstract class ExtensionFactory {
      * Looks up a registered extension by its {@link
      * ExtensionProperties#getExtensionName() extension name}.
      *
+     * @param extensionName the name to look up
+     * @return the registered extension, or {@link Optional#empty()} if none matches
      * @throws NullPointerException if {@code extensionName} is {@code null}
      */
     @NotNull
     public abstract Optional<Extension> findByName(@NotNull String extensionName);
 
-    /**
-     * Every currently registered extension, in no particular order.
-     */
+    /** Every currently registered extension, in no particular order. */
     @NotNull
     public abstract List<Extension> getExtensions();
 
     /**
-     * Starts every registered extension in dependency order - each
-     * extension's {@link ExtensionProperties#getDependencies()
-     * dependencies} are started before it is, so by the time {@link #start}
-     * runs for it, {@link #start}'s own dependency check always passes for
-     * every dependency that is registered.
+     * Starts every registered extension in dependency order, so each
+     * extension's own dependencies are already {@link
+     * ExtensionStatus#RUNNING} by the time {@link #start} runs for it.
      *
+     * @param args the arguments passed to every extension's {@link Extension#onRunning}
      * @throws NullPointerException if {@code args} is {@code null}
      * @throws IllegalStateException if the registered extensions' dependencies form a cycle
      */
@@ -83,13 +72,9 @@ public abstract class ExtensionFactory {
     }
 
     /**
-     * Async counterpart of {@link #startAll(String[])}, running on {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor so the calling
-     * thread never blocks on every extension's {@code onLoading()}/{@code
-     * onRunning()} - each of which may itself block on I/O. Per-extension
+     * Async counterpart of {@link #startAll(String[])}. Per-extension
      * failures still surface through that extension's {@link
-     * Extension#onException}, exactly as {@link #startAll} handles them
-     * synchronously; the returned future only ever fails if {@link
+     * Extension#onException}; the returned future only fails if {@link
      * #startAll} itself throws (e.g. a dependency cycle).
      *
      * @throws NullPointerException if {@code args} is {@code null}
@@ -100,10 +85,9 @@ public abstract class ExtensionFactory {
     }
 
     /**
-     * Registered extensions ordered so that every extension appears
-     * after every other registered extension it (transitively) depends on.
-     * A dependency name that is not registered is left for {@link #start} to
-     * reject - it does not affect ordering here.
+     * Registered extensions ordered so each appears after every registered
+     * extension it (transitively) depends on. A dependency name that is not
+     * registered is left for {@link #start} to reject.
      */
     @NotNull
     private List<Extension> dependencyOrder() {
@@ -130,30 +114,20 @@ public abstract class ExtensionFactory {
     }
 
     /**
-     * Starts {@code extension}: first checks that every extension named
-     * in {@link ExtensionProperties#getDependencies()} is registered and
-     * already {@link ExtensionStatus#RUNNING}, then {@link
-     * ExtensionStatus#LOADING} followed by {@link Extension#onLoading()},
-     * then {@link ExtensionStatus#RUNNING} followed by {@link
-     * Extension#onRunning(String[])} with {@code args}. A {@link
-     * RuntimeException} thrown by the dependency check or either phase is
-     * caught, the extension's status is set to {@link
-     * ExtensionStatus#ERROR}, and it is routed to {@link
-     * Extension#onException} instead of propagating - so one failing
-     * extension does not prevent {@link #startAll} from starting the rest.
+     * Starts {@code extension}: checks its declared dependencies are
+     * registered and running, then drives it through {@link
+     * ExtensionStatus#LOADING}/{@link Extension#onLoading()} and {@link
+     * ExtensionStatus#RUNNING}/{@link Extension#onRunning(String[])}. Runs
+     * on its own dedicated, named, daemon {@link Thread} rather than the
+     * shared virtual-thread executor, since {@code onRunning} may block
+     * indefinitely; the thread is tracked (by extension name) so {@link
+     * #stop} can later signal it. A {@link RuntimeException} from the
+     * dependency check or either phase is caught, the extension's status is
+     * set to {@link ExtensionStatus#ERROR}, and it is routed to {@link
+     * Extension#onException} instead of propagating.
      *
-     * <p>Runs on its own dedicated, named, daemon {@link Thread} - not {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor - since an
-     * extension may itself run an infinite loop (e.g. a CLI blocked on
-     * {@code System.in}) for as long as it is running. Giving it its own
-     * thread keeps that indefinite work off the shared pool entirely and
-     * makes it identifiable by name in a thread dump; daemon, so an
-     * extension that never returns from {@link Extension#onRunning} does
-     * not by itself keep the JVM alive once everything else has shut down.
-     * The thread is tracked (keyed by {@link
-     * ExtensionProperties#getExtensionName()}) for the rest of its life so
-     * {@link #stop} can later signal it to end - see {@link #stop} for how.
-     *
+     * @param extension the extension to start
+     * @param args the arguments passed to {@link Extension#onRunning}
      * @throws NullPointerException if {@code extension} or {@code args} is {@code null}
      */
     public void start(@NonNull final Extension extension, @NonNull final String[] args) {
@@ -187,8 +161,7 @@ public abstract class ExtensionFactory {
     }
 
     /**
-     * Async counterpart of {@link #start(Extension, String[])}, running on
-     * {@link MultiTaskingFactory}'s shared virtual-thread executor.
+     * Async counterpart of {@link #start(Extension, String[])}.
      *
      * @throws NullPointerException if {@code extension} or {@code args} is {@code null}
      */
@@ -220,12 +193,9 @@ public abstract class ExtensionFactory {
     /**
      * Ends every registered extension the same way {@link #stop} ends a
      * single one. A {@link RuntimeException} from one extension's {@link
-     * #stop} (i.e. from its own {@link Extension#onEnding()}) is caught and
-     * routed to that extension's {@link Extension#onException} instead of
-     * propagating - the same "one failure does not abort the rest" handling
-     * {@link #start} already applies to {@code onLoading()}/{@code
-     * onRunning()} failures - so a single misbehaving extension cannot
-     * prevent every other registered extension from being stopped too.
+     * #stop} is caught and routed to that extension's {@link
+     * Extension#onException} instead of propagating, so one misbehaving
+     * extension cannot prevent the rest from being stopped.
      */
     public void stopAll() {
         getExtensions().forEach(extension -> {
@@ -237,10 +207,7 @@ public abstract class ExtensionFactory {
         });
     }
 
-    /**
-     * Async counterpart of {@link #stopAll()}, running on {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor.
-     */
+    /** Async counterpart of {@link #stopAll()}. */
     @NotNull
     public CompletableFuture<Void> stopAllAsync() {
         return MultiTaskingFactory.getInstance().runAsync(this::stopAll);
@@ -248,25 +215,14 @@ public abstract class ExtensionFactory {
 
     /**
      * Ends {@code extension}: {@link ExtensionStatus#ENDING} then {@link
-     * Extension#onEnding()}, then - if {@code extension} still has a
-     * {@link #start started} thread running - {@link Thread#interrupt()
-     * interrupts} it and drops it from tracking. {@code onEnding()} is
-     * called first so the extension gets a chance to react and wind down
-     * cooperatively (e.g. clear a flag its own loop checks) before the
-     * interrupt arrives; the interrupt then covers the case where that
-     * alone doesn't unblock it (e.g. a blocked {@link Object#wait()} or
-     * {@link Thread#sleep}). This is still only cooperative, in-process
-     * signaling, not a forceful kill - a thread parked in blocking I/O
-     * (e.g. reading {@code System.in} for a CLI) will not respond to
-     * {@code interrupt()} either, since interrupting a blocked native read
-     * does not unblock it; the thread will only exit once that call itself
+     * Extension#onEnding()}, then interrupts and untracks its {@link
+     * #start started} thread, if still running. The thread is always
+     * removed/interrupted, even if {@code onEnding()} itself throws. This
+     * is cooperative, in-process signaling only - a thread blocked in
+     * native I/O will not respond to the interrupt until that call itself
      * returns.
      *
-     * <p>The tracked thread is always removed and interrupted - even if
-     * {@link Extension#onEnding()} itself throws - since a thread's
-     * tracking/interruption is this method's own cleanup responsibility, not
-     * something a failing extension should be able to skip and leak.
-     *
+     * @param extension the extension to stop
      * @throws NullPointerException if {@code extension} is {@code null}
      */
     @SneakyThrows
@@ -284,8 +240,7 @@ public abstract class ExtensionFactory {
     }
 
     /**
-     * Async counterpart of {@link #stop(Extension)}, running on {@link
-     * MultiTaskingFactory}'s shared virtual-thread executor.
+     * Async counterpart of {@link #stop(Extension)}.
      *
      * @throws NullPointerException if {@code extension} is {@code null}
      */

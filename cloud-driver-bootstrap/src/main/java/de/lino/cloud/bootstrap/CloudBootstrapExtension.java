@@ -4,33 +4,40 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.ExtensionFactory;
 
 /**
- * A no-op placeholder representing {@code cloud-driver-bootstrap} itself as an {@link Extension}
- * - it does nothing in any lifecycle hook. Its sole purpose is to exist under the {@code
- * "cloud-driver-bootstrap"} name (see its {@code extension.json}) so other extensions can declare
- * a dependency on the host bootstrap being present/started, the same way they would declare a
- * dependency on any other extension, via {@link ExtensionFactory}'s ordinary dependency-ordering
- * mechanism - e.g. {@code cloud-driver-extensions-watcher}'s {@code CloudWatcherExtension}.
- * Discovered and registered the same way any other extension jar is, by {@code
- * ExtensionFolderScanner} scanning {@code user.dir} (see {@code CloudBootstrap#
- * startExtensionsBootstrapScheduler}) - nothing in this repo constructs it directly.
+ * No-op placeholder representing {@code cloud-driver-bootstrap} itself as an {@link Extension},
+ * so other extensions can declare a dependency on the host bootstrap under its {@code
+ * "cloud-driver-bootstrap"} name via {@link ExtensionFactory}'s ordinary dependency-ordering
+ * mechanism.
  */
 public class CloudBootstrapExtension extends Extension {
 
+    /** No-op. */
     @Override
     public void onLoading() {
 
     }
 
+    /**
+     * No-op.
+     *
+     * @param args unused
+     */
     @Override
     public void onRunning(String[] args) {
 
     }
 
+    /** No-op. */
     @Override
     public void onEnding() {
 
     }
 
+    /**
+     * No-op.
+     *
+     * @param reason unused
+     */
     @Override
     public void onException(RuntimeException reason) {
 

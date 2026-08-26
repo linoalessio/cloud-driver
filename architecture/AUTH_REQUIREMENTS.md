@@ -479,10 +479,10 @@ aber nicht zwingend bereits importiert — prüfen und ggf. ergänzen.)
 
 ## 8. `cloud-driver-bootstrap/src/main/java/de/lino/cloud/bootstrap/CloudBootstrap.java` (ändern)
 
-`initiateCloudAPI()` konstruiert aktuell `DefaultCloudAPI.setInstance(...)`, welches
+`initiateCloudDriver()` konstruiert aktuell `DefaultCloudDriver.setInstance(...)`, welches
 intern bereits einen unauthentifizierten `DefaultRestFactory(dataFactory)` anlegt (siehe
-`DefaultCloudAPI.setInstance`). Für Auth brauchen wir stattdessen einen eigenen,
-JWT-gesicherten `RestFactory` — der über `CloudAPI.getRestFactory()` bereitgestellte ist
+`DefaultCloudDriver.setInstance`). Für Auth brauchen wir stattdessen einen eigenen,
+JWT-gesicherten `RestFactory` — der über `CloudDriver.getRestFactory()` bereitgestellte ist
 laut dessen eigenem Javadoc bewusst unauthentifiziert und nicht für den Einsatz außerhalb
 von `localhost` gedacht.
 
@@ -578,7 +578,7 @@ irgendjemand mit Zugriff auf Port 8080 selbst einen Account erstellen kann.
 ```java
 package de.lino.cloud.bootstrap;
 
-import de.lino.cloud.api.CloudAPI;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.plugin.security.auth.AuthService;
 import de.lino.cloud.plugin.security.jwt.JjwtSigner;
@@ -607,8 +607,8 @@ public final class CreateUserCli {
             System.exit(1);
         }
 
-        final CloudAPI cloudApi = CloudBootstrap.initiateCloudApiForCli();
-        final DataFactory dataFactory = cloudApi.getDataFactory();
+        final CloudDriver cloudDriver = CloudBootstrap.initiateCloudDriverForCli();
+        final DataFactory dataFactory = cloudDriver.getDataFactory();
 
         final String signingKey = System.getenv("JWT_SIGNING_KEY");
         if (signingKey == null || signingKey.isBlank()) {
@@ -634,10 +634,10 @@ public final class CreateUserCli {
 }
 ```
 
-Dafür muss `initiateCloudAPI()` in `CloudBootstrap` in eine wiederverwendbare,
-paket-sichtbare Methode `initiateCloudApiForCli()` umbenannt/extrahiert werden (gleicher
-Inhalt wie die bisherige `private static Optional<CloudAPI> initiateCloudAPI()`, nur
-`CloudAPI` statt `Optional<CloudAPI>` zurückgebend, `orElseThrow()` intern), damit sowohl
+Dafür muss `initiateCloudDriver()` in `CloudBootstrap` in eine wiederverwendbare,
+paket-sichtbare Methode `initiateCloudDriverForCli()` umbenannt/extrahiert werden (gleicher
+Inhalt wie die bisherige `private static Optional<CloudDriver> initiateCloudDriver()`, nur
+`CloudDriver` statt `Optional<CloudDriver>` zurückgebend, `orElseThrow()` intern), damit sowohl
 `main` als auch `CreateUserCli` dieselbe Bootstrap-Logik nutzen, ohne den vollen
 Extension-/Scheduler-Start mitzuziehen.
 

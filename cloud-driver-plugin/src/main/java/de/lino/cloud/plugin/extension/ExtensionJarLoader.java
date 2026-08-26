@@ -21,44 +21,13 @@ import java.util.jar.JarFile;
 
 /**
  * Loads every concrete {@link Extension} subclass out of one jar file, each
- * jar in its own {@link URLClassLoader} - isolating that jar's own bundled
- * classes/libraries from every other loaded jar's, while still sharing {@code
- * cloud-driver-api} (and everything else already on this process's own
- * classpath) via the parent classloader, so an {@code instanceof Extension}/
- * {@link de.lino.cloud.api.factory.ExtensionFactory#register} check across
- * the boundary sees the very same {@link Extension} class rather than two
- * distinct ones with identical bytecode but different runtime identity (two
- * classloaders that each independently define a class of the same name
- * produce two unrelated {@code Class} objects in the JVM - hence the shared
- * parent). Concrete infrastructure with no {@code cloud-driver-api} contract
- * of its own - real classloading/reflection I/O, not a swappable behavior,
- * the same reasoning {@code EntityDatabaseClient}/{@code
- * PendingUploadScheduler} follow.
- *
- * <p>Class loading on that classloader is left parent-first (the JDK
- * default), for the type-identity reason above, but {@link #newClassLoader}
- * overrides resource loading ({@code getResource}/{@code
- * getResourceAsStream}) to be child-first instead: the parent is the host
- * process's own classloader, which may itself ship a same-named resource
- * (e.g. the host bundles its own {@code extension.json}, as {@code
- * cloud-driver-bootstrap} does) - parent-first resource delegation would
- * silently hand that back instead of this jar's own, misattributing this
- * extension's properties to the host's.
- *
- * <p>A jar only yields an {@link Extension} instance if it both declares a
- * concrete (non-abstract) subclass of {@link Extension} <em>and</em> ships an
- * {@code extension.json} - {@link Extension}'s own constructor already
- * enforces the second half of that (via {@link
- * de.lino.cloud.api.extension.info.ExtensionPropertiesLoader}, resolved
- * against the class's own classloader - this jar's {@link URLClassLoader} -
- * so it correctly finds an {@code extension.json} bundled in this very jar,
- * not the host's, thanks to the child-first resource override above), so
- * {@link #load} only needs to check the first half itself. A class that
- * cannot be loaded, is not a concrete {@link Extension} subclass, or fails to
- * construct (most commonly: missing {@code extension.json}) is skipped
- * rather than failing the whole jar - the same "one failure does not abort
- * the rest" philosophy {@link de.lino.cloud.api.factory.ExtensionFactory#startAll}
- * applies to starting extensions.
+ * jar given its own {@link URLClassLoader} (parent-first class loading, so
+ * shared types like {@link Extension} resolve to the same {@code Class}
+ * across the boundary; child-first resource loading, so a same-named
+ * resource bundled in the host process - e.g. {@code extension.json} -
+ * doesn't shadow the jar's own). A class that cannot be loaded, isn't a
+ * concrete {@link Extension} subclass, or fails to construct (most commonly:
+ * missing {@code extension.json}) is skipped rather than failing the jar.
  */
 public final class ExtensionJarLoader {
 
@@ -101,16 +70,9 @@ public final class ExtensionJarLoader {
         try {
             final URL jarUrl = jarPath.toUri().toURL();
             return new URLClassLoader(new URL[] {jarUrl}, Extension.class.getClassLoader()) {
-                // Class loading stays parent-first (the default) so shared types like
-                // Extension resolve to the same Class object on both sides of the
-                // boundary - see this class's own Javadoc. Resource loading, however,
-                // must be child-first: two independently-loaded jars can each ship a
-                // same-named resource (e.g. extension.json), and the parent classloader
-                // here is the running host process itself, which may ship one too - the
-                // default parent-first ClassLoader#getResource would silently hand back
-                // the host's own resource instead of this jar's, misattributing this
-                // extension's properties to the host's. Checking findResource (this
-                // jar's own URL only) before falling back to the parent avoids that.
+                // Resource loading is child-first: check this jar's own URL before
+                // falling back to the parent, so a same-named host resource (e.g.
+                // extension.json) never shadows this jar's own.
                 @Override
                 public URL getResource(final String name) {
                     final URL own = findResource(name);

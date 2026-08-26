@@ -5,58 +5,40 @@ import com.google.common.collect.Maps;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Registry and dispatcher for a {@link Terminal}'s {@link Command}s.
- *
- * <p><b>Caching.</b> Lookup ({@link #findByName(String)}) is a direct, case-insensitive map
- * read - every registered command's name and every alias is indexed once, at {@link
- * #register(Command)} time, rather than scanning the registry on every keystroke a {@code
- * TabCompleter} or dispatch asks about. {@link #registeredCommands()} returns a snapshot list
- * that is only ever rebuilt when the registry actually changes ({@link #register(Command)}/
- * {@link #unregister(Command)}), not reconstructed on every call - a {@code TabCompleter}
- * calls this once per {@code Tab} press, so keeping it O(1) between mutations matters.
- *
- * <p><b>Async.</b> {@link #dispatchAsync(String, String[])} runs the matched {@link
- * Command#execute(String[])} on {@link MultiTaskingFactory}'s shared virtual-thread executor,
- * the same dispatch primitive every other {@code *Async} method in this codebase is built on
- * ({@code DataFactory}, {@code EventFactory}, {@code ExtensionFactory}, ...) - so a
- * long-running command never blocks the terminal's reading thread from accepting the next
- * line, and a failing command's exception is caught and logged rather than silently dropped
- * or left to crash the reading thread.
+ * Registry and dispatcher for a {@link Terminal}'s {@link Command}s. Lookup is a direct,
+ * case-insensitive map read; {@link #dispatchAsync(String, String[])} runs the matched command
+ * on {@link MultiTaskingFactory}'s shared virtual-thread executor.
  */
 public final class CommandService {
 
     private static final Logger LOGGER = Logger.getLogger(CommandService.class.getName());
 
-    /**
-     * Every registered command, keyed by its lowercase name and every lowercase alias, so
-     * {@link #findByName(String)} is a single, direct map read regardless of how many aliases
-     * a command declares.
-     */
+    /** Every registered command, keyed by its lowercase name and every lowercase alias. */
     private final Map<String, Command> commandsByLookupKey = Maps.newConcurrentMap();
 
-    /**
-     * Cached, immutable snapshot backing {@link #registeredCommands()} - rebuilt only inside
-     * {@link #register(Command)}/{@link #unregister(Command)}, never on a plain read.
-     */
+    /** Cached, immutable snapshot backing {@link #snapshot()}; rebuilt only on register/unregister. */
     private volatile List<Command> snapshot = List.of();
 
-    /**
-     * Every distinct registered command, in registration order, backing {@link #snapshot}'s
-     * rebuild - kept separately from {@link #commandsByLookupKey} since one command occupies
-     * several lookup keys (its name plus every alias) but should only ever appear once here.
-     */
+    /** Every distinct registered command, in registration order, backing {@link #snapshot}'s rebuild. */
     private final List<Command> registrationOrder = Lists.newLinkedList();
+
+    /**
+     * Registers every command in {@code commands}.
+     *
+     * @param commands the commands to register
+     */
+    public void register(@NonNull final Command... commands) {
+        Arrays.stream(commands).forEach(this::register);
+    }
 
     /**
      * Registers {@code command} under its name and every alias (case-insensitively).
@@ -81,6 +63,15 @@ public final class CommandService {
         if (this.commandsByLookupKey.putIfAbsent(lookupKey, command) != null) {
             throw new IllegalStateException("@CommandService.register: '" + key + "' is already registered");
         }
+    }
+
+    /**
+     * Unregisters every command in {@code commands}.
+     *
+     * @param commands the commands to unregister
+     */
+    public void unregister(@NonNull final Command... commands) {
+        Arrays.stream(commands).forEach(this::unregister);
     }
 
     /**
@@ -117,20 +108,17 @@ public final class CommandService {
      * not recomputed on every call (see this class's Javadoc)
      */
     @NotNull
-    public List<Command> registeredCommands() {
+    public List<Command> snapshot() {
         return this.snapshot;
     }
 
     /**
-     * Looks {@code name} up and runs it synchronously, on the calling thread, with {@code
-     * args}. Prefer {@link #dispatchAsync(String, String[])} from a terminal's reading loop -
-     * this synchronous variant exists for callers (e.g. tests, or a caller already off the
-     * reading thread) that need to observe completion or a thrown exception directly.
+     * Looks {@code name} up and runs it synchronously on the calling thread. Prefer
+     * {@link #dispatchAsync(String, String[])} from a terminal's reading loop.
      *
      * @param name the command name or alias to dispatch
      * @param args the arguments following the command name
-     * @return {@code true} if a command was found and run, {@code false} if nothing is
-     * registered under {@code name}
+     * @return {@code true} if a command was found and run, {@code false} otherwise
      * @throws NullPointerException if {@code name} or {@code args} is {@code null}
      */
     public boolean dispatch(@NotNull final String name, @NotNull final String[] args) {
@@ -143,14 +131,12 @@ public final class CommandService {
 
     /**
      * Looks {@code name} up and, if found, runs it on {@link MultiTaskingFactory}'s shared
-     * virtual-thread executor - never blocking the calling thread. Any {@link RuntimeException}
-     * thrown by the command is caught and logged rather than propagated, so one failing command
-     * can never take down the caller (typically a terminal's reading loop).
+     * virtual-thread executor. A thrown {@link RuntimeException} is caught and logged rather
+     * than propagated.
      *
      * @param name the command name or alias to dispatch
      * @param args the arguments following the command name
-     * @return a future completing with {@code true} once the command has run, or {@code false}
-     * immediately if nothing is registered under {@code name}
+     * @return a future completing with {@code true} if a command ran, {@code false} otherwise
      * @throws NullPointerException if {@code name} or {@code args} is {@code null}
      */
     @NotNull

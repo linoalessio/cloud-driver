@@ -11,14 +11,10 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * {@link ConnectivityChecker} that answers by opening a short-lived TCP
- * connection to one of a handful of well-known, highly available public DNS
- * resolvers ({@link #DEFAULT_PROBES}) - not the configured database itself,
- * since a database connection failure does not by itself distinguish "no
- * internet connection" from any other outage (wrong credentials, database
- * down, firewall rule, ...). {@link #isAvailable()} tries each probe in turn
- * and returns {@code true} on the first that accepts a connection within
- * {@link #timeout}; only if every probe fails does it report unavailable.
+ * {@link ConnectivityChecker} that probes well-known public DNS resolvers
+ * ({@link #DEFAULT_PROBES}) via a short-lived TCP connection, rather than
+ * the configured database, so a database outage isn't mistaken for a
+ * network outage. Reports available on the first probe that connects.
  */
 public final class InternetConnectivityChecker implements ConnectivityChecker {
 
