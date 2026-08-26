@@ -35,11 +35,11 @@ public class DatabaseWatchEvent extends Event {
         final Optional<StoredFile> uploadedFile = this.cloudDriver().getFileFactory().findById(id);
 
         if (uploadedFile.isEmpty()) {
-            CloudDriver.getInstance().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));
+            this.cloudDriver().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));
             return;
         }
 
-        CloudDriver.getInstance().getLogger().info(String.format("Received new file: '%s'", uploadedFile.get()));
+        this.cloudDriver().getLogger().info(String.format("Received new file: '%s'", uploadedFile.get()));
 
     }
 
