@@ -1,6 +1,4 @@
-package de.lino.cloud.api.terminal.color;
-
-import de.lino.cloud.api.terminal.Terminal;
+package de.lino.cloud.api.terminal.ansi;
 
 import java.util.Arrays;
 import java.util.Map;
@@ -9,7 +7,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Legacy Minecraft-style color codes ({@code &0}-{@code &f}, {@code &r}) translated into ANSI
+ * Legacy Minecraft-style ansi codes ({@code &0}-{@code &f}, {@code &r}) translated into ANSI
  * SGR escape sequences for use throughout {@code de.lino.cloud.api.terminal}.
  *
  * <pre>{@code
@@ -43,12 +41,12 @@ public enum AnsiColors {
     STRIKETHROUGH("&k", "[9m"),
     ;
 
-    /** The legacy color code this constant is triggered by (e.g. {@code "&a"}). */
+    /** The legacy ansi code this constant is triggered by (e.g. {@code "&a"}). */
     private final String code;
 
     /**
      * Precomputed ANSI SGR escape sequence - {@code "\u001b[0m"} for {@link #RESET},
-     * {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} for a color depending on {@code bright},
+     * {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} for a ansi depending on {@code bright},
      * or a fixed text-style sequence (e.g. {@code "\u001b[1m"}) for {@link #BOLD} and
      * the other style constants.
      */
@@ -64,16 +62,16 @@ public enum AnsiColors {
         this.ansi = ansi;
     }
 
-    /** Regular expression matching any legacy color code this enum recognizes. */
+    /** Regular expression matching any legacy ansi code this enum recognizes. */
     private static final Pattern COLOR_PATTERN = Pattern.compile("&[0-9a-fiklru]");
 
-    /** Lookup from a legacy color code (e.g. {@code "&a"}) to its constant. */
+    /** Lookup from a legacy ansi code (e.g. {@code "&a"}) to its constant. */
     private static final Map<String, AnsiColors> CODE_LOOKUP = Arrays.stream(values())
             .collect(Collectors.toMap(color -> color.code, color -> color));
 
     /**
-     * Translates every legacy color code in {@code message} into its ANSI escape sequence,
-     * appending a final {@link #RESET} so the color does not bleed into later output.
+     * Translates every legacy ansi code in {@code message} into its ANSI escape sequence,
+     * appending a final {@link #RESET} so the ansi does not bleed into later output.
      *
      * @param message the text to translate, e.g. {@code "&aOK&8: &7done"}
      * @return {@code message} with every recognized {@code &x} code replaced by its ANSI
@@ -84,7 +82,7 @@ public enum AnsiColors {
     }
 
     /**
-     * Translates every legacy color code in {@code message} into its ANSI escape sequence.
+     * Translates every legacy ansi code in {@code message} into its ANSI escape sequence.
      *
      * @param message the text to translate, e.g. {@code "&aOK&8: &7done"}
      * @param reset   whether to append a final {@link #RESET} sequence

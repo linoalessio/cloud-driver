@@ -1,6 +1,6 @@
 package de.lino.cloud.extensions.terminal.command;
 
-import de.lino.cloud.api.terminal.command.Command;
+import de.lino.cloud.api.terminal.service.Command;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * Dispatches an arbitrary Linux command (e.g. {@code sleep}, {@code kill}) via {@link
+ * Dispatches an arbitrary Linux service (e.g. {@code sleep}, {@code kill}) via {@link
  * ProcessBuilder}, printing its combined stdout/stderr and exit code to the terminal.
  */
 public class DispatchCommand implements Command {
@@ -27,26 +27,26 @@ public class DispatchCommand implements Command {
 
     @Override
     public @NotNull String description() {
-        return "Dispatch a linux command through the system-terminal";
+        return "Dispatch a linux service through the system-terminal";
     }
 
     /**
-     * Runs {@code args} as a command (its first element is the executable, the rest its
+     * Runs {@code args} as a service (its first element is the executable, the rest its
      * arguments - exactly as the reading thread already split the input line), streaming
      * its combined stdout/stderr to the terminal as it runs, then printing its exit code.
      *
-     * @param args the command and its arguments; a no-op with a usage message if empty
+     * @param args the service and its arguments; a no-op with a usage message if empty
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
-        if (args.length == 0) {
-            this.terminal().displayApproved("&fdispatch <command> [args...]");
+        if (arguments.length() == 0) {
+            this.terminal().displayApproved("&fdispatch <service> [args...]");
             return;
         }
 
         try {
-            final Process process = new ProcessBuilder(args)
+            final Process process = new ProcessBuilder(arguments.args())
                     .redirectErrorStream(true)
                     .start();
 
@@ -64,10 +64,10 @@ public class DispatchCommand implements Command {
                     : "Process exited with code &c&l" + exitCode);
 
         } catch (final IOException e) {
-            this.terminal().displayApproved("&7Failed to dispatch command: &c" + e.getMessage());
+            this.terminal().displayApproved("&7Failed to dispatch service: &c" + e.getMessage());
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
-            this.terminal().displayApproved("&cInterrupted while waiting for the command to finish.");
+            this.terminal().displayApproved("&cInterrupted while waiting for the service to finish.");
         }
 
     }

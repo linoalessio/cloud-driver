@@ -1,8 +1,8 @@
 package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.terminal.Terminal;
-import de.lino.cloud.api.terminal.command.Command;
-import de.lino.cloud.api.terminal.command.CommandService;
+import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandService;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -22,19 +22,19 @@ public class HelpCommand implements Command {
         return List.of("?", "h");
     }
 
-    /** @return this command's description */
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Display all available commands";
     }
 
     /**
-     * Prints every registered command's name, aliases, and description.
+     * Prints every registered service's name, aliases, and description.
      *
      * @param args unused
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
         final Terminal terminal = this.terminal();
         final CommandService commandService = terminal.getCommandService();

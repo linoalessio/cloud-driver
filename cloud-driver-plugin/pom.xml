@@ -21,6 +21,15 @@
             <version>1.0.1</version>
         </dependency>
 
+        <!-- AuthService/JwtSigner, for DefaultRestFactory's JWT-gated constructor
+             (see architecture/AUTH_REQUIREMENTS.md) - the Owned marker interface it
+             checks for per-user data scoping lives here too. -->
+        <dependency>
+            <groupId>de.lino.cloud.auth</groupId>
+            <artifactId>cloud-driver-auth</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+
         <!-- @NonNull on concrete methods across DefaultExtensionFactory/DefaultEventFactory/
              DefaultRestFactory - provided scope since it's only needed at compile time
              (annotation processing), never at runtime. -->

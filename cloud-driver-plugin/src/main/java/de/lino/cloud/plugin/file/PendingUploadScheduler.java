@@ -127,7 +127,7 @@ public final class PendingUploadScheduler {
         return this.dataFactory.registerAsync(file)
                 .thenRun(() -> {
                     this.pendingUploadCache.remove(file.fileId());
-                    CloudDriver.getInstance().getEventFactory().dispatch(PendingUploadEvent.class, new JsonDocument().append("fileId", file.fileId()));
+                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(PendingUploadEvent.class, new JsonDocument().append("fileId", file.fileId()));
                 })
                 .exceptionally(stillFailing -> null);
     }

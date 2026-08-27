@@ -4,20 +4,20 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
-import de.lino.cloud.api.factory.*;
-import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.factory.IFactoryContainer;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.factory.*;
-import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
-import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.json.JsonDocument;
 import lombok.Getter;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -37,35 +37,20 @@ import java.util.logging.Logger;
 @Getter
 public final class DefaultCloudDriver extends CloudDriver {
 
-    private final DataFactory dataFactory;
-    private final FileFactory fileFactory;
-    private final ExtensionFactory extensionFactory;
+    private final IFactoryContainer factoryContainer;
     private final ConnectivityChecker connectivityChecker;
-    private final EventFactory eventFactory;
-    private final RestFactory restFactory;
     private final Terminal terminal;
 
     /** Guards {@link #shutdown()} so a second (or concurrent) call is a no-op. */
     private final AtomicBoolean shutdownStarted = new AtomicBoolean(false);
 
     /**
-     * @param dataFactory         the meta-persistence facet, backed by an {@link EntityDatabaseClient}
-     * @param fileFactory         the file-persistence facet, backed by {@code dataFactory} itself
-     * @param extensionFactory    the extension-lifecycle facet
      * @param connectivityChecker the outbound-connectivity-reporting facet
-     * @param eventFactory        the event registration/dispatch facet
-     * @param restFactory         the REST-exposure facet, backed by {@code dataFactory} itself
      * @throws NullPointerException if any argument is {@code null}
      */
-    private DefaultCloudDriver(@NotNull final DataFactory dataFactory, @NotNull final FileFactory fileFactory,
-                               @NotNull final ExtensionFactory extensionFactory, @NotNull final ConnectivityChecker connectivityChecker,
-                               @NotNull final EventFactory eventFactory, @NotNull final RestFactory restFactory, Terminal terminal) {
-        this.dataFactory = Asserts.requireNonNull(dataFactory, "@DefaultCloudDriver: dataFactory cannot be null");
-        this.fileFactory = Asserts.requireNonNull(fileFactory, "@DefaultCloudDriver: fileFactory cannot be null");
-        this.extensionFactory = Asserts.requireNonNull(extensionFactory, "@DefaultCloudDriver: extensionFactory cannot be null");
+    private DefaultCloudDriver(@NotNull final ConnectivityChecker connectivityChecker, @NonNull final Terminal terminal, @NonNull final IFactoryContainer factoryContainer) {
         this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultCloudDriver: connectivityChecker cannot be null");
-        this.eventFactory = Asserts.requireNonNull(eventFactory, "@DefaultCloudDriver: eventFactory cannot be null");
-        this.restFactory = Asserts.requireNonNull(restFactory, "@DefaultCloudDriver: restFactory cannot be null");
+        this.factoryContainer = factoryContainer;
         this.terminal = terminal;
     }
 
@@ -108,20 +93,13 @@ public final class DefaultCloudDriver extends CloudDriver {
         final Logger logger = Logger.getLogger(CloudDriver.class.getSimpleName());
         terminal.attachLogging(logger);
 
-        final DataFactory dataFactory = new DefaultDataFactory(new EntityDatabaseClient(databaseProvider, envelopeEncryptionService));
-        final FileFactory fileFactory = new DefaultFileFactory(dataFactory, new InMemoryPendingUploadCache(), connectivityChecker);
-        final ExtensionFactory extensionFactory = new DefaultExtensionFactory();
-        final EventFactory eventFactory = new DefaultEventFactory();
-        final RestFactory restFactory = new DefaultRestFactory(dataFactory);
+        final IFactoryContainer container = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
+
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(
-                dataFactory,
-                fileFactory,
-                extensionFactory,
                 connectivityChecker,
-                eventFactory,
-                restFactory,
-                terminal
+                terminal,
+                container
         );
 
         INSTANCE = instance;
@@ -131,7 +109,7 @@ public final class DefaultCloudDriver extends CloudDriver {
     /**
      * Tears down every facet this instance owns: stops the REST server,
      * stops every registered extension, unregisters every registered event,
-     * shuts down the {@link #dataFactory} (also covers {@link #fileFactory},
+     * shuts down the {@link DataFactory} (also covers {@link FileFactory},
      * which shares its connection), then shuts down the {@link #terminal} if
      * one was constructed. Each step - and each extension/event within its
      * step - is attempted independently and a failure is logged rather than
@@ -143,26 +121,26 @@ public final class DefaultCloudDriver extends CloudDriver {
 
         if (!this.shutdownStarted.compareAndSet(false, true)) return;
 
-        this.runShutdownStep("RestFactory", this.restFactory::stop);
+        this.runShutdownStep("RestFactory", this.getFactoryContainer().getRestFactory()::stop);
 
-        for (final Extension extension : List.copyOf(this.extensionFactory.getExtensions())) {
+        for (final Extension extension : List.copyOf(this.getFactoryContainer().getExtensionFactory().getExtensions())) {
             this.runShutdownStep(
                     "Extension '" + extension.getExtensionProperties().getExtensionName() + "'",
                     () -> {
-                        this.eventFactory.dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName()));
-                        this.extensionFactory.stop(extension);
+                        this.factoryContainer.getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName()));
+                        this.getFactoryContainer().getExtensionFactory().stop(extension);
                     }
             );
         }
 
-        for (final Event event : List.copyOf(this.eventFactory.getEvents())) {
+        for (final Event event : List.copyOf(this.factoryContainer.getEventFactory().getEvents())) {
             this.runShutdownStep(
                     "Event '" + event.getClass().getSimpleName() + "'",
-                    () -> this.eventFactory.unregisterEvent(event.getClass())
+                    () -> this.factoryContainer.getEventFactory().unregisterEvent(event.getClass())
             );
         }
 
-        this.runShutdownStep("DataFactory", this.dataFactory::shutdown);
+        this.runShutdownStep("DataFactory", this.factoryContainer.getDataFactory()::shutdown);
 
         if (this.terminal != null && this.terminal.isActive())
             this.runShutdownStep("Terminal", this.terminal::shutdown);

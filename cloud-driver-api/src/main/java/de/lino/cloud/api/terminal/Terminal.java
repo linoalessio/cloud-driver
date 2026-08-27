@@ -1,7 +1,7 @@
 package de.lino.cloud.api.terminal;
 
-import de.lino.cloud.api.terminal.color.AnsiColors;
-import de.lino.cloud.api.terminal.command.CommandService;
+import de.lino.cloud.api.terminal.ansi.AnsiColors;
+import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.api.terminal.logging.TerminalLogHandler;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.terminal.prompt.PromptProvider;
@@ -23,10 +23,10 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Wraps a {@code jline} terminal, providing output display, prompt management, and command
- * reading - the terminal engine itself, not any concrete command. Requires a real terminal
+ * Wraps a {@code jline} terminal, providing output display, prompt management, and service
+ * reading - the terminal engine itself, not any concrete service. Requires a real terminal
  * ({@code .dumb(false)}); construction fails in environments with no real pty (e.g. an IDE's
- * console). Every displayed string accepts {@code &x} legacy color codes, translated via
+ * console). Every displayed string accepts {@code &x} legacy ansi codes, translated via
  * {@link AnsiColors#translate}.
  */
 public final class Terminal {
@@ -133,7 +133,7 @@ public final class Terminal {
      * Prints {@code message} above the current prompt line, then redraws it. Prefer
      * {@link #displayApproved(String)} once {@link #readingThread()} is running.
      *
-     * @param message the message to display, using {@code &x} legacy color codes
+     * @param message the message to display, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public void display(@NotNull final String message) {
@@ -153,7 +153,7 @@ public final class Terminal {
      * Prints {@code message} above the current input line without disturbing what the user is
      * typing. Safe to call while {@link #readingThread()} is blocked reading a line.
      *
-     * @param message the message to display, using {@code &x} legacy color codes
+     * @param message the message to display, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public void displayApproved(@NotNull final String message) {
@@ -197,10 +197,10 @@ public final class Terminal {
     }
 
     /**
-     * Updates the prompt to {@code prompt} (supports {@code &x} color codes) and redraws the
+     * Updates the prompt to {@code prompt} (supports {@code &x} ansi codes) and redraws the
      * terminal.
      *
-     * @param prompt the new prompt, using {@code &x} legacy color codes
+     * @param prompt the new prompt, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code prompt} is {@code null}
      */
     public void updatePrompt(@NotNull final String prompt) {

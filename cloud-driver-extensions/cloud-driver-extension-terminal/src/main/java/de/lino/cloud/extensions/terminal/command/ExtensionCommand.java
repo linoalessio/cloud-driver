@@ -8,8 +8,7 @@ import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.terminal.Terminal;
-import de.lino.cloud.api.terminal.color.AnsiColors;
-import de.lino.cloud.api.terminal.command.Command;
+import de.lino.cloud.api.terminal.service.Command;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -32,7 +31,7 @@ public class ExtensionCommand implements Command {
         return List.of("extension", "ext");
     }
 
-    /** @return this command's description */
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Get a list of information about the extensions";
@@ -44,17 +43,17 @@ public class ExtensionCommand implements Command {
      * @param args unused
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
-        if (args.length == 0) {
+        if (arguments.length() == 0) {
             this.sendHelp();
             return;
         }
 
         final Terminal terminal = this.terminal();
-        final ExtensionFactory extensionFactory = CloudDriver.getInstance().getExtensionFactory();
+        final ExtensionFactory extensionFactory = CloudDriver.getInstance().getFactoryContainer().getExtensionFactory();
 
-        if (args[0].equalsIgnoreCase("list")) {
+        if (arguments.hasCommand(0, "list")) {
 
             terminal.emptyLine();
             terminal.displayApproved("Registered extensions (&b%s&7): ", extensionFactory.getExtensions().size());
@@ -73,9 +72,9 @@ public class ExtensionCommand implements Command {
             return;
         }
 
-        if (args[0].equalsIgnoreCase("info")) {
+        if (arguments.hasCommand(0, "info")) {
 
-            final String extensionName = args[1];
+            final String extensionName = arguments.command(1);
             final Optional<Extension> extension = extensionFactory.findByName(extensionName);
 
             if (extension.isEmpty()) {
@@ -98,10 +97,10 @@ public class ExtensionCommand implements Command {
             return;
         }
 
-        if (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop")) {
+        if (arguments.hasCommand(0, "start") || arguments.hasCommand(0, "stop")) {
 
-            final String action = args[0];
-            final String extensionName = args[1];
+            final String action = arguments.command(0);
+            final String extensionName = arguments.command(1);
             final Optional<Extension> extension = extensionFactory.findByName(extensionName);
 
             if (extension.isEmpty()) {
@@ -118,7 +117,7 @@ public class ExtensionCommand implements Command {
                 case "start" -> {
                     extensionFactory.stop(extension.get());
                     extensionFactory.start(extension.get(), new String[0]);
-                    CloudDriver.getInstance().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
+                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
                 }
                 case "stop" -> {
 
@@ -128,7 +127,7 @@ public class ExtensionCommand implements Command {
                     }
 
                     extensionFactory.stop(extension.get());
-                    CloudDriver.getInstance().getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extensionName));
+                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extensionName));
                 }
                 default -> {
                     this.sendHelp();

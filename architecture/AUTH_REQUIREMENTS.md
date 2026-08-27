@@ -50,7 +50,7 @@ Konventionen dieses Codebase (siehe unten "Konventionen, die einzuhalten sind").
 | `bootstrap/CloudBootstrap.java` | `cloud-driver-bootstrap` | ändern |
 | `bootstrap/CreateUserCli.java` | `cloud-driver-bootstrap` | neu (einmaliges Anlegen von Usern) |
 | `cloud-driver-plugin/pom.xml` | `cloud-driver-plugin` | ändern (jjwt-Dependency) |
-| `.env` / systemd-Unit | Deployment | ändern (`JWT_SIGNING_KEY`) |
+| `jwt_signing_key.env` / systemd-Unit | Deployment | ändern (`JWT_SIGNING_KEY`) |
 
 ---
 
@@ -286,7 +286,7 @@ import java.util.UUID;
  * <p>{@link #register} is deliberately not wired to any public HTTP route
  * by this class - see {@code CreateUserCli} in {@code cloud-driver-bootstrap}
  * for how new accounts are meant to be created (an operator-run one-off
- * command, not a self-service endpoint), unless the deployment explicitly
+ * service, not a self-service endpoint), unless the deployment explicitly
  * wants open self-registration.
  */
 public final class AuthService {
@@ -646,7 +646,7 @@ Extension-/Scheduler-Start mitzuziehen.
 ## 10. Deployment: `JWT_SIGNING_KEY` setzen
 
 Auf der VPS, z.B. in der systemd-Unit (`Environment=`-Zeile) oder einer geladenen
-`.env`-Datei — **niemals im Repo**:
+`jwt_signing_key.env`-Datei — **niemals im Repo**:
 
 ```bash
 openssl rand -base64 32

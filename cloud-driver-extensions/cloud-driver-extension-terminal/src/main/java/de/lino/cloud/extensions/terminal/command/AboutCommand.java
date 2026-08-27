@@ -4,7 +4,7 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.terminal.Terminal;
-import de.lino.cloud.api.terminal.command.Command;
+import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.utility.Constraints;
 import org.jetbrains.annotations.NotNull;
 
@@ -25,7 +25,7 @@ public class AboutCommand implements Command {
         return List.of("ab");
     }
 
-    /** @return this command's description */
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Basic statistic information about the cloud driver";
@@ -33,14 +33,12 @@ public class AboutCommand implements Command {
 
     /**
      * Prints uptime, uploaded file count, and used storage.
-     *
-     * @param args unused
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
         final Terminal terminal = this.terminal();
-        final FileFactory fileFactory = CloudDriver.getInstance().getFileFactory();
+        final FileFactory fileFactory = CloudDriver.getInstance().getFactoryContainer().getFileFactory();
 
         final String cloudRunningFor = Constraints.resolveMilliSecondsToUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
         final String usedStorage = Constraints.resolveBytesToUnit(fileFactory.getEntitiesAsync().join().stream().mapToLong(StoredFile::sizeBytes).sum());

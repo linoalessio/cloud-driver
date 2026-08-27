@@ -21,6 +21,15 @@
             <version>1.0.1</version>
         </dependency>
 
+        <!-- AuthService/JwtSigner/JjwtSigner, used directly by startRestApi and
+             CreateUserCli - already a transitive dependency of cloud-driver-plugin,
+             declared directly too since both classes import it. -->
+        <dependency>
+            <groupId>de.lino.cloud.auth</groupId>
+            <artifactId>cloud-driver-auth</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+
     </dependencies>
 
     <build>

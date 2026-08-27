@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.lino.cloud</groupId>
+        <artifactId>cloud-driver</artifactId>
+        <version>1.0.1</version>
+    </parent>
+
+    <groupId>de.lino.cloud.auth</groupId>
+    <artifactId>cloud-driver-auth</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+
+        <!-- User is a Serialized entity, persisted through DataFactory like any other -
+             AuthService never opens a second persistence path of its own. -->
+        <dependency>
+            <groupId>de.lino.database</groupId>
+            <artifactId>database-driver-api</artifactId>
+            <version>1.3.11</version>
+        </dependency>
+
+        <!-- DataFactory (persists User) and PasswordHasher (verifies a login candidate) -
+             contracts only, no cloud-driver-plugin dependency, so this module stays usable
+             without pulling in Javalin/bcprov/the database drivers themselves. -->
+        <dependency>
+            <groupId>de.lino.cloud.api</groupId>
+            <artifactId>cloud-driver-api</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+
+        <!-- @NotNull on the public API surface; otherwise only a transitive
+             dependency of database-driver-api/cloud-driver-api. -->
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>24.1.0</version>
+        </dependency>
+
+        <!-- @NonNull/@Getter/@ToString/@EqualsAndHashCode on User/AuthService - provided
+             scope since it's only needed at compile time (annotation processing), never
+             at runtime. -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.38</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- JjwtSigner: HMAC-SHA256 JWT issuing/verification for end-user login
+             (see architecture/AUTH_REQUIREMENTS.md). jjwt-impl/jjwt-jackson are only
+             needed at runtime (service-loaded by jjwt-api). -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+
+    </dependencies>
+
+</project>

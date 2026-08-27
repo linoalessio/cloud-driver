@@ -58,7 +58,7 @@ public abstract class Extension {
      * Called once loading has finished, with the arguments passed to the JVM's
      * {@code main(String[])} entry point.
      *
-     * @param args the arguments passed from the command line
+     * @param args the arguments passed from the service line
      */
     public abstract void onRunning(final String[] args);
 

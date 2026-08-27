@@ -21,7 +21,7 @@ public class ExtensionUnregisterEvent extends Event {
     @Override
     public void handle(@NonNull JsonDocument properties) {
 
-        final Extension extension = this.cloudDriver().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
+        final Extension extension = this.cloudDriver().getFactoryContainer().getExtensionFactory().findByName(properties.getString("extensionName")).orElseThrow();
         final ExtensionProperties extensionProperties = extension.getExtensionProperties();
         this.cloudDriver().getTerminal().displayApproved("&7Extension '&b%s&7' (v%s) successfully &cshutdown&7.", extensionProperties.getExtensionName(), extensionProperties.getExtensionVersion());
 

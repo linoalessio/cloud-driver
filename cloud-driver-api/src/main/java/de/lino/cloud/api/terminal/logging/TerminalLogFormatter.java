@@ -1,6 +1,6 @@
 package de.lino.cloud.api.terminal.logging;
 
-import de.lino.cloud.api.terminal.color.AnsiColors;
+import de.lino.cloud.api.terminal.ansi.AnsiColors;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;

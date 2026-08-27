@@ -5,11 +5,13 @@ target/
 .kotlin
 
 ### Local secrets (DB credentials, key-encryption keys, API keys) ###
-shell/*.sh
 cloud-driver/postgres-database.json
-cloud-driver/api-key.json
+cloud-driver/configuration.json
 cloud-driver
+
+shell/*.sh
 shell
+
 test
 
 ### IntelliJ IDEA ###
@@ -51,3 +53,4 @@ build/
 ### AI ###
 .claude
 CLAUDE.md
+

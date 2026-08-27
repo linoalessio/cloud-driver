@@ -49,7 +49,7 @@ public class CloudWatcherExtension extends Extension {
         this.notification.watch(StoredFile.class);
         this.notification.start(payload -> {
             try {
-                this.cloudDriver().getEventFactory().dispatch(DatabaseWatchEvent.class, payload);
+                this.cloudDriver().getFactoryContainer().getEventFactory().dispatch(DatabaseWatchEvent.class, payload);
             } catch (final RuntimeException notificationHandlingFailed) {
                 this.cloudDriver().getLogger().log(Level.WARNING, "Failed to handle a database change notification: " + payload, notificationHandlingFailed);
             }

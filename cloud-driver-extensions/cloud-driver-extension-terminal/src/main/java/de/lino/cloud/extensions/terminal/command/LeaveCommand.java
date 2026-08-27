@@ -1,6 +1,6 @@
 package de.lino.cloud.extensions.terminal.command;
 
-import de.lino.cloud.api.terminal.command.Command;
+import de.lino.cloud.api.terminal.service.Command;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -25,7 +25,7 @@ public class LeaveCommand implements Command {
         return List.of("l", "sl");
     }
 
-    /** @return this command's description */
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Detach the current screen session without killing it";
@@ -39,7 +39,7 @@ public class LeaveCommand implements Command {
      * @param args unused
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
         final String sessionName = System.getenv("STY");
         if (sessionName == null || sessionName.isBlank()) {

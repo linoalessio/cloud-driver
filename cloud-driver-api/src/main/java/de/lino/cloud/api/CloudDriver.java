@@ -5,7 +5,9 @@ import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.logging.TerminalLogFormatter;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.utility.Constraints;
 import de.lino.database.database.entity.Serialized;
+import de.lino.database.json.JsonDocument;
 
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Formatter;
@@ -60,46 +62,13 @@ public abstract class CloudDriver {
     }
 
     /**
-     * Returns the entity-persistence facet.
-     *
-     * @return the {@link DataFactory}
-     */
-    public abstract DataFactory getDataFactory();
-
-    /**
-     * Returns the file-persistence facet.
-     *
-     * @return the {@link FileFactory}
-     */
-    public abstract FileFactory getFileFactory();
-
-    /**
-     * Returns the extension-lifecycle facet.
-     *
-     * @return the {@link ExtensionFactory}
-     */
-    public abstract ExtensionFactory getExtensionFactory();
-
-    /**
      * Returns the connectivity-reporting facet.
      *
      * @return the {@link ConnectivityChecker}
      */
     public abstract ConnectivityChecker getConnectivityChecker();
 
-    /**
-     * Returns the event facet.
-     *
-     * @return the {@link EventFactory}
-     */
-    public abstract EventFactory getEventFactory();
-
-    /**
-     * Returns the REST-exposure facet. Unauthenticated by default.
-     *
-     * @return the {@link RestFactory}
-     */
-    public abstract RestFactory getRestFactory();
+    public abstract IFactoryContainer getFactoryContainer();
 
     /**
      * Returns the interactive terminal.
@@ -110,5 +79,9 @@ public abstract class CloudDriver {
 
     /** Shuts down every facet owned by this instance. */
     public abstract void shutdown();
+
+    public JsonDocument getConfiguration() {
+        return JsonDocument.load(Constraints.CONFIGURATION_PATH.resolve("configuration.json"));
+    }
 
 }

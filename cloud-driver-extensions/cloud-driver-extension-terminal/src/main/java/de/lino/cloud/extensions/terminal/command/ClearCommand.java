@@ -1,7 +1,7 @@
 package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
-import de.lino.cloud.api.terminal.command.Command;
+import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.utility.Constraints;
 import org.jetbrains.annotations.NotNull;
 
@@ -22,7 +22,7 @@ public class ClearCommand implements Command {
         return List.of("clc");
     }
 
-    /** @return this command's description */
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Clearing the terminal window";
@@ -34,7 +34,7 @@ public class ClearCommand implements Command {
      * @param args unused
      */
     @Override
-    public void execute(@NotNull String[] args) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
         final CloudDriver cloudDriver = CloudDriver.getInstance();
 

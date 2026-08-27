@@ -31,8 +31,8 @@ public class DatabaseWatchEvent extends Event {
         final String id = properties.getString("id");
         if (id.isBlank()) return;
 
-        this.cloudDriver().getDataFactory().reload(StoredFile.class);
-        final Optional<StoredFile> uploadedFile = this.cloudDriver().getFileFactory().findById(id);
+        this.cloudDriver().getFactoryContainer().getDataFactory().reload(StoredFile.class);
+        final Optional<StoredFile> uploadedFile = this.cloudDriver().getFactoryContainer().getFileFactory().findById(id);
 
         if (uploadedFile.isEmpty()) {
             this.cloudDriver().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));

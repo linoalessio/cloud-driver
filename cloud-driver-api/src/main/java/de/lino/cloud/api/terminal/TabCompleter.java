@@ -1,7 +1,7 @@
 package de.lino.cloud.api.terminal;
 
-import de.lino.cloud.api.terminal.command.Command;
-import de.lino.cloud.api.terminal.command.CommandService;
+import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.api.utility.Asserts;
 import org.jetbrains.annotations.NotNull;
 import org.jline.reader.Candidate;
@@ -12,7 +12,7 @@ import org.jline.reader.ParsedLine;
 import java.util.List;
 
 /**
- * {@code jline} {@link Completer} suggesting registered command names and aliases while the
+ * {@code jline} {@link Completer} suggesting registered service names and aliases while the
  * first word of the input line is being typed. No argument-position completion.
  */
 public final class TabCompleter implements Completer {
@@ -20,7 +20,7 @@ public final class TabCompleter implements Completer {
     private final CommandService commandService;
 
     /**
-     * @param commandService the registry {@link #complete} suggests command names from
+     * @param commandService the registry {@link #complete} suggests service names from
      * @throws NullPointerException if {@code commandService} is {@code null}
      */
     public TabCompleter(@NotNull final CommandService commandService) {
@@ -28,7 +28,7 @@ public final class TabCompleter implements Completer {
     }
 
     /**
-     * Adds a candidate for every registered command name and alias, if the first word of the
+     * Adds a candidate for every registered service name and alias, if the first word of the
      * line is still being completed.
      *
      * @param reader     the line reader requesting completion

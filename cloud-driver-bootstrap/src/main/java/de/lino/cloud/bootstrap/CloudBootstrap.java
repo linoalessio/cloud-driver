@@ -6,25 +6,29 @@ import de.lino.cloud.api.event.database.DatabaseWatchEvent;
 import de.lino.cloud.api.event.extension.ExtensionRegisterEvent;
 import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
-import de.lino.cloud.api.factory.DataFactory;
-import de.lino.cloud.api.factory.EventFactory;
-import de.lino.cloud.api.factory.ExtensionFactory;
-import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.auth.AuthService;
+import de.lino.cloud.auth.CloudUserService;
+import de.lino.cloud.auth.jwt.JjwtSigner;
 import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
+import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
+import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
@@ -55,11 +59,13 @@ public final class CloudBootstrap {
     /** The installed {@link CloudDriver} singleton, read by every {@code startX()} method. */
     private static volatile CloudDriver CLOUD_DRIVER;
 
+    private static final int REST_API_PORT = 8080;
+
     /**
      * Boots the {@link CloudDriver}, starts every subsystem, and blocks the real main thread
      * on one shared shutdown latch until the process is told to stop.
      *
-     * @param args command-line arguments, forwarded to every started extension
+     * @param args service-line arguments, forwarded to every started extension
      * @throws IOException if reading local configuration/security-requirement files fails
      */
     public static void main(String[] args) throws IOException {
@@ -92,6 +98,8 @@ public final class CloudBootstrap {
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
 
                     , startExtensionsBootstrapScheduler(args)
+
+                    , startRestApi(REST_API_PORT)
 
                     , stopTerminal()
 
@@ -164,8 +172,8 @@ public final class CloudBootstrap {
      */
     private static Runnable startPendingUploadScheduler() {
 
-        final FileFactory fileFactory = CLOUD_DRIVER.getFileFactory();
-        final DataFactory dataFactory = CLOUD_DRIVER.getDataFactory();
+        final FileFactory fileFactory = CLOUD_DRIVER.getFactoryContainer().getFileFactory();
+        final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
 
         final PendingUploadScheduler pendingUploadScheduler = new PendingUploadScheduler(
                 dataFactory, ((DefaultFileFactory) fileFactory).getPendingUploadCache(), CLOUD_DRIVER.getConnectivityChecker()
@@ -186,16 +194,64 @@ public final class CloudBootstrap {
      */
     private static Runnable startExtensionsBootstrapScheduler(@NonNull final String[] args) {
 
-        final ExtensionFactory extensionFactory = CLOUD_DRIVER.getExtensionFactory();
+        final ExtensionFactory extensionFactory = CLOUD_DRIVER.getFactoryContainer().getExtensionFactory();
 
         ExtensionFolderScanner.scan(Constraints.WORKING_DIRECTORY).forEach(extensionFactory::register);
         ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
 
         CloudDriver.getInstance().getTerminal().emptyLine();
         extensionFactory.startAllAsync(args);
-        extensionFactory.getExtensions().forEach(extension -> CLOUD_DRIVER.getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
+        extensionFactory.getExtensions().forEach(extension -> CLOUD_DRIVER.getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
 
         return extensionFactory::stopAll;
+    }
+
+    /**
+     * Builds a JWT-authenticated {@link DefaultRestFactory} (backed by the same {@link
+     * DataFactory} as everything else {@link #CLOUD_DRIVER} exposes), registers every
+     * entity this deployment exposes over HTTP, and starts it listening on {@code port}.
+     * Deliberately does not use {@code CLOUD_DRIVER.getRestFactory()} - that facet is
+     * unauthenticated by design (see its Javadoc) - and constructs its own instead, gated
+     * by {@link AuthService}.
+     *
+     * <p>Does not throw if {@code JWT_SIGNING_KEY} is unset - unlike {@link
+     * #loadSecurityRequirements()}'s hard-fail-on-missing-config precedent, a missing
+     * signing key only logs a warning and skips REST start entirely, so every other
+     * subsystem still comes up normally on a deployment that hasn't configured JWT auth
+     * yet.
+     *
+     * @param port the port to listen on
+     * @return {@link RestFactory#stop} as the shutdown action, or a no-op if REST wasn't started
+     */
+    private static Runnable startRestApi(final int port) {
+
+        // TODO: DO NOT REMOVE HARD_CODED KEY!
+        final String signingKey = "yOIb+e3p8KZkpEiOpVgMtuwu6q2+hvfihkChRTX64cQ=";
+        if (signingKey == null || signingKey.isBlank()) {
+            CLOUD_DRIVER.getLogger().warning(
+                    "@CloudBootstrap.startRestApi: JWT_SIGNING_KEY environment variable is not set - "
+                            + "the JWT-authenticated REST API will not be started. Generate one via: openssl rand -base64 32");
+            return () -> {};
+        }
+
+        final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
+        final FileFactory fileFactory = CLOUD_DRIVER.getFactoryContainer().getFileFactory();
+        final PasswordHasher passwordHasher = new Argon2idPasswordHasher();
+        final JwtSigner jwtSigner = new JjwtSigner(signingKey);
+        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner);
+        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory);
+
+        final RestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService);
+
+        // Mount every entity that should be reachable over HTTP here, e.g.:
+        // restFactory.register("/cloudUsers", CloudUser.class);
+        // restFactory.fetch("/cloudUsers", CloudUser.class);
+        // restFactory.update("/cloudUsers", CloudUser.class);
+        // restFactory.delete("/cloudUsers", CloudUser.class);
+
+        restFactory.start(port);
+
+        return restFactory::stop;
     }
 
     /**
@@ -206,7 +262,7 @@ public final class CloudBootstrap {
      */
     @SafeVarargs
     private static Runnable startEventScheduler(@NonNull final Class<? extends Event>... events) {
-        final EventFactory eventFactory = CLOUD_DRIVER.getEventFactory();
+        final EventFactory eventFactory = CLOUD_DRIVER.getFactoryContainer().getEventFactory();
         Arrays.stream(events).forEach(eventFactory::registerEventAsync);
         return () -> {};
     }
@@ -238,13 +294,13 @@ public final class CloudBootstrap {
 
         try {
 
-            CLOUD_DRIVER.getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
+            CLOUD_DRIVER.getFactoryContainer().getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
 
-                final File file = Constraints.WORKING_DIRECTORY.resolve(Path.of("architecture", "SECURITY_REQUIREMENTS.md")).toFile();
+                final File file = Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "architecture", "SECURITY_REQUIREMENTS.md")).toFile();
                 try {
 
                     final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), file.getName(), Files.readAllBytes(file.toPath()));
-                    CLOUD_DRIVER.getFileFactory().uploadAsync(newStoredFile).join();
+                    CLOUD_DRIVER.getFactoryContainer().getFileFactory().uploadAsync(newStoredFile).join();
                     return newStoredFile;
 
                 } catch (IOException e) {
@@ -275,7 +331,7 @@ public final class CloudBootstrap {
                     , Files.readAllBytes(Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "pom.xml")))
             );
 
-            CLOUD_DRIVER.getFileFactory().upload(storedFile);
+            CLOUD_DRIVER.getFactoryContainer().getFileFactory().upload(storedFile);
 
         } catch (IOException | DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(e);

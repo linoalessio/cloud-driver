@@ -17,8 +17,8 @@ public class PendingUploadEvent extends Event {
         final String id = properties.getString("fileId");
         if (id.isBlank()) return;
 
-        this.cloudDriver().getDataFactory().reload(StoredFile.class);
-        final Optional<StoredFile> pendingFile = this.cloudDriver().getFileFactory().findById(id);
+        this.cloudDriver().getFactoryContainer().getDataFactory().reload(StoredFile.class);
+        final Optional<StoredFile> pendingFile = this.cloudDriver().getFactoryContainer().getFileFactory().findById(id);
 
         if (pendingFile.isEmpty()) {
             this.cloudDriver().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));

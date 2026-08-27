@@ -1,4 +1,4 @@
-package de.lino.cloud.api.terminal.command;
+package de.lino.cloud.api.terminal.service;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -15,24 +15,24 @@ import java.util.logging.Logger;
 
 /**
  * Registry and dispatcher for a {@link Terminal}'s {@link Command}s. Lookup is a direct,
- * case-insensitive map read; {@link #dispatchAsync(String, String[])} runs the matched command
+ * case-insensitive map read; {@link #dispatchAsync(String, String[])} runs the matched service
  * on {@link MultiTaskingFactory}'s shared virtual-thread executor.
  */
 public final class CommandService {
 
     private static final Logger LOGGER = Logger.getLogger(CommandService.class.getName());
 
-    /** Every registered command, keyed by its lowercase name and every lowercase alias. */
+    /** Every registered service, keyed by its lowercase name and every lowercase alias. */
     private final Map<String, Command> commandsByLookupKey = Maps.newConcurrentMap();
 
     /** Cached, immutable snapshot backing {@link #snapshot()}; rebuilt only on register/unregister. */
     private volatile List<Command> snapshot = List.of();
 
-    /** Every distinct registered command, in registration order, backing {@link #snapshot}'s rebuild. */
+    /** Every distinct registered service, in registration order, backing {@link #snapshot}'s rebuild. */
     private final List<Command> registrationOrder = Lists.newLinkedList();
 
     /**
-     * Registers every command in {@code commands}.
+     * Registers every service in {@code commands}.
      *
      * @param commands the commands to register
      */
@@ -41,15 +41,15 @@ public final class CommandService {
     }
 
     /**
-     * Registers {@code command} under its name and every alias (case-insensitively).
+     * Registers {@code service} under its name and every alias (case-insensitively).
      *
-     * @param command the command to register
-     * @throws NullPointerException  if {@code command} is {@code null}
-     * @throws IllegalStateException if {@code command}'s name or any of its aliases is already
+     * @param command the service to register
+     * @throws NullPointerException  if {@code service} is {@code null}
+     * @throws IllegalStateException if {@code service}'s name or any of its aliases is already
      *                                registered
      */
     public void register(@NotNull final Command command) {
-        Asserts.requireNonNull(command, "@CommandService.register: command must not be null");
+        Asserts.requireNonNull(command, "@CommandService.register: service must not be null");
 
         this.registerLookupKey(command.name(), command);
         command.aliases().forEach(alias -> registerLookupKey(alias, command));
@@ -66,7 +66,7 @@ public final class CommandService {
     }
 
     /**
-     * Unregisters every command in {@code commands}.
+     * Unregisters every service in {@code commands}.
      *
      * @param commands the commands to unregister
      */
@@ -75,13 +75,13 @@ public final class CommandService {
     }
 
     /**
-     * Unregisters {@code command}, freeing its name and every alias for reuse.
+     * Unregisters {@code service}, freeing its name and every alias for reuse.
      *
-     * @param command the command to unregister
-     * @throws NullPointerException if {@code command} is {@code null}
+     * @param command the service to unregister
+     * @throws NullPointerException if {@code service} is {@code null}
      */
     public void unregister(@NotNull final Command command) {
-        Asserts.requireNonNull(command, "@CommandService.unregister: command must not be null");
+        Asserts.requireNonNull(command, "@CommandService.unregister: service must not be null");
 
         this.commandsByLookupKey.remove(command.name().toLowerCase(Locale.ROOT));
         command.aliases().forEach(alias -> this.commandsByLookupKey.remove(alias.toLowerCase(Locale.ROOT)));
@@ -91,10 +91,10 @@ public final class CommandService {
     }
 
     /**
-     * Looks a command up by its name or one of its aliases, case-insensitively.
+     * Looks a service up by its name or one of its aliases, case-insensitively.
      *
      * @param name the name or alias to look up
-     * @return the matching command, or {@link Optional#empty()} if none is registered under it
+     * @return the matching service, or {@link Optional#empty()} if none is registered under it
      * @throws NullPointerException if {@code name} is {@code null}
      */
     @NotNull
@@ -104,7 +104,7 @@ public final class CommandService {
     }
 
     /**
-     * @return every currently registered command, in registration order - a cached snapshot,
+     * @return every currently registered service, in registration order - a cached snapshot,
      * not recomputed on every call (see this class's Javadoc)
      */
     @NotNull
@@ -116,16 +116,16 @@ public final class CommandService {
      * Looks {@code name} up and runs it synchronously on the calling thread. Prefer
      * {@link #dispatchAsync(String, String[])} from a terminal's reading loop.
      *
-     * @param name the command name or alias to dispatch
-     * @param args the arguments following the command name
-     * @return {@code true} if a command was found and run, {@code false} otherwise
+     * @param name the service name or alias to dispatch
+     * @param args the arguments following the service name
+     * @return {@code true} if a service was found and run, {@code false} otherwise
      * @throws NullPointerException if {@code name} or {@code args} is {@code null}
      */
     public boolean dispatch(@NotNull final String name, @NotNull final String[] args) {
         Asserts.requireNonNull(args, "@CommandService.dispatch: args must not be null");
 
         final Optional<Command> command = findByName(name);
-        command.ifPresent(value -> value.execute(args));
+        command.ifPresent(value -> value.execute(new Command.CommandArguments(args)));
         return command.isPresent();
     }
 
@@ -134,9 +134,9 @@ public final class CommandService {
      * virtual-thread executor. A thrown {@link RuntimeException} is caught and logged rather
      * than propagated.
      *
-     * @param name the command name or alias to dispatch
-     * @param args the arguments following the command name
-     * @return a future completing with {@code true} if a command ran, {@code false} otherwise
+     * @param name the service name or alias to dispatch
+     * @param args the arguments following the service name
+     * @return a future completing with {@code true} if a service ran, {@code false} otherwise
      * @throws NullPointerException if {@code name} or {@code args} is {@code null}
      */
     @NotNull
@@ -147,7 +147,7 @@ public final class CommandService {
 
         return command.map(value -> MultiTaskingFactory.getInstance().supplyAsync(() -> {
             try {
-                value.execute(args);
+                value.execute(new  Command.CommandArguments(args));
             } catch (final RuntimeException exception) {
                 LOGGER.log(Level.SEVERE, "@CommandService.dispatchAsync: '" + name + "' threw an exception", exception);
             }

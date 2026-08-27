@@ -2,7 +2,7 @@ package de.lino.cloud.api.terminal.thread;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
-import de.lino.cloud.api.terminal.command.CommandService;
+import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.api.utility.Asserts;
 import org.jetbrains.annotations.NotNull;
 import org.jline.reader.EndOfFileException;
@@ -59,7 +59,7 @@ public final class ReadingThread extends Thread {
                 final String[] args = Arrays.copyOfRange(tokens, 1, tokens.length);
 
                 this.commandService.dispatchAsync(commandName, args).thenAccept(found -> {
-                    if (!found) this.terminal.displayApproved("Unknown command provided. Use 'help' for more information.");
+                    if (!found) this.terminal.displayApproved("Unknown service provided. Use 'help' for more information.");
                 });
 
             } catch (final UserInterruptException exception) {

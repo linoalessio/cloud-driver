@@ -1,20 +1,20 @@
 package de.lino.cloud.extensions.terminal;
 
 import de.lino.cloud.api.extension.Extension;
-import de.lino.cloud.api.terminal.command.CommandService;
+import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.extensions.terminal.command.*;
 
 import java.util.logging.Level;
 
 /**
- * Registers the built-in terminal {@link de.lino.cloud.api.terminal.command.Command}s
+ * Registers the built-in terminal {@link de.lino.cloud.api.terminal.service.Command}s
  * ({@code exit}, {@code help}, {@code clear}, {@code extensions}, {@code about},
  * {@code screen-leave}, {@code dispatch}) on the host {@link de.lino.cloud.api.CloudDriver}'s
  * {@link CommandService}.
  */
 public class CloudTerminalExtension extends Extension {
 
-    /** The host terminal's command registry, resolved once at construction. */
+    /** The host terminal's service registry, resolved once at construction. */
     private final CommandService commandService = this.cloudDriver().getTerminal().getCommandService();
 
     /** No-op. */
@@ -24,7 +24,7 @@ public class CloudTerminalExtension extends Extension {
     }
 
     /**
-     * Registers every built-in terminal command.
+     * Registers every built-in terminal service.
      *
      * @param args unused
      */
