@@ -72,6 +72,7 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String FILES_PATH = "/files";
     private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
+    private static final String TOKEN_QUERY_PARAM = "token";
     private static final String USER_ID_ATTRIBUTE = "userId";
     private static final String OWNER_ID_FIELD = "ownerId";
 
@@ -104,7 +105,7 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Every route requires a valid {@code X-API-Key} header, checked against
      * {@code apiKey}. Use this for server-to-server access; for end-user
-     * clients (iOS/web/macOS) authenticating with a username/password, use
+     * clients (iOS/rest/macOS) authenticating with a username/password, use
      * {@link #DefaultRestFactory(DataFactory, AuthService)} instead - the two
      * mechanisms are mutually exclusive on one instance.
      *
@@ -228,11 +229,12 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Builds the Javalin app from every route registered so far and starts listening on
-     * {@code port}. Silences Javalin's/Jetty's own logging entirely before doing so - see
-     * {@link #silenceJavalinLogging}.
+     * {@code host}:{@code port} - see {@link RestFactory#start(String, int)}'s own Javadoc for
+     * why {@code host} matters (plain HTTP, no TLS). Silences Javalin's/Jetty's own logging
+     * entirely before doing so - see {@link #silenceJavalinLogging}.
      */
     @Override
-    public void start(final int port) {
+    public void start(@NonNull final String host, final int port) {
         if (this.app != null) {
             throw new IllegalStateException("@DefaultRestFactory.start: already started");
         }
@@ -262,7 +264,7 @@ public final class DefaultRestFactory extends RestFactory {
             this.deleteResources.forEach((path, type) -> this.bindDelete(config, path, type));
         });
 
-        this.app.start(port);
+        this.app.start(host, port);
     }
 
     /** Stops the running Javalin app, if any. Idempotent. */
@@ -316,30 +318,53 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Gates every route behind a valid {@code Authorization: Bearer <jwt>}
-     * header, except {@link #LOGIN_PATH} itself - that route is how a client
-     * obtains the JWT this filter checks for in the first place, so it must
-     * stay reachable without one. Stores the validated user id as a request
-     * attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link Owned}-scoping
-     * checks in {@link #bindRegister}/{@link #bindFetch}/{@link
-     * #bindUpdate}/{@link #bindDelete} to read.
+     * Gates every route behind a valid JWT, except {@link #LOGIN_PATH} itself
+     * - that route is how a client obtains the JWT this filter checks for in
+     * the first place, so it must stay reachable without one. The token
+     * itself is resolved by {@link #resolveBearerToken} (header, preferred,
+     * or a query parameter fallback). Stores the validated user id as a
+     * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
+     * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
+     * {@link #bindUpdate}/{@link #bindDelete} to read.
      *
-     * @throws UnauthorizedResponse if the header is missing, malformed, or the token is invalid/expired
+     * @throws UnauthorizedResponse if no token is present, or it is malformed/invalid/expired
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path())) {
             return;
         }
-        final String header = ctx.header(AUTHORIZATION_HEADER);
-        if (header == null || !header.startsWith(BEARER_PREFIX)) {
-            throw new UnauthorizedResponse("Missing " + AUTHORIZATION_HEADER + " header");
+        final String token = resolveBearerToken(ctx);
+        if (token == null) {
+            throw new UnauthorizedResponse(
+                    "Missing " + AUTHORIZATION_HEADER + " header or '" + TOKEN_QUERY_PARAM + "' query parameter");
         }
         try {
-            final String userId = this.authService.validate(header.substring(BEARER_PREFIX.length()));
+            final String userId = this.authService.validate(token);
             ctx.attribute(USER_ID_ATTRIBUTE, userId);
         } catch (final InvalidJwtException e) {
             throw new UnauthorizedResponse("Invalid or expired token");
         }
+    }
+
+    /**
+     * Resolves the caller's JWT: the {@code Authorization: Bearer <jwt>} header if present,
+     * otherwise a {@code ?token=<jwt>} query parameter - a deliberate fallback so a route can
+     * still be reached by typing a URL directly into a browser's address bar, which cannot set
+     * a custom header. This is a real security trade-off, not a free convenience: a token
+     * passed as a query parameter ends up in browser history, this server's own access logs,
+     * and any {@code Referer} header a page at that URL sends onward to a third party - prefer
+     * the header (e.g. a {@code fetch()} call setting it explicitly) whenever the caller can
+     * set one, and treat a query-parameter token as no more secret than the URL it's part of.
+     *
+     * @return the raw token, or {@code null} if neither source carries one
+     */
+    @Nullable
+    private static String resolveBearerToken(@NotNull final Context ctx) {
+        final String header = ctx.header(AUTHORIZATION_HEADER);
+        if (header != null && header.startsWith(BEARER_PREFIX)) {
+            return header.substring(BEARER_PREFIX.length());
+        }
+        return ctx.queryParam(TOKEN_QUERY_PARAM);
     }
 
     /**

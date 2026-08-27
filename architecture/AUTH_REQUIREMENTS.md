@@ -118,7 +118,7 @@ import org.jetbrains.annotations.NotNull;
 
 /**
  * Signs and verifies stateless JWTs used to authenticate end-user clients
- * (iOS/web/macOS) after a successful login. Unlike {@code
+ * (iOS/rest/macOS) after a successful login. Unlike {@code
  * de.lino.cloud.api.security.rest.ApiKey} (static, long-lived,
  * server-to-server), a JWT is short-lived and carries a user identity.
  */

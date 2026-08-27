@@ -10,7 +10,7 @@
     </parent>
 
     <groupId>de.lino.cloud.extensions.web</groupId>
-    <artifactId>cloud-driver-extensions-web</artifactId>
+    <artifactId>cloud-driver-extensions-rest</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>

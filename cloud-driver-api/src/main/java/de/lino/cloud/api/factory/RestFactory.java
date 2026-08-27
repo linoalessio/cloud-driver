@@ -87,14 +87,41 @@ public abstract class RestFactory {
 
     /**
      * Builds the underlying HTTP server from every route registered so far
-     * and starts it listening on {@code port}. No further {@code
-     * register}/{@code fetch}/{@code update}/{@code delete} calls are
+     * and starts it listening on {@code host}:{@code port}. No further
+     * {@code register}/{@code fetch}/{@code update}/{@code delete} calls are
      * accepted once this returns.
+     *
+     * <p>{@code host} matters beyond just "which interface": Javalin serves
+     * plain HTTP, no TLS, so binding to {@code "0.0.0.0"} (every interface,
+     * including public ones) means credentials/JWTs travel unencrypted to
+     * anyone who can reach that port directly. Binding to {@code
+     * "127.0.0.1"} instead makes the server reachable only from the same
+     * machine - the intended shape once a TLS-terminating reverse proxy
+     * (e.g. Caddy) sits in front, proxying its own public, HTTPS port to
+     * this one locally. See {@code shell/Caddyfile} and the "Deployment"
+     * section of this repo's `CLAUDE.md` for the reverse-proxy setup this
+     * is meant to be used with in production.
+     *
+     * @param host the interface to bind to, e.g. {@code "0.0.0.0"} (every interface) or {@code "127.0.0.1"} (loopback only)
+     * @param port the port to listen on
+     * @throws IllegalStateException if the server is already started
+     */
+    public abstract void start(@NotNull String host, int port);
+
+    /**
+     * {@link #start(String, int)}, binding to every interface ({@code "0.0.0.0"}) - the
+     * original, pre-reverse-proxy default. Only appropriate for local development/testing
+     * (plain HTTP reachable from anywhere that can reach this port) or for a deployment that
+     * terminates TLS some other way before traffic ever reaches this process; a real internet-
+     * facing deployment should call {@link #start(String, int)} with {@code "127.0.0.1"}
+     * directly, behind a reverse proxy, instead.
      *
      * @param port the port to listen on
      * @throws IllegalStateException if the server is already started
      */
-    public abstract void start(int port);
+    public void start(final int port) {
+        this.start("0.0.0.0", port);
+    }
 
     /** Stops the underlying HTTP server started by {@link #start}. A no-op if never started. */
     public abstract void stop();
@@ -127,6 +154,12 @@ public abstract class RestFactory {
     @NotNull
     public CompletableFuture<Void> startAsync(final int port) {
         return MultiTaskingFactory.getInstance().runAsync(() -> this.start(port));
+    }
+
+    /** Async counterpart of {@link #start(String, int)}. */
+    @NotNull
+    public CompletableFuture<Void> startAsync(@NotNull final String host, final int port) {
+        return MultiTaskingFactory.getInstance().runAsync(() -> this.start(host, port));
     }
 
     /** Async counterpart of {@link #stop()}. */

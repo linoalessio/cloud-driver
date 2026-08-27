@@ -80,21 +80,19 @@ public final class DefaultCloudDriver extends CloudDriver {
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence
      * @param connectivityChecker backs {@link #getConnectivityChecker()} and {@link DefaultFileFactory}
      * @return the installed instance
-     * @throws IOException if the extensions folder cannot be created
      */
     @NotNull
     public static synchronized CloudDriver setInstance(
             @NotNull final DatabaseProvider databaseProvider,
             @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
             @NotNull final ConnectivityChecker connectivityChecker
-    ) throws IOException {
+    ) {
 
         final Terminal terminal = new Terminal(new DefaultPromptProvider());
         final Logger logger = Logger.getLogger(CloudDriver.class.getSimpleName());
         terminal.attachLogging(logger);
 
         final IFactoryContainer container = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
-
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(
                 connectivityChecker,

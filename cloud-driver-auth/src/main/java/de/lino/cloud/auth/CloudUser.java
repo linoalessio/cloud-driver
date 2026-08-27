@@ -2,6 +2,7 @@ package de.lino.cloud.auth;
 
 import com.google.common.collect.Sets;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.database.database.entity.Serialized;
@@ -23,7 +24,7 @@ import java.util.Set;
  * every other entity in this codebase.
  */
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
-public final class CloudUser extends Serialized implements ICloudUser {
+public final class CloudUser extends Serialized implements ICloudUser, Owned {
 
     private final String authUserId;
 
@@ -62,6 +63,16 @@ public final class CloudUser extends Serialized implements ICloudUser {
     @Override
     public List<String> keysOf() {
         return List.of(this.authUserId);
+    }
+
+    /**
+     * @return {@link #authUserId} - a {@code CloudUser}'s primary key already
+     * is its owning user's id, so this is the same value as {@link #keysOf()}.
+     */
+    @NotNull
+    @Override
+    public String ownerId() {
+        return this.authUserId;
     }
 
 }
