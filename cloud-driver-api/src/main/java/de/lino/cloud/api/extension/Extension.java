@@ -32,8 +32,8 @@ public abstract class Extension {
     private final ExtensionProperties extensionProperties;
 
     /**
-     * The build tool managing the current project, detected once at construction
-     * time via {@link ProjectBuildDetection#detectProjectBuildType()}.
+     * The build tool managing this extension's own project, detected once at construction
+     * time via {@link ProjectBuildDetection#detectProjectBuildType(Class)}.
      */
     private final ProjectType projectBuildType;
 
@@ -45,7 +45,7 @@ public abstract class Extension {
      */
     protected Extension() {
         this.extensionProperties = ExtensionPropertiesLoader.load(getClass());
-        this.projectBuildType = ProjectBuildDetection.detectProjectBuildType();
+        this.projectBuildType = ProjectBuildDetection.detectProjectBuildType(getClass());
     }
 
     /**
@@ -82,7 +82,7 @@ public abstract class Extension {
      * @return this extension's {@link ExtensionProperties}
      */
     public final ExtensionProperties getExtensionProperties() {
-        return extensionProperties;
+        return this.extensionProperties;
     }
 
     /**
@@ -91,7 +91,7 @@ public abstract class Extension {
      * @return {@code ProjectType.JAVA_PLUGIN}, {@code ProjectType.MAVEN_PLUGIN}, or {@code ProjectType.GRADLE_PLUGIN}
      */
     public final ProjectType getProjectBuildType() {
-        return projectBuildType;
+        return this.projectBuildType;
     }
 
     /**

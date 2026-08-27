@@ -60,7 +60,8 @@ public class CloudWatcherExtension extends Extension {
     /** Shuts the listener down, if it was ever started. */
     @Override
     public void onEnding() {
-        if (this.notification != null) this.notification.shutdown();
+        if (this.notification == null) return;
+        this.notification.shutdown();
     }
 
     /**

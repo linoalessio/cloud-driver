@@ -1,11 +1,14 @@
 package de.lino.cloud.plugin.file;
 
+import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.event.database.PendingUploadEvent;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
@@ -122,7 +125,10 @@ public final class PendingUploadScheduler {
      */
     private CompletableFuture<Void> retryUpload(final StoredFile file) {
         return this.dataFactory.registerAsync(file)
-                .thenRun(() -> this.pendingUploadCache.remove(file.fileId()))
+                .thenRun(() -> {
+                    this.pendingUploadCache.remove(file.fileId());
+                    CloudDriver.getInstance().getEventFactory().dispatch(PendingUploadEvent.class, new JsonDocument().append("fileId", file.fileId()));
+                })
                 .exceptionally(stillFailing -> null);
     }
 

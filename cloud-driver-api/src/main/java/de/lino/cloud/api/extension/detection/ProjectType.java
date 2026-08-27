@@ -5,8 +5,8 @@ import lombok.Getter;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * The build tool managing the current project, as detected by
- * {@link ProjectBuildDetection#detectProjectBuildType()}.
+ * The build tool managing an extension's own project, as detected by
+ * {@link ProjectBuildDetection#detectProjectBuildType(Class)}.
  */
 @Getter
 public enum ProjectType {

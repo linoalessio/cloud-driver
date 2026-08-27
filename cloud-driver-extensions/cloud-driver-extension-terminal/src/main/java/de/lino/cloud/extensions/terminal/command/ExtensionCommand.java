@@ -8,6 +8,7 @@ import de.lino.cloud.api.extension.info.ExtensionProperties;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.terminal.Terminal;
+import de.lino.cloud.api.terminal.color.AnsiColors;
 import de.lino.cloud.api.terminal.command.Command;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
@@ -87,9 +88,10 @@ public class ExtensionCommand implements Command {
             terminal.emptyLine();
             terminal.displayApproved("Information about '&b&l%s&7': ", properties.getExtensionName());
             terminal.displayApproved("Version: &f%s", properties.getExtensionVersion());
-            terminal.displayApproved("Description: &7%s", properties.getDescription().isEmpty() ? "EMPTY" : properties.getDescription());
+            terminal.displayApproved("Description: &f%s", properties.getDescription().isEmpty() ? "EMPTY" : properties.getDescription());
             terminal.displayApproved("Status: %s", extensionStatusOf(properties.getExtensionStatus()));
-            terminal.displayApproved("Authors: &e%s", String.join("&7, &e", properties.getAuthors()));
+            terminal.displayApproved("Build: &e%s", extension.get().getProjectBuildType().getName());
+            terminal.displayApproved("Authors: &3%s", String.join("&7, &e", properties.getAuthors()));
             terminal.displayApproved("Dependencies: &c%s", properties.getDependencies().isEmpty() ? "EMPTY" : String.join("&7, &c", properties.getDependencies()));
             terminal.emptyLine();
 
@@ -135,6 +137,8 @@ public class ExtensionCommand implements Command {
 
             return;
         }
+
+        this.sendHelp();
 
     }
 

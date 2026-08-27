@@ -2,6 +2,7 @@ package de.lino.cloud.api.event;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.EventFactory;
+import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
@@ -31,6 +32,11 @@ public abstract class Event {
     @NonNull
     public CloudDriver cloudDriver() {
         return Asserts.requireNonNull(CloudDriver.getInstance());
+    }
+
+    @NonNull
+    public Terminal terminal() {
+        return Asserts.requireNonNull(this.cloudDriver().getTerminal());
     }
 
 }
