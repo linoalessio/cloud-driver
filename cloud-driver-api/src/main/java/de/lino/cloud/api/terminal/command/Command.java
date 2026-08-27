@@ -2,6 +2,7 @@ package de.lino.cloud.api.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;

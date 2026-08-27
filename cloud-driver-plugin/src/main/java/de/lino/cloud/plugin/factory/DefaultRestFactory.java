@@ -1,5 +1,6 @@
 package de.lino.cloud.plugin.factory;
 
+import com.google.common.collect.Maps;
 import com.google.gson.Gson;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
@@ -51,10 +52,10 @@ public final class DefaultRestFactory extends RestFactory {
     private final ApiKey apiKey;
     private final Gson gson = new Gson();
 
-    private final Map<String, Class<? extends Serialized>> registerResources = new ConcurrentHashMap<>();
-    private final Map<String, Class<? extends Serialized>> fetchResources = new ConcurrentHashMap<>();
-    private final Map<String, Class<? extends Serialized>> updateResources = new ConcurrentHashMap<>();
-    private final Map<String, Class<? extends Serialized>> deleteResources = new ConcurrentHashMap<>();
+    private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
+    private final Map<String, Class<? extends Serialized>> fetchResources = Maps.newHashMap();
+    private final Map<String, Class<? extends Serialized>> updateResources = Maps.newHashMap();
+    private final Map<String, Class<? extends Serialized>> deleteResources = Maps.newHashMap();
 
     /** The running Javalin app, or {@code null} before {@link #start} / after {@link #stop}. */
     private volatile Javalin app;

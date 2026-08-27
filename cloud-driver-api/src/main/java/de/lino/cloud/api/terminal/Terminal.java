@@ -7,6 +7,7 @@ import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.terminal.prompt.PromptProvider;
 import de.lino.cloud.api.terminal.thread.ReadingThread;
 import de.lino.cloud.api.utility.Asserts;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -144,6 +145,10 @@ public final class Terminal {
         update();
     }
 
+    public void display(@NonNull final String message, @NonNull final Object... args) {
+        this.display(String.format(message, args));
+    }
+
     /**
      * Prints {@code message} above the current input line without disturbing what the user is
      * typing. Safe to call while {@link #readingThread()} is blocked reading a line.
@@ -156,6 +161,10 @@ public final class Terminal {
 
         this.lineReader.printAbove(this.prompt + AnsiColors.translate(String.format("&7%s", message)));
         update();
+    }
+
+    public void displayApproved(@NonNull final String format, @NonNull final Object... args) {
+        this.displayApproved(String.format(format, args));
     }
 
     /** Prints a single blank line above the current input line. */
@@ -182,10 +191,9 @@ public final class Terminal {
 
     /** Redraws the prompt if the reader is currently active. Called after every display. */
     void update() {
-        if (this.lineReader.isReading()) {
-            this.lineReader.callWidget(LineReader.REDRAW_LINE);
-            this.lineReader.callWidget(LineReader.REDISPLAY);
-        }
+        if (!this.lineReader.isReading()) return;
+        this.lineReader.callWidget(LineReader.REDRAW_LINE);
+        this.lineReader.callWidget(LineReader.REDISPLAY);
     }
 
     /**

@@ -40,9 +40,9 @@ public class HelpCommand implements Command {
         final CommandService commandService = terminal.getCommandService();
 
         terminal.emptyLine();
-        terminal.displayApproved(String.format("Registered commands (&b%s&7): ", commandService.snapshot().size()));
+        terminal.displayApproved("Registered commands (&b%s&7): ", commandService.snapshot().size());
         commandService.snapshot().forEach(command -> {
-            terminal.displayApproved(String.format("- &b%s &7(%s) | &7%s", command.name(), String.join(", ", command.aliases()), command.description()));
+            terminal.displayApproved("- &b%s &7(%s) | &7%s", command.name(), String.join(", ", command.aliases()), command.description());
         });
         terminal.emptyLine();
 

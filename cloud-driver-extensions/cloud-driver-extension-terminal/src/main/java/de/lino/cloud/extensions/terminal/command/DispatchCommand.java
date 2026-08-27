@@ -41,7 +41,7 @@ public class DispatchCommand implements Command {
     public void execute(@NotNull String[] args) {
 
         if (args.length == 0) {
-            this.terminal().displayApproved("&cUsage: dispatch <command> [args...]");
+            this.terminal().displayApproved("&fdispatch <command> [args...]");
             return;
         }
 
