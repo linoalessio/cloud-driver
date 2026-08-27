@@ -1,0 +1,7 @@
+{
+  "name": "cloud-driver-backup",
+  "version": "1.0.0",
+  "description": "CloudDriver backup extension backing up the database periodicallygit s",
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-bootstrap"]
+}

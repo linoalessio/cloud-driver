@@ -9,19 +9,18 @@
         <version>1.0.1</version>
     </parent>
 
-    <groupId>de.lino.cloud.extensions.terminal</groupId>
-    <artifactId>cloud-driver-extension-terminal</artifactId>
+    <groupId>de.lino.cloud.extensions.backup</groupId>
+    <artifactId>cloud-driver-extensions-backup</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>
 
         <dependency>
-            <groupId>de.lino.cloud.api</groupId>
-            <artifactId>cloud-driver-api</artifactId>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
             <version>1.0.1</version>
         </dependency>
 
     </dependencies>
-
 
 </project>

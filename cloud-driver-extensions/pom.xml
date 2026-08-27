@@ -16,7 +16,8 @@
     <modules>
         <module>cloud-driver-extensions-rest</module>
         <module>cloud-driver-extensions-watcher</module>
-        <module>cloud-driver-extension-terminal</module>
+        <module>cloud-driver-extensions-terminal</module>
+        <module>cloud-driver-extensions-backup</module>
     </modules>
 
 </project>
