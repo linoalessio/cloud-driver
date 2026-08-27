@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cloud-driver &middot; account access</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --border: #e1e4e9;
+    --text: #1b1e24;
+    --muted: #6b7280;
+    --accent: #2f6fed;
+    --accent-hover: #2558c4;
+    --danger: #c23b3b;
+    --danger-bg: #fdeceb;
+    --success: #1b7a4a;
+    --success-bg: #e9f7ef;
+    --mono-bg: #f0f2f5;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f26;
+      --border: #2b2f3a;
+      --text: #e7e9ee;
+      --muted: #9aa1ae;
+      --accent: #5b8bf0;
+      --accent-hover: #7ba0f4;
+      --danger: #f27272;
+      --danger-bg: #3a1f1f;
+      --success: #5fd393;
+      --success-bg: #163a28;
+      --mono-bg: #11131a;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.45);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 32px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #8b5cf6);
+    flex-shrink: 0;
+  }
+
+  .brand-name {
+    font-weight: 650;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+  }
+
+  h1 {
+    font-size: 20px;
+    margin: 20px 0 4px;
+    letter-spacing: -0.01em;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 13.5px;
+    margin: 0 0 22px;
+    line-height: 1.5;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--mono-bg);
+    padding: 4px;
+    border-radius: 10px;
+    margin-bottom: 22px;
+  }
+
+  .tab {
+    flex: 1;
+    text-align: center;
+    padding: 8px 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13.5px;
+    font-weight: 550;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .tab.active {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+  }
+
+  label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 14px 0 6px;
+  }
+
+  label:first-of-type { margin-top: 0; }
+
+  input[type="email"],
+  input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  input[type="email"]:focus,
+  input[type="password"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+
+  .hint {
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+
+  button.submit {
+    width: 100%;
+    margin-top: 22px;
+    padding: 11px 0;
+    border: none;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  button.submit:hover { background: var(--accent-hover); }
+  button.submit:disabled { opacity: 0.6; cursor: default; }
+
+  .message {
+    margin-top: 16px;
+    padding: 11px 13px;
+    border-radius: 9px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: none;
+  }
+
+  .message.error {
+    display: block;
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+
+  .message.success {
+    display: block;
+    background: var(--success-bg);
+    color: var(--success);
+  }
+
+  .token-box {
+    margin-top: 12px;
+    display: none;
+  }
+
+  .token-box.visible { display: block; }
+
+  .token-value {
+    width: 100%;
+    resize: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    padding: 10px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--mono-bg);
+    color: var(--text);
+    height: 76px;
+  }
+
+  button.copy {
+    margin-top: 8px;
+    width: 100%;
+    padding: 8px 0;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 550;
+    cursor: pointer;
+  }
+
+  button.copy:hover { border-color: var(--accent); color: var(--accent); }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+</style>
+</head>
+<body>
+
+  <div class="card">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">cloud-driver</div>
+    </div>
+    <h1 id="heading">Create your account</h1>
+    <p class="subtitle" id="subtitle">Register a new cloud-driver account to receive an access token.</p>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="register" type="button">Register</button>
+      <button class="tab" data-tab="login" type="button">Log in</button>
+    </div>
+
+    <form class="panel active" id="register-panel">
+      <label for="register-email">Email address</label>
+      <input type="email" id="register-email" autocomplete="email" required>
+
+      <label for="register-password">Password</label>
+      <input type="password" id="register-password" autocomplete="new-password" minlength="8" required>
+      <div class="hint">At least 8 characters.</div>
+
+      <button class="submit" type="submit">Create account</button>
+    </form>
+
+    <form class="panel" id="login-panel">
+      <label for="login-email">Email address</label>
+      <input type="email" id="login-email" autocomplete="email" required>
+
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" autocomplete="current-password" required>
+
+      <button class="submit" type="submit">Log in</button>
+    </form>
+
+    <div class="message" id="message"></div>
+
+    <div class="token-box" id="token-box">
+      <textarea class="token-value" id="token-value" readonly></textarea>
+      <button class="copy" id="copy-button" type="button">Copy token</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const tabs = document.querySelectorAll(".tab");
+  const panels = { register: document.getElementById("register-panel"), login: document.getElementById("login-panel") };
+  const heading = document.getElementById("heading");
+  const subtitle = document.getElementById("subtitle");
+  const message = document.getElementById("message");
+  const tokenBox = document.getElementById("token-box");
+  const tokenValue = document.getElementById("token-value");
+  const copyButton = document.getElementById("copy-button");
+
+  const copy = { register: { heading: "Create your account", subtitle: "Register a new cloud-driver account to receive an access token." },
+                 login: { heading: "Welcome back", subtitle: "Log in to obtain a fresh access token." } };
+
+  function resetFeedback() {
+    message.className = "message";
+    message.textContent = "";
+    tokenBox.classList.remove("visible");
+    tokenValue.value = "";
+  }
+
+  function switchTab(name) {
+    tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.tab === name));
+    Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle("active", key === name));
+    heading.textContent = copy[name].heading;
+    subtitle.textContent = copy[name].subtitle;
+    resetFeedback();
+  }
+
+  tabs.forEach(tab => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
+
+  async function submitForm(path, emailAddress, password, submitButton) {
+    resetFeedback();
+    submitButton.disabled = true;
+
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailAddress, password })
+      });
+
+      const bodyText = await response.text();
+      let body = null;
+      try { body = bodyText ? JSON.parse(bodyText) : null; } catch (_) { /* non-JSON error body */ }
+
+      if (!response.ok) {
+        const detail = (body && body.TITLE) || (body && body.title) || bodyText || response.statusText;
+        message.className = "message error";
+        message.textContent = detail || ("Request failed (" + response.status + ")");
+        return;
+      }
+
+      message.className = "message success";
+      message.textContent = path === "/api/register"
+        ? "Account created. Your access token is ready below."
+        : "Logged in. Your access token is ready below.";
+
+      tokenValue.value = body.token;
+      tokenBox.classList.add("visible");
+    } catch (networkError) {
+      message.className = "message error";
+      message.textContent = "Could not reach the server. Please try again.";
+    } finally {
+      submitButton.disabled = false;
+    }
+  }
+
+  document.getElementById("register-panel").addEventListener("submit", event => {
+    event.preventDefault();
+    const email = document.getElementById("register-email").value.trim();
+    const password = document.getElementById("register-password").value;
+    submitForm("/api/register", email, password, event.submitter || event.target.querySelector("button.submit"));
+  });
+
+  document.getElementById("login-panel").addEventListener("submit", event => {
+    event.preventDefault();
+    const email = document.getElementById("login-email").value.trim();
+    const password = document.getElementById("login-password").value;
+    submitForm("/api/login", email, password, event.submitter || event.target.querySelector("button.submit"));
+  });
+
+  copyButton.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(tokenValue.value);
+      copyButton.textContent = "Copied";
+      setTimeout(() => { copyButton.textContent = "Copy token"; }, 1500);
+    } catch (_) {
+      tokenValue.select();
+      document.execCommand("copy");
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
