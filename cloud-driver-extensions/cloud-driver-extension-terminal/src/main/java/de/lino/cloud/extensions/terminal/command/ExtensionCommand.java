@@ -16,7 +16,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Optional;
 
-/** Lists every registered {@link de.lino.cloud.api.extension.Extension} and its status. */
+/** Lists every registered {@link Extension} and its status. */
 public class ExtensionCommand implements Command {
 
     /** @return {@code "extensions"} */
@@ -34,7 +34,7 @@ public class ExtensionCommand implements Command {
     /** @return this command's description */
     @Override
     public @NotNull String description() {
-        return "List all registered extensions";
+        return "Get a list of information about the extensions";
     }
 
     /**
@@ -64,7 +64,7 @@ public class ExtensionCommand implements Command {
                                 , properties.getExtensionName()
                                 , properties.getExtensionVersion()
                                 , extensionStatusOf(properties.getExtensionStatus())
-                                , properties.getDescription()
+                                , properties.getDescription().isEmpty() ? "EMPTY" : properties.getDescription()
                 );
             });
             terminal.emptyLine();
@@ -87,7 +87,7 @@ public class ExtensionCommand implements Command {
             terminal.emptyLine();
             terminal.displayApproved("Information about '&b&l%s&7': ", properties.getExtensionName());
             terminal.displayApproved("Version: &f%s", properties.getExtensionVersion());
-            terminal.displayApproved("Description: &7%s", properties.getDescription());
+            terminal.displayApproved("Description: &7%s", properties.getDescription().isEmpty() ? "EMPTY" : properties.getDescription());
             terminal.displayApproved("Status: %s", extensionStatusOf(properties.getExtensionStatus()));
             terminal.displayApproved("Authors: &e%s", String.join("&7, &e", properties.getAuthors()));
             terminal.displayApproved("Dependencies: &c%s", properties.getDependencies().isEmpty() ? "EMPTY" : String.join("&7, &c", properties.getDependencies()));
