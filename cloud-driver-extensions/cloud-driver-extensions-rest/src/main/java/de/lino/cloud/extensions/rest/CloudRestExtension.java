@@ -74,7 +74,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onException(RuntimeException reason) {
 
-        REST_FACTORY.stop();
+        if (REST_FACTORY != null) REST_FACTORY.stop();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud rest extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 
@@ -84,7 +84,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onEnding() {
 
-        REST_FACTORY.stop();
+        if (REST_FACTORY != null)REST_FACTORY.stop();
         this.cloudDriver().getTerminal().displayApproved("Rest server connection successfully &cclosed&7.");
 
     }
@@ -106,7 +106,7 @@ public class CloudRestExtension extends Extension {
             return;
         }
 
-        final String configuredBindHost = this.cloudDriver().getConfiguration().getString("rest-api-bind-host");
+        final String configuredBindHost = this.cloudDriver().getConfiguration().getString("rest-server-bind-host");
         final String bindHost = configuredBindHost.isBlank() ? DEFAULT_BIND_HOST : configuredBindHost;
 
         final DataFactory dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
