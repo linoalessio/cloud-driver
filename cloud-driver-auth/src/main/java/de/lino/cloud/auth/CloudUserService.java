@@ -32,11 +32,24 @@ public final class CloudUserService implements ICloudUserService {
     private final DataFactory dataFactory;
     private final FileFactory fileFactory;
 
+    /**
+     * Creates a {@code CloudUserService} backed by the given collaborators.
+     *
+     * @param dataFactory persists/looks up {@link CloudUser} and {@link StoredFileOwnership} rows
+     * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     */
     public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory) {
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
     }
 
+    /**
+     * Looks up {@code authUserId}'s {@link CloudUser} record, creating and persisting a fresh
+     * one on first use.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @return the existing or newly-created {@link CloudUser}
+     */
     @NonNull
     @Override
     public CloudUser getOrCreate(@NonNull final String authUserId) {
@@ -58,6 +71,11 @@ public final class CloudUserService implements ICloudUserService {
      * random id) and tracks it as owned by {@code authUserId} via a single new {@link
      * StoredFileOwnership} row - a plain insert, not a rewrite of any existing data,
      * regardless of how many files {@code authUserId} already owns.
+     *
+     * @param authUserId the uploading user's id, tracked as the new file's owner
+     * @param fileName the file's name, used to infer its content type and preserved on download
+     * @param content the file's raw bytes
+     * @return the newly-created {@link StoredFile}
      */
     @NonNull
     @Override
@@ -84,8 +102,7 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * @return every {@link StoredFile} currently tracked as belonging to {@code
-     * authUserId}
+     * Lists every {@link StoredFile} currently tracked as belonging to {@code authUserId}.
      *
      * <p><strong>Trade-off:</strong> neither {@link DataFactory} nor the underlying
      * database-driver expose a lookup by a non-primary-key field, so this scans and
@@ -99,6 +116,9 @@ public final class CloudUserService implements ICloudUserService {
      * the fix is a proper indexed query (e.g. {@code WHERE authUserId = ?}) exposed
      * from {@code database-driver-v2} up through {@code DataFactory} - not something
      * available today.
+     *
+     * @param authUserId the user whose files should be listed
+     * @return every {@link StoredFile} currently tracked as belonging to {@code authUserId}
      */
     @NonNull
     @Override
@@ -112,6 +132,11 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Deletes {@code storedFileId} and stops tracking its ownership, but only if {@code
+     * authUserId} actually owns it.
+     *
+     * @param authUserId the caller's own id, checked against the ownership record
+     * @param storedFileId the file to delete
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
      */
     @Override

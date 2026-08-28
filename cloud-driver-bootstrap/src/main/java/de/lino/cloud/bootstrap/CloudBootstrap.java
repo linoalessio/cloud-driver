@@ -267,6 +267,11 @@ public final class CloudBootstrap {
     /**
      * Smoke-test upload of the repo's own root {@code pom.xml} under a fresh random id.
      *
+     * <p><strong>Currently unused</strong> - not called from {@link #main}'s {@code runnable[]}
+     * sequence or anywhere else in this class; kept here as a ready-made manual smoke test to
+     * invoke ad hoc (e.g. from a debugger or a temporary call in {@link #main}) rather than
+     * deleted outright.
+     *
      * @throws RuntimeException wrapping any I/O, database, or encryption failure
      */
     private static void loadDummyFileUpload() {

@@ -1,6 +1,15 @@
-package de.lino.cloud.api.factory;
+package de.lino.cloud.api.factory.container;
 
-public interface IFactoryContainer {
+import de.lino.cloud.api.factory.*;
+import de.lino.cloud.api.user.ICloudUserService;
+
+/**
+ * Bundles every persistence/extension/event/REST facet a {@link
+ * de.lino.cloud.api.CloudDriver} implementation is constructed with, reached
+ * through {@link de.lino.cloud.api.CloudDriver#getFactoryContainer()}.
+ */
+public interface
+IFactoryContainer {
     
     /**
      * Returns the entity-persistence facet.
@@ -36,5 +45,5 @@ public interface IFactoryContainer {
      * @return the {@link RestFactory}
      */
     RestFactory getRestFactory();
-    
+
 }

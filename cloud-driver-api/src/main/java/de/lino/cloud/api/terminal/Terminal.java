@@ -145,6 +145,14 @@ public final class Terminal {
         update();
     }
 
+    /**
+     * {@link #display(String)}, formatting {@code message} with {@code args} via {@link
+     * String#format(String, Object...)} first.
+     *
+     * @param message the message format string, using {@code &x} legacy ansi codes
+     * @param args the arguments to substitute into {@code message}
+     * @throws NullPointerException if {@code message} or {@code args} is {@code null}
+     */
     public void display(@NonNull final String message, @NonNull final Object... args) {
         this.display(String.format(message, args));
     }
@@ -163,6 +171,14 @@ public final class Terminal {
         update();
     }
 
+    /**
+     * {@link #displayApproved(String)}, formatting {@code format} with {@code args} via {@link
+     * String#format(String, Object...)} first.
+     *
+     * @param format the message format string, using {@code &x} legacy ansi codes
+     * @param args the arguments to substitute into {@code format}
+     * @throws NullPointerException if {@code format} or {@code args} is {@code null}
+     */
     public void displayApproved(@NonNull final String format, @NonNull final Object... args) {
         this.displayApproved(String.format(format, args));
     }

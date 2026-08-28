@@ -16,7 +16,11 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Optional;
 
-/** Lists every registered {@link Extension} and its status. */
+/**
+ * Lists, inspects, starts, and stops registered {@link Extension}s from the terminal - the
+ * interactive counterpart of {@link ExtensionFactory}'s own programmatic {@code start}/{@code
+ * stop}/{@code getExtensions} surface.
+ */
 public class ExtensionCommand implements Command {
 
     /** @return {@code "extensions"} */
@@ -38,9 +42,16 @@ public class ExtensionCommand implements Command {
     }
 
     /**
-     * Prints every registered extension's name, version, status, and description.
+     * Dispatches to one of {@code list}/{@code info}/{@code start}/{@code stop} based on {@code
+     * arguments}' first token, printing a usage message if it is empty or unrecognized: {@code
+     * list} prints every registered extension's name, version, status, and description; {@code
+     * info <name>} prints one extension's full detail; {@code start <name>}/{@code stop <name>}
+     * drive that extension through {@link ExtensionFactory#start}/{@link ExtensionFactory#stop}
+     * and dispatch the matching {@link ExtensionRegisterEvent}/{@link ExtensionUnregisterEvent}
+     * (the host bootstrap extension itself, {@code "cloud-driver-bootstrap"}, is excluded from
+     * {@code start}/{@code stop} to avoid tearing down the process that hosts this very command).
      *
-     * @param args unused
+     * @param arguments the sub-command and its own arguments, split on whitespace
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

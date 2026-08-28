@@ -21,6 +21,9 @@ public interface ICloudUserService {
     /**
      * Looks up {@code authUserId}'s {@link ICloudUser} record, creating and persisting
      * a fresh (empty) one on first use.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} to look up or create a record for
+     * @return the existing or newly created {@link ICloudUser} record
      */
     @NotNull
     ICloudUser getOrCreate(@NotNull String authUserId);
@@ -29,12 +32,18 @@ public interface ICloudUserService {
      * Uploads {@code fileName}/{@code content} as a new {@link StoredFile} and tracks
      * it on {@code authUserId}'s {@link ICloudUser} record.
      *
+     * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param fileName the original file name of the content being uploaded
+     * @param content the file's raw bytes, of any type
      * @return the uploaded {@link StoredFile}
      */
     @NotNull
     StoredFile uploadFile(@NotNull String authUserId, @NotNull String fileName, byte[] content);
 
-    /** @return every {@link StoredFile} currently tracked as belonging to {@code authUserId} */
+    /**
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list
+     * @return every {@link StoredFile} currently tracked as belonging to {@code authUserId}
+     */
     @NotNull
     List<StoredFile> listFiles(@NotNull String authUserId);
 
@@ -42,6 +51,8 @@ public interface ICloudUserService {
      * Deletes {@code storedFileId} and stops tracking it, but only if {@code authUserId}
      * actually owns it.
      *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to delete
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
      */
     void deleteFile(@NotNull String authUserId, @NotNull String storedFileId);

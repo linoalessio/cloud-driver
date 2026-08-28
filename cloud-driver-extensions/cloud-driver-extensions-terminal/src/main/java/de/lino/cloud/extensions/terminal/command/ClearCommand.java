@@ -31,7 +31,7 @@ public class ClearCommand implements Command {
     /**
      * Clears the screen and reprints the banner.
      *
-     * @param args unused
+     * @param arguments unused
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

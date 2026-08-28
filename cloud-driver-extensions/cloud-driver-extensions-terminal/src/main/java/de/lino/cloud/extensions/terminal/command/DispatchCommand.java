@@ -15,27 +15,30 @@ import java.util.List;
  */
 public class DispatchCommand implements Command {
 
+    /** @return {@code "dispatch"} */
     @Override
     public @NotNull String name() {
         return "dispatch";
     }
 
+    /** @return {@code "exec"}, {@code "sudo"}, {@code "d"} */
     @Override
     public @NotNull List<String> aliases() {
         return List.of("exec", "sudo", "d");
     }
 
+    /** @return this service's description */
     @Override
     public @NotNull String description() {
         return "Dispatch a linux service through the system-terminal";
     }
 
     /**
-     * Runs {@code args} as a service (its first element is the executable, the rest its
+     * Runs {@code arguments} as a service (its first element is the executable, the rest its
      * arguments - exactly as the reading thread already split the input line), streaming
      * its combined stdout/stderr to the terminal as it runs, then printing its exit code.
      *
-     * @param args the service and its arguments; a no-op with a usage message if empty
+     * @param arguments the service and its arguments; a no-op with a usage message if empty
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

@@ -34,6 +34,12 @@ public abstract class Event {
         return Asserts.requireNonNull(CloudDriver.getInstance());
     }
 
+    /**
+     * Returns the host process's {@link Terminal}, reached through {@link #cloudDriver()}.
+     *
+     * @return the {@link Terminal}
+     * @throws NullPointerException if {@link CloudDriver#getInstance()} has not been set up yet, or if it has no {@link Terminal}
+     */
     @NonNull
     public Terminal terminal() {
         return Asserts.requireNonNull(this.cloudDriver().getTerminal());

@@ -33,6 +33,8 @@ public class AboutCommand implements Command {
 
     /**
      * Prints uptime, uploaded file count, and used storage.
+     *
+     * @param arguments unused
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

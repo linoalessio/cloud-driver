@@ -58,7 +58,7 @@ public abstract class Extension {
      * Called once loading has finished, with the arguments passed to the JVM's
      * {@code main(String[])} entry point.
      *
-     * @param args the arguments passed from the service line
+     * @param args the arguments passed from the command line
      */
     public abstract void onRunning(final String[] args);
 
@@ -104,12 +104,21 @@ public abstract class Extension {
         return Asserts.requireNonNull(CloudDriver.getInstance());
     }
 
-    /** @return the extensions folder path */
+    /**
+     * Returns the folder {@code ExtensionFolderScanner} loads third-party extension jars from.
+     *
+     * @return the extensions folder path, {@link Constraints#EXTENSIONS_PATH}
+     */
     public Path getWorkingDirectory() {
         return Constraints.EXTENSIONS_PATH;
     }
 
-    /** @return the host {@link CloudDriver}'s shared logger */
+    /**
+     * Returns the host {@link CloudDriver}'s shared logger, reached through {@link #cloudDriver()}.
+     *
+     * @return the host {@link CloudDriver}'s shared logger
+     * @throws NullPointerException if {@link CloudDriver#getInstance()} has not been set up yet
+     */
     public Logger getLogger() {
         return this.cloudDriver().getLogger();
     }

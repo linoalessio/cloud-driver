@@ -17,27 +17,48 @@ import java.util.stream.Collectors;
  */
 public enum AnsiColors {
 
+    /** Legacy code {@code &0}: standard black. */
     BLACK("&0", 0, false),
+    /** Legacy code {@code &1}: standard blue. */
     DARK_BLUE("&1", 4, false),
+    /** Legacy code {@code &2}: standard green. */
     DARK_GREEN("&2", 2, false),
+    /** Legacy code {@code &3}: standard cyan. */
     DARK_AQUA("&3", 6, false),
+    /** Legacy code {@code &4}: standard red. */
     DARK_RED("&4", 1, false),
+    /** Legacy code {@code &5}: standard magenta. */
     DARK_PURPLE("&5", 5, false),
+    /** Legacy code {@code &6}: standard yellow. */
     GOLD("&6", 3, false),
+    /** Legacy code {@code &7}: standard white/gray. */
     GRAY("&7", 7, false),
+    /** Legacy code {@code &8}: bright black. */
     DARK_GRAY("&8", 0, true),
+    /** Legacy code {@code &9}: bright blue. */
     BLUE("&9", 4, true),
+    /** Legacy code {@code &a}: bright green. */
     GREEN("&a", 2, true),
+    /** Legacy code {@code &b}: bright cyan. */
     AQUA("&b", 6, true),
+    /** Legacy code {@code &c}: bright red. */
     RED("&c", 1, true),
+    /** Legacy code {@code &d}: bright magenta. */
     LIGHT_PURPLE("&d", 5, true),
+    /** Legacy code {@code &e}: bright yellow. */
     YELLOW("&e", 3, true),
+    /** Legacy code {@code &f}: bright white. */
     WHITE("&f", 7, true),
 
+    /** Legacy code {@code &r}: resets every color/style back to the terminal's default. */
     RESET("&r", "[0m"),
+    /** Legacy code {@code &i}: italic text style. */
     ITALIC("&i", "[3m"),
+    /** Legacy code {@code &u}: underline text style. */
     UNDERLINE("&u", "[4m"),
+    /** Legacy code {@code &l}: bold text style. */
     BOLD("&l", "[1m"),
+    /** Legacy code {@code &k}: strikethrough text style. */
     STRIKETHROUGH("&k", "[9m"),
     ;
 
@@ -46,7 +67,7 @@ public enum AnsiColors {
 
     /**
      * Precomputed ANSI SGR escape sequence - {@code "\u001b[0m"} for {@link #RESET},
-     * {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} for a ansi depending on {@code bright},
+     * {@code "\u001b[3Xm"}/{@code "\u001b[9Xm"} for a color depending on {@code bright},
      * or a fixed text-style sequence (e.g. {@code "\u001b[1m"}) for {@link #BOLD} and
      * the other style constants.
      */

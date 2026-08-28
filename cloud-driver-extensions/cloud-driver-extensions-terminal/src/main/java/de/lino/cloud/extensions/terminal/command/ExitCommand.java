@@ -30,7 +30,7 @@ public class ExitCommand implements Command {
     /**
      * Shuts down the {@link CloudDriver}.
      *
-     * @param args unused
+     * @param arguments unused
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

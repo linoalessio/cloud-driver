@@ -6,13 +6,16 @@ import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.factory.IFactoryContainer;
+import de.lino.cloud.api.factory.container.IFactoryContainer;
+import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.factory.*;
+import de.lino.cloud.plugin.factory.container.FactoryContainer;
+import de.lino.cloud.plugin.factory.container.ServiceContainer;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.json.JsonDocument;
@@ -38,6 +41,8 @@ import java.util.logging.Logger;
 public final class DefaultCloudDriver extends CloudDriver {
 
     private final IFactoryContainer factoryContainer;
+    private final IServiceContainer serviceContainer;
+
     private final ConnectivityChecker connectivityChecker;
     private final Terminal terminal;
 
@@ -48,9 +53,10 @@ public final class DefaultCloudDriver extends CloudDriver {
      * @param connectivityChecker the outbound-connectivity-reporting facet
      * @throws NullPointerException if any argument is {@code null}
      */
-    private DefaultCloudDriver(@NotNull final ConnectivityChecker connectivityChecker, @NonNull final Terminal terminal, @NonNull final IFactoryContainer factoryContainer) {
+    private DefaultCloudDriver(@NotNull final ConnectivityChecker connectivityChecker, @NonNull final Terminal terminal, @NonNull final IFactoryContainer factoryContainer, @NonNull final IServiceContainer serviceContainer) {
         this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@DefaultCloudDriver: connectivityChecker cannot be null");
         this.factoryContainer = factoryContainer;
+        this.serviceContainer = serviceContainer;
         this.terminal = terminal;
     }
 
@@ -92,12 +98,14 @@ public final class DefaultCloudDriver extends CloudDriver {
         final Logger logger = Logger.getLogger(CloudDriver.class.getSimpleName());
         terminal.attachLogging(logger);
 
-        final IFactoryContainer container = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
+        final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
+        final IServiceContainer serviceContainer = new ServiceContainer(factoryContainer.getRestFactory());
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(
                 connectivityChecker,
                 terminal,
-                container
+                factoryContainer,
+                serviceContainer
         );
 
         INSTANCE = instance;

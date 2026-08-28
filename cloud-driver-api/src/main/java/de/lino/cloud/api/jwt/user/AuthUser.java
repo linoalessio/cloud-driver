@@ -40,6 +40,14 @@ public final class AuthUser extends Serialized {
     private final String emailAddress;
     private final String passwordHash;
 
+    /**
+     * Constructs an account record for an already-hashed password.
+     *
+     * @param id this account's unique id, its {@link #primaryKey()}
+     * @param emailAddress this account's identifying email address
+     * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password
+     * @throws NullPointerException if any argument is {@code null}
+     */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash) {
         this.id = Objects.requireNonNull(id, "@AuthUser.init: id cannot be null");
         this.emailAddress = Objects.requireNonNull(emailAddress, "@AuthUser.init: username cannot be null");

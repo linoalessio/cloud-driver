@@ -38,6 +38,8 @@ public final class Argon2idPasswordHasher implements PasswordHasher {
     }
 
     /**
+     * Constructs a hasher with explicit Argon2id cost parameters, rather than the OWASP baseline defaults.
+     *
      * @param memoryKib memory cost, in KiB
      * @param iterations number of iterations
      * @param parallelism degree of parallelism

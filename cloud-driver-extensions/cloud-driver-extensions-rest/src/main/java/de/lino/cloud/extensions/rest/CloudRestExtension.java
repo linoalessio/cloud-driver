@@ -13,6 +13,8 @@ import de.lino.cloud.auth.jwt.JjwtSigner;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
 
+import java.util.logging.Level;
+
 /**
  * Hosts the JWT-authenticated {@code RestFactory} - the actual place {@code RestFactory#start}
  * is called from in this repo (not {@code CloudBootstrap}, despite what older comments/docs
@@ -21,6 +23,7 @@ import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
  */
 public class CloudRestExtension extends Extension {
 
+    /** The configured listen port, read from {@code configuration.json}'s {@code "rest-server-port"} during {@link #onLoading()}. */
     private static int REST_SERVER_PORT;
 
     /**
@@ -33,9 +36,16 @@ public class CloudRestExtension extends Extension {
      */
     private static final String DEFAULT_BIND_HOST = "0.0.0.0";
 
+    /** The JWT-authenticated {@link RestFactory} this extension owns, once {@link #startRestApi()} has run. */
     private static volatile RestFactory REST_FACTORY;
 
-    /** Prints a diagnostic message; no real loading behavior yet. */
+    /**
+     * Reads the configured listen port and delegates to {@link #startRestApi()}, which builds
+     * the JWT-authenticated {@link RestFactory} (mounting {@code /auth/login} and the
+     * {@code /cloudUsers}/{@code /files} routes) and starts it listening.
+     *
+     * @throws NullPointerException if {@code "rest-server-port"} is missing from {@code configuration.json}
+     */
     @Override
     public void onLoading() {
 
@@ -45,7 +55,7 @@ public class CloudRestExtension extends Extension {
     }
 
     /**
-     * Prints a diagnostic message; no real running behavior yet.
+     * Prints a confirmation once the REST server started by {@link #onLoading()} is listening.
      *
      * @param args unused
      */
@@ -57,16 +67,20 @@ public class CloudRestExtension extends Extension {
     }
 
     /**
-     * No-op.
+     * Stops the REST server and logs the failure.
      *
-     * @param reason unused
+     * @param reason the exception that occurred
      */
     @Override
     public void onException(RuntimeException reason) {
+
         REST_FACTORY.stop();
+        this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud rest extension.");
+        this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
+
     }
 
-        /** No-op. */
+    /** Stops the REST server. */
     @Override
     public void onEnding() {
 
@@ -75,6 +89,12 @@ public class CloudRestExtension extends Extension {
 
     }
 
+    /**
+     * Builds the JWT-authenticated {@link RestFactory} and starts it. A blank {@code
+     * "jwt-signing-key"} in {@code configuration.json} logs a warning and returns without
+     * starting the server, rather than throwing - a deployment that hasn't configured JWT auth
+     * yet should still be able to boot every other subsystem normally.
+     */
     private void startRestApi() {
 
         final String signingKey = this.cloudDriver().getConfiguration().getString("jwt-signing-key");

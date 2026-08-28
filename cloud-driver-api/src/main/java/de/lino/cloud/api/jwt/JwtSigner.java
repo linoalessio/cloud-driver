@@ -13,8 +13,9 @@ public interface JwtSigner {
     /**
      * Issues a signed JWT asserting {@code subject}, expiring after {@code ttlSeconds}.
      *
-     * @param subject the identity to embed (e.g. {@code User#getId()})
+     * @param subject the identity to embed (e.g. {@code AuthUser#getId()})
      * @param ttlSeconds how many seconds from now the token expires
+     * @return the signed, encoded JWT
      */
     @NotNull
     String sign(@NotNull String subject, long ttlSeconds);
@@ -22,7 +23,9 @@ public interface JwtSigner {
     /**
      * Verifies {@code token}'s signature and expiry, returning its subject.
      *
-     * @throws InvalidJwtException if the signature is invalid, malformed, or the token has expired
+     * @param token the encoded JWT to verify
+     * @return the subject embedded in {@code token} at signing time
+     * @throws InvalidJwtException if the signature is invalid, the token is malformed, or it has expired
      */
     @NotNull
     String verify(@NotNull String token) throws InvalidJwtException;

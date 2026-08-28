@@ -36,7 +36,7 @@ public class LeaveCommand implements Command {
      * {@code STY} environment variable {@code screen} sets for every process running inside
      * one. No-ops with a message if {@code STY} is unset (not running inside {@code screen}).
      *
-     * @param args unused
+     * @param arguments unused
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

@@ -8,6 +8,11 @@ package de.lino.cloud.api.jwt;
  */
 public final class InvalidCredentialsException extends RuntimeException {
 
+    /**
+     * Constructs the exception with a detail message.
+     *
+     * @param message the detail message, deliberately identical whether the username doesn't exist or the password is wrong
+     */
     public InvalidCredentialsException(final String message) {
         super(message);
     }

@@ -31,7 +31,7 @@ public class HelpCommand implements Command {
     /**
      * Prints every registered service's name, aliases, and description.
      *
-     * @param args unused
+     * @param arguments unused
      */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {

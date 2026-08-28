@@ -21,6 +21,7 @@ import io.javalin.http.Context;
 import io.javalin.http.NotFoundResponse;
 import io.javalin.http.UnauthorizedResponse;
 import io.javalin.util.JavalinLogger;
+import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -79,6 +80,7 @@ public final class DefaultRestFactory extends RestFactory {
     private final DataFactory dataFactory;
     private final ApiKey apiKey;
     private final AuthService authService;
+    @Getter
     private final CloudUserService cloudUserService;
     private final Gson gson = new Gson();
 

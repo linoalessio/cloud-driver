@@ -34,6 +34,8 @@ public interface IAuthService {
      * Creates and persists a new user account. Not exposed over HTTP by this
      * class - call it directly (e.g. from {@code CreateUserCli}).
      *
+     * @param username the new account's identifying username (an email address, in the current implementation)
+     * @param rawPassword the new account's plaintext password, hashed before persistence and never itself retained
      * @throws DatabaseClientException if persisting the new account fails
      * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
      */
@@ -42,6 +44,9 @@ public interface IAuthService {
     /**
      * Verifies {@code username}/{@code rawPassword}, returning a signed JWT on success.
      *
+     * @param username the account's identifying username (an email address, in the current implementation) to verify
+     * @param rawPassword the plaintext password to verify against the stored hash
+     * @return a freshly signed JWT asserting the matched account's id
      * @throws InvalidCredentialsException if the username doesn't exist or the password doesn't match
      */
     @NonNull
@@ -50,6 +55,8 @@ public interface IAuthService {
     /**
      * Validates a JWT from the {@code Authorization} header, returning the embedded user id.
      *
+     * @param jwt the encoded JWT to validate
+     * @return the user id embedded in {@code jwt} at signing time
      * @throws InvalidJwtException if the token's signature is invalid, it is malformed, or it has expired
      */
     @NonNull

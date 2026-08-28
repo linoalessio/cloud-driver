@@ -1,7 +1,11 @@
 package de.lino.cloud.api.user;
 
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.UnmodifiableView;
+
+import java.util.List;
 
 /**
  * The behavioral contract {@code CloudUser} implements - mirrors the "{@code I}-prefixed
@@ -19,5 +23,17 @@ public interface ICloudUser {
     /** @return the {@link AuthUser#getId()} this record belongs to, and its own primary key */
     @NotNull
     String getAuthUserId();
+
+    /**
+     * Every {@link StoredFile} currently owned by this user, resolved on demand from the
+     * per-(user, file) ownership records described in this interface's own Javadoc - not state
+     * held on this record itself, so the returned view reflects an unmodifiable, point-in-time
+     * snapshot rather than a live, mutable collection.
+     *
+     * @return an unmodifiable view of every {@link StoredFile} this user currently owns
+     */
+    @NotNull
+    @UnmodifiableView
+    List<StoredFile> getStoredFiles();
 
 }

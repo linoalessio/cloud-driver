@@ -71,9 +71,13 @@ public final class EnvelopeEncryptionService {
      * Encrypts {@code plaintext} under a freshly generated DEK, then wraps
      * that DEK with the active key-encryption key.
      *
+     * @param plaintext the bytes to encrypt
      * @param associatedData additional data to authenticate but not encrypt,
      *                       e.g. protocol/version identifiers, tenant or
      *                       record ids; may be {@code null} or empty
+     * @return the resulting envelope, carrying both the wrapped DEK and the encrypted payload
+     * @throws NullPointerException if {@code plaintext} is {@code null}
+     * @throws KeyWrapException if wrapping the freshly generated data-encryption key fails
      */
     @NotNull
     public EnvelopeEncryptedPayload encrypt(@NotNull final byte[] plaintext, @Nullable final byte[] associatedData) throws KeyWrapException {
@@ -90,6 +94,12 @@ public final class EnvelopeEncryptionService {
     /**
      * Unwraps the envelope's DEK via the KMS/HSM and decrypts its payload,
      * verifying the authentication tag before returning any plaintext.
+     *
+     * @param envelope the envelope to decrypt, as produced by {@link #encrypt}
+     * @return the recovered plaintext
+     * @throws NullPointerException if {@code envelope} is {@code null}
+     * @throws KeyWrapException if unwrapping the envelope's data-encryption key fails
+     * @throws AuthenticationFailedException if authentication tag verification fails
      */
     @NotNull
     public byte[] decrypt(@NotNull final EnvelopeEncryptedPayload envelope) throws KeyWrapException, AuthenticationFailedException {

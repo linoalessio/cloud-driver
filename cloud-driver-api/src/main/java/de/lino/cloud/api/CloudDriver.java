@@ -1,16 +1,15 @@
 package de.lino.cloud.api;
 
-import de.lino.cloud.api.factory.*;
+import de.lino.cloud.api.factory.container.IFactoryContainer;
+import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.logging.TerminalLogFormatter;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
-import de.lino.database.database.entity.Serialized;
 import de.lino.database.json.JsonDocument;
 
 import java.util.logging.ConsoleHandler;
-import java.util.logging.Formatter;
 import java.util.logging.Logger;
 
 /**
@@ -68,7 +67,17 @@ public abstract class CloudDriver {
      */
     public abstract ConnectivityChecker getConnectivityChecker();
 
+    /**
+     * Returns the container bundling every persistence/extension/event/REST facet
+     * ({@link de.lino.cloud.api.factory.DataFactory}, {@link de.lino.cloud.api.factory.FileFactory},
+     * {@link de.lino.cloud.api.factory.ExtensionFactory}, {@link de.lino.cloud.api.factory.EventFactory},
+     * {@link de.lino.cloud.api.factory.RestFactory}) this instance was constructed with.
+     *
+     * @return the {@link IFactoryContainer}
+     */
     public abstract IFactoryContainer getFactoryContainer();
+
+    public abstract IServiceContainer getServiceContainer();
 
     /**
      * Returns the interactive terminal.
@@ -80,6 +89,13 @@ public abstract class CloudDriver {
     /** Shuts down every facet owned by this instance. */
     public abstract void shutdown();
 
+    /**
+     * Loads this deployment's local configuration file (e.g. {@code "rest-api-port"},
+     * {@code "jwt-signing-key"}), re-reading it from disk on every call rather than caching it.
+     *
+     * @return the parsed {@code configuration.json} document, resolved against {@link
+     * Constraints#CONFIGURATION_PATH}
+     */
     public JsonDocument getConfiguration() {
         return JsonDocument.load(Constraints.CONFIGURATION_PATH.resolve("configuration.json"));
     }

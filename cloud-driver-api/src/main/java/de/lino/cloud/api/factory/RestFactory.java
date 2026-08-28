@@ -1,7 +1,9 @@
 package de.lino.cloud.api.factory;
 
+import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.database.database.entity.Serialized;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Collection;
@@ -84,6 +86,15 @@ public abstract class RestFactory {
     /** Every path currently registered under any operation. */
     @NotNull
     public abstract Collection<String> getRegisteredPaths();
+
+    /**
+     * Returns the end-user file-ownership service backing the {@code /files} routes, so a
+     * caller mounting those routes can reach the same instance this factory's own handlers use.
+     *
+     * @return the {@link ICloudUserService}
+     */
+    @NonNull
+    public abstract ICloudUserService getCloudUserService();
 
     /**
      * Builds the underlying HTTP server from every route registered so far

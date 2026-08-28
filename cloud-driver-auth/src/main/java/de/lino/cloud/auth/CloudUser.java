@@ -1,5 +1,7 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
@@ -8,6 +10,7 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.List;
 import java.util.Objects;
@@ -35,6 +38,20 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      */
     public CloudUser(@NotNull final String authUserId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@CloudUser.init: authUserId cannot be null");
+    }
+
+    /**
+     * Convenience accessor for every {@link StoredFile} this user owns, resolved on demand
+     * through the process-wide {@link CloudDriver} singleton rather than held as state on this
+     * entity - see {@link CloudUserService#listFiles} for the underlying lookup (including its
+     * full-table-scan trade-off) this delegates to.
+     *
+     * @return an unmodifiable view of every {@link StoredFile} currently tracked as belonging
+     *     to this user
+     */
+    @UnmodifiableView
+    public List<StoredFile> getStoredFiles() {
+        return CloudDriver.getInstance().getServiceContainer().getCloudUserService().listFiles(this.authUserId);
     }
 
     /** @return this entity's primary key, {@link #authUserId} */
