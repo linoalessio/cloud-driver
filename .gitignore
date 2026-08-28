@@ -9,6 +9,9 @@ cloud-driver/postgres-database.json
 cloud-driver/configuration.json
 cloud-driver
 
+architecture
+architecture/*.md
+
 shell/*.sh
 shell
 
