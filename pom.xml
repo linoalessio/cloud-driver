@@ -15,6 +15,7 @@
         <module>cloud-driver-extensions</module>
         <module>cloud-driver-bootstrap</module>
         <module>cloud-driver-auth</module>
+        <module>cloud-driver-platform</module>
     </modules>
 
     <properties>
