@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.app.api.session;
+package de.lino.cloud.platform.rest.api.session;
 
 import java.io.IOException;
 import java.io.OutputStream;

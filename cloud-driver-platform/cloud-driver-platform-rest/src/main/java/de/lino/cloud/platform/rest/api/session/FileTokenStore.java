@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.app.api.session;
+package de.lino.cloud.platform.rest.api.session;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -28,7 +28,7 @@ final class FileTokenStore implements TokenStore {
     private final Path storageFile;
 
     FileTokenStore() {
-        this.storageFile = Path.of(System.getProperty("user.home"), ".config", "cloud-driver-desktop", "session.token");
+        this.storageFile = Path.of(System.getProperty("user.home"), ".config", "cloud-driver-desktop-app", "session.token");
     }
 
     @Override

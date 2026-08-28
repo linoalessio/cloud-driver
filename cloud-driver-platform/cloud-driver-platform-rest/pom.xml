@@ -9,13 +9,19 @@
         <version>1.0.1</version>
     </parent>
 
-    <groupId>de.lino.cloud.platform</groupId>
-    <artifactId>cloud-driver-platform</artifactId>
-    <packaging>pom</packaging>
+    <groupId>de.lino.cloud.platform.rest</groupId>
+    <artifactId>cloud-driver-platform-rest</artifactId>
+    <packaging>jar</packaging>
 
-    <modules>
-        <module>cloud-driver-platform-rest</module>
-        <module>cloud-driver-platform-app</module>
-    </modules>
+    <dependencies>
+
+        <!-- ApiClient: hand-parses the REST API's JSON request/response bodies (Dtos). -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.11.0</version>
+        </dependency>
+
+    </dependencies>
 
 </project>

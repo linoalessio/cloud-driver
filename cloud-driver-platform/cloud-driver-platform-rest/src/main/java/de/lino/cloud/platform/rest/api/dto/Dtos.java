@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.app.api.dto;
+package de.lino.cloud.platform.rest.api.dto;
 
 /**
  * Plain request/response shapes mirrored 1:1 against the server's REST contract - see
@@ -12,19 +12,16 @@ public final class Dtos {
     }
 
     /**
-     * Body for {@code POST /auth/login}. The field is named {@code username} to match the
-     * server's {@code AuthService.login} contract exactly, even though the value passed in is
-     * always an email address.
+     * Body for {@code POST /auth/login} and {@code POST /auth/register} - both read the same
+     * {@code {"username", "password"}} shape server-side. The field is named {@code username}
+     * to match the server's {@code AuthService} contract exactly, even though the value passed
+     * in is always an email address.
      */
     public record AuthRequest(String username, String password) {
     }
 
-    /** Response of {@code POST /auth/login}. */
+    /** Response of {@code POST /auth/login} and {@code POST /auth/register} - both return a fresh JWT. */
     public record AuthResponse(String token) {
-    }
-
-    /** Body for {@code POST /files} (main REST port). */
-    public record UploadFileRequest(String fileName, String contentBase64) {
     }
 
     /**

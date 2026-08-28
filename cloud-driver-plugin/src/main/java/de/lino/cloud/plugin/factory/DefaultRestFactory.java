@@ -6,10 +6,12 @@ import com.google.gson.JsonObject;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.security.database.DatabaseClientException;
+import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
+import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.rest.Owned;
@@ -17,6 +19,8 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.database.database.entity.Serialized;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
+import io.javalin.http.BadRequestResponse;
+import io.javalin.http.ConflictResponse;
 import io.javalin.http.Context;
 import io.javalin.http.NotFoundResponse;
 import io.javalin.http.UnauthorizedResponse;
@@ -26,7 +30,6 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -70,12 +73,14 @@ public final class DefaultRestFactory extends RestFactory {
 
     private static final String API_KEY_HEADER = "X-API-Key";
     private static final String LOGIN_PATH = "/auth/login";
+    private static final String REGISTER_PATH = "/auth/register";
     private static final String FILES_PATH = "/files";
     private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
     private static final String TOKEN_QUERY_PARAM = "token";
     private static final String USER_ID_ATTRIBUTE = "userId";
     private static final String OWNER_ID_FIELD = "ownerId";
+    private static final String FILE_NAME_QUERY_PARAM = "fileName";
 
     /**
      * Overrides Javalin's own {@link JavalinConfig#http}{@code .maxRequestSize} default of
@@ -85,7 +90,7 @@ public final class DefaultRestFactory extends RestFactory {
      * content fails with Javalin's own 413 {@code CONTENT_TOO_LARGE} ("Content Too Large").
      * 256 MB comfortably covers a 64 MB file's ~85 MB base64 encoding with headroom to spare.
      */
-    private static final long MAX_REQUEST_SIZE_BYTES = 256L * 1024 * 1024;
+    private static final long MAX_REQUEST_SIZE_BYTES = 26_8435_456;
 
     private final DataFactory dataFactory;
     private final ApiKey apiKey;
@@ -133,17 +138,20 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Every route requires a valid {@code Authorization: Bearer <jwt>}
-     * header, checked via {@code authService}, except {@code POST
-     * /auth/login} itself - mounted automatically by this constructor -
-     * which issues that JWT in the first place. Use this constructor
-     * (instead of the {@link ApiKey} one) when the clients calling this API
-     * are end users authenticating with a username/password, not another
-     * service holding a static key. Any registered entity type implementing
-     * {@link Owned} is additionally scoped to the authenticated caller - see
-     * this class's own Javadoc.
+     * header, checked via {@code authService}, except {@code POST /auth/login}/{@code POST
+     * /auth/register} themselves - both mounted automatically by this constructor. {@code
+     * /auth/login} issues the JWT this filter checks for in the first place; {@code
+     * /auth/register} is this deployment's chosen, open self-registration route (see {@link
+     * de.lino.cloud.api.jwt.auth.IAuthService}'s own Javadoc) - it creates the account via
+     * {@link AuthService#register} and immediately logs it in, returning a JWT the same shape
+     * {@code /auth/login} does, so a client can go straight from signup into an authenticated
+     * session. Use this constructor (instead of the {@link ApiKey} one) when the clients calling
+     * this API are end users authenticating with a username/password, not another service
+     * holding a static key. Any registered entity type implementing {@link Owned} is
+     * additionally scoped to the authenticated caller - see this class's own Javadoc.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
-     * @param authService verifies login and issued JWTs; must not be {@code null}
+     * @param authService verifies login and issued JWTs, and backs {@code /auth/register}; must not be {@code null}
      */
     public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService) {
         this(dataFactory, authService, null);
@@ -263,6 +271,7 @@ public final class DefaultRestFactory extends RestFactory {
 
             if (this.authService != null) {
                 config.routes.post(LOGIN_PATH, this::handleLogin);
+                config.routes.post(REGISTER_PATH, this::handleRegister);
                 config.routes.before(this::requireValidBearerToken);
             }
 
@@ -332,9 +341,10 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Gates every route behind a valid JWT, except {@link #LOGIN_PATH} itself
-     * - that route is how a client obtains the JWT this filter checks for in
-     * the first place, so it must stay reachable without one. The token
+     * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link #REGISTER_PATH}
+     * themselves - {@code LOGIN_PATH} is how a client obtains the JWT this filter checks for in
+     * the first place, and {@code REGISTER_PATH} is how a client obtains an account before it
+     * has any JWT at all, so both must stay reachable without one. The token
      * itself is resolved by {@link #resolveBearerToken} (header, preferred,
      * or a query parameter fallback). Stores the validated user id as a
      * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
@@ -344,7 +354,7 @@ public final class DefaultRestFactory extends RestFactory {
      * @throws UnauthorizedResponse if no token is present, or it is malformed/invalid/expired
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
-        if (LOGIN_PATH.equals(ctx.path())) {
+        if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -407,24 +417,64 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * {@code POST /files}: reads {@code {"fileName": ..., "contentBase64": ...}} from the
-     * request body and uploads it via {@link CloudUserService#uploadFile}, tracked under
-     * the caller's own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link
+     * {@code POST /auth/register}: reads {@code {"username": ..., "password": ...}} from the
+     * request body (the same shape {@link #handleLogin} reads, so {@link LoginRequest} is
+     * reused rather than a near-identical record), creates the account via {@link
+     * AuthService#register}, then immediately logs it in and returns the resulting JWT under
+     * the same {@link LoginResponse} shape {@code POST /auth/login} returns - a caller can go
+     * straight from a successful registration into an authenticated session without a second
+     * round trip. This is the only way a new account gets created (the earlier operator-run
+     * {@code CreateUserCli} has been removed). Dispatched off the Jetty worker thread since both
+     * steps run Argon2id/database I/O. {@code 201 Created} on success.
+     */
+    private void handleRegister(@NotNull final Context ctx) {
+        final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        this.authService.register(request.username(), request.password().toCharArray());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleRegister: failed to create account for " + request.username(), e);
+                    }
+                    return this.authService.login(request.username(), request.password().toCharArray());
+                })
+                .handle((token, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * {@code POST /files?fileName=<url-encoded name>}: reads the raw request body as the
+     * file's bytes ({@code application/octet-stream}, not base64-encoded JSON - a base64 body
+     * inflates the transferred/parsed size by ~37% and forces {@link #gson} to parse one huge
+     * JSON string field, both pure overhead on top of {@link #MAX_REQUEST_SIZE_BYTES}'s own
+     * size-limit concern; large uploads pay for both) via {@link Context#bodyAsBytes()} -
+     * subject to the same {@link JavalinConfig#http}{@code .maxRequestSize} limit {@link
+     * Context#body()} enforces - and uploads it via {@link CloudUserService#uploadFile},
+     * tracked under the caller's own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link
      * #requireValidBearerToken}). Dispatched off the Jetty worker thread since {@code
      * uploadFile} does real database/encryption I/O.
      */
     private void handleUploadFile(@NotNull final Context ctx) {
-        final UploadFileRequest request = this.gson.fromJson(ctx.body(), UploadFileRequest.class);
+        final String fileName = ctx.queryParam(FILE_NAME_QUERY_PARAM);
+        if (fileName == null || fileName.isBlank()) {
+            throw new BadRequestResponse("Missing '" + FILE_NAME_QUERY_PARAM + "' query parameter");
+        }
+        final byte[] content = ctx.bodyAsBytes();
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.uploadFile(
-                        userId, request.fileName(), Base64.getDecoder().decode(request.contentBase64())))
+                .supplyAsync(() -> this.cloudUserService.uploadFile(userId, fileName, content))
                 .handle((storedFile, failure) -> {
                     if (failure == null) {
                         ctx.status(201).contentType("application/json").result(this.gson.toJson(storedFile));
                         return null;
                     }
-                    throw notFoundOrPropagate(failure, StoredFile.class, request.fileName());
+                    throw notFoundOrPropagate(failure, StoredFile.class, fileName);
                 }));
     }
 
@@ -458,9 +508,6 @@ public final class DefaultRestFactory extends RestFactory {
                     }
                     throw notFoundOrPropagate(failure, StoredFile.class, id);
                 }));
-    }
-
-    private record UploadFileRequest(String fileName, String contentBase64) {
     }
 
     /** {@code POST path}  ->  create (DataFactory#registerAsync), dispatched off the Jetty worker thread. */
@@ -643,6 +690,26 @@ public final class DefaultRestFactory extends RestFactory {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
         if (cause instanceof InvalidCredentialsException) {
             return new UnauthorizedResponse("invalid credentials");
+        }
+        return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
+    }
+
+    /**
+     * Unwraps a {@link #handleRegister} failure's {@link CompletionException} and translates
+     * {@link EmailAlreadyRegisteredException} into {@link ConflictResponse} (409 - unlike login,
+     * confirming an email is already taken is normal, expected signup-form feedback, not an
+     * enumeration risk) and {@link InvalidCredentialsException} - reused by {@link
+     * AuthService#register} for a syntactically invalid email/undeliverable domain, not a wrong
+     * password here - into {@link BadRequestResponse} (400); any other cause is rethrown as-is
+     * to reach Javalin's default (500) handling.
+     */
+    private static RuntimeException registrationFailureOrPropagate(final Throwable failure) {
+        final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        if (cause instanceof EmailAlreadyRegisteredException emailAlreadyRegistered) {
+            return new ConflictResponse(emailAlreadyRegistered.getMessage());
+        }
+        if (cause instanceof InvalidCredentialsException invalidCredentials) {
+            return new BadRequestResponse(invalidCredentials.getMessage());
         }
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }

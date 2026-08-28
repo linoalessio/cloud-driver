@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.app.api.session;
+package de.lino.cloud.platform.rest.api.session;
 
 /**
  * Picks the right {@link TokenStore} for the current OS. Callers should check {@link

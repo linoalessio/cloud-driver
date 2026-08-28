@@ -1,6 +1,7 @@
 package de.lino.cloud.auth;
 
 import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.JwtSigner;
@@ -60,15 +61,24 @@ public final class AuthService implements IAuthService {
     /**
      * Creates and persists a new {@link AuthUser} account under {@code emailAddress}, after
      * checking that it looks like a real, deliverable address (syntax via {@link
-     * #EMAIL_PATTERN}, then a live MX-record lookup via {@link #domainHasMxRecord}). Not wired
-     * to any HTTP route by this class - see {@link IAuthService#register}'s Javadoc for how new
-     * accounts are meant to be created.
+     * #EMAIL_PATTERN}, then a live MX-record lookup via {@link #domainHasMxRecord}) and that no
+     * account already exists under it - see {@link IAuthService#register}'s Javadoc for how/
+     * whether new accounts are exposed over HTTP; this method itself has no opinion on that.
+     *
+     * <p>The duplicate check exists because {@code emailAddress} is not this entity's primary
+     * key (see {@link #login}'s own Javadoc on why): without it, two accounts could exist under
+     * the same email with different generated ids, and {@link #login}'s {@code findFirst()}
+     * lookup would then match whichever one happens to come first - non-deterministically, from
+     * a caller's perspective. Not a race-proof check (a concurrent double-submit could still
+     * slip both past this read before either write lands), but sufficient for the normal,
+     * sequential case a self-service register form produces.
      *
      * @param emailAddress the new account's email address, also its login identifier
      * @param rawPassword the chosen password; hashed via {@link PasswordHasher#hash} before
      *     persistence, never stored or retained in plain form
      * @throws InvalidCredentialsException if {@code emailAddress} fails the syntax check or its
      *     domain has no MX record
+     * @throws EmailAlreadyRegisteredException if an {@link AuthUser} already exists under {@code emailAddress}
      * @throws DatabaseClientException if persisting the new account fails
      * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
      */
@@ -81,6 +91,17 @@ public final class AuthService implements IAuthService {
         final String domain = emailAddress.substring(emailAddress.indexOf('@') + 1);
         if (!domainHasMxRecord(domain))
             throw new InvalidCredentialsException("Email domain cannot receive mail (no MX record): " + domain);
+
+        final boolean alreadyRegistered;
+        try {
+            alreadyRegistered = this.dataFactory.getEntities(AuthUser.class).stream()
+                    .anyMatch(candidate -> candidate.getEmailAddress().equals(emailAddress));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.register: failed to check for an existing account under " + emailAddress, e);
+        }
+        if (alreadyRegistered) {
+            throw new EmailAlreadyRegisteredException(emailAddress);
+        }
 
         final AuthUser user = new AuthUser(UUID.randomUUID().toString(), emailAddress, this.hasher.hash(rawPassword));
         this.dataFactory.register(user);

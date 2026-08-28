@@ -1,9 +1,9 @@
 package de.lino.cloud.platform.app;
 
-import de.lino.cloud.platform.app.api.ApiClient.ApiException;
-import de.lino.cloud.platform.app.api.SessionManager;
-import de.lino.cloud.platform.app.api.dto.Dtos.StoredFileResponse;
-import de.lino.cloud.platform.app.api.session.TokenStoreException;
+import de.lino.cloud.platform.rest.api.ApiClient.ApiException;
+import de.lino.cloud.platform.rest.api.SessionManager;
+import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
+import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -13,9 +13,6 @@ import javafx.scene.control.ListView;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.function.Consumer;
 
 /**
@@ -79,10 +76,9 @@ public final class FileListController {
 
         this.statusLabel.setText("Uploading " + chosen.getName() + "...");
         this.runAuthenticated(
-                sessionManager -> {
-                    final byte[] content = readAllBytesUnchecked(chosen.toPath());
-                    return sessionManager.api().uploadFile(chosen.getName(), content);
-                },
+                // Streams straight from disk (ApiClient#uploadFile(Path)) rather than reading the
+                // whole file into a byte[] first - see that method's own Javadoc.
+                sessionManager -> sessionManager.api().uploadFile(chosen.toPath()),
                 uploaded -> {
                     this.statusLabel.setText("Uploaded " + uploaded.fileName() + ".");
                     this.refresh();
@@ -162,14 +158,6 @@ public final class FileListController {
             case 0 -> "Could not reach the server: " + failure.getMessage();
             default -> "Something went wrong (" + failure.statusCode() + "): " + failure.getMessage();
         };
-    }
-
-    private static byte[] readAllBytesUnchecked(final Path path) {
-        try {
-            return Files.readAllBytes(path);
-        } catch (final IOException e) {
-            throw new java.io.UncheckedIOException("failed to read " + path, e);
-        }
     }
 
     @FunctionalInterface

@@ -1,9 +1,9 @@
 package de.lino.cloud.platform.app;
 
-import de.lino.cloud.platform.app.api.session.TokenStoreFactory;
-import de.lino.cloud.platform.app.api.ApiClient.ApiException;
-import de.lino.cloud.platform.app.api.SessionManager;
-import de.lino.cloud.platform.app.api.session.TokenStoreException;
+import de.lino.cloud.platform.rest.api.session.TokenStoreFactory;
+import de.lino.cloud.platform.rest.api.ApiClient.ApiException;
+import de.lino.cloud.platform.rest.api.SessionManager;
+import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.scene.control.Label;
@@ -15,8 +15,8 @@ import javafx.scene.control.TextField;
  * successful login is automatically persisted to the OS keychain (see {@link TokenStoreFactory})
  * and available again on the next app start via {@link SessionManager#tryRestoreSession()}.
  *
- * <p>No "register" flow - the server has no self-signup route; accounts are only created
- * server-side via {@code CreateUserCli}.
+ * <p>No "register" flow of its own - see {@link RegisterController} for that screen; both drive
+ * {@link SessionManager} the same way and share the same {@link #onAuthenticated} shape.
  */
 public final class LoginController {
 
@@ -44,6 +44,7 @@ public final class LoginController {
     }
 
     private void runAuthTask(final AuthCall call) {
+        this.statusLabel.getStyleClass().removeAll("status-label-error");
         this.statusLabel.setText("Working...");
 
         final Task<Void> task = new Task<>() {
@@ -55,6 +56,7 @@ public final class LoginController {
         };
 
         task.setOnSucceeded(event -> Platform.runLater(() -> {
+            this.statusLabel.getStyleClass().removeAll("status-label-error");
             this.statusLabel.setText("Logged in.");
             this.onAuthenticated.run();
         }));
@@ -67,7 +69,12 @@ public final class LoginController {
                 // holds the token in memory) - only local persistence failed, so this session
                 // still works until the app is closed. Proceed rather than stranding the user
                 // on the login screen after a technically-successful login.
+                this.statusLabel.getStyleClass().removeAll("status-label-error");
                 this.onAuthenticated.run();
+                return;
+            }
+            if (!this.statusLabel.getStyleClass().contains("status-label-error")) {
+                this.statusLabel.getStyleClass().add("status-label-error");
             }
         }));
 

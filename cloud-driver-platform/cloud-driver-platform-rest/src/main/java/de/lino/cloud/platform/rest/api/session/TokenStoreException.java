@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.app.api.session;
+package de.lino.cloud.platform.rest.api.session;
 
 /** Thrown when reading/writing/clearing the persisted session token fails. */
 public final class TokenStoreException extends Exception {

@@ -22,20 +22,24 @@ import lombok.NonNull;
  * cloud-driver-plugin}'s {@code DefaultRestFactory}) translates those into
  * the appropriate response itself.
  *
- * <p>{@link #register} is deliberately not wired to any public HTTP route by
- * this class - see {@code CreateUserCli} in {@code cloud-driver-bootstrap}
- * for how new accounts are meant to be created (an operator-run one-off
- * service, not a self-service endpoint), unless the deployment explicitly
- * wants open self-registration.
+ * <p>{@link #register} itself is transport-agnostic - whether it's reachable over HTTP is a
+ * deployment choice made by whichever caller wires it up. This deployment wants open
+ * self-registration: {@code cloud-driver-plugin}'s {@code DefaultRestFactory(DataFactory,
+ * AuthService)} constructor mounts {@code POST /auth/register} automatically whenever an {@code
+ * AuthService} is supplied, the same way it already mounts {@code POST /auth/login} - this is
+ * now the only way a new account gets created (the earlier operator-run {@code CreateUserCli}
+ * has been removed).
  */
 public interface IAuthService {
 
     /**
-     * Creates and persists a new user account. Not exposed over HTTP by this
-     * class - call it directly (e.g. from {@code CreateUserCli}).
+     * Creates and persists a new user account. Exposed over HTTP as {@code POST /auth/register}
+     * by {@code cloud-driver-plugin}'s {@code DefaultRestFactory} whenever it's constructed with
+     * an {@code AuthService}.
      *
      * @param username the new account's identifying username (an email address, in the current implementation)
      * @param rawPassword the new account's plaintext password, hashed before persistence and never itself retained
+     * @throws de.lino.cloud.api.jwt.EmailAlreadyRegisteredException if an account already exists under {@code username}
      * @throws DatabaseClientException if persisting the new account fails
      * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
      */

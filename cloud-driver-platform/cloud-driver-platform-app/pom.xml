@@ -28,11 +28,13 @@
             <classifier>${javafx.platform}</classifier>
         </dependency>
 
-        <!-- ApiClient: hand-parses the REST API's JSON request/response bodies (Dtos). -->
+        <!-- ApiClient/SessionManager/Dtos/TokenStore*: the REST API client, extracted into its
+             own module so it can be reused as a plain dependency by other clients (mobile, other
+             desktop apps, ...) without pulling in JavaFX. Brings gson in transitively. -->
         <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.11.0</version>
+            <groupId>de.lino.cloud.platform.rest</groupId>
+            <artifactId>cloud-driver-platform-rest</artifactId>
+            <version>1.0.1</version>
         </dependency>
 
     </dependencies>
