@@ -1,8 +1,8 @@
-package de.lino.clouddriver.desktop.api;
+package de.lino.cloud.platform.app.api;
 
-import de.lino.clouddriver.desktop.api.ApiClient.ApiException;
-import de.lino.clouddriver.desktop.api.session.TokenStore;
-import de.lino.clouddriver.desktop.api.session.TokenStoreException;
+import de.lino.cloud.platform.app.api.ApiClient.ApiException;
+import de.lino.cloud.platform.app.api.session.TokenStore;
+import de.lino.cloud.platform.app.api.session.TokenStoreException;
 
 import java.util.Optional;
 
@@ -54,13 +54,7 @@ public final class SessionManager {
         }
     }
 
-    /** {@code POST /api/register}, then persists the resulting token. */
-    public void register(final String emailAddress, final String password) throws ApiException, TokenStoreException {
-        final String token = this.apiClient.register(emailAddress, password);
-        this.tokenStore.save(token);
-    }
-
-    /** {@code POST /api/login}, then persists the resulting token. */
+    /** {@code POST /auth/login}, then persists the resulting token. */
     public void login(final String emailAddress, final String password) throws ApiException, TokenStoreException {
         final String token = this.apiClient.login(emailAddress, password);
         this.tokenStore.save(token);

@@ -1,10 +1,11 @@
-package de.lino.clouddriver.desktop;
+package de.lino.cloud.platform.app;
 
-import de.lino.clouddriver.desktop.api.ApiClient;
-import de.lino.clouddriver.desktop.api.SessionManager;
-import de.lino.clouddriver.desktop.api.session.TokenStore;
-import de.lino.clouddriver.desktop.api.session.TokenStoreException;
-import de.lino.clouddriver.desktop.api.session.TokenStoreFactory;
+import de.lino.cloud.platform.app.api.dto.Dtos;
+import de.lino.cloud.platform.app.api.ApiClient;
+import de.lino.cloud.platform.app.api.SessionManager;
+import de.lino.cloud.platform.app.api.session.TokenStore;
+import de.lino.cloud.platform.app.api.session.TokenStoreException;
+import de.lino.cloud.platform.app.api.session.TokenStoreFactory;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -26,10 +27,11 @@ import javafx.stage.Stage;
  * {@link #showFileListScreen()}, so {@link LoginController#onAuthenticated} and {@link
  * FileListController#onSessionExpired} both just call back into this class.
  *
- * <p><b>Configuration:</b> the two base URLs below are placeholders - point them at your actual
- * {@code cloud-driver} deployment (auth-panel port and main REST port respectively; see {@link
- * ApiClient}'s own Javadoc for why there are two). In a real build, read these from a config
- * file or environment variables instead of hardcoding them.
+ * <p><b>Configuration:</b> the two base URLs below point at the {@code auth.cloud-driver.de}/
+ * {@code api.cloud-driver.de} reverse-proxy vhosts fronting the single real {@code cloud-driver}
+ * REST server (see {@link ApiClient}'s own Javadoc for why there are still two constructor
+ * arguments even though there's only one backend today). In a real build, read these from a
+ * config file or environment variables instead of hardcoding them.
  */
 public final class MainApp extends Application {
 
@@ -91,22 +93,20 @@ public final class MainApp extends Application {
         final Label statusLabel = new Label();
 
         final Button loginButton = new Button("Login");
-        final Button registerButton = new Button("Register");
 
         final LoginController controller = new LoginController(
                 this.sessionManager, emailField, passwordField, statusLabel, this::showFileListScreen
         );
         loginButton.setOnAction(event -> controller.onLoginClicked());
-        registerButton.setOnAction(event -> controller.onRegisterClicked());
 
-        final VBox root = new VBox(10, emailField, passwordField, loginButton, registerButton, statusLabel);
+        final VBox root = new VBox(10, emailField, passwordField, loginButton, statusLabel);
         root.setPadding(new Insets(20));
 
         this.stage.setScene(new Scene(root, 320, 220));
     }
 
     private void showFileListScreen() {
-        final ListView<de.lino.clouddriver.desktop.api.dto.Dtos.StoredFileResponse> fileListView = new ListView<>();
+        final ListView<Dtos.StoredFileResponse> fileListView = new ListView<>();
         final Label statusLabel = new Label();
 
         final Button uploadButton = new Button("Upload...");

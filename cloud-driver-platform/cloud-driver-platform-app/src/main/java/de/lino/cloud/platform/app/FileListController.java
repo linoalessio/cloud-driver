@@ -1,9 +1,9 @@
-package de.lino.clouddriver.desktop;
+package de.lino.cloud.platform.app;
 
-import de.lino.clouddriver.desktop.api.ApiClient.ApiException;
-import de.lino.clouddriver.desktop.api.SessionManager;
-import de.lino.clouddriver.desktop.api.dto.Dtos.StoredFileResponse;
-import de.lino.clouddriver.desktop.api.session.TokenStoreException;
+import de.lino.cloud.platform.app.api.ApiClient.ApiException;
+import de.lino.cloud.platform.app.api.SessionManager;
+import de.lino.cloud.platform.app.api.dto.Dtos.StoredFileResponse;
+import de.lino.cloud.platform.app.api.session.TokenStoreException;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;

@@ -1,4 +1,4 @@
-package de.lino.clouddriver.desktop.api.session;
+package de.lino.cloud.platform.app.api.session;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

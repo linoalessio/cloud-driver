@@ -35,12 +35,12 @@ import de.lino.database.database.file.DefaultFileProvider;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 
 /**
@@ -244,49 +244,15 @@ public final class CloudBootstrap {
 
             CLOUD_DRIVER.getFactoryContainer().getFileFactory().findById(Constraints.REQUIREMENTS_UUID.toString()).orElseGet(() -> {
 
-                final File file = Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "architecture", "SECURITY_REQUIREMENTS.md")).toFile();
-                try {
 
-                    final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), file.getName(), Files.readAllBytes(file.toPath()));
-                    CLOUD_DRIVER.getFactoryContainer().getFileFactory().uploadAsync(newStoredFile).join();
-                    return newStoredFile;
-
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
+                final StoredFile newStoredFile = new StoredFile(Constraints.REQUIREMENTS_UUID.toString(), "init.txt", new byte[0]);
+                CLOUD_DRIVER.getFactoryContainer().getFileFactory().uploadAsync(newStoredFile).join();
+                return newStoredFile;
 
             });
 
         } catch (DatabaseClientException | FileIntegrityException | AuthenticationFailedException |
                  KeyWrapException e) {
-            throw new RuntimeException(e);
-        }
-
-    }
-
-    /**
-     * Smoke-test upload of the repo's own root {@code pom.xml} under a fresh random id.
-     *
-     * <p><strong>Currently unused</strong> - not called from {@link #main}'s {@code runnable[]}
-     * sequence or anywhere else in this class; kept here as a ready-made manual smoke test to
-     * invoke ad hoc (e.g. from a debugger or a temporary call in {@link #main}) rather than
-     * deleted outright.
-     *
-     * @throws RuntimeException wrapping any I/O, database, or encryption failure
-     */
-    private static void loadDummyFileUpload() {
-
-        try {
-
-            final StoredFile storedFile = new StoredFile(
-                    UUID.randomUUID().toString()
-                    , "pom.xml"
-                    , Files.readAllBytes(Constraints.WORKING_DIRECTORY.resolve(Path.of("..", "pom.xml")))
-            );
-
-            CLOUD_DRIVER.getFactoryContainer().getFileFactory().upload(storedFile);
-
-        } catch (IOException | DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(e);
         }
 

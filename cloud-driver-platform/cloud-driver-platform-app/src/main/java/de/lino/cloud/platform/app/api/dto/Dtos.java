@@ -1,8 +1,8 @@
-package de.lino.clouddriver.desktop.api.dto;
+package de.lino.cloud.platform.app.api.dto;
 
 /**
  * Plain request/response shapes mirrored 1:1 against the server's REST contract - see
- * {@code AuthPanelServer}/{@code DefaultRestFactory} in cloud-driver for the authoritative
+ * {@code CloudRestExtension}/{@code DefaultRestFactory} in cloud-driver for the authoritative
  * field names. Deliberately not shared code with the server module: the desktop app only
  * ever talks HTTP, so it has no dependency on cloud-driver-api at all.
  */
@@ -11,11 +11,15 @@ public final class Dtos {
     private Dtos() {
     }
 
-    /** Body for {@code POST /api/register} and {@code POST /api/login} (auth-panel port). */
-    public record AuthRequest(String emailAddress, String password) {
+    /**
+     * Body for {@code POST /auth/login}. The field is named {@code username} to match the
+     * server's {@code AuthService.login} contract exactly, even though the value passed in is
+     * always an email address.
+     */
+    public record AuthRequest(String username, String password) {
     }
 
-    /** Response of {@code POST /api/register} / {@code POST /api/login} (auth-panel port). */
+    /** Response of {@code POST /auth/login}. */
     public record AuthResponse(String token) {
     }
 

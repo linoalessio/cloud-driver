@@ -1,7 +1,6 @@
-package de.lino.clouddriver.desktop.api.session;
+package de.lino.cloud.platform.app.api.session;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
@@ -13,7 +12,7 @@ import java.util.concurrent.TimeUnit;
  */
 final class MacKeychainTokenStore implements TokenStore {
 
-    private static final String SERVICE = "de.lino.cloud-driver.desktop";
+    private static final String SERVICE = "de.lino.cloud.platform.app";
     private static final String ACCOUNT = "session";
 
     @Override

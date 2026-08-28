@@ -1,21 +1,22 @@
-package de.lino.clouddriver.desktop;
+package de.lino.cloud.platform.app;
 
-import de.lino.clouddriver.desktop.api.ApiClient.ApiException;
-import de.lino.clouddriver.desktop.api.SessionManager;
-import de.lino.clouddriver.desktop.api.session.TokenStoreException;
+import de.lino.cloud.platform.app.api.session.TokenStoreFactory;
+import de.lino.cloud.platform.app.api.ApiClient.ApiException;
+import de.lino.cloud.platform.app.api.SessionManager;
+import de.lino.cloud.platform.app.api.session.TokenStoreException;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
 
-import java.util.function.Consumer;
-
 /**
- * Drives the login/register screen against {@link SessionManager} - not the raw {@code
- * ApiClient} - so a successful login is automatically persisted to the OS keychain (see {@link
- * de.lino.clouddriver.desktop.api.session.TokenStoreFactory}) and available again on the next
- * app start via {@link SessionManager#tryRestoreSession()}.
+ * Drives the login screen against {@link SessionManager} - not the raw {@code ApiClient} - so a
+ * successful login is automatically persisted to the OS keychain (see {@link TokenStoreFactory})
+ * and available again on the next app start via {@link SessionManager#tryRestoreSession()}.
+ *
+ * <p>No "register" flow - the server has no self-signup route; accounts are only created
+ * server-side via {@code CreateUserCli}.
  */
 public final class LoginController {
 
@@ -24,7 +25,7 @@ public final class LoginController {
     private final PasswordField passwordField;
     private final Label statusLabel;
 
-    /** Invoked on the JavaFX Application Thread once login/register has actually succeeded. */
+    /** Invoked on the JavaFX Application Thread once login has actually succeeded. */
     private final Runnable onAuthenticated;
 
     public LoginController(final SessionManager sessionManager, final TextField emailField,
@@ -35,11 +36,6 @@ public final class LoginController {
         this.passwordField = passwordField;
         this.statusLabel = statusLabel;
         this.onAuthenticated = onAuthenticated;
-    }
-
-    /** Wire this to your "Register" button's {@code onAction}. */
-    public void onRegisterClicked() {
-        this.runAuthTask(sm -> sm.register(this.emailField.getText(), this.passwordField.getText()));
     }
 
     /** Wire this to your "Login" button's {@code onAction}. */
@@ -67,7 +63,7 @@ public final class LoginController {
             final Throwable failure = task.getException();
             this.statusLabel.setText(describe(failure));
             if (failure instanceof TokenStoreException) {
-                // Login/register itself already succeeded server-side (and ApiClient already
+                // Login itself already succeeded server-side (and ApiClient already
                 // holds the token in memory) - only local persistence failed, so this session
                 // still works until the app is closed. Proceed rather than stranding the user
                 // on the login screen after a technically-successful login.
@@ -82,13 +78,12 @@ public final class LoginController {
         if (failure instanceof ApiException apiException) {
             return switch (apiException.statusCode()) {
                 case 401 -> "Wrong email or password.";
-                case 409 -> "An account with that email already exists.";
                 case 400 -> apiException.getMessage();
                 default -> "Something went wrong: " + apiException.getMessage();
             };
         }
         if (failure instanceof TokenStoreException) {
-            // Login/register itself succeeded server-side - only persisting the token locally
+            // Login itself succeeded server-side - only persisting the token locally
             // failed. Worth telling the user, but they are logged in for this session either way.
             return "Logged in, but could not save your session locally: " + failure.getMessage();
         }

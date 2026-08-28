@@ -77,6 +77,16 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String USER_ID_ATTRIBUTE = "userId";
     private static final String OWNER_ID_FIELD = "ownerId";
 
+    /**
+     * Overrides Javalin's own {@link JavalinConfig#http}{@code .maxRequestSize} default of
+     * 1,000,000 bytes (1 MB) - too small for {@code POST /files}, whose body is a base64-encoded
+     * {@link StoredFile} (roughly 1.37x the raw file size) read whole via {@link Context#body()}
+     * in {@link #handleUploadFile}; without this override, any upload over ~730 KB of raw file
+     * content fails with Javalin's own 413 {@code CONTENT_TOO_LARGE} ("Content Too Large").
+     * 256 MB comfortably covers a 64 MB file's ~85 MB base64 encoding with headroom to spare.
+     */
+    private static final long MAX_REQUEST_SIZE_BYTES = 256L * 1024 * 1024;
+
     private final DataFactory dataFactory;
     private final ApiKey apiKey;
     private final AuthService authService;
@@ -244,6 +254,8 @@ public final class DefaultRestFactory extends RestFactory {
         silenceJavalinLogging();
 
         this.app = Javalin.create(config -> {
+
+            config.http.maxRequestSize = MAX_REQUEST_SIZE_BYTES;
 
             if (this.apiKey != null) {
                 config.routes.before(this::requireValidApiKey);

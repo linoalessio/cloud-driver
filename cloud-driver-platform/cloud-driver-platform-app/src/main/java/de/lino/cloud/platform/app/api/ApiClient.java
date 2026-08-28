@@ -1,11 +1,11 @@
-package de.lino.clouddriver.desktop.api;
+package de.lino.cloud.platform.app.api;
 
 import com.google.gson.Gson;
-import de.lino.clouddriver.desktop.api.dto.Dtos.AuthRequest;
-import de.lino.clouddriver.desktop.api.dto.Dtos.AuthResponse;
-import de.lino.clouddriver.desktop.api.dto.Dtos.ErrorResponse;
-import de.lino.clouddriver.desktop.api.dto.Dtos.StoredFileResponse;
-import de.lino.clouddriver.desktop.api.dto.Dtos.UploadFileRequest;
+import de.lino.cloud.platform.app.api.dto.Dtos.AuthRequest;
+import de.lino.cloud.platform.app.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.app.api.dto.Dtos.ErrorResponse;
+import de.lino.cloud.platform.app.api.dto.Dtos.StoredFileResponse;
+import de.lino.cloud.platform.app.api.dto.Dtos.UploadFileRequest;
 
 import java.io.IOException;
 import java.net.URI;
@@ -25,12 +25,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * database credentials anywhere on this machine, matching the "desktop app must never see the
  * database" requirement.
  *
- * <p>Two base URLs on purpose, because they're two separate Javalin servers in cloud-driver
- * today: {@code authPanelBaseUrl} for {@code POST /api/register}/{@code POST /api/login} (hosted
- * by {@code AuthPanelServer}, its own port), and {@code apiBaseUrl} for {@code /files} (hosted by
- * {@code cloud-driver-extensions-rest}, port 8080 by default). If a deployment fronts both behind
- * one reverse proxy under different paths, both constructor arguments can simply point at the
+ * <p>Two base URLs on purpose, but they resolve to the <b>same</b> single Javalin server
+ * ({@code cloud-driver-extensions-rest}'s {@code CloudRestExtension}, one {@code rest-server-port})
+ * behind two different hostnames/reverse-proxy vhosts - {@code authPanelBaseUrl} for
+ * {@code POST /auth/login}, {@code apiBaseUrl} for {@code /files}/{@code /cloudUsers}. There is no
+ * separate "auth-panel" server today (an earlier {@code AuthPanelServer}/{@code cloud-driver-extensions-web}
+ * module that used to host {@code /api/register}/{@code /api/login} on its own port has since been
+ * removed) - the split is kept here purely so a deployment is free to front auth/files under
+ * different subdomains if it wants to; both constructor arguments can just as well point at the
  * same host.
+ *
+ * <p><b>No self-registration.</b> The server has no register/self-signup HTTP route by design -
+ * accounts are only ever created server-side via {@code CreateUserCli}. This client has no
+ * {@code register} method to match; only {@link #login}.
  *
  * <p>Not thread-safe by design choice, only by accident of {@link HttpClient} itself being
  * thread-safe - the mutable {@link #token} is a single logged-in session, matching a desktop
@@ -45,7 +52,7 @@ public final class ApiClient {
     private final URI authPanelBaseUrl;
     private final URI apiBaseUrl;
 
-    /** The current session's JWT, once {@link #register}/{@link #login} has succeeded; {@code null} until then. */
+    /** The current session's JWT, once {@link #login} has succeeded; {@code null} until then. */
     private final AtomicReference<String> token = new AtomicReference<>();
 
     /**
@@ -60,7 +67,7 @@ public final class ApiClient {
                 .build();
     }
 
-    /** @return {@code true} once {@link #register}/{@link #login} has produced a token still held in memory. */
+    /** @return {@code true} once {@link #login} has produced a token still held in memory. */
     public boolean isAuthenticated() {
         return this.token.get() != null;
     }
@@ -76,32 +83,16 @@ public final class ApiClient {
     }
 
     /**
-     * {@code POST /api/register} on the auth-panel server - creates a new account and, on
-     * success, logs it in immediately, exactly like {@code AuthPanelServer#registerAndLogin}
-     * does server-side.
-     *
-     * @return the freshly issued JWT, already stored for subsequent calls
-     * @throws ApiException {@code 409} if the email is already registered, {@code 400} if the
-     *                       email/password fail validation, or any other transport/HTTP failure
-     */
-    public String register(final String emailAddress, final String password) throws ApiException {
-        final AuthResponse response = this.post(
-                this.authPanelBaseUrl.resolve("/api/register"), new AuthRequest(emailAddress, password),
-                AuthResponse.class, false
-        );
-        this.token.set(response.token());
-        return response.token();
-    }
-
-    /**
-     * {@code POST /api/login} on the auth-panel server.
+     * {@code POST /auth/login} on the auth-panel host - the only auth route the server exposes.
+     * The request body's field is literally named {@code username} (see {@link AuthRequest}),
+     * even though {@code emailAddress} is what's actually passed for it.
      *
      * @return the freshly issued JWT, already stored for subsequent calls
      * @throws ApiException {@code 401} on wrong credentials, or any other transport/HTTP failure
      */
     public String login(final String emailAddress, final String password) throws ApiException {
         final AuthResponse response = this.post(
-                this.authPanelBaseUrl.resolve("/api/login"), new AuthRequest(emailAddress, password),
+                this.authPanelBaseUrl.resolve("/auth/login"), new AuthRequest(emailAddress, password),
                 AuthResponse.class, false
         );
         this.token.set(response.token());
@@ -166,7 +157,7 @@ public final class ApiClient {
         if (authenticated) {
             final String currentToken = this.token.get();
             if (currentToken == null) {
-                throw new IllegalStateException("@ApiClient: no active session - call register()/login() first");
+                throw new IllegalStateException("@ApiClient: no active session - call login() first");
             }
             builder.header("Authorization", "Bearer " + currentToken);
         }
