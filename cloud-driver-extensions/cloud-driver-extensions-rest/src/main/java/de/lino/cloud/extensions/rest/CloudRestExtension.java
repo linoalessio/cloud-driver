@@ -21,8 +21,7 @@ import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
  */
 public class CloudRestExtension extends Extension {
 
-    /** Rest server port */
-    private static final int REST_SERVER_PORT = 8080;
+    private static int REST_SERVER_PORT;
 
     /**
      * Default bind interface if {@code "rest-api-bind-host"} isn't set in {@code
@@ -40,6 +39,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onLoading() {
 
+        REST_SERVER_PORT = this.cloudDriver().getConfiguration().getInteger("rest-server-port");
         this.startRestApi();
 
     }
@@ -100,7 +100,7 @@ public class CloudRestExtension extends Extension {
 
         // AuthUser and StoredFile are deliberately NOT mounted here at all - both are entities
         // with no Owned scoping (AuthUser has no ownership concept, it IS the account; StoredFile's
-        // ownership lives entirely outside itself, in CloudUser#storedFileIds), so a generic
+        // ownership lives entirely outside itself, in per-file StoredFileOwnership rows), so a generic
         // register()/update() would let any authenticated caller overwrite an arbitrary existing
         // record by id (EntityDatabaseClient#store falls back to update-on-collision) - an account
         // takeover vector for AuthUser (spoofed passwordHash under a victim's id) and a way to

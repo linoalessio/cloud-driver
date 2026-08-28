@@ -18,7 +18,6 @@
         <module>cloud-driver-extensions-watcher</module>
         <module>cloud-driver-extensions-terminal</module>
         <module>cloud-driver-extensions-backup</module>
-        <module>cloud-driver-extensions-web</module>
     </modules>
 
 </project>

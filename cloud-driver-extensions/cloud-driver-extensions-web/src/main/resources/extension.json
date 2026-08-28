@@ -1,7 +1,0 @@
-{
-  "name": "cloud-driver-web",
-  "version": "1.0.0",
-  "description": "Self-contained browser panel (served at e.g. auth.cloud-driver.de) for registering a new CloudUser account and logging in to obtain a fresh JWT",
-  "authors": ["Lino Alessio Kauschinger"],
-  "dependencies": ["cloud-driver-bootstrap"]
-}
