@@ -122,6 +122,15 @@ public class CloudRestExtension extends Extension {
         final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender);
         final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory);
 
+        // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal
+        // Command, or CloudUser#getStoredFiles()) reaches these exact instances via
+        // CloudDriver.getInstance().getServiceContainer() - that container starts out empty
+        // (see ServiceContainer's own Javadoc) since the CloudDriver-level RestFactory built in
+        // FactoryContainer is deliberately unauthenticated and never carries real AuthService/
+        // CloudUserService instances of its own.
+        this.cloudDriver().getServiceContainer().setAuthService(authService);
+        this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
+
         REST_FACTORY = new DefaultRestFactory(dataFactory, authService, cloudUserService);
 
         // AuthUser and StoredFile are deliberately NOT mounted here at all - both are entities

@@ -1,6 +1,7 @@
 package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.file.StoredFile;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -46,6 +47,9 @@ public interface ICloudUserService {
      */
     @NotNull
     List<StoredFile> listFiles(@NotNull String authUserId);
+
+    @NonNull
+    List<ICloudUser> getCloudUsers();
 
     /**
      * Deletes {@code storedFileId} and stops tracking it, but only if {@code authUserId}

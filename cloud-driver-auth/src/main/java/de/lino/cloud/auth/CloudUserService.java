@@ -8,6 +8,7 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
@@ -56,10 +57,10 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public CloudUser getOrCreate(@NonNull final String authUserId) {
         try {
+
             final Optional<CloudUser> existing = this.dataFactory.findById(authUserId, CloudUser.class);
-            if (existing.isPresent()) {
-                return existing.get();
-            }
+            if (existing.isPresent()) return existing.get();
+
             final CloudUser cloudUser = new CloudUser(authUserId);
             this.dataFactory.register(cloudUser);
             return cloudUser;
@@ -130,6 +131,23 @@ public final class CloudUserService implements ICloudUserService {
             return this.fileFactory.download(ownedFileIds.toArray(new String[0]));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.listFiles: failed to download files for " + authUserId, e);
+        }
+    }
+
+    /**
+     * Lists every {@link CloudUser} currently registered, as their {@link ICloudUser} contract.
+     *
+     * @return every currently-registered {@link ICloudUser}
+     */
+    @NonNull
+    @Override
+    public List<ICloudUser> getCloudUsers() {
+        try {
+            return this.dataFactory.getEntities(CloudUser.class).stream()
+                    .map(ICloudUser.class::cast)
+                    .toList();
+        } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.getCloudUsers: failed to list CloudUser records", e);
         }
     }
 

@@ -8,19 +8,53 @@ import lombok.NonNull;
  * Bundles higher-level, cross-cutting services built on top of the raw
  * persistence facets in {@link de.lino.cloud.api.factory.container.IFactoryContainer} -
  * currently just the {@link ICloudUserService} used to scope end-user file
- * ownership over the REST API.
+ * ownership over the REST API, and the {@link IAuthService} that verifies
+ * logins/issues JWTs.
+ *
+ * <p>Unlike every other facet on {@link de.lino.cloud.api.CloudDriver}, these two
+ * are not necessarily available the moment {@code CloudDriver} itself is
+ * constructed: both are only ever built once the JWT-authenticated {@code RestFactory}
+ * is - which happens later, inside {@code cloud-driver-extensions-rest}'s
+ * {@code CloudRestExtension}, and only if a {@code "jwt-signing-key"} is configured
+ * at all (see {@code CloudRestExtension#startRestApi}). {@link #setCloudUserService}/
+ * {@link #setAuthService} are how that extension publishes its real instances back
+ * here once they exist; {@link #getCloudUserService()}/{@link #getAuthService()}
+ * return {@code null} until then - a caller reached before/without that extension
+ * (e.g. a {@code Command} that can run concurrently with, or without ever depending
+ * on, {@code cloud-driver-rest}) must handle that case rather than assume non-null.
  */
 public interface IServiceContainer {
 
     /**
-     * Returns the end-user file-ownership service.
+     * Returns the end-user file-ownership service, or {@code null} if {@code
+     * CloudRestExtension} hasn't published one yet (not started, or the REST API
+     * is disabled for this deployment).
      *
-     * @return the {@link ICloudUserService}
+     * @return the {@link ICloudUserService}, or {@code null}
      */
-    @NonNull
     ICloudUserService getCloudUserService();
 
-    @NonNull
+    /**
+     * Publishes the real {@link ICloudUserService}, once built.
+     *
+     * @param cloudUserService the instance backing the JWT-authenticated REST API's {@code /files} routes
+     */
+    void setCloudUserService(@NonNull ICloudUserService cloudUserService);
+
+    /**
+     * Returns the login/JWT service, or {@code null} if {@code CloudRestExtension}
+     * hasn't published one yet (not started, or the REST API is disabled for this
+     * deployment).
+     *
+     * @return the {@link IAuthService}, or {@code null}
+     */
     IAuthService getAuthService();
+
+    /**
+     * Publishes the real {@link IAuthService}, once built.
+     *
+     * @param authService the instance backing the JWT-authenticated REST API's login/registration routes
+     */
+    void setAuthService(@NonNull IAuthService authService);
 
 }

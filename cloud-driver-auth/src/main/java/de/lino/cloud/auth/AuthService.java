@@ -23,6 +23,7 @@ import javax.naming.directory.InitialDirContext;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Hashtable;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -133,8 +134,10 @@ public final class AuthService implements IAuthService {
 
             final String[] emailMessage = new String[] {
                     String.format("Hello %s,", emailAddress)
+                    , ""
                     , "We have noticed that you wanted to register a new cloud user account."
                     , "To verify your registration, enter the following account."
+                    , ""
                     , String.format("Your verification code is '%s'", verificationCode)
                     , ""
                     , "If you have not tried to register a new account, just ignore this email."
@@ -278,6 +281,21 @@ public final class AuthService implements IAuthService {
     @Override
     public String validate(@NonNull final String jwt) throws InvalidJwtException {
         return this.signer.verify(jwt);
+    }
+
+    /**
+     * Lists every currently-registered {@link AuthUser}.
+     *
+     * @return every currently-registered {@link AuthUser}
+     */
+    @NonNull
+    @Override
+    public List<AuthUser> getAuthUsers() {
+        try {
+            return List.copyOf(this.dataFactory.getEntities(AuthUser.class));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.getAuthUsers: failed to list AuthUser records", e);
+        }
     }
 
 }

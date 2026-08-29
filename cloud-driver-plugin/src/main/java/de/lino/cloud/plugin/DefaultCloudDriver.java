@@ -97,7 +97,7 @@ public final class DefaultCloudDriver extends CloudDriver {
         terminal.attachLogging(logger);
 
         final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
-        final IServiceContainer serviceContainer = new ServiceContainer(factoryContainer.getRestFactory());
+        final IServiceContainer serviceContainer = new ServiceContainer();
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(
                 connectivityChecker,

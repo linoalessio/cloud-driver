@@ -5,9 +5,12 @@ import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
+import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import lombok.NonNull;
+
+import java.util.List;
 
 /**
  * Verifies end-user login (username + password) against {@link de.lino.cloud.api.jwt.user.AuthUser}
@@ -97,5 +100,8 @@ public interface IAuthService {
      */
     @NonNull
     String validate(@NonNull final String jwt) throws InvalidJwtException;
+
+    @NonNull
+    List<AuthUser> getAuthUsers();
 
 }

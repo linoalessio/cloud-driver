@@ -49,10 +49,12 @@ public final class SmtpEmailSender implements EmailSender {
         properties.put("mail.smtp.starttls.enable", "true");
 
         this.session = Session.getInstance(properties, new Authenticator() {
+
             @Override
             protected PasswordAuthentication getPasswordAuthentication() {
                 return new PasswordAuthentication(SmtpEmailSender.this.username, SmtpEmailSender.this.password);
             }
+
         });
     }
 
