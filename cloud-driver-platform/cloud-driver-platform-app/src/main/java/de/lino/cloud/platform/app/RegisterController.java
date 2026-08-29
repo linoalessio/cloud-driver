@@ -10,10 +10,15 @@ import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
 
 /**
- * Drives the register screen against {@link SessionManager#register} - the server's opt-in
- * self-registration route ({@code POST /auth/register}), which creates the account and logs it
- * in as one call, so a successful call here leaves the caller already authenticated and the
- * resulting token already persisted, the same as a successful {@link LoginController} run.
+ * Drives the register screen against {@link SessionManager#register}/{@link
+ * SessionManager#confirmRegistration} - the server's opt-in self-registration route is a
+ * two-step, e-mail-verified flow: {@code POST /auth/register} only e-mails a 6-digit
+ * verification code (valid 10 minutes) and does not create the account, so {@link
+ * #onRegisterClicked()} alone cannot leave the caller authenticated. Once that call succeeds,
+ * {@link #onVerificationRequired} is invoked to switch the screen to the code-entry step;
+ * {@link #onConfirmClicked()} then submits the code via {@code POST /auth/register/confirm},
+ * which is what actually creates the account and returns a JWT, the same as a successful
+ * {@link LoginController} run.
  *
  * <p>Checks that the password and confirmation field match locally before ever calling the
  * server - a pure client-side convenience (typo protection), not a security boundary; the
@@ -25,23 +30,30 @@ public final class RegisterController {
     private final TextField emailField;
     private final PasswordField passwordField;
     private final PasswordField confirmPasswordField;
+    private final TextField codeField;
     private final Label statusLabel;
 
-    /** Invoked on the JavaFX Application Thread once registration has actually succeeded. */
+    /** Invoked on the JavaFX Application Thread once step one succeeds - swaps the UI to the code-entry step. */
+    private final Runnable onVerificationRequired;
+
+    /** Invoked on the JavaFX Application Thread once step two (confirmation) has actually succeeded. */
     private final Runnable onAuthenticated;
 
     public RegisterController(final SessionManager sessionManager, final TextField emailField,
                                final PasswordField passwordField, final PasswordField confirmPasswordField,
-                               final Label statusLabel, final Runnable onAuthenticated) {
+                               final TextField codeField, final Label statusLabel,
+                               final Runnable onVerificationRequired, final Runnable onAuthenticated) {
         this.sessionManager = sessionManager;
         this.emailField = emailField;
         this.passwordField = passwordField;
         this.confirmPasswordField = confirmPasswordField;
+        this.codeField = codeField;
         this.statusLabel = statusLabel;
+        this.onVerificationRequired = onVerificationRequired;
         this.onAuthenticated = onAuthenticated;
     }
 
-    /** Wire this to your "Create account" button's {@code onAction}. */
+    /** Wire this to your "Create account" button's {@code onAction} - step one. */
     public void onRegisterClicked() {
         final String email = this.emailField.getText();
         final String password = this.passwordField.getText();
@@ -56,12 +68,44 @@ public final class RegisterController {
         }
 
         this.statusLabel.getStyleClass().removeAll("status-label-error");
-        this.statusLabel.setText("Creating your account...");
+        this.statusLabel.setText("Sending verification code...");
+
+        final Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() throws ApiException {
+                RegisterController.this.sessionManager.register(email, password);
+                return null;
+            }
+        };
+
+        task.setOnSucceeded(event -> Platform.runLater(() -> {
+            this.statusLabel.getStyleClass().removeAll("status-label-error");
+            this.statusLabel.setText("We emailed you a verification code.");
+            this.onVerificationRequired.run();
+        }));
+
+        task.setOnFailed(event -> Platform.runLater(() -> this.showError(describe(task.getException()))));
+
+        Thread.ofVirtual().name("api-call").start(task);
+    }
+
+    /** Wire this to your "Verify" button's {@code onAction} - step two. */
+    public void onConfirmClicked() {
+        final String email = this.emailField.getText();
+        final String code = this.codeField.getText();
+
+        if (code.isBlank()) {
+            this.showError("Enter the code we emailed you.");
+            return;
+        }
+
+        this.statusLabel.getStyleClass().removeAll("status-label-error");
+        this.statusLabel.setText("Verifying...");
 
         final Task<Void> task = new Task<>() {
             @Override
             protected Void call() throws ApiException, TokenStoreException {
-                RegisterController.this.sessionManager.register(email, password);
+                RegisterController.this.sessionManager.confirmRegistration(email, code);
                 return null;
             }
         };
@@ -75,7 +119,7 @@ public final class RegisterController {
         task.setOnFailed(event -> Platform.runLater(() -> {
             final Throwable failure = task.getException();
             if (failure instanceof TokenStoreException) {
-                // Registration itself already succeeded server-side (and ApiClient already
+                // Confirmation itself already succeeded server-side (and ApiClient already
                 // holds the token in memory) - only local persistence failed, so this session
                 // still works until the app is closed. Proceed rather than stranding the user.
                 this.statusLabel.getStyleClass().removeAll("status-label-error");

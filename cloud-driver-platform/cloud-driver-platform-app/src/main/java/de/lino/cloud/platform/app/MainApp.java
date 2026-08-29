@@ -165,10 +165,45 @@ public final class MainApp extends Application {
         registerButton.setMaxWidth(Double.MAX_VALUE);
         registerButton.setDefaultButton(true);
 
+        final VBox detailsStep = new VBox(18,
+                labeledField("Email", emailField),
+                labeledField("Password", passwordField),
+                labeledField("Confirm password", confirmPasswordField),
+                registerButton
+        );
+
+        // Step two - shown only after step one e-mails a verification code (see
+        // RegisterController's own Javadoc for why registration can't complete in one call).
+        final Label codeHint = new Label("Enter the code we emailed you. It expires in 10 minutes.");
+        codeHint.getStyleClass().add("status-label");
+        codeHint.setWrapText(true);
+
+        final TextField codeField = new TextField();
+        codeField.setPromptText("6-digit code");
+        codeField.getStyleClass().add("input-field");
+
+        final Button confirmButton = new Button("Verify & Create Account");
+        confirmButton.getStyleClass().add("button-primary");
+        confirmButton.setMaxWidth(Double.MAX_VALUE);
+
+        final VBox verificationStep = new VBox(18, codeHint, labeledField("Verification code", codeField), confirmButton);
+        verificationStep.setVisible(false);
+        verificationStep.setManaged(false);
+
         final RegisterController controller = new RegisterController(
-                this.sessionManager, emailField, passwordField, confirmPasswordField, statusLabel, this::showFileListScreen
+                this.sessionManager, emailField, passwordField, confirmPasswordField, codeField, statusLabel,
+                () -> {
+                    detailsStep.setVisible(false);
+                    detailsStep.setManaged(false);
+                    verificationStep.setVisible(true);
+                    verificationStep.setManaged(true);
+                    registerButton.setDefaultButton(false);
+                    confirmButton.setDefaultButton(true);
+                },
+                this::showFileListScreen
         );
         registerButton.setOnAction(event -> controller.onRegisterClicked());
+        confirmButton.setOnAction(event -> controller.onConfirmClicked());
 
         final Label switchLabel = new Label("Already have an account?");
         switchLabel.getStyleClass().add("status-label");
@@ -180,10 +215,8 @@ public final class MainApp extends Application {
 
         final VBox card = authCard(
                 "Create your account", "Get started with Cloud Driver",
-                labeledField("Email", emailField),
-                labeledField("Password", passwordField),
-                labeledField("Confirm password", confirmPasswordField),
-                registerButton,
+                detailsStep,
+                verificationStep,
                 statusLabel,
                 switchRow
         );

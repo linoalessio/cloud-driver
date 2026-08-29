@@ -151,20 +151,25 @@ public class CloudRestExtension extends Extension {
     /**
      * Builds the {@link EmailSender} {@link AuthService#register} sends its verification codes
      * through, from {@code configuration.json}'s {@code "smtp-host"}/{@code "smtp-port"}/{@code
-     * "smtp-username"}/{@code "smtp-password"}/{@code "smtp-from-address"} keys. A blank or
-     * absent {@code "smtp-host"} - including on a deployment whose {@code configuration.json}
-     * predates this feature and simply doesn't have the key yet - logs a warning and falls back
-     * to a {@link LoggingEmailSender} instead of failing to start the REST API entirely: every
-     * other subsystem, and every route except registration, works the same either way, and a
-     * fallback that only logs the code is enough to keep local development/testing working
-     * without a real mail server.
+     * "smtp-username"}/{@code "smtp-password"}/{@code "smtp-from-address"} keys. If {@code
+     * "smtp-host"} is blank or absent - including on a deployment whose {@code configuration.json}
+     * predates this feature and simply doesn't have the key yet - or if any of the other four
+     * keys is missing, logs a warning and falls back to a {@link LoggingEmailSender} instead of
+     * failing to start the REST API entirely: every other subsystem, and every route except
+     * registration, works the same either way, and a fallback that only logs the code is enough
+     * to keep local development/testing working without a real mail server. Every key is read via
+     * {@link #configString(JsonDocument, String)}/checked via {@code contains} first, rather than
+     * calling {@code JsonDocument#getString}/{@code #getInteger} directly - both throw a bare
+     * {@link NullPointerException} on a missing key, which previously crashed this whole extension
+     * (not just registration) the moment {@code smtp-host} was configured without also setting
+     * {@code smtp-port} or one of the other three keys.
      *
-     * @return a {@link SmtpEmailSender} if SMTP is configured, a {@link LoggingEmailSender} otherwise
+     * @return a {@link SmtpEmailSender} if SMTP is fully configured, a {@link LoggingEmailSender} otherwise
      */
     private EmailSender buildEmailSender() {
 
         final JsonDocument configuration = this.cloudDriver().getConfiguration();
-        final String host = configuration.contains("smtp-host") ? configuration.getString("smtp-host") : "";
+        final String host = this.configString(configuration, "smtp-host");
 
         if (host.isBlank()) {
             this.getLogger().warning(
@@ -173,12 +178,40 @@ public class CloudRestExtension extends Extension {
             return new LoggingEmailSender(this.getLogger());
         }
 
-        return new SmtpEmailSender(
-                host,
-                configuration.getInteger("smtp-port"),
-                configuration.getString("smtp-username"),
-                configuration.getString("smtp-password"),
-                configuration.getString("smtp-from-address"));
+        if (!configuration.contains("smtp-port")) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is set but 'smtp-port' is missing from "
+                            + "configuration.json - verification codes will only be logged, not actually e-mailed.");
+            return new LoggingEmailSender(this.getLogger());
+        }
+
+        final String username = this.configString(configuration, "smtp-username");
+        final String password = this.configString(configuration, "smtp-password");
+        final String fromAddress = this.configString(configuration, "smtp-from-address");
+
+        if (username.isBlank() || password.isBlank() || fromAddress.isBlank()) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is set but 'smtp-username'/'smtp-password'/"
+                            + "'smtp-from-address' is missing or blank in configuration.json - verification codes "
+                            + "will only be logged, not actually e-mailed.");
+            return new LoggingEmailSender(this.getLogger());
+        }
+
+        return new SmtpEmailSender(host, configuration.getInteger("smtp-port"), username, password, fromAddress);
+    }
+
+    /**
+     * Reads {@code key} from {@code configuration} as a {@code String}, or {@code ""} if the key
+     * is absent - {@link JsonDocument#getString} throws a bare {@link NullPointerException} on a
+     * missing key instead, so every caller that treats a key as optional must guard it with
+     * {@link JsonDocument#contains} first; this centralizes that guard.
+     *
+     * @param configuration the document to read from
+     * @param key the key to look up
+     * @return the key's value, or {@code ""} if absent
+     */
+    private String configString(final JsonDocument configuration, final String key) {
+        return configuration.contains(key) ? configuration.getString(key) : "";
     }
 
 }

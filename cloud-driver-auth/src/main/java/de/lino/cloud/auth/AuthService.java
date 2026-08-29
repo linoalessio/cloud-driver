@@ -130,8 +130,19 @@ public final class AuthService implements IAuthService {
         this.dataFactory.register(pending);
 
         try {
-            this.emailSender.send(emailAddress, "Confirm your registration",
-                    "Your verification code is " + verificationCode + ". It expires in 10 minutes.");
+
+            final String[] emailMessage = new String[] {
+                    String.format("Hello %s,", emailAddress)
+                    , "We have noticed that you wanted to register a new cloud user account."
+                    , "To verify your registration, enter the following account."
+                    , String.format("Your verification code is '%s'", verificationCode)
+                    , ""
+                    , "If you have not tried to register a new account, just ignore this email."
+                    , "The register attempt will be deleted within 10 minutes when the account will not be confirmed."
+            };
+
+            this.emailSender.send(emailAddress, "Registration confirmation", String.join("\n", emailMessage));
+
         } catch (final EmailDeliveryException e) {
             throw new RuntimeException("@AuthService.register: failed to send verification email to " + emailAddress, e);
         }

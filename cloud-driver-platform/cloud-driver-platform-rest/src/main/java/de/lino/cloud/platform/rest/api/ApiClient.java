@@ -4,7 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 
 import java.io.Closeable;
@@ -105,10 +107,13 @@ import java.util.stream.StreamSupport;
  * different subdomains if it wants to; both constructor arguments can just as well point at the
  * same host.
  *
- * <p>{@link #register} calls {@code POST /auth/register} - the server's chosen, opt-in
- * self-registration route (see {@code cloud-driver}'s {@code IAuthService}/{@code
- * DefaultRestFactory} Javadoc for the full picture). It returns a JWT the same way {@link
- * #login} does, so a successful registration leaves the caller already authenticated.
+ * <p>Registration is a two-step, e-mail-verified flow (see {@code cloud-driver}'s {@code
+ * IAuthService}/{@code DefaultRestFactory} Javadoc for the full picture): {@link #register}
+ * calls {@code POST /auth/register}, which only e-mails a 6-digit verification code (valid 10
+ * minutes) and does <b>not</b> create the account or return a token; {@link
+ * #confirmRegistration} then calls {@code POST /auth/register/confirm} with that code, which is
+ * what actually creates the account - only that second call returns a JWT the same way {@link
+ * #login} does.
  *
  * <p>Not thread-safe by design choice, only by accident of {@link HttpClient} itself being
  * thread-safe - the mutable {@link #token} is a single logged-in session, matching a desktop
@@ -201,32 +206,58 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-     * {@code POST /auth/register} on the auth-panel host - creates a new account and logs it in,
-     * one call. Same request/response shape as {@link #login} (see {@link AuthRequest}'s own
-     * Javadoc on the {@code username} field naming).
+     * {@code POST /auth/register} on the auth-panel host - step one of registration: validates
+     * {@code emailAddress} and e-mails a verification code. Does <b>not</b> create the account or
+     * return a token - call {@link #confirmRegistration} with the e-mailed code to actually
+     * create it. Same request shape as {@link #login} (see {@link AuthRequest}'s own Javadoc on
+     * the {@code username} field naming).
      *
-     * @return the freshly issued JWT, already stored for subsequent calls
+     * @return the server's acknowledgement message - purely informational, nothing to act on
      * @throws ApiException {@code 409} if an account already exists for {@code emailAddress},
      *                       {@code 400} if it fails the server's email validity/deliverability
      *                       check, or any other transport/HTTP failure
      */
-    public String register(final String emailAddress, final String password) throws ApiException {
-        final AuthResponse response = this.send(this.registerRequest(emailAddress, password), AuthResponse.class);
+    public MessageResponse register(final String emailAddress, final String password) throws ApiException {
+        return this.send(this.registerRequest(emailAddress, password), MessageResponse.class);
+    }
+
+    /** Async form of {@link #register} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> registerAsync(final String emailAddress, final String password) {
+        return this.sendAsync(this.registerRequest(emailAddress, password), MessageResponse.class);
+    }
+
+    private HttpRequest registerRequest(final String emailAddress, final String password) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register"), new AuthRequest(emailAddress, password), false);
+    }
+
+    /**
+     * {@code POST /auth/register/confirm} on the auth-panel host - step two of registration:
+     * submits the verification code {@link #register} caused the server to e-mail, and is what
+     * actually creates the account. Same response shape as {@link #login} - a successful
+     * confirmation leaves the caller already authenticated.
+     *
+     * @return the freshly issued JWT, already stored for subsequent calls
+     * @throws ApiException {@code 400} if the code is missing, expired, or does not match, or
+     *                       any other transport/HTTP failure
+     */
+    public String confirmRegistration(final String emailAddress, final String code) throws ApiException {
+        final AuthResponse response = this.send(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class);
         this.token.set(response.token());
         return response.token();
     }
 
-    /** Async form of {@link #register} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<String> registerAsync(final String emailAddress, final String password) {
-        return this.sendAsync(this.registerRequest(emailAddress, password), AuthResponse.class)
+    /** Async form of {@link #confirmRegistration} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> confirmRegistrationAsync(final String emailAddress, final String code) {
+        return this.sendAsync(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class)
                 .thenApply(response -> {
                     this.token.set(response.token());
                     return response.token();
                 });
     }
 
-    private HttpRequest registerRequest(final String emailAddress, final String password) {
-        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register"), new AuthRequest(emailAddress, password), false);
+    private HttpRequest confirmRegistrationRequest(final String emailAddress, final String code) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register/confirm"),
+                new ConfirmRegistrationRequest(emailAddress, code), false);
     }
 
     // --- files: upload --------------------------------------------------

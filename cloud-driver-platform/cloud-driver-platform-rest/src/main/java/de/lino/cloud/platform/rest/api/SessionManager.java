@@ -109,15 +109,29 @@ public final class SessionManager {
                 .thenApplyAsync(this::saveTokenOrThrow, this.apiClient.executor());
     }
 
-    /** {@code POST /auth/register} (creates the account and logs it in), then persists the resulting token. */
-    public void register(final String emailAddress, final String password) throws ApiException, TokenStoreException {
-        final String token = this.apiClient.register(emailAddress, password);
-        this.tokenStore.save(token);
+    /**
+     * {@code POST /auth/register} - step one of registration, e-mails a verification code. Does
+     * not create an account and leaves no session to persist; call {@link #confirmRegistration}
+     * with the e-mailed code to actually create the account.
+     */
+    public void register(final String emailAddress, final String password) throws ApiException {
+        this.apiClient.register(emailAddress, password);
     }
 
     /** Async form of {@link #register} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Void> registerAsync(final String emailAddress, final String password) {
-        return this.apiClient.registerAsync(emailAddress, password)
+        return this.apiClient.registerAsync(emailAddress, password).thenApply(ignored -> null);
+    }
+
+    /** {@code POST /auth/register/confirm} (step two - creates the account and logs it in), then persists the resulting token. */
+    public void confirmRegistration(final String emailAddress, final String code) throws ApiException, TokenStoreException {
+        final String token = this.apiClient.confirmRegistration(emailAddress, code);
+        this.tokenStore.save(token);
+    }
+
+    /** Async form of {@link #confirmRegistration} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> confirmRegistrationAsync(final String emailAddress, final String code) {
+        return this.apiClient.confirmRegistrationAsync(emailAddress, code)
                 .thenApplyAsync(this::saveTokenOrThrow, this.apiClient.executor());
     }
 

@@ -20,8 +20,23 @@ public final class Dtos {
     public record AuthRequest(String username, String password) {
     }
 
-    /** Response of {@code POST /auth/login} and {@code POST /auth/register} - both return a fresh JWT. */
+    /**
+     * Body for {@code POST /auth/register/confirm} - step two of registration, submitting the
+     * 6-digit code {@code POST /auth/register} e-mailed. {@code username} is the same email
+     * address passed to {@link AuthRequest}, named the same way for the same reason.
+     */
+    public record ConfirmRegistrationRequest(String username, String code) {
+    }
+
+    /** Response of {@code POST /auth/login} and {@code POST /auth/register/confirm} - both return a fresh JWT. */
     public record AuthResponse(String token) {
+    }
+
+    /**
+     * Response of {@code POST /auth/register} ({@code 202 Accepted}) - registration is not
+     * complete yet at this point, this only acknowledges that a verification code was e-mailed.
+     */
+    public record MessageResponse(String message) {
     }
 
     /**
