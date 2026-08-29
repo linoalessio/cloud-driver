@@ -4,20 +4,26 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
+import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.mail.EmailDeliveryException;
+import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.auth.pending.PendingRegistration;
 import lombok.NonNull;
 
 import javax.naming.NamingException;
 import javax.naming.directory.Attribute;
 import javax.naming.directory.InitialDirContext;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Hashtable;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -38,40 +44,55 @@ public final class AuthService implements IAuthService {
     /** RFC-5322-ish email syntax check - deliberately not exhaustive, just enough to reject an obvious typo. */
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
 
-    /** How long a JWT issued by {@link #login} remains valid: 12 hours. */
+    /** How long a JWT issued by {@link #login}/{@link #confirmRegistration} remains valid: 12 hours. */
     private static final long ACCESS_TOKEN_TTL_SECONDS = Duration.ofHours(12).getSeconds(); // 12h
+
+    /** How long a verification code issued by {@link #register} remains valid: 10 minutes. */
+    private static final long VERIFICATION_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final DataFactory dataFactory;
     private final PasswordHasher hasher;
     private final JwtSigner signer;
+    private final EmailSender emailSender;
 
     /**
      * Creates an {@code AuthService} backed by the given collaborators.
      *
-     * @param dataFactory persists/looks up {@link AuthUser} accounts
+     * @param dataFactory persists/looks up {@link AuthUser}/{@link PendingRegistration} rows
      * @param hasher hashes a new password and verifies a login candidate against a stored hash
-     * @param signer issues and verifies the JWTs returned by {@link #login}/{@link #validate}
+     * @param signer issues and verifies the JWTs returned by {@link #login}/{@link #confirmRegistration}/{@link #validate}
+     * @param emailSender delivers the verification code {@link #register} generates
      */
-    public AuthService(@NonNull final DataFactory dataFactory, @NonNull final PasswordHasher hasher, @NonNull final JwtSigner signer) {
+    public AuthService(@NonNull final DataFactory dataFactory, @NonNull final PasswordHasher hasher,
+                        @NonNull final JwtSigner signer, @NonNull final EmailSender emailSender) {
         this.dataFactory = dataFactory;
         this.hasher = hasher;
         this.signer = signer;
+        this.emailSender = emailSender;
     }
 
     /**
-     * Creates and persists a new {@link AuthUser} account under {@code emailAddress}, after
-     * checking that it looks like a real, deliverable address (syntax via {@link
-     * #EMAIL_PATTERN}, then a live MX-record lookup via {@link #domainHasMxRecord}) and that no
-     * account already exists under it - see {@link IAuthService#register}'s Javadoc for how/
-     * whether new accounts are exposed over HTTP; this method itself has no opinion on that.
+     * Starts registration under {@code emailAddress}, after checking that it looks like a real,
+     * deliverable address (syntax via {@link #EMAIL_PATTERN}, then a live MX-record lookup via
+     * {@link #domainHasMxRecord}) and that no {@link AuthUser} already exists under it - see
+     * {@link IAuthService#register}'s Javadoc for how/whether this is exposed over HTTP; this
+     * method itself has no opinion on that. Does <b>not</b> create the {@link AuthUser} yet -
+     * persists a {@link PendingRegistration} (hashed password + a freshly generated numeric
+     * code, valid for {@link #VERIFICATION_CODE_TTL_MILLIS}) and e-mails that code to {@code
+     * emailAddress}; {@link #confirmRegistration} is what actually creates the account.
      *
-     * <p>The duplicate check exists because {@code emailAddress} is not this entity's primary
-     * key (see {@link #login}'s own Javadoc on why): without it, two accounts could exist under
-     * the same email with different generated ids, and {@link #login}'s {@code findFirst()}
-     * lookup would then match whichever one happens to come first - non-deterministically, from
-     * a caller's perspective. Not a race-proof check (a concurrent double-submit could still
-     * slip both past this read before either write lands), but sufficient for the normal,
-     * sequential case a self-service register form produces.
+     * <p>The duplicate check exists because {@code emailAddress} is not {@link AuthUser}'s
+     * primary key (see {@link #login}'s own Javadoc on why): without it, two accounts could
+     * exist under the same email with different generated ids, and {@link #login}'s {@code
+     * findFirst()} lookup would then match whichever one happens to come first -
+     * non-deterministically, from a caller's perspective. Not a race-proof check (a concurrent
+     * double-submit could still slip both past this read before either write lands), but
+     * sufficient for the normal, sequential case a self-service register form produces. A
+     * repeated {@link #register} call for the same address before it's confirmed is not treated
+     * as a duplicate - {@link PendingRegistration#keysOf()} is keyed on {@code emailAddress}
+     * itself, so it simply overwrites the previous attempt with a fresh code/expiry.
      *
      * @param emailAddress the new account's email address, also its login identifier
      * @param rawPassword the chosen password; hashed via {@link PasswordHasher#hash} before
@@ -79,8 +100,8 @@ public final class AuthService implements IAuthService {
      * @throws InvalidCredentialsException if {@code emailAddress} fails the syntax check or its
      *     domain has no MX record
      * @throws EmailAlreadyRegisteredException if an {@link AuthUser} already exists under {@code emailAddress}
-     * @throws DatabaseClientException if persisting the new account fails
-     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
+     * @throws DatabaseClientException if persisting the pending registration fails
+     * @throws KeyWrapException if the pending registration's data-encryption key cannot be wrapped by the KMS/HSM
      */
     @Override
     public void register(@NonNull final String emailAddress, final char @NonNull [] rawPassword) throws DatabaseClientException, KeyWrapException {
@@ -103,8 +124,73 @@ public final class AuthService implements IAuthService {
             throw new EmailAlreadyRegisteredException(emailAddress);
         }
 
-        final AuthUser user = new AuthUser(UUID.randomUUID().toString(), emailAddress, this.hasher.hash(rawPassword));
+        final String verificationCode = generateVerificationCode();
+        final long expiresAt = System.currentTimeMillis() + VERIFICATION_CODE_TTL_MILLIS;
+        final PendingRegistration pending = new PendingRegistration(emailAddress, this.hasher.hash(rawPassword), verificationCode, expiresAt);
+        this.dataFactory.register(pending);
+
+        try {
+            this.emailSender.send(emailAddress, "Confirm your registration",
+                    "Your verification code is " + verificationCode + ". It expires in 10 minutes.");
+        } catch (final EmailDeliveryException e) {
+            throw new RuntimeException("@AuthService.register: failed to send verification email to " + emailAddress, e);
+        }
+
+    }
+
+    /** @return a fresh, zero-padded 6-digit numeric code, e.g. {@code "042917"} */
+    private static String generateVerificationCode() {
+        return String.format("%06d", SECURE_RANDOM.nextInt(1_000_000));
+    }
+
+    /**
+     * Completes a registration previously started by {@link #register}: looks up the {@link
+     * PendingRegistration} stored under {@code emailAddress}, rejects it (via {@link
+     * InvalidVerificationCodeException}, the same message either way, matching {@link
+     * #login}'s "don't leak" idiom) if it doesn't exist, has expired, or {@code code} doesn't
+     * match its {@link PendingRegistration#getVerificationCode()} - an expired row is deleted
+     * as part of that rejection, rather than left to be overwritten by a later {@link
+     * #register} call. On success, creates the real {@link AuthUser} from the pending row's
+     * already-hashed password, deletes the pending row, and returns a signed JWT the same way
+     * {@link #login} does.
+     *
+     * @param emailAddress the e-mail address {@link #register} was called with
+     * @param code the verification code e-mailed to {@code emailAddress}
+     * @return a freshly signed JWT asserting the newly created {@link AuthUser#getId()}
+     * @throws InvalidVerificationCodeException if there is no pending registration under {@code
+     *     emailAddress}, it has expired, or {@code code} doesn't match
+     * @throws DatabaseClientException if creating the account fails
+     * @throws KeyWrapException if the new account's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    @Override
+    public String confirmRegistration(@NonNull final String emailAddress, @NonNull final String code)
+            throws DatabaseClientException, KeyWrapException {
+
+        final Optional<PendingRegistration> pendingOpt;
+        try {
+            pendingOpt = this.dataFactory.findById(emailAddress, PendingRegistration.class);
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmRegistration: failed to look up pending registration for " + emailAddress, e);
+        }
+
+        final PendingRegistration pending = pendingOpt.orElseThrow(
+                () -> new InvalidVerificationCodeException("invalid or expired verification code"));
+
+        if (pending.isExpired()) {
+            this.dataFactory.delete(emailAddress, PendingRegistration.class);
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        if (!pending.getVerificationCode().equals(code)) {
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        final AuthUser user = new AuthUser(UUID.randomUUID().toString(), emailAddress, pending.getPasswordHash());
         this.dataFactory.register(user);
+        this.dataFactory.delete(emailAddress, PendingRegistration.class);
+
+        return this.signer.sign(user.getId(), ACCESS_TOKEN_TTL_SECONDS);
     }
 
     /**

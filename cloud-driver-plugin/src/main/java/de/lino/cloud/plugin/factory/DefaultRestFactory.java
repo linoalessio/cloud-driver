@@ -5,39 +5,29 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
+import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
+import de.lino.cloud.api.jwt.InvalidCredentialsException;
+import de.lino.cloud.api.jwt.InvalidJwtException;
+import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
+import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
-import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
-import de.lino.cloud.api.jwt.InvalidCredentialsException;
-import de.lino.cloud.api.jwt.InvalidJwtException;
-import de.lino.cloud.api.jwt.rest.Owned;
-import de.lino.cloud.api.file.StoredFile;
 import de.lino.database.database.entity.Serialized;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
-import io.javalin.http.BadRequestResponse;
-import io.javalin.http.ConflictResponse;
-import io.javalin.http.Context;
-import io.javalin.http.NotFoundResponse;
-import io.javalin.http.UnauthorizedResponse;
+import io.javalin.http.*;
 import io.javalin.util.JavalinLogger;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -74,6 +64,7 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String API_KEY_HEADER = "X-API-Key";
     private static final String LOGIN_PATH = "/auth/login";
     private static final String REGISTER_PATH = "/auth/register";
+    private static final String REGISTER_CONFIRM_PATH = "/auth/register/confirm";
     private static final String FILES_PATH = "/files";
     private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
@@ -94,10 +85,13 @@ public final class DefaultRestFactory extends RestFactory {
 
     private final DataFactory dataFactory;
     private final ApiKey apiKey;
+    private final Gson gson = new Gson();
+
+    @Getter
     private final AuthService authService;
+
     @Getter
     private final CloudUserService cloudUserService;
-    private final Gson gson = new Gson();
 
     private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
     private final Map<String, Class<? extends Serialized>> fetchResources = Maps.newHashMap();
@@ -139,16 +133,19 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Every route requires a valid {@code Authorization: Bearer <jwt>}
      * header, checked via {@code authService}, except {@code POST /auth/login}/{@code POST
-     * /auth/register} themselves - both mounted automatically by this constructor. {@code
-     * /auth/login} issues the JWT this filter checks for in the first place; {@code
-     * /auth/register} is this deployment's chosen, open self-registration route (see {@link
-     * de.lino.cloud.api.jwt.auth.IAuthService}'s own Javadoc) - it creates the account via
-     * {@link AuthService#register} and immediately logs it in, returning a JWT the same shape
-     * {@code /auth/login} does, so a client can go straight from signup into an authenticated
-     * session. Use this constructor (instead of the {@link ApiKey} one) when the clients calling
-     * this API are end users authenticating with a username/password, not another service
-     * holding a static key. Any registered entity type implementing {@link Owned} is
-     * additionally scoped to the authenticated caller - see this class's own Javadoc.
+     * /auth/register}/{@code POST /auth/register/confirm} themselves - all three mounted
+     * automatically by this constructor. {@code /auth/login} issues the JWT this filter checks
+     * for in the first place; {@code /auth/register}/{@code /auth/register/confirm} together
+     * are this deployment's chosen, open, e-mail-verified self-registration flow (see {@link
+     * de.lino.cloud.api.jwt.auth.IAuthService}'s own Javadoc) - {@code /auth/register} only
+     * starts it (via {@link AuthService#register}, which e-mails a verification code rather
+     * than creating the account outright), and {@code /auth/register/confirm} (via {@link
+     * AuthService#confirmRegistration}) is what actually creates the account and returns a JWT
+     * the same shape {@code /auth/login} does, once the caller supplies that code back. Use
+     * this constructor (instead of the {@link ApiKey} one) when the clients calling this API
+     * are end users authenticating with a username/password, not another service holding a
+     * static key. Any registered entity type implementing {@link Owned} is additionally scoped
+     * to the authenticated caller - see this class's own Javadoc.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
      * @param authService verifies login and issued JWTs, and backs {@code /auth/register}; must not be {@code null}
@@ -272,6 +269,7 @@ public final class DefaultRestFactory extends RestFactory {
             if (this.authService != null) {
                 config.routes.post(LOGIN_PATH, this::handleLogin);
                 config.routes.post(REGISTER_PATH, this::handleRegister);
+                config.routes.post(REGISTER_CONFIRM_PATH, this::handleConfirmRegistration);
                 config.routes.before(this::requireValidBearerToken);
             }
 
@@ -341,10 +339,11 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link #REGISTER_PATH}
-     * themselves - {@code LOGIN_PATH} is how a client obtains the JWT this filter checks for in
-     * the first place, and {@code REGISTER_PATH} is how a client obtains an account before it
-     * has any JWT at all, so both must stay reachable without one. The token
+     * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link
+     * #REGISTER_PATH}/{@link #REGISTER_CONFIRM_PATH} themselves - {@code LOGIN_PATH} is how a
+     * client obtains the JWT this filter checks for in the first place, and {@code
+     * REGISTER_PATH}/{@code REGISTER_CONFIRM_PATH} together are how a client obtains an account
+     * before it has any JWT at all, so all three must stay reachable without one. The token
      * itself is resolved by {@link #resolveBearerToken} (header, preferred,
      * or a query parameter fallback). Stores the validated user id as a
      * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
@@ -354,7 +353,7 @@ public final class DefaultRestFactory extends RestFactory {
      * @throws UnauthorizedResponse if no token is present, or it is malformed/invalid/expired
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
-        if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path())) {
+        if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -419,25 +418,57 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * {@code POST /auth/register}: reads {@code {"username": ..., "password": ...}} from the
      * request body (the same shape {@link #handleLogin} reads, so {@link LoginRequest} is
-     * reused rather than a near-identical record), creates the account via {@link
-     * AuthService#register}, then immediately logs it in and returns the resulting JWT under
-     * the same {@link LoginResponse} shape {@code POST /auth/login} returns - a caller can go
-     * straight from a successful registration into an authenticated session without a second
-     * round trip. This is the only way a new account gets created (the earlier operator-run
-     * {@code CreateUserCli} has been removed). Dispatched off the Jetty worker thread since both
-     * steps run Argon2id/database I/O. {@code 201 Created} on success.
+     * reused rather than a near-identical record) and starts registration via {@link
+     * AuthService#register} - which e-mails a verification code rather than creating the
+     * account outright. Does <b>not</b> return a JWT; the caller must follow up with {@link
+     * #handleConfirmRegistration} once it has the code. Dispatched off the Jetty worker thread
+     * since this runs Argon2id/database I/O/an e-mail send. {@code 202 Accepted} on success.
      */
     private void handleRegister(@NotNull final Context ctx) {
         final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> {
+                .runAsync(() -> {
                     try {
                         this.authService.register(request.username(), request.password().toCharArray());
                     } catch (final DatabaseClientException | KeyWrapException e) {
                         throw new RuntimeException(
-                                "@DefaultRestFactory.handleRegister: failed to create account for " + request.username(), e);
+                                "@DefaultRestFactory.handleRegister: failed to start registration for " + request.username(), e);
                     }
-                    return this.authService.login(request.username(), request.password().toCharArray());
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(202).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Verification code sent to " + request.username())));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    private record MessageResponse(String message) {
+    }
+
+    private record ConfirmRegistrationRequest(String username, String code) {
+    }
+
+    /**
+     * {@code POST /auth/register/confirm}: reads {@code {"username": ..., "code": ...}} from
+     * the request body and completes registration via {@link AuthService#confirmRegistration} -
+     * creating the account and returning the resulting JWT under the same {@link LoginResponse}
+     * shape {@code POST /auth/login} returns, so a caller goes straight from a confirmed code
+     * into an authenticated session. Dispatched off the Jetty worker thread since this runs
+     * database I/O. {@code 201 Created} on success.
+     */
+    private void handleConfirmRegistration(@NotNull final Context ctx) {
+        final ConfirmRegistrationRequest request = this.gson.fromJson(ctx.body(), ConfirmRegistrationRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.confirmRegistration(request.username(), request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleConfirmRegistration: failed to complete registration for " + request.username(), e);
+                    }
                 })
                 .handle((token, failure) -> {
                     if (failure == null) {
@@ -695,13 +726,16 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Unwraps a {@link #handleRegister} failure's {@link CompletionException} and translates
-     * {@link EmailAlreadyRegisteredException} into {@link ConflictResponse} (409 - unlike login,
-     * confirming an email is already taken is normal, expected signup-form feedback, not an
-     * enumeration risk) and {@link InvalidCredentialsException} - reused by {@link
-     * AuthService#register} for a syntactically invalid email/undeliverable domain, not a wrong
-     * password here - into {@link BadRequestResponse} (400); any other cause is rethrown as-is
-     * to reach Javalin's default (500) handling.
+     * Unwraps a {@link #handleRegister}/{@link #handleConfirmRegistration} failure's {@link
+     * CompletionException} and translates {@link EmailAlreadyRegisteredException} into {@link
+     * ConflictResponse} (409 - unlike login, confirming an email is already taken is normal,
+     * expected signup-form feedback, not an enumeration risk), {@link
+     * InvalidCredentialsException} - reused by {@link AuthService#register} for a syntactically
+     * invalid email/undeliverable domain, not a wrong password here - into {@link
+     * BadRequestResponse} (400), and {@link InvalidVerificationCodeException} - thrown by
+     * {@link AuthService#confirmRegistration} for a missing/expired/mismatched code - into
+     * {@link BadRequestResponse} (400) as well; any other cause is rethrown as-is to reach
+     * Javalin's default (500) handling.
      */
     private static RuntimeException registrationFailureOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
@@ -710,6 +744,9 @@ public final class DefaultRestFactory extends RestFactory {
         }
         if (cause instanceof InvalidCredentialsException invalidCredentials) {
             return new BadRequestResponse(invalidCredentials.getMessage());
+        }
+        if (cause instanceof InvalidVerificationCodeException invalidVerificationCode) {
+            return new BadRequestResponse(invalidVerificationCode.getMessage());
         }
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }

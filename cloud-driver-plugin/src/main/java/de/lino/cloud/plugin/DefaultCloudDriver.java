@@ -23,7 +23,6 @@ import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -68,13 +67,12 @@ public final class DefaultCloudDriver extends CloudDriver {
      * @param databaseProvider the backing {@code database-driver-plugin} provider
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence
      * @return the installed instance
-     * @throws IOException if the extensions folder cannot be created
      */
     @NotNull
     public static CloudDriver setInstance(
             @NotNull final DatabaseProvider databaseProvider,
             @NotNull final EnvelopeEncryptionService envelopeEncryptionService
-    ) throws IOException {
+    ) {
         return setInstance(databaseProvider, envelopeEncryptionService, new InternetConnectivityChecker());
     }
 

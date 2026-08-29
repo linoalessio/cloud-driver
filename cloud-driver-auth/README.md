@@ -24,10 +24,11 @@ directly - this module never depends back on either.
 ```
 
 Depends only on `cloud-driver-api` (contracts: `DataFactory`, `PasswordHasher`, `JwtSigner`,
-`AuthUser`, `Owned`, `ICloudUser`/`ICloudUserService`, ...), `database-driver-api`, `jjwt-api`
-(+ `jjwt-impl`/`jjwt-jackson` at runtime), and `org.jetbrains:annotations`/Lombok. **Never**
-depends on `cloud-driver-plugin` - a caller supplies a concrete `DataFactory`/`PasswordHasher`
-(e.g. `cloud-driver-plugin`'s `EntityDatabaseClient`-backed `DefaultDataFactory` and
+`EmailSender`, `AuthUser`, `Owned`, `ICloudUser`/`ICloudUserService`, ...), `database-driver-api`,
+`jjwt-api` (+ `jjwt-impl`/`jjwt-jackson` at runtime), `jakarta.mail-api` (+ `angus-mail` at
+runtime, backing `SmtpEmailSender`), and `org.jetbrains:annotations`/Lombok. **Never** depends on
+`cloud-driver-plugin` - a caller supplies a concrete `DataFactory`/`PasswordHasher` (e.g.
+`cloud-driver-plugin`'s `EntityDatabaseClient`-backed `DefaultDataFactory` and
 `Argon2idPasswordHasher`) from the outside.
 
 ## Structure
@@ -39,7 +40,10 @@ persists.
 
 | Class | Package | Role |
 |---|---|---|
-| `AuthService` | `de.lino.cloud.auth` | The only `IAuthService` implementation: `register`/`login`/`validate` |
+| `AuthService` | `de.lino.cloud.auth` | The only `IAuthService` implementation: `register`/`confirmRegistration`/`login`/`validate` |
+| `PendingRegistration` | `de.lino.cloud.auth` | A not-yet-created account waiting on e-mail verification, keyed by e-mail address |
+| `SmtpEmailSender` | `de.lino.cloud.auth.mail` | The only production `EmailSender`: SMTP+STARTTLS via Jakarta Mail/Angus Mail |
+| `LoggingEmailSender` | `de.lino.cloud.auth.mail` | Dev-only `EmailSender` fallback: logs instead of actually sending |
 | `CloudUser` | `de.lino.cloud.auth` | One end user's identifying record (`ICloudUser`, `Owned`) |
 | `CloudUserService` | `de.lino.cloud.auth` | The only `ICloudUserService` implementation: ties a user to their `StoredFile`s |
 | `StoredFileOwnership` | `de.lino.cloud.auth` | One (user, file) ownership row (`Owned`) |
@@ -47,7 +51,9 @@ persists.
 | `AuthUser` | `de.lino.cloud.api.jwt.user` *(cloud-driver-api)* | The persisted account entity |
 | `JwtSigner`/`InvalidJwtException` | `de.lino.cloud.api.jwt` *(cloud-driver-api)* | Sign/verify contract + its failure exception |
 | `InvalidCredentialsException` | `de.lino.cloud.api.jwt` *(cloud-driver-api)* | `login`'s failure exception |
+| `InvalidVerificationCodeException` | `de.lino.cloud.api.jwt` *(cloud-driver-api)* | `confirmRegistration`'s failure exception |
 | `IAuthService` | `de.lino.cloud.api.jwt.auth` *(cloud-driver-api)* | `AuthService`'s contract |
+| `EmailSender`/`EmailDeliveryException` | `de.lino.cloud.api.mail` *(cloud-driver-api)* | Send contract + its failure exception |
 | `Owned` | `de.lino.cloud.api.jwt.rest` *(cloud-driver-api)* | Marks an entity as scoped to one end user |
 | `ICloudUser`/`ICloudUserService` | `de.lino.cloud.api.user` *(cloud-driver-api)* | `CloudUser`/`CloudUserService`'s contracts |
 
@@ -90,30 +96,43 @@ field of `configuration.json` under `Constraints.CONFIGURATION_PATH` - see
 
 ### `AuthService`
 
-The only `IAuthService` implementation, constructed with the three collaborators it delegates
+The only `IAuthService` implementation, constructed with the four collaborators it delegates
 to - no other state, no mutable fields, so one instance is safe to share across concurrent
 callers:
 
 ```java
-AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner);
+AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender);
 
-authService.register("jane@example.com", rawPassword); // syntax + MX-record check, then persists a new AuthUser
-String token = authService.login("jane@example.com", rawPassword); // throws InvalidCredentialsException on any mismatch
+authService.register("jane@example.com", rawPassword); // syntax + MX-record check, then e-mails a verification code
+String token = authService.confirmRegistration("jane@example.com", code); // persists the real AuthUser, returns a JWT
+String loginToken = authService.login("jane@example.com", rawPassword); // throws InvalidCredentialsException on any mismatch
 String userId = authService.validate(token); // throws InvalidJwtException
 ```
 
+Registration is a two-step, e-mail-verified flow, not a single call:
+
 - **`register`** validates the address against a permissive email-syntax regex, then performs a
   live DNS MX-record lookup against its domain (rejecting an obviously fake/typo'd domain like
-  `@gmial.com` without sending any mail) before hashing the password (`PasswordHasher#hash`) and
-  persisting a new `AuthUser`. Not wired to any HTTP route by this module - see
-  `cloud-driver-bootstrap`'s `CreateUserCli` for how new accounts are actually meant to be
-  created (an operator-run one-off tool, not a public self-registration endpoint).
+  `@gmial.com` without sending any mail). It does **not** create the `AuthUser` yet: it hashes
+  the password (`PasswordHasher#hash`), generates a random 6-digit code valid for 10 minutes,
+  persists both as a `PendingRegistration` keyed by the e-mail address (a repeat call for the
+  same address just overwrites the previous attempt), and e-mails the code via `EmailSender`.
+- **`confirmRegistration`** looks up the `PendingRegistration` for the given address, rejects it
+  (via `InvalidVerificationCodeException`, the same message either way) if it doesn't exist, has
+  expired, or the supplied code doesn't match, otherwise creates the real `AuthUser` from the
+  pending row's already-hashed password, deletes the pending row, and returns a signed JWT the
+  same way `login` does. This - not `register` - is what actually creates the account.
 - **`login`** looks the account up by scanning every `AuthUser` via `DataFactory#getEntities` and
   filtering by `emailAddress` in memory (there is no keyed-by-email lookup - `emailAddress` isn't
   this entity's primary key), verifies the password via `PasswordHasher#verify`, and signs a JWT
   valid for 12 hours. Deliberately throws the exact same `InvalidCredentialsException` message
   whether the account doesn't exist or the password is wrong.
 - **`validate`** is a thin pass-through to `JwtSigner#verify`.
+
+Both HTTP routes this module is wired up behind (`cloud-driver-plugin`'s `DefaultRestFactory(DataFactory,
+AuthService)`) - `POST /auth/register` and `POST /auth/register/confirm` - are this deployment's
+open, e-mail-verified self-registration flow; there is no separate operator-run account-creation
+tool.
 
 ### `CloudUser`/`Owned`/`StoredFileOwnership`/`CloudUserService`
 

@@ -9,6 +9,8 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.auth.entity.CloudUser;
+import de.lino.cloud.auth.entity.StoredFileOwnership;
 import lombok.NonNull;
 
 import java.util.List;

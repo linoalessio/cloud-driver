@@ -5,13 +5,17 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.jwt.JwtSigner;
+import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.auth.AuthService;
-import de.lino.cloud.auth.CloudUser;
+import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.jwt.JjwtSigner;
+import de.lino.cloud.auth.mail.LoggingEmailSender;
+import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
+import de.lino.database.json.JsonDocument;
 
 import java.util.logging.Level;
 
@@ -84,7 +88,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onEnding() {
 
-        if (REST_FACTORY != null)REST_FACTORY.stop();
+        if (REST_FACTORY != null) REST_FACTORY.stop();
         this.cloudDriver().getTerminal().displayApproved("Rest server connection successfully &cclosed&7.");
 
     }
@@ -113,7 +117,9 @@ public class CloudRestExtension extends Extension {
         final FileFactory fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();
         final PasswordHasher passwordHasher = new Argon2idPasswordHasher();
         final JwtSigner jwtSigner = new JjwtSigner(signingKey);
-        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner);
+
+        final EmailSender emailSender = this.buildEmailSender();
+        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender);
         final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory);
 
         REST_FACTORY = new DefaultRestFactory(dataFactory, authService, cloudUserService);
@@ -140,6 +146,39 @@ public class CloudRestExtension extends Extension {
         REST_FACTORY.fetch("/cloudUsers", CloudUser.class);
 
         REST_FACTORY.start(bindHost, REST_SERVER_PORT);
+    }
+
+    /**
+     * Builds the {@link EmailSender} {@link AuthService#register} sends its verification codes
+     * through, from {@code configuration.json}'s {@code "smtp-host"}/{@code "smtp-port"}/{@code
+     * "smtp-username"}/{@code "smtp-password"}/{@code "smtp-from-address"} keys. A blank or
+     * absent {@code "smtp-host"} - including on a deployment whose {@code configuration.json}
+     * predates this feature and simply doesn't have the key yet - logs a warning and falls back
+     * to a {@link LoggingEmailSender} instead of failing to start the REST API entirely: every
+     * other subsystem, and every route except registration, works the same either way, and a
+     * fallback that only logs the code is enough to keep local development/testing working
+     * without a real mail server.
+     *
+     * @return a {@link SmtpEmailSender} if SMTP is configured, a {@link LoggingEmailSender} otherwise
+     */
+    private EmailSender buildEmailSender() {
+
+        final JsonDocument configuration = this.cloudDriver().getConfiguration();
+        final String host = configuration.contains("smtp-host") ? configuration.getString("smtp-host") : "";
+
+        if (host.isBlank()) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is not set in configuration.json - "
+                            + "verification codes will only be logged, not actually e-mailed. Not suitable for production.");
+            return new LoggingEmailSender(this.getLogger());
+        }
+
+        return new SmtpEmailSender(
+                host,
+                configuration.getInteger("smtp-port"),
+                configuration.getString("smtp-username"),
+                configuration.getString("smtp-password"),
+                configuration.getString("smtp-from-address"));
     }
 
 }

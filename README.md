@@ -39,14 +39,14 @@ full diagram with class names at each stage.
 | Module | What it is | README |
 |---|---|---|
 | `cloud-driver-api` | Contracts only - interfaces, abstract classes, value objects, exceptions. No concrete implementations except a handful of narrow entities with no `cloud-driver-plugin` dependency to place them in instead (`StoredFile`, `ApiKey`, `AuthUser`, the `security.*` value objects). Also hosts the self-contained `jline`-based terminal engine. | [`cloud-driver-api/README.md`](cloud-driver-api/README.md) |
-| `cloud-driver-auth` | The framework-agnostic username/email + password → JWT authentication engine (`AuthService`, `JjwtSigner`, `CloudUser`/`CloudUserService`, `StoredFileOwnership`). No Javalin dependency of its own. | [`cloud-driver-auth/README.md`](cloud-driver-auth/README.md) |
+| `cloud-driver-auth` | The framework-agnostic e-mail + password → JWT authentication engine (`AuthService`, `JjwtSigner`, `SmtpEmailSender`/`LoggingEmailSender`, `PendingRegistration`, `CloudUser`/`CloudUserService`, `StoredFileOwnership`). No Javalin dependency of its own. | [`cloud-driver-auth/README.md`](cloud-driver-auth/README.md) |
 | `cloud-driver-plugin` | Every concrete implementation of `cloud-driver-api`'s contracts: `DefaultCloudDriver`, the five `Default*Factory` classes, `EntityDatabaseClient`, the AES-256-GCM/DEK-KEK stack, `Argon2idPasswordHasher`, the extension jar-loading classes, offline-safe upload machinery. | [`cloud-driver-plugin/README.md`](cloud-driver-plugin/README.md) |
-| `cloud-driver-bootstrap` | The runnable entry point (shaded jar via `maven-shade-plugin`) that wires a real Postgres-backed `CloudDriver` together and starts every subsystem a deployment needs. Also hosts `CreateUserCli`/`LoginSample`, the operator tools for creating accounts and minting tokens. | [`cloud-driver-bootstrap/README.md`](cloud-driver-bootstrap/README.md) |
+| `cloud-driver-bootstrap` | The runnable entry point (shaded jar via `maven-shade-plugin`) that wires a real Postgres-backed `CloudDriver` together and starts every subsystem a deployment needs. New accounts are created exclusively through `POST /auth/register`/`POST /auth/register/confirm` (see `cloud-driver-extensions-rest`) - there is no operator-run account-creation CLI. | [`cloud-driver-bootstrap/README.md`](cloud-driver-bootstrap/README.md) |
 | `cloud-driver-extensions` | Parent aggregator (no source of its own) for the concrete `Extension`s built on the `Extension`/`ExtensionFactory` framework. | [`cloud-driver-extensions/README.md`](cloud-driver-extensions/README.md) |
 | ├─ `cloud-driver-extensions-watcher` | Postgres `LISTEN`/`NOTIFY` change notification - push, not poll, cross-process awareness of new `StoredFile` writes. | [README](cloud-driver-extensions/cloud-driver-extensions-watcher/README.md) |
 | ├─ `cloud-driver-extensions-terminal` | Registers the real `Command` catalog (`exit`, `help`, `extensions`, `about`, `dispatch`, ...) on the terminal engine and starts its reading loop. | [README](cloud-driver-extensions/cloud-driver-extensions-terminal/README.md) |
 | ├─ `cloud-driver-extensions-backup` | Keyset-paginated, streaming Postgres backup job, purpose-built for 150-200GB-class tables. | [README](cloud-driver-extensions/cloud-driver-extensions-backup/README.md) |
-| └─ `cloud-driver-extensions-rest` | Stands up the JWT-authenticated `RestFactory` (login, per-user `CloudUser` data, per-user file upload/list/delete) over Javalin. | [README](cloud-driver-extensions/cloud-driver-extensions-rest/README.md) |
+| └─ `cloud-driver-extensions-rest` | Stands up the JWT-authenticated `RestFactory` (login, e-mail-verified self-registration, per-user `CloudUser` data, per-user file upload/list/delete) over Javalin. | [README](cloud-driver-extensions/cloud-driver-extensions-rest/README.md) |
 
 Dependency direction is one-way: `api` ← `auth` ← `plugin` ← `bootstrap`/`extensions-*`
 (`bootstrap` and `plugin` both also depend on `auth` directly, not just transitively). Never add a
@@ -73,9 +73,7 @@ aggregators, `jar` for the rest).
 
 No test framework (JUnit, etc.) is wired into any `pom.xml` anywhere in this repo. Java files
 under `src/test` in several modules are runnable worked examples with a `main` method - a
-repo-wide convention, not `mvn test` targets. Two of them (`cloud-driver-bootstrap`'s
-`CreateUserCli`/`LoginSample`) are real, hand-run operator tools rather than disposable samples;
-see that module's README.
+repo-wide convention, not `mvn test` targets.
 
 ## Local secrets
 
@@ -83,8 +81,9 @@ Two gitignored files under a `cloud-driver/` directory (`Constraints.CONFIGURATI
 subdirectory of the JVM's working directory - not to be confused with this repository's own root
 directory, which happens to share the name) hold everything environment-specific:
 `postgres-database.json` (live database `Credentials`) and `configuration.json`
-(`"jwt-signing-key"`, `"rest-api-bind-host"`, `"rest-server-port"`, ...). Never commit real values
-found there. `cloud-driver-bootstrap`'s README documents exactly what reads from each file.
+(`"jwt-signing-key"`, `"rest-api-bind-host"`, `"rest-server-port"`, `"smtp-host"`/`"smtp-port"`/
+`"smtp-username"`/`"smtp-password"`/`"smtp-from-address"`, ...). Never commit real values found
+there. `cloud-driver-bootstrap`'s README documents exactly what reads from each file.
 
 ## Project structure and layering
 
@@ -93,9 +92,9 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
 
 - **Facade over facets, not a monolith.** `CloudDriver` is a thin facade exposing an
   `IFactoryContainer` (`getDataFactory()`/`getFileFactory()`/`getExtensionFactory()`/
-  `getEventFactory()`/`getRestFactory()`), an `IServiceContainer` (`getCloudUserService()`),
-  `getConnectivityChecker()`, `getTerminal()`, and `getConfiguration()`. It holds no persistence
-  or lifecycle logic of its own.
+  `getEventFactory()`/`getRestFactory()`), an `IServiceContainer` (`getCloudUserService()`/
+  `getAuthService()`), `getConnectivityChecker()`, `getTerminal()`, and `getConfiguration()`. It
+  holds no persistence or lifecycle logic of its own.
 - **Abstract primitives + generic concrete `*Async`.** `DataFactory`, `FileFactory`,
   `ExtensionFactory`, `EventFactory`, and `RestFactory` all share one shape: a handful of abstract
   synchronous primitives a concrete class must implement, plus every `*Async` variant implemented

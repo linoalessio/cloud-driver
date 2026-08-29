@@ -1,10 +1,11 @@
-package de.lino.cloud.auth;
+package de.lino.cloud.auth.entity;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
+import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;

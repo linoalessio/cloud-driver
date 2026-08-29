@@ -1,5 +1,6 @@
 package de.lino.cloud.api.factory.service;
 
+import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
 
@@ -18,5 +19,8 @@ public interface IServiceContainer {
      */
     @NonNull
     ICloudUserService getCloudUserService();
+
+    @NonNull
+    IAuthService getAuthService();
 
 }
