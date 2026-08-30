@@ -1,4 +1,7 @@
-package de.lino.cloud.platform.rest.api.session;
+package de.lino.cloud.platform.rest.api.session.windows;
+
+import de.lino.cloud.platform.rest.api.session.TokenStore;
+import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -17,11 +20,11 @@ import java.util.concurrent.TimeUnit;
  * resulting ciphertext in a file under {@code %APPDATA%}. Only this Windows user, on this
  * machine, can ever decrypt it back - a stolen copy of the file alone is useless.
  */
-final class WindowsDpapiTokenStore implements TokenStore {
+public final class WindowsDpapiTokenStore implements TokenStore {
 
     private final Path storageFile;
 
-    WindowsDpapiTokenStore() {
+    public WindowsDpapiTokenStore() {
         final String appData = System.getenv("APPDATA");
         final Path baseDir = appData != null
                 ? Path.of(appData, "cloud-driver-desktop")

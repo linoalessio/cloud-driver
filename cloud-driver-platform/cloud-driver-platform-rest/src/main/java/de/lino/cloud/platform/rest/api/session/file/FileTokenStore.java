@@ -1,4 +1,9 @@
-package de.lino.cloud.platform.rest.api.session;
+package de.lino.cloud.platform.rest.api.session.file;
+
+import de.lino.cloud.platform.rest.api.session.*;
+import de.lino.cloud.platform.rest.api.session.linux.LinuxSecretServiceTokenStore;
+import de.lino.cloud.platform.rest.api.session.mac.MacKeychainTokenStore;
+import de.lino.cloud.platform.rest.api.session.windows.WindowsDpapiTokenStore;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -19,7 +24,7 @@ import java.util.Set;
  * this when nothing better is available, and callers should surface that to the user (see its
  * Javadoc).
  */
-final class FileTokenStore implements TokenStore {
+public final class FileTokenStore implements TokenStore {
 
     private static final Set<PosixFilePermission> OWNER_ONLY = EnumSet.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE

@@ -1,4 +1,9 @@
-package de.lino.cloud.platform.rest.api.session;
+package de.lino.cloud.platform.rest.api.session.linux;
+
+import de.lino.cloud.platform.rest.api.session.TokenStore;
+import de.lino.cloud.platform.rest.api.session.TokenStoreException;
+import de.lino.cloud.platform.rest.api.session.TokenStoreFactory;
+import de.lino.cloud.platform.rest.api.session.file.FileTokenStore;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -12,13 +17,13 @@ import java.util.concurrent.TimeUnit;
  * TokenStoreFactory} detect a minimal/headless install where {@code secret-tool} isn't present
  * and fall back to {@link FileTokenStore} instead of failing outright.
  */
-final class LinuxSecretServiceTokenStore implements TokenStore {
+public final class LinuxSecretServiceTokenStore implements TokenStore {
 
     private static final String SERVICE_ATTR_VALUE = "cloud-driver-desktop";
     private static final String ACCOUNT_ATTR_VALUE = "session";
 
     /** @return {@code true} if {@code secret-tool} is installed and reachable on {@code PATH} */
-    boolean isAvailable() {
+    public boolean isAvailable() {
         try {
             final Process process = new ProcessBuilder("secret-tool", "--version").start();
             return process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0;

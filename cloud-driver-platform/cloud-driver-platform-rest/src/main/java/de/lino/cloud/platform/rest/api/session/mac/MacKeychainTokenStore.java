@@ -1,4 +1,7 @@
-package de.lino.cloud.platform.rest.api.session;
+package de.lino.cloud.platform.rest.api.session.mac;
+
+import de.lino.cloud.platform.rest.api.session.TokenStore;
+import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 
 import java.io.IOException;
 import java.util.Optional;
@@ -10,7 +13,7 @@ import java.util.concurrent.TimeUnit;
  * therefore encrypted at rest by the OS itself and only readable by this user's own login
  * session - never touches a plain file on disk.
  */
-final class MacKeychainTokenStore implements TokenStore {
+public final class MacKeychainTokenStore implements TokenStore {
 
     private static final String SERVICE = "de.lino.cloud.platform.app";
     private static final String ACCOUNT = "session";

@@ -49,7 +49,7 @@ public final class ReadingThread extends Thread {
 
             try {
 
-                if (!this.isAlive()) return;
+                if (!this.isAlive() || isInterrupted()) return;
 
                 final String line = this.lineReader.readLine(this.terminal.prompt()).trim();
                 if (line.isEmpty()) continue;
