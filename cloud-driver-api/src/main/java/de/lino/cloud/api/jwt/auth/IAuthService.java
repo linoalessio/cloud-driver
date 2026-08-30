@@ -11,6 +11,7 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import lombok.NonNull;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Verifies end-user login (username + password) against {@link de.lino.cloud.api.jwt.user.AuthUser}
@@ -108,5 +109,17 @@ public interface IAuthService {
      */
     @NonNull
     List<AuthUser> getAuthUsers();
+
+    /**
+     * Looks up a single {@link AuthUser} by its plain id - the counterpart to {@link
+     * #getAuthUsers()}'s "list everything" for the common case of resolving one already-known id
+     * (e.g. {@link de.lino.cloud.api.user.ICloudUser#getAuthUserId()}) back to the account it
+     * belongs to.
+     *
+     * @param authUserId the {@link AuthUser#getId()} to look up
+     * @return the matching {@link AuthUser}, or {@link Optional#empty()} if no account exists under that id
+     */
+    @NonNull
+    Optional<AuthUser> getAuthUser(@NonNull final String authUserId);
 
 }

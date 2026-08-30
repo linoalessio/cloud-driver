@@ -306,4 +306,23 @@ public final class AuthService implements IAuthService {
         }
     }
 
+    /**
+     * Looks up a single {@link AuthUser} by its plain id - a direct, O(1) {@link
+     * DataFactory#findById} point lookup (unlike {@link #login}, which has to scan every {@link
+     * AuthUser} since {@code emailAddress}, not {@code id}, is the lookup key there), since {@code
+     * authUserId} already <em>is</em> {@link AuthUser}'s primary key.
+     *
+     * @param authUserId the {@link AuthUser#getId()} to look up
+     * @return the matching {@link AuthUser}, or {@link Optional#empty()} if no account exists under that id
+     */
+    @NonNull
+    @Override
+    public Optional<AuthUser> getAuthUser(@NonNull final String authUserId) {
+        try {
+            return this.dataFactory.findById(authUserId, AuthUser.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.getAuthUser: failed to look up AuthUser " + authUserId, e);
+        }
+    }
+
 }

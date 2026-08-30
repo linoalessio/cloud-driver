@@ -247,6 +247,19 @@ public abstract class ExtensionFactory {
      * native I/O will not respond to the interrupt until that call itself
      * returns.
      *
+     * <p><b>Idempotent</b>: a no-op if {@code extension} is already {@link
+     * ExtensionStatus#ENDING} - there is no further status {@link #stop}
+     * ever transitions an extension to once it reaches {@code ENDING}, so
+     * that status alone is enough to detect "already stopped, or already
+     * being stopped". Without this guard, a caller that ends up invoking
+     * {@link #stop}/{@link #stopAll} twice on the same already-stopped
+     * extension (e.g. once directly, and again via a JVM shutdown hook
+     * triggered by the first call's own {@code System.exit}) would run
+     * {@code onEnding()} a second time - unsafe for an extension whose
+     * {@code onEnding()} isn't itself idempotent, such as one that writes
+     * to a resource (like a terminal) the first {@code onEnding()} call
+     * may have already torn down.
+     *
      * @param extension the extension to stop
      * @throws NullPointerException if {@code extension} is {@code null}
      */
@@ -254,6 +267,7 @@ public abstract class ExtensionFactory {
     public void stop(@NonNull final Extension extension) {
         final ExtensionProperties properties = extension.getExtensionProperties();
 
+        if (properties.getExtensionStatus() == ExtensionStatus.ENDING) return;
         properties.updateExtensionStatus(ExtensionStatus.ENDING);
 
         try {

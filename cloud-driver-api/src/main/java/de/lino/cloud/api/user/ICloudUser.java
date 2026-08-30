@@ -2,6 +2,7 @@ package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -23,6 +24,9 @@ public interface ICloudUser {
     /** @return the {@link AuthUser#getId()} this record belongs to, and its own primary key */
     @NotNull
     String getAuthUserId();
+
+    @NonNull
+    AuthUser getAuthUser();
 
     /**
      * Every {@link StoredFile} currently owned by this user, resolved on demand from the

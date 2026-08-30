@@ -2,9 +2,13 @@ package de.lino.cloud.plugin.factory;
 
 import com.google.common.collect.Maps;
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
+import de.lino.cloud.api.file.FileWithFolder;
+import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
@@ -71,6 +75,8 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String REGISTER_CONFIRM_PATH = "/auth/register/confirm";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
+    /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
+    private static final String FOLDERS_PATH = "/folders";
     /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
     /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
@@ -83,6 +89,25 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String OWNER_ID_FIELD = "ownerId";
     /** Query parameter {@link #handleUploadFile} reads the uploaded file's name from. */
     private static final String FILE_NAME_QUERY_PARAM = "fileName";
+    /**
+     * Query parameter {@link #handleUploadFile}/{@link #handleListFiles} read a target/filter
+     * folder id from, and the JSON field name each entry of {@link #handleListFiles}'s response
+     * array carries that folder id under (merged in via {@link #toJsonArray} - {@link StoredFile}
+     * itself has no such field, since placement lives on {@code StoredFileOwnership} instead).
+     */
+    private static final String FOLDER_ID_FIELD = "folderId";
+    /** Query parameter {@link #handleListFolders} reads the parent folder to list children of from. */
+    private static final String PARENT_FOLDER_ID_QUERY_PARAM = "parentFolderId";
+    /**
+     * Value of {@link #FOLDER_ID_FIELD}/{@link #PARENT_FOLDER_ID_QUERY_PARAM} that explicitly means
+     * "the root", used by {@link #resolveFolderIdOrRoot} - a query string cannot carry a literal
+     * {@code null}, and for {@link #handleUploadFile}/{@link #handleMoveFile}/{@link
+     * #handleListFolders} the parameter being <em>omitted</em> already means the same thing (place
+     * at/list the root), so this sentinel only matters for {@link #handleListFiles}, where an
+     * omitted {@link #FOLDER_ID_FIELD} instead means "every file, unscoped" (see that method's
+     * Javadoc) and this sentinel is the only way to explicitly ask for just the root's files.
+     */
+    private static final String ROOT_FOLDER_SENTINEL = "root";
 
     /**
      * Overrides Javalin's own {@link JavalinConfig#http}{@code .maxRequestSize} default of
@@ -176,12 +201,15 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Same as {@link #DefaultRestFactory(DataFactory, AuthService)}, additionally mounting
-     * {@code POST /files}/{@code GET /files}/{@code DELETE /files/{id}} - each user's own
-     * {@link StoredFile} uploads, backed by {@code cloudUserService}. Unlike {@link
-     * #register}/{@link #fetch}/{@link #update}/{@link #delete}, these three routes are
-     * not generic over a {@code (path, type)} pair registered separately - they're fixed,
-     * mounted directly by this constructor, since uploading/listing/deleting a user's own
-     * files is business logic ({@link CloudUserService}), not a plain {@code DataFactory}
+     * {@code POST /files}/{@code GET /files}/{@code DELETE /files/{id}}/{@code PUT
+     * /files/{id}/folder} and {@code POST /folders}/{@code GET /folders}/{@code PUT
+     * /folders/{id}}/{@code DELETE /folders/{id}} - each user's own {@link StoredFile} uploads
+     * and {@link Folder} organization, backed by {@code cloudUserService}. Unlike {@link
+     * #register}/{@link #fetch}/{@link #update}/{@link #delete}, these routes are not generic
+     * over a {@code (path, type)} pair registered separately - they're fixed, mounted directly
+     * by this constructor, since uploading/listing/deleting a user's own files and folders is
+     * business logic ({@link CloudUserService} - move/rename validate ownership and, for
+     * folders, guard against cycles and non-empty deletes), not a plain {@code DataFactory}
      * CRUD pass-through the way every other registered resource is.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
@@ -302,6 +330,12 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
+                config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
+
+                config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
+                config.routes.get(FOLDERS_PATH, this::handleListFolders);
+                config.routes.put(FOLDERS_PATH + "/{id}", this::handleUpdateFolder);
+                config.routes.delete(FOLDERS_PATH + "/{id}", this::handleDeleteFolder);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -413,6 +447,49 @@ public final class DefaultRestFactory extends RestFactory {
             return header.substring(BEARER_PREFIX.length());
         }
         return ctx.queryParam(TOKEN_QUERY_PARAM);
+    }
+
+    /**
+     * Resolves a folder-id query parameter (named {@code queryParamName}) where both an omitted
+     * parameter and an explicit {@link #ROOT_FOLDER_SENTINEL} mean the same thing: the root. Used
+     * by {@link #handleUploadFile}/{@link #handleListFolders}, where there is no third meaning
+     * (e.g. "unscoped") to distinguish "omitted" from - unlike {@link #handleListFiles}, which
+     * reads its own {@link #FOLDER_ID_FIELD} parameter directly instead, since there "omitted"
+     * means something else entirely (every file, unscoped).
+     *
+     * @return {@code null} for the root (parameter omitted or {@link #ROOT_FOLDER_SENTINEL}), otherwise the raw parameter value
+     */
+    @Nullable
+    private static String resolveFolderIdOrRoot(@NotNull final Context ctx, final String queryParamName) {
+        final String raw = ctx.queryParam(queryParamName);
+        return raw == null || ROOT_FOLDER_SENTINEL.equals(raw) ? null : raw;
+    }
+
+    /** {@link #toJsonObject(StoredFile, String)}, applied to every entry - backs {@link #handleListFiles}. */
+    private JsonArray toJsonArray(final List<FileWithFolder> files) {
+        final JsonArray array = new JsonArray();
+        for (final FileWithFolder entry : files) {
+            array.add(this.toJsonObject(entry.file(), entry.folderId()));
+        }
+        return array;
+    }
+
+    /**
+     * Merges {@code folderId} into {@code file}'s own serialized JSON, under {@link
+     * #FOLDER_ID_FIELD} - the same {@link JsonObject}-merge idiom {@link #parseOwnedBody}
+     * already uses, applied here since {@link StoredFile} carries no folder field of its own to
+     * serialize (see {@link Folder}'s Javadoc for why). Used by both {@link #handleListFiles}
+     * (via {@link #toJsonArray}) and {@link #handleUploadFile}, so a freshly uploaded file's
+     * response reflects the folder it was placed in exactly like every other route does.
+     */
+    private JsonObject toJsonObject(final StoredFile file, @Nullable final String folderId) {
+        final JsonObject json = this.gson.toJsonTree(file).getAsJsonObject();
+        if (folderId != null) {
+            json.addProperty(FOLDER_ID_FIELD, folderId);
+        } else {
+            json.add(FOLDER_ID_FIELD, JsonNull.INSTANCE);
+        }
+        return json;
     }
 
     /**
@@ -530,44 +607,58 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * {@code POST /files?fileName=<url-encoded name>}: reads the raw request body as the
-     * file's bytes ({@code application/octet-stream}, not base64-encoded JSON - a base64 body
-     * inflates the transferred/parsed size by ~37% and forces {@link #gson} to parse one huge
-     * JSON string field, both pure overhead on top of {@link #MAX_REQUEST_SIZE_BYTES}'s own
-     * size-limit concern; large uploads pay for both) via {@link Context#bodyAsBytes()} -
-     * subject to the same {@link JavalinConfig#http}{@code .maxRequestSize} limit {@link
-     * Context#body()} enforces - and uploads it via {@link CloudUserService#uploadFile},
-     * tracked under the caller's own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link
-     * #requireValidBearerToken}). Dispatched off the Jetty worker thread since {@code
-     * uploadFile} does real database/encryption I/O.
+     * {@code POST /files?fileName=<url-encoded name>&folderId=<id-or-omitted>}: reads the raw
+     * request body as the file's bytes ({@code application/octet-stream}, not base64-encoded
+     * JSON - a base64 body inflates the transferred/parsed size by ~37% and forces {@link
+     * #gson} to parse one huge JSON string field, both pure overhead on top of {@link
+     * #MAX_REQUEST_SIZE_BYTES}'s own size-limit concern; large uploads pay for both) via {@link
+     * Context#bodyAsBytes()} - subject to the same {@link JavalinConfig#http}{@code
+     * .maxRequestSize} limit {@link Context#body()} enforces - and uploads it via {@link
+     * CloudUserService#uploadFile(String, String, byte[], String)}, tracked under the caller's
+     * own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link #requireValidBearerToken}).
+     * {@link #FOLDER_ID_FIELD} is resolved via {@link #resolveFolderIdOrRoot} - omitted (or
+     * {@link #ROOT_FOLDER_SENTINEL}) places the file at the root, matching this route's
+     * pre-folders behavior. Dispatched off the Jetty worker thread since {@code uploadFile}
+     * does real database/encryption I/O.
      */
     private void handleUploadFile(@NotNull final Context ctx) {
         final String fileName = ctx.queryParam(FILE_NAME_QUERY_PARAM);
         if (fileName == null || fileName.isBlank()) {
             throw new BadRequestResponse("Missing '" + FILE_NAME_QUERY_PARAM + "' query parameter");
         }
+        final String folderId = resolveFolderIdOrRoot(ctx, FOLDER_ID_FIELD);
         final byte[] content = ctx.bodyAsBytes();
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.uploadFile(userId, fileName, content))
+                .supplyAsync(() -> this.cloudUserService.uploadFile(userId, fileName, content, folderId))
                 .handle((storedFile, failure) -> {
                     if (failure == null) {
-                        ctx.status(201).contentType("application/json").result(this.gson.toJson(storedFile));
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(this.toJsonObject(storedFile, folderId)));
                         return null;
                     }
-                    throw notFoundOrPropagate(failure, StoredFile.class, fileName);
+                    throw folderFailureOrPropagate(failure, StoredFile.class, fileName);
                 }));
     }
 
     /**
-     * {@code GET /files}: lists every {@link StoredFile} tracked as belonging to the
-     * caller, via {@link CloudUserService#listFiles}.
+     * {@code GET /files}, optionally {@code ?folderId=<id-or-{@value #ROOT_FOLDER_SENTINEL}>}:
+     * lists every {@link StoredFile} tracked as belonging to the caller, each entry carrying an
+     * additional {@link #FOLDER_ID_FIELD} property (merged in via {@link #toJsonArray}, since
+     * {@link StoredFile} itself has no folder field - see {@link CloudUserService#listFilesWithFolder}).
+     * {@link #FOLDER_ID_FIELD} <b>omitted</b> lists every file regardless of folder - the
+     * pre-folders behavior this route always had, kept as the default for any client that
+     * doesn't yet know about folders; present (including {@link #ROOT_FOLDER_SENTINEL}) scopes
+     * the list to just that one folder (or the root).
      */
     private void handleListFiles(@NotNull final Context ctx) {
+        final String folderIdParam = ctx.queryParam(FOLDER_ID_FIELD);
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.listFiles(userId))
-                .thenAccept(files -> ctx.contentType("application/json").result(this.gson.toJson(files))));
+                .supplyAsync(() -> folderIdParam == null
+                        ? this.cloudUserService.listFilesWithFolder(userId)
+                        : this.cloudUserService.listFilesWithFolder(
+                                userId, ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam))
+                .thenAccept(files -> ctx.contentType("application/json").result(this.gson.toJson(toJsonArray(files)))));
     }
 
     /**
@@ -588,6 +679,129 @@ public final class DefaultRestFactory extends RestFactory {
                         return null;
                     }
                     throw notFoundOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"folderId"}} JSON body shape read by {@code PUT /files/{id}/folder} -
+     * {@code folderId} may be an explicit JSON {@code null} to move the file back to the root
+     * (unlike a query parameter, a JSON body can carry a real {@code null}, so no {@link
+     * #ROOT_FOLDER_SENTINEL}-style sentinel is needed here).
+     *
+     * @param folderId the folder to move the file into, or {@code null} for the root
+     */
+    private record MoveFileRequest(String folderId) {
+    }
+
+    /**
+     * {@code PUT /files/{id}/folder}: moves a {@link StoredFile} into another folder (or back to
+     * the root) via {@link CloudUserService#moveFile}, which checks the caller owns both the
+     * file and the target folder. {@code 204} on success.
+     */
+    private void handleMoveFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final MoveFileRequest request = this.gson.fromJson(ctx.body(), MoveFileRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.moveFile(userId, id, request.folderId()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"name", "parentFolderId"}} JSON body shape read by {@code POST /folders}.
+     *
+     * @param name the new folder's display name
+     * @param parentFolderId the parent folder to nest the new folder inside, or {@code null} for the top level
+     */
+    private record CreateFolderRequest(String name, String parentFolderId) {
+    }
+
+    /**
+     * {@code POST /folders}: creates a new {@link Folder} owned by the caller via {@link
+     * CloudUserService#createFolder}. {@code 201} with the created {@link Folder} on success.
+     */
+    private void handleCreateFolder(@NotNull final Context ctx) {
+        final CreateFolderRequest request = this.gson.fromJson(ctx.body(), CreateFolderRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.createFolder(userId, request.name(), request.parentFolderId()))
+                .handle((folder, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(folder));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, request.parentFolderId());
+                }));
+    }
+
+    /**
+     * {@code GET /folders}, optionally {@code ?parentFolderId=<id-or-{@value
+     * #ROOT_FOLDER_SENTINEL}>}: lists every {@link Folder} owned by the caller directly inside
+     * that parent, via {@link CloudUserService#listFolders} - omitted (or {@link
+     * #ROOT_FOLDER_SENTINEL}) lists the caller's top-level folders.
+     */
+    private void handleListFolders(@NotNull final Context ctx) {
+        final String parentFolderId = resolveFolderIdOrRoot(ctx, PARENT_FOLDER_ID_QUERY_PARAM);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listFolders(userId, parentFolderId))
+                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /**
+     * The {@code {"name", "parentFolderId"}} JSON body shape read by {@code PUT /folders/{id}} -
+     * a full replace of both fields, matching {@code PUT}'s whole-resource-replace semantics
+     * (the same convention {@link #bindUpdate} already uses for a generically-registered type).
+     *
+     * @param name the folder's new display name
+     * @param parentFolderId the folder's new parent, or {@code null} to move it to the top level
+     */
+    private record UpdateFolderRequest(String name, String parentFolderId) {
+    }
+
+    /**
+     * {@code PUT /folders/{id}}: renames and/or moves a {@link Folder} in one step via {@link
+     * CloudUserService#updateFolder}, which validates both that the caller owns the folder (and
+     * the new parent, if changing) and that the move would not create a cycle.
+     */
+    private void handleUpdateFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final UpdateFolderRequest request = this.gson.fromJson(ctx.body(), UpdateFolderRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.updateFolder(userId, id, request.name(), request.parentFolderId()))
+                .handle((folder, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(folder));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /folders/{id}}: deletes a {@link Folder} via {@link
+     * CloudUserService#deleteFolder}, which checks the caller owns it and that it is currently
+     * empty. {@code 204} on success, {@code 409} if it still has children (via {@link
+     * #folderFailureOrPropagate}'s {@link IllegalStateException} handling).
+     */
+    private void handleDeleteFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.deleteFolder(userId, id))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
                 }));
     }
 
@@ -769,6 +983,32 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
+     * {@link #notFoundOrPropagate}, extended with one more case {@link CloudUserService}'s
+     * folder operations can throw: {@link IllegalStateException} - a validation failure that
+     * <em>does</em> confirm the resource's existence rather than hiding it (unlike {@link
+     * IllegalArgumentException}'s "not yours"/"doesn't exist" case above), since "this folder
+     * still has files in it" or "that would create a cycle" are normal, expected client-facing
+     * feedback, not something to hide the same way a missing/foreign record is - translated to
+     * {@link ConflictResponse} (409). Any other cause is rethrown as-is to reach Javalin's
+     * default (500) handling.
+     *
+     * @param failure the raw failure from a {@code *Async} call
+     * @param type the entity type being handled
+     * @param id the entity id being handled
+     * @return the exception to throw from the route handler
+     */
+    private static RuntimeException folderFailureOrPropagate(final Throwable failure, final Class<?> type, final String id) {
+        final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
+            return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
+        }
+        if (cause instanceof IllegalStateException illegalState) {
+            return new ConflictResponse(illegalState.getMessage());
+        }
+        return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
+    }
+
+    /**
      * Unwraps an {@link AuthService#login} failure's {@link CompletionException} and
      * translates {@link InvalidCredentialsException} into {@link UnauthorizedResponse}; any
      * other cause is rethrown as-is to reach Javalin's default (500) handling.
@@ -790,8 +1030,12 @@ public final class DefaultRestFactory extends RestFactory {
      * invalid email/undeliverable domain, not a wrong password here - into {@link
      * BadRequestResponse} (400), and {@link InvalidVerificationCodeException} - thrown by
      * {@link AuthService#confirmRegistration} for a missing/expired/mismatched code - into
-     * {@link BadRequestResponse} (400) as well; any other cause is rethrown as-is to reach
-     * Javalin's default (500) handling.
+     * {@link BadRequestResponse} (400) as well; any other cause is printed directly to {@link
+     * System#err} (bypassing this module's own deliberately-silenced {@code slf4j-simple}/{@link
+     * JavalinLogger} logging, see {@link #silenceJavalinLogging} - without this, an unmapped
+     * cause here, e.g. {@code EmailDeliveryException} from a misconfigured SMTP server, reached
+     * the client as a bare {@code 500 Server Error} with zero trace of why on the server side)
+     * before being rethrown as-is to reach Javalin's default (500) handling.
      */
     private static RuntimeException registrationFailureOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
@@ -804,6 +1048,8 @@ public final class DefaultRestFactory extends RestFactory {
         if (cause instanceof InvalidVerificationCodeException invalidVerificationCode) {
             return new BadRequestResponse(invalidVerificationCode.getMessage());
         }
+        System.err.println("[DefaultRestFactory] unmapped registration failure, returning 500:");
+        cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }
 }

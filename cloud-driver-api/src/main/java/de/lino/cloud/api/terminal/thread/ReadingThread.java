@@ -75,6 +75,16 @@ public final class ReadingThread extends Thread {
                 // Ctrl+D / stdin closed - nothing further to read.
                 break;
             } catch (final Throwable throwable) {
+                if (!this.terminal.isActive()) break;
+                // Terminal#shutdown() closing the underlying jline terminal while this thread is
+                // blocked inside readLine() surfaces here as some jline-internal exception (not
+                // necessarily observable via isInterrupted() - jline may consume/clear the
+                // interrupt status itself while unwinding a blocked read), not as
+                // UserInterruptException/EndOfFileException above. Without the isActive() check,
+                // every next loop iteration would immediately call readLine() again on the
+                // now-permanently-closed terminal, throw again with no blocking in between, and
+                // spin - a tight, CPU-burning loop logging the same exception forever instead of
+                // ending the same way Ctrl+C/Ctrl+D above do.
                 CloudDriver.getInstance().getLogger().log(Level.SEVERE, "@ReadingThread.run: input handling failed", throwable);
             }
 

@@ -5,9 +5,13 @@ import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 
 import java.io.Closeable;
 import java.io.FileNotFoundException;
@@ -277,16 +281,32 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public StoredFileResponse uploadFile(final String fileName, final byte[] content) throws ApiException {
-        return this.send(this.uploadFileRequest(fileName, content), StoredFileResponse.class);
+        return this.uploadFile(fileName, content, null);
     }
 
     /** Async form of {@link #uploadFile(String, byte[])} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final byte[] content) {
-        return this.sendAsync(this.uploadFileRequest(fileName, content), StoredFileResponse.class);
+        return this.uploadFileAsync(fileName, content, null);
     }
 
-    private HttpRequest uploadFileRequest(final String fileName, final byte[] content) {
-        return this.uploadRequestBuilder(fileName)
+    /**
+     * Same as {@link #uploadFile(String, byte[])}, placing the new file directly into {@code
+     * folderId} instead of the root.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
+     *                       folderId} doesn't exist or isn't owned by the caller, or any other failure
+     */
+    public StoredFileResponse uploadFile(final String fileName, final byte[] content, final String folderId) throws ApiException {
+        return this.send(this.uploadFileRequest(fileName, content, folderId), StoredFileResponse.class);
+    }
+
+    /** Async form of {@link #uploadFile(String, byte[], String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final byte[] content, final String folderId) {
+        return this.sendAsync(this.uploadFileRequest(fileName, content, folderId), StoredFileResponse.class);
+    }
+
+    private HttpRequest uploadFileRequest(final String fileName, final byte[] content, final String folderId) {
+        return this.uploadRequestBuilder(fileName, folderId)
                 .POST(BodyPublishers.ofByteArray(content))
                 .build();
     }
@@ -309,9 +329,14 @@ public final class ApiClient implements AutoCloseable {
 
     /** Same as {@link #uploadFile(Path)}, with an explicit {@code fileName} instead of the path's own file name. */
     public StoredFileResponse uploadFile(final String fileName, final Path filePath) throws ApiException {
+        return this.uploadFile(fileName, filePath, null);
+    }
+
+    /** Same as {@link #uploadFile(String, Path)}, placing the new file directly into {@code folderId} instead of the root. */
+    public StoredFileResponse uploadFile(final String fileName, final Path filePath, final String folderId) throws ApiException {
         final HttpRequest request;
         try {
-            request = this.uploadFileRequest(fileName, filePath);
+            request = this.uploadFileRequest(fileName, filePath, folderId);
         } catch (final FileNotFoundException e) {
             throw new ApiException(0, "file not found or unreadable: " + filePath, e);
         }
@@ -325,24 +350,32 @@ public final class ApiClient implements AutoCloseable {
 
     /** Async form of {@link #uploadFile(String, Path)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final Path filePath) {
+        return this.uploadFileAsync(fileName, filePath, null);
+    }
+
+    /** Async form of {@link #uploadFile(String, Path, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final Path filePath, final String folderId) {
         final HttpRequest request;
         try {
-            request = this.uploadFileRequest(fileName, filePath);
+            request = this.uploadFileRequest(fileName, filePath, folderId);
         } catch (final FileNotFoundException e) {
             return CompletableFuture.failedFuture(new ApiException(0, "file not found or unreadable: " + filePath, e));
         }
         return this.sendAsync(request, StoredFileResponse.class);
     }
 
-    private HttpRequest uploadFileRequest(final String fileName, final Path filePath) throws FileNotFoundException {
-        return this.uploadRequestBuilder(fileName)
+    private HttpRequest uploadFileRequest(final String fileName, final Path filePath, final String folderId) throws FileNotFoundException {
+        return this.uploadRequestBuilder(fileName, folderId)
                 .POST(BodyPublishers.ofFile(filePath))
                 .build();
     }
 
-    private HttpRequest.Builder uploadRequestBuilder(final String fileName) {
+    /** {@code folderId} {@code null} places the upload at the root, omitting the query parameter entirely. */
+    private HttpRequest.Builder uploadRequestBuilder(final String fileName, final String folderId) {
         final String encodedFileName = URLEncoder.encode(fileName, StandardCharsets.UTF_8);
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files?fileName=" + encodedFileName), true)
+        final String query = "/files?fileName=" + encodedFileName
+                + (folderId == null ? "" : "&folderId=" + URLEncoder.encode(folderId, StandardCharsets.UTF_8));
+        return this.requestBuilder(this.apiBaseUrl.resolve(query), true)
                 .header("Content-Type", "application/octet-stream");
     }
 
@@ -406,6 +439,29 @@ public final class ApiClient implements AutoCloseable {
     /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<List<StoredFileResponse>> listFilesAsync() {
         return this.sendAsync(this.listFilesRequest(), StoredFileResponse[].class).thenApply(List::of);
+    }
+
+    /**
+     * Same route as {@link #listFiles()}, scoped to just one folder's direct contents instead of
+     * every file the caller owns - {@code folderId} {@code null} lists the root's own files.
+     * Every {@link StoredFileResponse#folderId()} in the result equals {@code folderId} (or is
+     * {@code null}, for a root listing).
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public List<StoredFileResponse> listFiles(final String folderId) throws ApiException {
+        final StoredFileResponse[] files = this.send(this.listFilesRequest(folderId), StoredFileResponse[].class);
+        return List.of(files);
+    }
+
+    /** Async form of {@link #listFiles(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<StoredFileResponse>> listFilesAsync(final String folderId) {
+        return this.sendAsync(this.listFilesRequest(folderId), StoredFileResponse[].class).thenApply(List::of);
+    }
+
+    private HttpRequest listFilesRequest(final String folderId) {
+        final String encodedFolderId = URLEncoder.encode(folderId == null ? "root" : folderId, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files?folderId=" + encodedFolderId), true).GET().build();
     }
 
     /**
@@ -542,6 +598,119 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<Void> deleteFilesAsync(final Collection<String> fileIds) {
         final List<CompletableFuture<Void>> deletions = fileIds.stream().map(this::deleteFileAsync).toList();
         return awaitAll(deletions).thenApply(ignored -> null);
+    }
+
+    // --- files: move --------------------------------------------------
+
+    /**
+     * {@code PUT /files/{id}/folder}: moves {@code fileId} into {@code folderId} - {@code null}
+     * moves it back to the root.
+     *
+     * @throws ApiException {@code 404} if {@code fileId}/{@code folderId} doesn't exist or isn't
+     *                       owned by the caller, {@code 401} if not logged in / token expired
+     */
+    public void moveFile(final String fileId, final String folderId) throws ApiException {
+        this.send(this.moveFileRequest(fileId, folderId), Void.class);
+    }
+
+    /** Async form of {@link #moveFile(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> moveFileAsync(final String fileId, final String folderId) {
+        return this.sendAsync(this.moveFileRequest(fileId, folderId), Void.class);
+    }
+
+    private HttpRequest moveFileRequest(final String fileId, final String folderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/folder"), true)
+                .header("Content-Type", "application/json")
+                .method("PUT", BodyPublishers.ofString(GSON.toJson(new MoveFileRequest(folderId))))
+                .build();
+    }
+
+    // --- folders --------------------------------------------------------
+
+    /**
+     * {@code POST /folders}: creates a new folder owned by the caller - {@code parentFolderId}
+     * {@code null} creates a top-level folder.
+     *
+     * @throws ApiException {@code 404} if {@code parentFolderId} is non-null and doesn't exist or
+     *                       isn't owned by the caller, {@code 401} if not logged in / token expired
+     */
+    public FolderResponse createFolder(final String name, final String parentFolderId) throws ApiException {
+        return this.send(this.createFolderRequest(name, parentFolderId), FolderResponse.class);
+    }
+
+    /** Async form of {@link #createFolder(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<FolderResponse> createFolderAsync(final String name, final String parentFolderId) {
+        return this.sendAsync(this.createFolderRequest(name, parentFolderId), FolderResponse.class);
+    }
+
+    private HttpRequest createFolderRequest(final String name, final String parentFolderId) {
+        return this.postRequest(this.apiBaseUrl.resolve("/folders"), new CreateFolderRequest(name, parentFolderId), true);
+    }
+
+    /**
+     * {@code GET /folders}: lists the caller's own folders directly inside {@code parentFolderId}
+     * - {@code null} lists their top-level folders.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public List<FolderResponse> listFolders(final String parentFolderId) throws ApiException {
+        final FolderResponse[] folders = this.send(this.listFoldersRequest(parentFolderId), FolderResponse[].class);
+        return List.of(folders);
+    }
+
+    /** Async form of {@link #listFolders(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<FolderResponse>> listFoldersAsync(final String parentFolderId) {
+        return this.sendAsync(this.listFoldersRequest(parentFolderId), FolderResponse[].class).thenApply(List::of);
+    }
+
+    private HttpRequest listFoldersRequest(final String parentFolderId) {
+        final String encodedParentFolderId = URLEncoder.encode(parentFolderId == null ? "root" : parentFolderId, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders?parentFolderId=" + encodedParentFolderId), true).GET().build();
+    }
+
+    /**
+     * {@code PUT /folders/{id}}: renames and/or moves a folder in one step - a full replace of
+     * both fields, not a partial patch; {@code newParentFolderId} {@code null} moves it to the
+     * top level.
+     *
+     * @throws ApiException {@code 404} if {@code folderId}/{@code newParentFolderId} doesn't
+     *                       exist or isn't owned by the caller, {@code 409} if the move would
+     *                       create a cycle, {@code 401} if not logged in / token expired
+     */
+    public FolderResponse updateFolder(final String folderId, final String newName, final String newParentFolderId) throws ApiException {
+        return this.send(this.updateFolderRequest(folderId, newName, newParentFolderId), FolderResponse.class);
+    }
+
+    /** Async form of {@link #updateFolder(String, String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<FolderResponse> updateFolderAsync(final String folderId, final String newName, final String newParentFolderId) {
+        return this.sendAsync(this.updateFolderRequest(folderId, newName, newParentFolderId), FolderResponse.class);
+    }
+
+    private HttpRequest updateFolderRequest(final String folderId, final String newName, final String newParentFolderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true)
+                .header("Content-Type", "application/json")
+                .method("PUT", BodyPublishers.ofString(GSON.toJson(new UpdateFolderRequest(newName, newParentFolderId))))
+                .build();
+    }
+
+    /**
+     * {@code DELETE /folders/{id}}: deletes an empty folder.
+     *
+     * @throws ApiException {@code 404} if {@code folderId} doesn't exist or isn't owned by the
+     *                       caller, {@code 409} if it still has child folders or files, {@code
+     *                       401} if not logged in / token expired
+     */
+    public void deleteFolder(final String folderId) throws ApiException {
+        this.send(this.deleteFolderRequest(folderId), Void.class);
+    }
+
+    /** Async form of {@link #deleteFolder(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> deleteFolderAsync(final String folderId) {
+        return this.sendAsync(this.deleteFolderRequest(folderId), Void.class);
+    }
+
+    private HttpRequest deleteFolderRequest(final String folderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true).DELETE().build();
     }
 
     // --- internals -------------------------------------------------------

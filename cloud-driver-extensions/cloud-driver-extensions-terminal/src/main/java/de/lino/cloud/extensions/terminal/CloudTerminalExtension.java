@@ -34,7 +34,7 @@ public class CloudTerminalExtension extends Extension {
         this.commandService.register(
                 new ExitCommand(), new HelpCommand(), new ClearCommand()
                 , new ExtensionCommand(), new AboutCommand(), new LeaveCommand()
-                , new DispatchCommand()
+                , new DispatchCommand(), new CloudUserCommand()
         );
 
     }

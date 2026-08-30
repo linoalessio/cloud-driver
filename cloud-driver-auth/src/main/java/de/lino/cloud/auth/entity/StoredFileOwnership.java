@@ -1,5 +1,6 @@
 package de.lino.cloud.auth.entity;
 
+import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.auth.CloudUserService;
@@ -8,6 +9,7 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
@@ -15,7 +17,8 @@ import java.util.Objects;
 /**
  * A single (user, file) ownership record - the join between an {@link
  * de.lino.cloud.api.jwt.user.AuthUser} (by its plain id) and one {@link
- * StoredFile#fileId()} it owns.
+ * StoredFile#fileId()} it owns, additionally tracking which {@link Folder} (if any)
+ * the file currently sits in.
  *
  * <p>Replaces the old design where {@link CloudUser} embedded every owned file id in
  * one {@code Set<String>}: with up to 10,000 files per user, tracking or untracking a
@@ -23,9 +26,11 @@ import java.util.Objects;
  * re-encrypting that <em>entire</em> set on every upload/delete - an O(n) rewrite for
  * an operation that should be O(1). Here, each ownership is its own {@link Serialized}
  * row, envelope-encrypted independently (see {@code SecureEntityChannel}) and
- * primary-keyed on {@link #compositeKey(String, String)}, so adding or removing one
- * file's ownership is a single-row insert/delete that never touches any other file id
- * this or any other user owns.
+ * primary-keyed on {@link #compositeKey(String, String)}, so adding, removing, or
+ * moving one file is a single-row insert/delete/update that never touches any other
+ * file id this or any other user owns. {@link #folderId} lives on this same row for
+ * exactly the same reason a file's folder placement doesn't live on {@link StoredFile}
+ * itself or as a membership list on {@link Folder} - see {@link Folder}'s own Javadoc.
  *
  * <p>{@link CloudUserService} still uses a full-section scan (via {@code
  * DataFactory#getEntities}) to answer "which files does this user own" for {@link
@@ -44,13 +49,40 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     /** The plain {@link StoredFile#fileId()} tracked as owned by {@link #authUserId}. */
     private final String storedFileId;
 
+    /** The {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root. */
+    @Nullable
+    private final String folderId;
+
     /**
+     * Same as {@link #StoredFileOwnership(String, String, String)}, placing the file at the root
+     * ({@code folderId} {@code null}).
+     *
      * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
      */
     public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId) {
+        this(authUserId, storedFileId, null);
+    }
+
+    /**
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     */
+    public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
+                                @Nullable final String folderId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@StoredFileOwnership.init: authUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@StoredFileOwnership.init: storedFileId cannot be null");
+        this.folderId = folderId;
+    }
+
+    /**
+     * @param newFolderId the {@link Folder#getFolderId()} to move this file into, or {@code null} for the root
+     * @return a copy of this row with {@link #folderId} changed to {@code newFolderId}
+     */
+    @NotNull
+    public StoredFileOwnership movedTo(@Nullable final String newFolderId) {
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId);
     }
 
     /**

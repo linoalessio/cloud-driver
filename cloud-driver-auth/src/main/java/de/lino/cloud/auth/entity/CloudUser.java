@@ -9,6 +9,7 @@ import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import lombok.NonNull;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -40,6 +41,11 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      */
     public CloudUser(@NotNull final String authUserId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@CloudUser.init: authUserId cannot be null");
+    }
+
+    @Override
+    public @NonNull AuthUser getAuthUser() {
+        return CloudDriver.getInstance().getServiceContainer().getAuthService().getAuthUser(this.authUserId).orElseThrow();
     }
 
     /**

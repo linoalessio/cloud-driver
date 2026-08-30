@@ -32,7 +32,7 @@ public final class FileTokenStore implements TokenStore {
 
     private final Path storageFile;
 
-    FileTokenStore() {
+    public FileTokenStore() {
         this.storageFile = Path.of(System.getProperty("user.home"), ".config", "cloud-driver-desktop-app", "session.token");
     }
 

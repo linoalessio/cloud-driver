@@ -46,7 +46,7 @@ public class CloudRestExtension extends Extension {
     /**
      * Reads the configured listen port and delegates to {@link #startRestApi()}, which builds
      * the JWT-authenticated {@link RestFactory} (mounting {@code /auth/login} and the
-     * {@code /cloudUsers}/{@code /files} routes) and starts it listening.
+     * {@code /cloudUsers}/{@code /files}/{@code /folders} routes) and starts it listening.
      *
      * @throws NullPointerException if {@code "rest-server-port"} is missing from {@code configuration.json}
      */

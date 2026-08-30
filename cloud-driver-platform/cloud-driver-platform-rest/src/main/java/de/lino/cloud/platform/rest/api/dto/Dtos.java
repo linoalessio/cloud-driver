@@ -44,6 +44,9 @@ public final class Dtos {
      * {@code POST /files} returns on success. Mirrors {@code StoredFile}'s Gson-serialized
      * fields; {@code checksum} is left as a raw {@code String} here since the client only
      * needs {@code fileId}/{@code fileName}/{@code contentBase64} to download and save a file.
+     * {@code folderId} is not a {@code StoredFile} field at all - the server merges it in from
+     * the file's {@code StoredFileOwnership} row (see {@code DefaultRestFactory#toJsonArray}) -
+     * {@code null} for a file at the root.
      */
     public record StoredFileResponse(
             String fileId,
@@ -52,8 +55,41 @@ public final class Dtos {
             String contentBase64,
             boolean contentCompressed,
             long createdAtEpochMilli,
-            long updatedAtEpochMilli
+            long updatedAtEpochMilli,
+            String folderId
     ) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /folders} response array, and of the object
+     * {@code POST /folders}/{@code PUT /folders/{id}} return on success. Mirrors {@code
+     * Folder}'s Gson-serialized fields; {@code ownerId} is included even though the client
+     * never needs to act on it, purely because it's part of the server's actual JSON shape.
+     */
+    public record FolderResponse(
+            String folderId,
+            String ownerId,
+            String name,
+            String parentFolderId,
+            long createdAtEpochMillis,
+            long modifiedAtEpochMillis
+    ) {
+    }
+
+    /** Body for {@code POST /folders} - {@code parentFolderId} {@code null} creates a top-level folder. */
+    public record CreateFolderRequest(String name, String parentFolderId) {
+    }
+
+    /**
+     * Body for {@code PUT /folders/{id}} - a full replace of both fields (matching {@code PUT}'s
+     * whole-resource-replace semantics), not a partial patch; {@code parentFolderId} {@code null}
+     * moves the folder to the top level.
+     */
+    public record UpdateFolderRequest(String name, String parentFolderId) {
+    }
+
+    /** Body for {@code PUT /files/{id}/folder} - {@code folderId} {@code null} moves the file back to the root. */
+    public record MoveFileRequest(String folderId) {
     }
 
     /** Body Javalin's default error responses use ({@code BadRequestResponse} etc. all share this shape). */

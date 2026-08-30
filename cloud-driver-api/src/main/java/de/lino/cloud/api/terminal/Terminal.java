@@ -132,8 +132,10 @@ public final class Terminal {
         return this.prompt;
     }
 
-    /** Clears the entire terminal screen. */
+    /** Clears the entire terminal screen. No-op once {@link #isActive()} is {@code false}. */
     public void clearScreen() {
+        if (!this.active.get()) return;
+
         this.terminal.puts(InfoCmp.Capability.clear_screen);
         this.terminal.flush();
     }
@@ -142,14 +144,28 @@ public final class Terminal {
      * Prints {@code message} above the current prompt line, then redraws it. Prefer
      * {@link #displayApproved(String)} once {@link #readingThread()} is running.
      *
+     * <p>Falls back to a plain {@code System.out.println} (no prompt, since the prompt is a
+     * terminal-UI artifact with no meaning once the terminal is gone) once {@link #isActive()}
+     * is {@code false}, instead of throwing - the same fallback {@link TerminalLogHandler}
+     * already uses for log records, hoisted here so every direct caller (not just logging)
+     * is safe to call after {@link #shutdown()}, e.g. from an {@code Extension#onEnding()}/
+     * {@code #onException(RuntimeException)} that runs a second time after the terminal this
+     * process owns has already been closed.
+     *
      * @param message the message to display, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public void display(@NotNull final String message) {
         Asserts.requireNonNull(message, "@Terminal.display: message must not be null");
+        final String translated = AnsiColors.translate(String.format("&7%s", message));
+
+        if (!this.active.get()) {
+            System.out.println(translated);
+            return;
+        }
 
         this.terminal.puts(InfoCmp.Capability.carriage_return);
-        this.terminal.writer().println(this.prompt + AnsiColors.translate(String.format("&7%s", message)));
+        this.terminal.writer().println(this.prompt + translated);
         this.terminal.flush();
         update();
     }
@@ -170,13 +186,21 @@ public final class Terminal {
      * Prints {@code message} above the current input line without disturbing what the user is
      * typing. Safe to call while {@link #readingThread()} is blocked reading a line.
      *
+     * <p>Same post-{@link #shutdown()} fallback as {@link #display(String)} - see its Javadoc.
+     *
      * @param message the message to display, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public void displayApproved(@NotNull final String message) {
         Asserts.requireNonNull(message, "@Terminal.displayApproved: message must not be null");
+        final String translated = AnsiColors.translate(String.format("&7%s", message));
 
-        this.lineReader.printAbove(this.prompt + AnsiColors.translate(String.format("&7%s", message)));
+        if (!this.active.get()) {
+            System.out.println(translated);
+            return;
+        }
+
+        this.lineReader.printAbove(this.prompt + translated);
         update();
     }
 
@@ -192,8 +216,9 @@ public final class Terminal {
         this.displayApproved(String.format(format, args));
     }
 
-    /** Prints a single blank line above the current input line. */
+    /** Prints a single blank line above the current input line. No-op once {@link #isActive()} is {@code false}. */
     public void emptyLine() {
+        if (!this.active.get()) return;
         this.lineReader.printAbove(" ");
     }
 
@@ -202,12 +227,17 @@ public final class Terminal {
      * yes} (case-insensitive) counts as confirmation; anything else, including blank input, is
      * a rejection.
      *
+     * <p>Returns {@code false} immediately, without attempting to read, once {@link
+     * #isActive()} is {@code false} - there is no input to read once the underlying terminal
+     * has been closed.
+     *
      * @param message the confirmation question to display, e.g. {@code "&eProceed? (y/n)"}
-     * @return {@code true} if confirmed, {@code false} otherwise
+     * @return {@code true} if confirmed, {@code false} otherwise (including if the terminal is no longer active)
      * @throws NullPointerException if {@code message} is {@code null}
      */
     public boolean confirm(@NotNull final String message) {
         Asserts.requireNonNull(message, "@Terminal.confirm: message must not be null");
+        if (!this.active.get()) return false;
 
         final String answer = this.lineReader.readLine(AnsiColors.translate(message + " "));
         final String trimmed = answer.trim();
@@ -223,7 +253,8 @@ public final class Terminal {
 
     /**
      * Updates the prompt to {@code prompt} (supports {@code &x} ansi codes) and redraws the
-     * terminal.
+     * terminal. {@link #prompt()} still reflects the new value once {@link #isActive()} is
+     * {@code false}, but the jline redraw itself is skipped (nothing to redraw).
      *
      * @param prompt the new prompt, using {@code &x} legacy ansi codes
      * @throws NullPointerException if {@code prompt} is {@code null}
@@ -232,6 +263,8 @@ public final class Terminal {
         Asserts.requireNonNull(prompt, "@Terminal.updatePrompt: prompt must not be null");
 
         this.prompt = AnsiColors.translate(prompt);
+        if (!this.active.get()) return;
+
         this.lineReader.setPrompt(this.prompt);
         update();
     }
