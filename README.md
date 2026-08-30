@@ -47,11 +47,15 @@ full diagram with class names at each stage.
 | ├─ `cloud-driver-extensions-terminal` | Registers the real `Command` catalog (`exit`, `help`, `extensions`, `about`, `dispatch`, ...) on the terminal engine and starts its reading loop. | [README](cloud-driver-extensions/cloud-driver-extensions-terminal/README.md) |
 | ├─ `cloud-driver-extensions-backup` | Keyset-paginated, streaming Postgres backup job, purpose-built for 150-200GB-class tables. | [README](cloud-driver-extensions/cloud-driver-extensions-backup/README.md) |
 | └─ `cloud-driver-extensions-rest` | Stands up the JWT-authenticated `RestFactory` (login, e-mail-verified self-registration, per-user `CloudUser` data, per-user file upload/list/delete) over Javalin. | [README](cloud-driver-extensions/cloud-driver-extensions-rest/README.md) |
+| `cloud-driver-platform` | Parent aggregator (no source of its own) for the **client-side** modules - code that talks to a running server purely over its REST API. Sibling to `cloud-driver-extensions`, not a submodule of it; sits entirely outside the `api`/`auth`/`plugin`/`bootstrap` server-side dependency chain. | [`cloud-driver-platform/README.md`](cloud-driver-platform/README.md) |
+| ├─ `cloud-driver-platform-rest` | Dependency-free (of any other module in this repo) REST API client library: `ApiClient`, `SessionManager`, `Dtos`, OS-specific `TokenStore` implementations. | [README](cloud-driver-platform/cloud-driver-platform-rest/README.md) |
+| └─ `cloud-driver-platform-app` | JavaFX desktop client built on top of `cloud-driver-platform-rest` - register, login, list/upload/delete files. | [README](cloud-driver-platform/cloud-driver-platform-app/README.md) |
 
 Dependency direction is one-way: `api` ← `auth` ← `plugin` ← `bootstrap`/`extensions-*`
 (`bootstrap` and `plugin` both also depend on `auth` directly, not just transitively). Never add a
 dependency from `cloud-driver-api` back onto `cloud-driver-auth`/`cloud-driver-plugin`, or from
-`cloud-driver-auth` onto `cloud-driver-plugin`.
+`cloud-driver-auth` onto `cloud-driver-plugin`. `cloud-driver-platform-rest`/`cloud-driver-platform-app`
+sit outside this chain entirely - neither depends on any server-side module, only on their own sibling.
 
 `cloud-driver-extensions-web` is **not** a current module - the directory still exists on disk
 with empty `src/` trees but no `pom.xml` and no entry in the aggregator's `<modules>`, so Maven
@@ -81,7 +85,7 @@ Two gitignored files under a `cloud-driver/` directory (`Constraints.CONFIGURATI
 subdirectory of the JVM's working directory - not to be confused with this repository's own root
 directory, which happens to share the name) hold everything environment-specific:
 `postgres-database.json` (live database `Credentials`) and `configuration.json`
-(`"jwt-signing-key"`, `"rest-api-bind-host"`, `"rest-server-port"`, `"smtp-host"`/`"smtp-port"`/
+(`"jwt-signing-key"`, `"rest-server-bind-host"`, `"rest-server-port"`, `"smtp-host"`/`"smtp-port"`/
 `"smtp-username"`/`"smtp-password"`/`"smtp-from-address"`, ...). Never commit real values found
 there. `cloud-driver-bootstrap`'s README documents exactly what reads from each file.
 
@@ -179,9 +183,12 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
   authenticated instance additionally scopes any `Owned`-implementing entity type to its caller:
   writes have their `ownerId` overwritten server-side (spoofing is a no-op), and reads 404 rather
   than 403 on a record the caller doesn't own, to avoid confirming its existence at all.
-- **No public self-registration endpoint anywhere in this codebase.** The only way to create an
-  `AuthUser` account is `cloud-driver-bootstrap`'s `CreateUserCli`, an operator-run CLI that reads
-  a password from a real interactive console and never accepts one as a command-line argument.
+- **Self-registration is opt-in and e-mail-verified, not silently open.** `POST /auth/register`
+  (mounted by `cloud-driver-extensions-rest`'s JWT-gated `DefaultRestFactory`) only e-mails a
+  time-limited (10-minute) numeric verification code via `AuthService#register`; the `AuthUser`
+  account itself is created only once `POST /auth/register/confirm` supplies the matching code.
+  There is no operator-run account-creation CLI anymore - the earlier `CreateUserCli`/`LoginSample`
+  tools were deleted once this two-step HTTP flow covered the same job.
 
 ## Scalability
 

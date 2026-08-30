@@ -17,8 +17,14 @@ java -jar cloud-driver-bootstrap-1.0.1.jar
 ```
 
 Depends on `cloud-driver-plugin` (every concrete implementation this module wires together) and
-`cloud-driver-auth` directly (not just transitively - `CreateUserCli`/`LoginSample` import its
-classes to construct an `AuthService` themselves).
+`cloud-driver-auth` directly (not just transitively - declared explicitly on this module's own
+`pom.xml` since account creation/login now happens exclusively over HTTP, through
+`cloud-driver-extensions-rest`'s `CloudRestExtension`, which itself constructs an `AuthService`
+from `cloud-driver-auth` types).
+
+Dependency chain this module sits at the end of: `cloud-driver-api` ← `cloud-driver-auth` ←
+`cloud-driver-plugin` ← `cloud-driver-bootstrap`. Nothing in this repo depends on
+`cloud-driver-bootstrap` - it is the runnable end of the chain, not a library.
 
 ## Structure
 
@@ -48,9 +54,8 @@ public static void main(String[] args) throws IOException {
 }
 ```
 
-- **`initiateCloudDriver()`** (package-private, not `public` - reused by `CreateUserCli`/
-  `LoginSample` for the same wiring without pulling in the rest of `main`'s subsystem startup)
-  resolves `Credentials` from `Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")`,
+- **`initiateCloudDriver()`** (package-private, not `public`, since nothing outside this package
+  needs it) resolves `Credentials` from `Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")`,
   registers a Postgres `DatabaseProvider`, builds a `DatabaseKeyEncryptionService`/
   `EnvelopeEncryptionService` backed by a `"kek"` database section, and installs the `CloudDriver`
   singleton via `DefaultCloudDriver.setInstance`.
@@ -75,14 +80,12 @@ public static void main(String[] args) throws IOException {
 - **`prepareShutdownLatch(Runnable... tasks)`** collects every returned shutdown action into one
   list and wires a single `Runtime.addShutdownHook` that runs all of them (so an in-flight flush
   isn't cut off mid-upload by an abrupt kill) before counting down the shared latch `main` awaits.
-- **`loadSecurityRequirements()`** uploads `architecture/SECURITY_REQUIREMENTS.md` as a
-  `StoredFile` under a fixed id (`Constraints.REQUIREMENTS_UUID`), if not already present -
-  guarantees the `storedfile` table exists before any extension (e.g. a Postgres
-  change-notification watcher) tries to watch it. Runs synchronously, before any subsystem
-  starts.
-- **`loadDummyFileUpload()`** is a ready-made manual smoke-test upload of the repo's own root
-  `pom.xml` under a fresh random id - currently **not called** from `main`'s `runnable[]`
-  sequence or anywhere else; kept as a one-off to invoke ad hoc rather than deleted.
+- **`loadSecurityRequirements()`** uploads a placeholder `StoredFile` (`"init.txt"`, empty
+  content) under a fixed id (`Constraints.REQUIREMENTS_UUID`), if not already present -
+  guarantees the `storedfile` table exists before `startExtensionsBootstrapScheduler` starts
+  `cloud-driver-extensions-watcher`'s `CloudWatcherExtension`, which watches that table for
+  change notifications and would otherwise try to install a trigger on a table that doesn't
+  exist yet. Runs synchronously, before any subsystem starts.
 
 ### `CloudBootstrapExtension`
 
@@ -91,24 +94,15 @@ the name `"cloud-driver-bootstrap"` (from its `extension.json`) purely so other 
 declare a dependency on the host bootstrap via `ExtensionFactory`'s ordinary dependency-ordering
 mechanism (`extension.json`'s `dependencies` list). All four lifecycle hooks are empty.
 
-### `CreateUserCli`/`LoginSample` - operator-run account tools
+### Account creation/login - no CLI, HTTP only
 
-Both live under `src/test` (the repo's "runnable worked example with a `main` method, not an
-`mvn test` target" convention) but are real, hand-run tools, not disposable samples:
-
-- **`CreateUserCli`** (`java -cp cloud-driver-bootstrap-*.jar de.lino.cloud.bootstrap.CreateUserCli <email>`)
-  reuses `CloudBootstrap.initiateCloudDriver()` for the same Postgres/key-service wiring `main`
-  itself uses, reads a password via `System.console().readPassword(...)`, constructs an
-  `Argon2idPasswordHasher` + `JjwtSigner` (keyed from `configuration.json`'s `"jwt-signing-key"`)
-  + `AuthService`, calls `register` then immediately `login`, and prints the resulting JWT - one
-  run produces both a working account and a token ready to test against a JWT-gated route.
-  Deliberately **not** a public HTTP endpoint - see `cloud-driver-auth`'s README for why.
-- **`LoginSample`** is the same shape minus the `register` call - obtains a **fresh** token for
-  an account that already exists (e.g. once a previous token has expired), without recreating it.
-
-Both require a real, interactive terminal (`System.console()` returns `null` in an IDE's Run tool
-window or a piped/non-interactive process, matching the same restriction the `terminal` package's
-`jline`-based `Terminal` has) and zero the password `char[]` in a `finally` block once used.
+There is no operator-run CLI for creating or logging in accounts in this module -
+`find cloud-driver-bootstrap -name '*.java'` returns only `CloudBootstrap.java`/
+`CloudBootstrapExtension.java`. An earlier `CreateUserCli`/`LoginSample` pair (both under
+`src/test`) has been removed: `POST /auth/register` + `POST /auth/register/confirm` (self-service,
+e-mail-verified signup) and `POST /auth/login`, both mounted by `cloud-driver-extensions-rest`'s
+`CloudRestExtension` once it starts as part of `startExtensionsBootstrapScheduler` above, are now
+the only way to create an account or obtain a JWT.
 
 ### Packaging - the shaded jar
 
@@ -160,18 +154,22 @@ Consequences of this shape for anyone adding a new subsystem:
 - **Never** add another blocking loop (`while(true)`, or otherwise) directly inside `main` - only
   one thread (the real main thread, via the one shared latch) should ever be blocked there.
 
-## Data handling and safety
+## Data handling
+
+The only entity this module itself creates is the placeholder `StoredFile` `loadSecurityRequirements()`
+uploads at startup (see above) - everything else it persists (`AuthUser`, `PendingRegistration`,
+`CloudUser`, `StoredFileOwnership`, user-uploaded `StoredFile`s) flows through `cloud-driver-plugin`/
+`cloud-driver-auth` classes this module only wires together, not code it defines itself.
+
+## Safety & security
 
 - **Live secrets are never inlined in source.** `CloudBootstrap.main`/`initiateCloudDriver()`
   resolves Postgres credentials from `Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")`
-  at runtime; the JWT signing key (`CreateUserCli`/`LoginSample`, and
-  `cloud-driver-extensions-rest`'s `CloudRestExtension`) comes from the `"jwt-signing-key"` field
-  of a sibling `configuration.json` in the same directory. Both files live under
-  `Constraints.CONFIGURATION_PATH` (a `cloud-driver` subdirectory of the JVM's working
-  directory), which is gitignored - never commit real credentials found there.
-- **`CreateUserCli`/`LoginSample` never accept a password as a CLI argument.** Both read it via
-  `System.console().readPassword(...)`, so it never lands in shell history or a process listing
-  (`ps`), and both zero the password `char[]` in a `finally` block once it's no longer needed.
+  at runtime; the JWT signing key (read by `cloud-driver-extensions-rest`'s `CloudRestExtension`,
+  not by this module) comes from the `"jwt-signing-key"` field of a sibling `configuration.json`
+  in the same directory. Both files live under `Constraints.CONFIGURATION_PATH` (a `cloud-driver`
+  subdirectory of the JVM's working directory), which is gitignored - never commit real
+  credentials found there.
 - **The KEK (key-encryption key) is itself persisted through the same database**, via
   `DatabaseKeyEncryptionService` backed by a `"kek"` `DatabaseSection` - shared across every
   process talking to the same Postgres instance, rather than bound to one machine's filesystem
@@ -194,11 +192,21 @@ does scale with the *number of extensions* dropped into `Constraints.EXTENSIONS_
 this module's findings list (produced alongside this documentation pass) for a concrete note on
 that loop's current blocking-dispatch behavior.
 
+## API surface
+
+This module produces a runnable jar, not a library - nothing else in the repo depends on it. Its
+public surface is effectively just the entry point:
+
+- **`CloudBootstrap`** - `public static void main(String[] args)`, the shaded jar's `Main-Class`.
+  No other public members.
+- **`CloudBootstrapExtension`** - a no-op `Extension` subclass other extensions declare an
+  `extension.json` dependency on (`"cloud-driver-bootstrap"`) to require the host bootstrap be
+  present before they start.
+
 ## Javadoc conventions
 
-Every public/protected class, method, and field in this module now carries Google-style Javadoc:
-a short summary fragment ending in a period, a blank line, then `@param`/`@return`/`@throws` as
-applicable - including `CreateUserCli`/`LoginSample`'s `main` methods, documented here as real
-worked examples rather than left bare. The same conventions used throughout the rest of this
-codebase apply: Lombok's `@NonNull` on concrete method parameters, `this.field` (never a bare
-`field`) for instance-variable access.
+Every public/protected class, method, and field in this module carries Google-style Javadoc: a
+short summary fragment ending in a period, a blank line, then `@param`/`@return`/`@throws` as
+applicable. The same conventions used throughout the rest of this codebase apply: Lombok's
+`@NonNull` on concrete method parameters, `this.field` (never a bare `field`) for instance-variable
+access.

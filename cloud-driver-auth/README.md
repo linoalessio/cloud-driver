@@ -151,8 +151,11 @@ files to every other logged-in user:
   `Owned` entities only overwrites a JSON `"ownerId"` property, but `CloudUser`'s Gson field is
   named `"authUserId"`, so that protection is a no-op for this type; only `RestFactory#fetch` is
   ever mounted for it. `getStoredFiles()` is a convenience accessor that resolves
-  `CloudDriver.getInstance().getFactoryContainer().getRestFactory().getCloudUserService()` and
-  delegates to `listFiles` on demand - it holds no file list as state on the entity itself.
+  `CloudDriver.getInstance().getServiceContainer().getCloudUserService()` and
+  delegates to `listFiles` on demand - it holds no file list as state on the entity itself. (An
+  earlier revision of this wiring read `getCloudUserService()` off the *unauthenticated*
+  `getFactoryContainer().getRestFactory()` instead, which is always `null` there - a fixed bug,
+  not a design choice; see `IServiceContainer`'s own Javadoc in `cloud-driver-api`.)
 - **`StoredFileOwnership`** - one row per (user, file) pair, primary-keyed on
   `authUserId + ":" + storedFileId` (safe to concatenate unquoted since `storedFileId` is always
   a random UUID). Replaces an earlier design where `CloudUser` embedded every owned file id in
@@ -229,10 +232,12 @@ are thin orchestration on top. Two things worth knowing:
 - **`ApiKey`/`X-API-Key` auth and this module's JWT auth are never combined** on one
   `DefaultRestFactory` instance (see `cloud-driver-plugin`'s docs) - a deployment picks one
   mechanism per REST server instance.
-- **No public self-registration endpoint.** `AuthService#register` is not wired to any HTTP
-  route anywhere in this codebase today; the only way to create an account is
-  `cloud-driver-bootstrap`'s `CreateUserCli`, an operator-run CLI that reads the password from a
-  real interactive console, never a command-line argument.
+- **Self-registration is open and public, deliberately.** `POST /auth/register`/
+  `POST /auth/register/confirm` (mounted by `cloud-driver-plugin`'s `DefaultRestFactory(DataFactory,
+  AuthService, ...)` whenever it's constructed with an `AuthService`) are this deployment's only
+  way to create an `AuthUser` account - there is no separate operator-run account-creation tool.
+  An earlier `cloud-driver-bootstrap`-side `CreateUserCli`/`LoginSample` pair has since been
+  removed now that these two HTTP routes cover the same job.
 
 ## Scalability
 

@@ -125,6 +125,34 @@ Reading reverses every step: `EntityDatabaseClient.retrieve()` (cache miss) pull
 
 Extension code normally only ever touches the top of this stack (`CloudDriver.getInstance().getDataFactory()`/`.getFileFactory()`); everything else here exists so that call can be made safely and efficiently.
 
+## API usage
+
+This module's own entry point is `DefaultCloudDriver.setInstance(...)` - everything else
+(`DataFactory`, `FileFactory`, ...) is then reached back through `cloud-driver-api`'s `CloudDriver`
+facade, never through a `de.lino.cloud.plugin` type directly:
+
+```java
+import de.lino.cloud.plugin.DefaultCloudDriver;
+import de.lino.cloud.plugin.security.keys.InMemoryKeyEncryptionService;
+import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
+import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.DatabaseType;
+import de.lino.database.database.Credentials;
+
+// A throwaway local JSON-file-based DatabaseProvider - no external database needed for this sample.
+DatabaseProvider databaseProvider = DatabaseProvider.create(DatabaseType.JSON, credentials);
+EnvelopeEncryptionService envelopeEncryptionService =
+        new EnvelopeEncryptionService(new InMemoryKeyEncryptionService()); // KEK lost on restart - dev only
+
+CloudDriver cloudDriver = DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
+
+cloudDriver.getFactoryContainer().getDataFactory().register(new CustomerRecord(42, "DE00..."));
+CustomerRecord fetched = cloudDriver.getFactoryContainer().getDataFactory()
+        .fetch("42", CustomerRecord.class); // decrypted transparently on the way back out
+
+cloudDriver.shutdown(); // idempotent, tears down every facet this instance owns
+```
+
 ## Worked examples (`src/test`)
 
 Runnable `main`-method samples, not `mvn test` targets (see the root `CLAUDE.md`'s "Build" section for this repo-wide convention):

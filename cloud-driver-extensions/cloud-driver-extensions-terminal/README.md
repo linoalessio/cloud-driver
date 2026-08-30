@@ -2,6 +2,18 @@
 
 Registers `Command` implementations on the host `CloudDriver`'s `jline`-based interactive `Terminal` and starts its reading loop - the first, and currently only, real consumer of `cloud-driver-api`'s `terminal` package (`de.lino.cloud.api.terminal`). Without this extension (or something equivalent), a `Terminal` is constructed and receives log output, but never actually reads a line of input, no matter how many `Command`s exist elsewhere.
 
+## Project structure
+
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling
+of `cloud-driver-extensions-backup`/`-rest`/`-watcher`. Its `pom.xml` declares exactly one in-repo
+dependency, `cloud-driver-api` - notably **not** `cloud-driver-plugin`, unlike the other three
+extension modules: every type this module touches beyond the `terminal` package itself
+(`ICloudUserService`, `IAuthService`, `FileFactory`, `ExtensionFactory`) is a `cloud-driver-api`
+contract, reached via `CloudDriver.getInstance().getFactoryContainer()`/`getServiceContainer()`,
+so it never needs a concrete `cloud-driver-plugin`/`cloud-driver-auth` type at compile time.
+Package: `de.lino.cloud.extensions.terminal` (the extension itself) plus
+`de.lino.cloud.extensions.terminal.command` (one class per `Command`).
+
 ## Why this exists
 
 `cloud-driver-api`'s `terminal` package deliberately implements the engine only - `Command`/`CommandService` exist so the reading loop has something to dispatch into, not as a catalog of real commands. This module is that catalog: an operator console for a running `cloud-driver-bootstrap` process (or anything else hosting a `CloudDriver`), with commands to inspect/start/stop extensions, shut the process down, run an arbitrary shell command, and detach the `screen` session the process typically runs inside.
@@ -60,6 +72,27 @@ Depends only on `"cloud-driver-bootstrap"` being registered and `RUNNING` first.
 ## Scalability
 
 This module has no meaningful data-volume scalability dimension of its own - it's an interactive, single-operator console, not a component processing bulk data. Its only genuine scaling concern is command-dispatch latency, already addressed by dispatching every command on a virtual thread rather than the reading thread (see above).
+
+## API usage
+
+This module exposes no library API - `CloudTerminalExtension` and its `Command`s are loaded as a
+jar dropped into `Constraints.EXTENSIONS_PATH` (or picked up the same way by
+`shell/test-bootstrap.sh`), not called directly from Java. Build it alongside a bootstrap jar
+built from the same commit:
+
+```
+mvn -pl cloud-driver-extensions/cloud-driver-extensions-terminal -am package
+```
+
+Once registered, its commands are typed directly into the operator terminal the host process
+opens - no code sample applies. To add a new command, implement `Command`
+(`de.lino.cloud.api.terminal.service`) and register it the same way `CloudTerminalExtension`
+registers the seven above:
+
+```java
+CommandService commandService = this.cloudDriver().getTerminal().getCommandService();
+commandService.register(new MyCommand());
+```
 
 ## Javadoc conventions
 

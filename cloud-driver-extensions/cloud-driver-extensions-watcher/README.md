@@ -2,6 +2,17 @@
 
 Wraps Postgres change-notification (`LISTEN`/`NOTIFY`) as an `Extension` - push, not poll, notice of every write to `StoredFile`'s table, from any process, routed into `cloud-driver`'s own `event` framework. This logic used to live directly inside `cloud-driver-bootstrap` (`CloudBootstrap.startDatabaseChangeNotifier`); it was pulled out into its own extension so the host application doesn't have to hardcode a Postgres-specific subsystem as one of its bespoke `startX()` methods.
 
+## Project structure
+
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling
+of `cloud-driver-extensions-backup`/`-rest`/`-terminal`. Its `pom.xml` declares two in-repo/vendor
+dependencies: `cloud-driver-api` (for `Extension`/`DatabaseWatchEvent`) and, unusually among the
+extension modules, a **direct** dependency on `database-driver-plugin` (not just `cloud-driver-api`/
+`-plugin`) - needed because `PostgresDatabaseNotification` (the actual `LISTEN`/`NOTIFY` mechanics
+this module wires up) lives in that upstream artifact, not anywhere in this repo. It does **not**
+depend on `cloud-driver-plugin` at all. Package: `de.lino.cloud.extensions.watcher` (one class,
+`CloudWatcherExtension`).
+
 ## Why this exists
 
 `EntityDatabaseClient` (`cloud-driver-plugin`) caches each entity type's `DatabaseSection` in process-local memory once it's first resolved - reads never go back to the database on their own. That means a row written by a *different* process (a laptop uploading a file straight to the same shared Postgres instance a deployed server is also connected to) is invisible to the server's own `findById`/`getEntities` indefinitely, not just for a cache TTL, until something calls `DataFactory#reload(type)` or the process restarts. This extension is that "something": it listens for Postgres's own `NOTIFY` on every `INSERT`/`UPDATE` against `StoredFile`'s table and reacts to each one by reloading that section before re-fetching the row.
@@ -46,6 +57,24 @@ Registering this extension therefore requires `"cloud-driver-bootstrap"` (the ho
 ## Scalability
 
 Push-based notification scales far better than any poll-based alternative would: no wasted round-trips when nothing has changed, and latency is bounded only by network/Postgres notification delivery rather than a poll interval. The one structural limit is the dedicated, always-open listener connection this class holds for as long as it runs - a single connection regardless of how many rows are written, so this does not compete with normal query traffic for pool capacity the way a poll-based approach hammering the same pool would.
+
+## API usage
+
+This module exposes no library API - `CloudWatcherExtension` is loaded as a jar dropped into
+`Constraints.EXTENSIONS_PATH` (or picked up the same way by `shell/test-bootstrap.sh`), not
+called directly from Java. Build it alongside a bootstrap jar built from the same commit:
+
+```
+mvn -pl cloud-driver-extensions/cloud-driver-extensions-watcher -am package
+```
+
+To react to the change notifications it dispatches from another extension, register a handler
+for `DatabaseWatchEvent` the same way `CloudBootstrap`'s own `startEventScheduler` does:
+
+```java
+CloudDriver.getInstance().getFactoryContainer().getEventFactory()
+        .registerEventAsync(DatabaseWatchEvent.class);
+```
 
 ## Javadoc conventions
 

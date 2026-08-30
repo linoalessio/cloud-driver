@@ -4,6 +4,24 @@ Hosts the JWT-authenticated `RestFactory` - as of this writing, the actual place
 
 **Note on staleness:** the root `CLAUDE.md` flags its own "RestFactory"/"JWT authentication" sections covering this extension as "stale, not yet fully re-verified" as of a later refactor (the `FactoryContainer`/`getConfiguration()` additions). This README was written by reading the actual current source (`CloudRestExtension`, `DefaultRestFactory`, `CloudUserService`, `AuthService`) directly rather than trusting that document, but re-verify against source again if it drifts further.
 
+## Project structure
+
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling
+of `cloud-driver-extensions-backup`/`-terminal`/`-watcher`. Its `pom.xml` declares exactly one
+in-repo dependency, `cloud-driver-plugin` - `cloud-driver-auth` (needed for `AuthService`/
+`CloudUserService`/`JjwtSigner`/`Argon2idPasswordHasher`'s contracts) arrives transitively through
+it, not as a direct declaration. Its `<groupId>` (`de.lino.cloud.extensions.web`) and single Java
+package (`de.lino.cloud.extensions.rest`) disagree - a leftover from before this functionality
+moved out of the now-removed `cloud-driver-extensions-web` module (see "`extension.json`" note
+above); harmless for the reactor build, just a stale coordinate.
+
+## API surface
+
+- **`CloudRestExtension`** (`de.lino.cloud.extensions.rest`) - the only public class this module
+  declares. `onLoading`/`onRunning`/`onEnding`/`onException` are the `Extension` lifecycle hooks;
+  everything else (`startRestApi`, `buildEmailSender`, `configString`) is a private implementation
+  detail of wiring up the JWT-gated `DefaultRestFactory` described above.
+
 ## Why this exists
 
 `RestFactory` (`cloud-driver-api`) is a thin, Javalin-free contract; `DefaultRestFactory` (`cloud-driver-plugin`) is its one implementation, with three constructors - unauthenticated, static-API-key-gated, and JWT-gated. `CloudDriver.getInstance().getRestFactory()` is always wired to the unauthenticated constructor (local development / trusted-network use only). This extension is what actually stands up the JWT-gated variant for real end-user clients (iOS/web/macOS), which authenticate with a username+password-derived JWT rather than holding a static key.
@@ -29,7 +47,7 @@ Note also: this module's `pom.xml` currently declares `<groupId>de.lino.cloud.ex
 `CloudRestExtension#onLoading` reads `"rest-server-port"` from `configuration.json` and calls its own `startRestApi()`, which:
 
 1. Reads `"jwt-signing-key"` from `configuration.json` - if blank, logs a warning and returns **without starting the server**, leaving every other subsystem (terminal, other extensions, pending-upload scheduler) unaffected. This mirrors `CloudBootstrap`'s original `startRestApi` behavior of not hard-failing the whole process over a missing signing key.
-2. Reads `"rest-api-bind-host"` (falling back to `0.0.0.0` if blank/absent) - a production deployment fronted by a TLS-terminating reverse proxy should set this to `127.0.0.1` so the plain-HTTP Javalin listener is only reachable from the proxy, never directly from the internet.
+2. Reads `"rest-server-bind-host"` (falling back to `0.0.0.0` if blank/absent) - a production deployment fronted by a TLS-terminating reverse proxy should set this to `127.0.0.1` so the plain-HTTP Javalin listener is only reachable from the proxy, never directly from the internet.
 3. Builds `Argon2idPasswordHasher` + `JjwtSigner` + an `EmailSender` (see below) + `AuthService` + `CloudUserService`, then constructs `new DefaultRestFactory(dataFactory, authService, cloudUserService)`.
 4. Mounts `restFactory.fetch("/cloudUsers", CloudUser.class)` - **and nothing else generic** - then calls `restFactory.start(bindHost, port)`.
 
@@ -64,6 +82,31 @@ The JWT-gated `DefaultRestFactory` constructor itself (not this extension) is wh
 ## Scalability
 
 The unbounded `listFiles` scan (above) is this module's one identified scaling limit as the total number of `StoredFileOwnership` rows across all users grows; every other path here scales with the caller's own request rate, not with total system size, thanks to the future-based Javalin wiring and O(1) per-file ownership operations.
+
+## API usage
+
+This module exposes no library API - `CloudRestExtension` is loaded as a jar dropped into
+`Constraints.EXTENSIONS_PATH` (or picked up the same way by `shell/test-bootstrap.sh`), not
+called directly from Java. Build it alongside a bootstrap jar built from the same commit:
+
+```
+mvn -pl cloud-driver-extensions/cloud-driver-extensions-rest -am package
+```
+
+Once registered and running, a client talks to it purely over HTTP - see
+`cloud-driver-platform-rest`'s `ApiClient` for a full Java HTTP client built against these exact
+routes, or call them directly:
+
+```
+curl -X POST https://api.cloud-driver.de/auth/register \
+     -H "Content-Type: application/json" \
+     -d '{"username":"user@example.com","password":"correct horse battery staple"}'
+# -> 202 Accepted, {"message": "..."}; check your inbox for the 6-digit code, then:
+curl -X POST https://api.cloud-driver.de/auth/register/confirm \
+     -H "Content-Type: application/json" \
+     -d '{"username":"user@example.com","code":"123456"}'
+# -> 201 Created, {"token": "<jwt>"}
+```
 
 ## Javadoc conventions
 

@@ -6,6 +6,17 @@ Wraps `DatabaseBackupScheduler`, a keyset-paginated, streaming Postgres backup j
 
 A naive backup built on `SQLExecution#executeQuery` (a plain parameterized query helper, with no JDBC fetch-size/cursor configured) would have the Postgres driver load an entire `SELECT * FROM table` into client memory before processing even the first row - a guaranteed `OutOfMemoryError` at this data scale. Rather than modifying `SQLExecution` itself (an upstream `database-driver` class), this module works around the limitation entirely at the call site, via keyset pagination.
 
+## Project structure
+
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), itself a
+top-level sibling of `cloud-driver-api`/`cloud-driver-auth`/`cloud-driver-plugin`/
+`cloud-driver-bootstrap`. This module's own `pom.xml` declares exactly one in-repo dependency,
+`cloud-driver-plugin` - it does not depend on `cloud-driver-bootstrap`/`cloud-driver-auth`
+directly, even though its `extension.json` declares a *runtime* dependency on
+`"cloud-driver-bootstrap"` (an `ExtensionFactory` startup-ordering constraint, not a Maven
+dependency - see below). Package: `de.lino.cloud.extensions` (both classes below live directly in
+it, no further sub-packages).
+
 ## `extension.json`
 
 ```json
@@ -45,6 +56,31 @@ Depends only on `"cloud-driver-bootstrap"` being registered and `RUNNING` first.
 ## Scalability
 
 Purpose-built for the 150-200GB-per-table regime described in its own class Javadoc: memory use per table export is bounded to one page (`batchSize` rows) regardless of table size, and the class is explicit that `listTables()` deliberately goes through `SQLExecution` directly rather than `DatabaseProvider`/`SQLDatabaseSection`, since the latter load an entire table into an in-memory cache on section creation - exactly the problem this class exists to avoid. Currently tailored to PostgreSQL only (`information_schema.tables`); supporting another SQL dialect would mean extending `listTables()` with that dialect's equivalent query.
+
+## API usage
+
+This module exposes no library API of its own - it is loaded as a jar dropped into
+`Constraints.EXTENSIONS_PATH` (or built as part of the reactor and picked up the same way by
+`shell/test-bootstrap.sh`), not called directly from Java. Build it and drop it alongside a
+bootstrap jar built from the same commit:
+
+```
+mvn -pl cloud-driver-extensions/cloud-driver-extensions-backup -am package
+```
+
+`CloudBackupExtension` is registered automatically once its jar sits in the scanned folder - no
+code wiring is needed. To use `DatabaseBackupScheduler` directly instead (e.g. from another
+extension or a standalone tool), construct and start it the same way `CloudBackupExtension` does:
+
+```java
+Credentials credentials = Credentials.of(Constraints.CONFIGURATION_PATH.resolve("postgres-database.json"))
+        .orElseThrow();
+
+DatabaseBackupScheduler scheduler = new DatabaseBackupScheduler(
+        credentials, Constraints.CONFIGURATION_PATH.resolve("backup")
+);
+scheduler.start();
+```
 
 ## Javadoc conventions
 

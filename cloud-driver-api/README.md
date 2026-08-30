@@ -10,7 +10,7 @@ The cryptographic design follows `../architecture/SECURITY_REQUIREMENTS.md` (bun
 <dependency>
     <groupId>de.lino.cloud.api</groupId>
     <artifactId>cloud-driver-api</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
@@ -20,7 +20,7 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 <dependency>
     <groupId>de.lino.cloud.plugin</groupId>
     <artifactId>cloud-driver-plugin</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
@@ -80,6 +80,7 @@ public abstract class CloudDriver {
     public final Logger getLogger();                  // lazily-created, process-wide logger
     public abstract ConnectivityChecker getConnectivityChecker();
     public abstract IFactoryContainer getFactoryContainer();
+    public abstract IServiceContainer getServiceContainer();
     public abstract Terminal getTerminal();
     public abstract void shutdown();
     public JsonDocument getConfiguration();            // re-reads configuration.json fresh every call
@@ -87,6 +88,7 @@ public abstract class CloudDriver {
 ```
 
 - **`getFactoryContainer()`** - returns the `IFactoryContainer` (`de.lino.cloud.api.factory.container`) this instance was constructed with: `getDataFactory()`, `getFileFactory()`, `getExtensionFactory()`, `getEventFactory()`, `getRestFactory()`. Every one of the five facets described below is reached through this container, not directly off `CloudDriver`.
+- **`getServiceContainer()`** - returns the `IServiceContainer` (`de.lino.cloud.api.factory.service`) bundling `getCloudUserService()`/`getAuthService()` (see [The `user` package](#the-user-package-end-user--owned-file-bookkeeping)). Unlike `IFactoryContainer`, this one may start out holding `null` accessors - the concrete `AuthService`/`ICloudUserService` instances are only published into it once the JWT-gated REST extension actually runs (see that constructor's own bullet below); a caller reached before/without it must null-check.
 - **`getConnectivityChecker()`** - reports whether outbound network connectivity is currently available. See [Offline-safe file uploads](#offline-safe-file-uploads).
 - **`getTerminal()`** - the interactive `jline`-based console (see [The `terminal` package](#the-terminal-package)), independent of whether `CloudDriver.getInstance()` is even set up for anything else.
 - **`getConfiguration()`** - loads (fresh, not cached) `Constraints.CONFIGURATION_PATH.resolve("configuration.json")` - local deployment settings such as `"rest-api-port"`, `"rest-api-bind-host"`, `"jwt-signing-key"`.
@@ -104,7 +106,7 @@ CustomerRecord recovered = cloudDriver.getFactoryContainer().getDataFactory().fe
 CloudDriver.getInstance().getFactoryContainer().getDataFactory().fetch("42", CustomerRecord.class);
 ```
 
-A complete, runnable worked example (`DataFactory` and `FileFactory`, in one `main` method, against the JSON file-based `DatabaseProvider` - needs no external database) lives at `cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/CloudDriverUsageSample.java`. `ExtensionFactory` has its own sample (see [below](#the-extension-framework)); `EventFactory` and `RestFactory` currently have none.
+**As of this writing, no dedicated `DataFactory`/`FileFactory` worked example exists in this repo** - a `CloudDriverUsageSample.java` this section previously pointed to is not currently on disk (re-verify with `find . -name CloudDriverUsageSample.java` before pointing anyone at that path). `RestFactory` has two real samples (`cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/RestFactorySample.java`/`RestFactoryCloudUserSample.java`, see [below](#restfactory---rest-exposure-over-datafactory)), both of which exercise `DataFactory`/`FileFactory` indirectly through `RestFactory`'s route handlers; `ExtensionFactory` has its own sample (see [below](#the-extension-framework)); `EventFactory` currently has none.
 
 ## `IFactoryContainer` / `IServiceContainer` - the two facet bundles
 
@@ -270,7 +272,7 @@ extensionFactory.startAllAsync(args);
 
 `start` runs each extension on its own dedicated, named (`"extension-" + name`), daemon `Thread` - never on the shared virtual-thread pool, since `onRunning` may block indefinitely - and tracks it in a `ConcurrentHashMap` keyed by extension name so `stop` can later `interrupt()` it. A `RuntimeException` from `onLoading`/`onRunning` is caught, the extension's status is set to `ExtensionStatus.ERROR`, and it's routed to that extension's own `onException` rather than aborting the rest of `startAll`; `stopAll` isolates per-extension `onEnding()` failures the same way. `ExtensionProperties` tracks a `volatile` lifecycle `ExtensionStatus` (`LOADING`/`RUNNING`/`ENDING`/`ERROR`) that `ExtensionFactory` updates as it drives an extension through its lifecycle.
 
-A worked example lives at `cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/ExtensionUsageSample.java` (with its `extension.json` under `cloud-driver-plugin/src/test/resources/`) - it lives in `cloud-driver-plugin`, not here, because `Extension`'s constructor needs a real `CloudDriver` implementation to exist.
+**As of this writing, no dedicated `ExtensionFactory` worked example exists in this repo** - an `ExtensionUsageSample.java` this section previously pointed to (`cloud-driver-plugin/src/test/java/de/lino/cloud/plugin/sample/`) is not currently on disk; that module's `src/test` today holds only `RestFactorySample.java`/`RestFactoryCloudUserSample.java`/`Note.java` (re-verify with `find . -path '*/sample/*' -name '*.java'` before pointing anyone at a specific path). Such a sample would need to live in `cloud-driver-plugin`, not here, since `Extension`'s constructor needs a real `CloudDriver` implementation to exist.
 
 ## The event framework
 
@@ -371,7 +373,7 @@ Registration is a two-step, e-mail-verified flow, not a single call: `register` 
 
 ### The `user` package - end-user <-> owned-file bookkeeping
 
-- **`ICloudUser`** (`de.lino.cloud.api.user`) - the behavioral contract a persisted per-user record (`CloudUser`, in `cloud-driver-auth`'s `de.lino.cloud.auth.entity` package) implements: one method, `getAuthUserId()`, tying the record back to its owning `AuthUser`. File ownership is deliberately *not* part of this contract - it is tracked through dedicated per-(user, file) records instead (`StoredFileOwnership`, alongside `CloudUser` in `de.lino.cloud.auth.entity`), so adding/removing one owned file never requires decrypting and re-encrypting an entire user record.
+- **`ICloudUser`** (`de.lino.cloud.api.user`) - the behavioral contract a persisted per-user record (`CloudUser`, in `cloud-driver-auth`'s `de.lino.cloud.auth.entity` package) implements: `getAuthUserId()` (ties the record back to its owning `AuthUser`) plus `getStoredFiles()` (an unmodifiable, on-demand-resolved view of every `StoredFile` this user currently owns, delegating to `ICloudUserService#listFiles` rather than holding the list as state on the record itself). File ownership is deliberately *not* modeled as a field on this contract - it is tracked through dedicated per-(user, file) records instead (`StoredFileOwnership`, alongside `CloudUser` in `de.lino.cloud.auth.entity`), so adding/removing one owned file never requires decrypting and re-encrypting an entire user record; `getStoredFiles()` only resolves those records into a snapshot view when called.
 - **`ICloudUserService`** (`de.lino.cloud.api.user`) - `getOrCreate(authUserId)`, `uploadFile(authUserId, fileName, content)`, `listFiles(authUserId)`, `deleteFile(authUserId, storedFileId)`. Every method takes the authenticated caller's plain `authUserId` rather than a full `AuthUser`, since that id is the only thing available once a JWT has been validated. Reached either through `RestFactory#getCloudUserService()` or `IServiceContainer#getCloudUserService()`.
 
 ## The `security` package
@@ -445,6 +447,7 @@ terminal.shutdown();                                  // idempotent; closes the 
 - **`Terminal`** wraps a `jline` `Terminal`/`LineReaderImpl` pair and owns one `CommandService` and one `ReadingThread`, both constructed internally. Requires a real terminal by design (`.dumb(false)`) - construction fails in an IDE's Run/Console tool window, which pipes stdout/stdin rather than allocating a real pty; this is expected, not a bug.
 - **`ReadingThread`** blocks on `LineReader#readLine`, splits each line on whitespace, and dispatches the first token through `CommandService#dispatchAsync` so a slow command never delays the next line being read. Deliberately not a daemon thread, since starting it is typically what keeps the process alive.
 - **`Command`/`CommandService`** - a `Command` is a name, optional aliases, a description, and an `execute(CommandArguments)` action; no typed-argument/syntax DSL. `CommandService` indexes by lowercased name/alias for O(1) lookup and caches an immutable snapshot, rebuilt only on register/unregister.
+- **`TabCompleter`** - a `jline` `Completer` suggesting registered command names/aliases while the first word of the input line is being typed, reusing `CommandService#registeredCommands()`'s own cached snapshot rather than maintaining a second cache.
 - **`AnsiColors`** - legacy Minecraft-style `&x` codes translated to ANSI SGR escape sequences, precomputed once per enum constant and looked up via a map built once at class-initialization time, since this sits on the hot path of every colored log line and prompt redraw.
 - **`TerminalLogHandler`/`TerminalLogFormatter`** - a `java.util.logging.Handler`/`Formatter` pair routing log records through a `Terminal` (colored by level, with a colored recursive stack trace on a thrown exception) instead of a plain console handler. Install via `Terminal#attachLogging(Logger)`.
 - **`PromptProvider`/`DefaultPromptProvider`** - builds the `&x`-coded prompt string a `Terminal` starts with; the default returns a `cloud-driver@<random>` prompt with a fresh suffix every call.
