@@ -8,12 +8,16 @@ import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 
 /**
- * Fired once per extension registered, purely to log a confirmation line.
+ * Fired once per extension registered, purely to print a confirmation line to the terminal.
+ * Dispatched from {@code CloudBootstrap#startExtensionsBootstrapScheduler} for every extension
+ * registered at bootstrap, and from {@code ExtensionCommand}'s {@code start} subcommand for one
+ * registered interactively from the terminal.
  */
 public class ExtensionRegisterEvent extends Event {
 
     /**
-     * Looks the just-registered extension back up by name and logs its name/version.
+     * Looks the just-registered extension back up by name and prints its name/version via
+     * {@link CloudDriver#getTerminal()}'s {@code displayApproved}.
      *
      * @param properties the payload, carrying the registered extension's {@code "extensionName"}
      * @throws java.util.NoSuchElementException if no extension is registered under that name

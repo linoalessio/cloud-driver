@@ -14,10 +14,14 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * Exposes {@link Serialized} domain entities already reachable through a
- * {@link DataFactory} over a REST HTTP API. Unlike {@code DataFactory}/
- * {@code FileFactory}, this has no {@code CloudDriver} facet - its Javalin
- * dependency is exclusive to the implementing module, so a caller
- * constructs a concrete implementation directly.
+ * {@link DataFactory} over a REST HTTP API - reached through {@code
+ * CloudDriver#getFactoryContainer()}'s {@code getRestFactory()} (unauthenticated
+ * by default there; an authenticated instance is constructed directly by a
+ * caller that needs one, e.g. {@code CloudRestExtension}). This class itself
+ * carries no Javalin dependency though - purely {@code DataFactory}/{@link
+ * Serialized}/{@code MultiTaskingFactory}-based - which is exactly why it can
+ * live in {@code cloud-driver-api} despite Javalin only ever appearing in the
+ * {@code cloud-driver-plugin} implementation.
  *
  * <p>{@link #register}, {@link #fetch}, {@link #update}, {@link #delete},
  * {@link #findByPath}, {@link #getRegisteredPaths}, {@link #start}, and
@@ -85,19 +89,40 @@ public abstract class RestFactory {
     @NotNull
     public abstract Optional<Class<? extends Serialized>> findByPath(@NotNull String path);
 
-    /** Every path currently registered under any operation. */
+    /**
+     * Every path currently registered under any operation.
+     *
+     * @return the union of every path registered via {@link #register}, {@link #fetch}, {@link #update}, and {@link #delete}
+     */
     @NotNull
     public abstract Collection<String> getRegisteredPaths();
 
     /**
      * Returns the end-user file-ownership service backing the {@code /files} routes, so a
      * caller mounting those routes can reach the same instance this factory's own handlers use.
+     * The sole implementation, {@code DefaultRestFactory}, only ever holds a non-{@code null}
+     * value here when constructed with one (its three-argument, JWT-authenticated constructor);
+     * every other constructor leaves it {@code null} and mounts no {@code /files} routes at all,
+     * despite the {@code @NonNull} annotation above having no effect on an abstract method with
+     * no body to inject a null-check into.
      *
-     * @return the {@link ICloudUserService}
+     * @return the {@link ICloudUserService}, or {@code null} if this instance mounts no {@code /files} routes
      */
     @NonNull
     public abstract ICloudUserService getCloudUserService();
 
+    /**
+     * Returns the JWT-authentication service backing this factory's own
+     * {@code /auth/login}/{@code /auth/register}/{@code /auth/register/confirm} routes and its
+     * {@code Authorization: Bearer} filter, so a caller mounting additional routes can reach the
+     * same instance those handlers use. The sole implementation, {@code DefaultRestFactory}, only
+     * holds a non-{@code null} value here when constructed with one (its two- or three-argument,
+     * JWT-authenticated constructors); the unauthenticated and {@code ApiKey}-gated constructors
+     * leave it {@code null}, despite the {@code @NonNull} annotation above having no effect on an
+     * abstract method with no body to inject a null-check into.
+     *
+     * @return the {@link IAuthService}, or {@code null} if this instance is not JWT-authenticated
+     */
     @NonNull
     public abstract IAuthService getAuthService();
 
@@ -114,9 +139,10 @@ public abstract class RestFactory {
      * "127.0.0.1"} instead makes the server reachable only from the same
      * machine - the intended shape once a TLS-terminating reverse proxy
      * (e.g. Caddy) sits in front, proxying its own public, HTTPS port to
-     * this one locally. See {@code shell/Caddyfile} and the "Deployment"
-     * section of this repo's `CLAUDE.md` for the reverse-proxy setup this
-     * is meant to be used with in production.
+     * this one locally. See the {@code cloud-driver-platform-app} section of
+     * this repo's {@code CLAUDE.md} for the actual reverse-proxy setup this
+     * is used with in production (configured directly on the deployment
+     * server's own Caddyfile, which is not checked into this repo).
      *
      * @param host the interface to bind to, e.g. {@code "0.0.0.0"} (every interface) or {@code "127.0.0.1"} (loopback only)
      * @param port the port to listen on

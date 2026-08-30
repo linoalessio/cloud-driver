@@ -18,9 +18,17 @@ public class PendingUploadEvent extends Event {
     /**
      * Re-fetches the {@link StoredFile} named by {@code properties}' {@code "fileId"} field,
      * reloading {@link StoredFile}'s section first so the just-flushed row becomes visible. A blank
-     * id is a no-op; a miss after reloading is logged and ignored rather than thrown.
+     * id is a no-op; a miss after reloading is logged and ignored rather than thrown. Dispatched
+     * from {@code PendingUploadScheduler#retryUpload} inside a {@code thenRun} stage whose whole
+     * chain ends in {@code .exceptionally(stillFailing -> null)}, so any exception this method
+     * itself throws - including one sneaky-thrown per the {@code @throws} list below - is silently
+     * swallowed there rather than logged.
      *
      * @param properties the payload, carrying the uploaded file's {@code "fileId"}
+     * @throws de.lino.cloud.api.security.database.DatabaseClientException if the file exists but its record is corrupted - sneaky-thrown by {@code @SneakyThrows}, not declared on this method's signature
+     * @throws de.lino.cloud.api.security.keys.KeyWrapException if the file's data-encryption key cannot be unwrapped by the KMS/HSM - sneaky-thrown
+     * @throws de.lino.cloud.api.security.crypto.AuthenticationFailedException if the retrieved payload fails authentication - sneaky-thrown
+     * @throws de.lino.cloud.api.file.exception.FileIntegrityException if the decrypted content does not match its recorded checksum - sneaky-thrown
      */
     @SneakyThrows
     @Override

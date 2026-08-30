@@ -16,24 +16,30 @@ import lombok.NonNull;
  */
 public class ServiceContainer implements IServiceContainer {
 
+    /** The end-user file-ownership service, {@code null} until {@link #setCloudUserService} publishes one. */
     private volatile ICloudUserService cloudUserService;
+    /** The login/JWT service, {@code null} until {@link #setAuthService} publishes one. */
     private volatile IAuthService authService;
 
+    /** {@inheritDoc} */
     @Override
     public ICloudUserService getCloudUserService() {
         return this.cloudUserService;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void setCloudUserService(@NonNull final ICloudUserService cloudUserService) {
         this.cloudUserService = cloudUserService;
     }
 
+    /** {@inheritDoc} */
     @Override
     public IAuthService getAuthService() {
         return this.authService;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void setAuthService(@NonNull final IAuthService authService) {
         this.authService = authService;

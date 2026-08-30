@@ -31,10 +31,19 @@ import java.util.logging.Logger;
  */
 public final class Terminal {
 
+    /** The underlying {@code jline} terminal this class wraps. */
     private final org.jline.terminal.Terminal terminal;
+
+    /** The {@code jline} line reader backing every prompt/input operation. */
     private final LineReaderImpl lineReader;
+
+    /** The registry {@link Command}s are registered on and dispatched through. */
     private final CommandService commandService = new CommandService();
+
+    /** The background input loop; not started automatically, see {@link #start()}. */
     private final ReadingThread readingThread;
+
+    /** Builds the prompt this terminal starts with and can be {@link #resetPrompt() reset} to. */
     private final PromptProvider promptProvider;
 
     /** {@code true} from construction until {@link #shutdown()}. */

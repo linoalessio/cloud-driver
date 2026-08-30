@@ -14,6 +14,7 @@ import java.util.logging.Logger;
  */
 public final class LoggingEmailSender implements EmailSender {
 
+    /** Where a "sent" e-mail is logged instead of actually being delivered. */
     private final Logger logger;
 
     /**

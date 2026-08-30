@@ -38,7 +38,10 @@ import java.util.Objects;
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
 public final class StoredFileOwnership extends Serialized implements Owned {
 
+    /** The owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - also this row's {@link #ownerId()}. */
     private final String authUserId;
+
+    /** The plain {@link StoredFile#fileId()} tracked as owned by {@link #authUserId}. */
     private final String storedFileId;
 
     /**

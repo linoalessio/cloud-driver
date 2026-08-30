@@ -20,6 +20,7 @@ import java.util.logging.Logger;
  */
 public final class CommandService {
 
+    /** Logs a service's uncaught {@link RuntimeException} in {@link #dispatchAsync(String, String[])}. */
     private static final Logger LOGGER = Logger.getLogger(CommandService.class.getName());
 
     /** Every registered service, keyed by its lowercase name and every lowercase alias. */
@@ -58,6 +59,13 @@ public final class CommandService {
         this.snapshot = List.copyOf(this.registrationOrder);
     }
 
+    /**
+     * Registers {@code command} under {@code key}, lowercased, in {@link #commandsByLookupKey}.
+     *
+     * @param key     the name or alias to register
+     * @param command the service it should resolve to
+     * @throws IllegalStateException if {@code key} (lowercased) is already registered
+     */
     private void registerLookupKey(final String key, final Command command) {
         final String lookupKey = key.toLowerCase(Locale.ROOT);
         if (this.commandsByLookupKey.putIfAbsent(lookupKey, command) != null) {

@@ -42,6 +42,9 @@ public final class DefaultExtensionFactory extends ExtensionFactory {
     }
 
     /**
+     * Stores {@code extension} under its own {@link ExtensionProperties#getExtensionName()}.
+     *
+     * @param extension the extension to register
      * @throws IllegalStateException if an extension with the same name is already registered
      */
     @Override
@@ -54,12 +57,23 @@ public final class DefaultExtensionFactory extends ExtensionFactory {
         }
     }
 
+    /**
+     * Looks up a registered extension by name.
+     *
+     * @param extensionName the extension's own {@link ExtensionProperties#getExtensionName()}
+     * @return the registered extension, or {@link Optional#empty()} if none is registered under that name
+     */
     @NotNull
     @Override
     public Optional<Extension> findByName(@NonNull final String extensionName) {
         return Optional.ofNullable(this.extensions.get(extensionName));
     }
 
+    /**
+     * Returns every registered extension, in registration order.
+     *
+     * @return a new list snapshot of {@link #extensions}' values
+     */
     @NotNull
     @Override
     public List<Extension> getExtensions() {

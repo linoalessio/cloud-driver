@@ -15,9 +15,18 @@ import java.util.Locale;
  * stored ciphertext: the tag proves the envelope wasn't tampered with, this
  * proves the decrypted content still matches what was uploaded. Restricted
  * to {@link HashAlgorithm}'s approved algorithms.
+ *
+ * @param algorithm the hash algorithm {@link #hexDigest} was computed with
+ * @param hexDigest the lowercase hex-encoded digest; must match {@code algorithm}'s expected length
  */
 public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
 
+    /**
+     * Validates {@code algorithm}/{@code hexDigest} and lowercases {@code hexDigest}.
+     *
+     * @throws NullPointerException if {@code algorithm} or {@code hexDigest} is {@code null}
+     * @throws IllegalArgumentException if {@code hexDigest} isn't a hex string of the length {@code algorithm} expects
+     */
     public FileChecksum {
         Asserts.requireNonNull(algorithm, "@FileChecksum: algorithm cannot be null");
         Asserts.requireNonNull(hexDigest, "@FileChecksum: hexDigest cannot be null");
@@ -61,6 +70,12 @@ public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
         return this.equals(FileChecksum.of(this.algorithm, content));
     }
 
+    /**
+     * The exact hex-digest string length {@code algorithm} produces.
+     *
+     * @param algorithm the hash algorithm to look up the expected digest length for
+     * @return the expected hex-digest length, in characters
+     */
     private static int hexLength(final HashAlgorithm algorithm) {
         return switch (algorithm) {
             case SHA_256 -> 64;
@@ -69,6 +84,12 @@ public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
         };
     }
 
+    /**
+     * Whether {@code value} consists only of lowercase hex digit characters.
+     *
+     * @param value the string to check
+     * @return {@code true} if every character in {@code value} is {@code 0-9} or {@code a-f}
+     */
     private static boolean isHex(final String value) {
         return value.chars().allMatch(c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
     }

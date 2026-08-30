@@ -58,10 +58,16 @@ public final class StoredFile extends Serialized {
     /** Fallback MIME type used when none can be inferred from the file name. */
     public static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
+    /** The hash algorithm used to compute {@link #checksum()} for a freshly uploaded file. */
     private static final HashAlgorithm DEFAULT_CHECKSUM_ALGORITHM = HashAlgorithm.SHA_256;
 
+    /** This file's unique id, its {@link #primaryKey()}. */
     private final String fileId;
+
+    /** This file's original file name, as uploaded; also the source {@link #normalizeContentType(String)} infers {@link #contentType} from. */
     private final String fileName;
+
+    /** This file's MIME content type, inferred from {@link #fileName}'s extension via {@link Constraints#CONTENT_TYPES}. */
     private final String contentType;
 
     /**
@@ -73,6 +79,7 @@ public final class StoredFile extends Serialized {
     /** Whether {@link #contentBase64} decodes to DEFLATE-compressed bytes rather than the original. */
     private final boolean contentCompressed;
 
+    /** The plaintext checksum this file's content must match on every future download - see {@link #verifyChecksum()}. */
     private final FileChecksum checksum;
 
     // Stored as epoch millis, not Instant: Serialized.toByteArray() serializes
@@ -142,14 +149,24 @@ public final class StoredFile extends Serialized {
         );
     }
 
-    /** Infers a content type from {@code fileName}'s extension, falling back to {@link #DEFAULT_CONTENT_TYPE}. */
+    /**
+     * Infers a content type from {@code fileName}'s extension, falling back to {@link #DEFAULT_CONTENT_TYPE}.
+     *
+     * @param fileName the file name to infer a content type from
+     * @return the inferred MIME content type, never {@code null}
+     */
     private static String normalizeContentType(final String fileName) {
         final String extension = extractExtension(fileName);
         final String inferred = extension == null ? null : Constraints.CONTENT_TYPES.get(extension);
         return inferred != null ? inferred : DEFAULT_CONTENT_TYPE;
     }
 
-    /** The lowercase file extension of {@code fileName} (without the dot), or {@code null} if it has none. */
+    /**
+     * The lowercase file extension of {@code fileName} (without the dot), or {@code null} if it has none.
+     *
+     * @param fileName the file name to extract an extension from, possibly {@code null}
+     * @return the lowercase extension, or {@code null} if {@code fileName} is {@code null} or has no extension
+     */
     private static String extractExtension(final String fileName) {
         if (fileName == null) {
             return null;
@@ -163,6 +180,9 @@ public final class StoredFile extends Serialized {
         return fileName.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
     }
 
+    /**
+     * @return this entity's primary key, a single-element list containing {@link #fileId}
+     */
     @Override
     public List<String> keysOf() {
         return List.of(fileId);
@@ -274,7 +294,11 @@ public final class StoredFile extends Serialized {
         return this.downloadToDevice(Constraints.USER_DOWNLOADS_PATH);
     }
 
-    /** Decodes (and decompresses, if needed) {@link #contentBase64} into {@link #decodedContent}, caching the result. */
+    /**
+     * Decodes (and decompresses, if needed) {@link #contentBase64} into {@link #decodedContent}, caching the result.
+     *
+     * @return this file's original, uncompressed plaintext bytes - the live cached array, not a defensive copy
+     */
     private byte[] resolveContent() {
         byte[] resolved = decodedContent;
         if (resolved == null) {
@@ -285,7 +309,12 @@ public final class StoredFile extends Serialized {
         return resolved;
     }
 
-    /** DEFLATE-compresses {@code data}. Never throws for arbitrary input bytes. */
+    /**
+     * DEFLATE-compresses {@code data}. Never throws for arbitrary input bytes.
+     *
+     * @param data the bytes to compress
+     * @return the DEFLATE-compressed bytes
+     */
     private static byte[] deflate(final byte[] data) {
         final Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION);
         try {
@@ -307,6 +336,8 @@ public final class StoredFile extends Serialized {
     /**
      * Reverses {@link #deflate(byte[])}.
      *
+     * @param compressed the DEFLATE-compressed bytes to decompress
+     * @return the original, uncompressed bytes
      * @throws IllegalStateException if {@code compressed} is not valid DEFLATE data
      */
     private static byte[] inflate(final byte[] compressed) {

@@ -48,6 +48,9 @@ public interface ICloudUserService {
     @NotNull
     List<StoredFile> listFiles(@NotNull String authUserId);
 
+    /**
+     * @return every currently registered {@link ICloudUser} record
+     */
     @NonNull
     List<ICloudUser> getCloudUsers();
 

@@ -27,6 +27,7 @@ import java.util.Objects;
 @EqualsAndHashCode(callSuper = false)
 public final class ApiKey extends Serialized {
 
+    /** Length, in bytes, of the random key material generated for a fresh {@link ApiKey}. */
     private static final int RAW_KEY_LENGTH_BYTES = 32;
 
     /** This key's primary key - lets a deployment keep more than one named key. */
@@ -76,7 +77,13 @@ public final class ApiKey extends Serialized {
         return MessageDigest.isEqual(candidateHash, HexFormat.of().parseHex(this.apiKeyHashHex));
     }
 
-    /** Computes a {@link HashAlgorithm#SHA_256} digest of {@code data}. */
+    /**
+     * Computes a {@link HashAlgorithm#SHA_256} digest of {@code data}.
+     *
+     * @param data the bytes to digest
+     * @return the SHA-256 digest of {@code data}
+     * @throws IllegalStateException if the JVM does not provide a SHA-256 {@link MessageDigest}
+     */
     private static byte[] sha256(final byte[] data) {
         try {
             return MessageDigest.getInstance(HashAlgorithm.SHA_256.jcaName()).digest(data);

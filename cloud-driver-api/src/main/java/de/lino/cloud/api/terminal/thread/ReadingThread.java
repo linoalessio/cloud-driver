@@ -21,8 +21,13 @@ import java.util.logging.Level;
  */
 public final class ReadingThread extends Thread {
 
+    /** The owning terminal input is read from and results are displayed through. */
     private final Terminal terminal;
+
+    /** The {@code jline} reader this thread blocks on for each line. */
     private final LineReader lineReader;
+
+    /** The registry each read line's first token is dispatched through. */
     private final CommandService commandService;
 
     /**

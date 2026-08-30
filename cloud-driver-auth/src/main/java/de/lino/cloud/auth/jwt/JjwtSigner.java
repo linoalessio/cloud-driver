@@ -15,14 +15,15 @@ import java.util.Date;
 
 /**
  * {@link JwtSigner} backed by HMAC-SHA256 (jjwt). The signing key is read by the caller (e.g.
- * {@code CreateUserCli}, {@code LoginSample}, {@code cloud-driver-extensions-rest}'s {@code
- * CloudRestExtension}) from the {@code "jwt-signing-key"} field of {@code configuration.json}
- * under {@code Constraints.CONFIGURATION_PATH} - never hardcoded, same requirement as the
- * Postgres credentials. Requires at least 32 bytes/256 bits of entropy; generate e.g. via
- * {@code openssl rand -base64 32}.
+ * {@code cloud-driver-extensions-rest}'s {@code CloudRestExtension}) from the {@code
+ * "jwt-signing-key"} field of {@code configuration.json} under {@code
+ * Constraints.CONFIGURATION_PATH} - never hardcoded, same requirement as the Postgres
+ * credentials. Requires at least 32 bytes/256 bits of entropy; generate e.g. via {@code
+ * openssl rand -base64 32}.
  */
 public final class JjwtSigner implements JwtSigner {
 
+    /** The HMAC-SHA256 key derived from the signing key material passed to the constructor. */
     private final SecretKey key;
 
     /**

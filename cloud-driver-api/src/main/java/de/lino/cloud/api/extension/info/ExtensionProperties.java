@@ -10,8 +10,8 @@ import java.util.List;
 import de.lino.cloud.api.utility.Asserts;
 
 /**
- * An {@link Extension}'s name, version, authors,
- * and current {@link ExtensionStatus}.
+ * An {@link Extension}'s name, version, description, authors, names of
+ * other extensions it depends on, and its current {@link ExtensionStatus}.
  */
 @Getter
 @ToString @EqualsAndHashCode
@@ -59,7 +59,7 @@ public class ExtensionProperties {
      * @param description      the extension's description
      * @param authors          the extension's authors
      * @param dependencies     names of other extensions this one depends on
-     * @throws NullPointerException if any argument, or any element of {@code authors}, is {@code null}
+     * @throws NullPointerException if any argument, or any element of {@code authors} or {@code dependencies}, is {@code null}
      */
     public ExtensionProperties(final String extensionName, final String extensionVersion, String description, final String[] authors, final String... dependencies) {
 

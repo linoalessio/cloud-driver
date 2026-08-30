@@ -36,8 +36,13 @@ import java.util.Objects;
 @EqualsAndHashCode(callSuper = false)
 public final class AuthUser extends Serialized {
 
+    /** This account's unique id, its {@link #primaryKey()}. */
     private final String id;
+
+    /** This account's identifying email address. */
     private final String emailAddress;
+
+    /** A PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password. */
     private final String passwordHash;
 
     /**

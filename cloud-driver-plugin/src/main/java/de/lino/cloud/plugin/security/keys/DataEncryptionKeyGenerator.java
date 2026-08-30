@@ -13,6 +13,7 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class DataEncryptionKeyGenerator {
 
+    /** Source of the random key material {@link #generate} draws from. */
     private final SecureRandom secureRandom = new SecureRandom ();
 
     /**

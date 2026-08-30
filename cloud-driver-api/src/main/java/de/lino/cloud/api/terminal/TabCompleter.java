@@ -17,6 +17,7 @@ import java.util.List;
  */
 public final class TabCompleter implements Completer {
 
+    /** The registry {@link #complete} suggests registered names/aliases from. */
     private final CommandService commandService;
 
     /**

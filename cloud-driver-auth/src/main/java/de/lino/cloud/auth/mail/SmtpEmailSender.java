@@ -23,9 +23,16 @@ import java.util.Properties;
  */
 public final class SmtpEmailSender implements EmailSender {
 
+    /** The SMTP account username, also used to authenticate outgoing sessions. */
     private final String username;
+
+    /** The SMTP account password, also used to authenticate outgoing sessions. */
     private final String password;
+
+    /** The address every sent e-mail is shown as coming from. */
     private final String fromAddress;
+
+    /** The Jakarta Mail session configured with STARTTLS and this instance's credentials. */
     private final Session session;
 
     /**
@@ -50,6 +57,12 @@ public final class SmtpEmailSender implements EmailSender {
 
         this.session = Session.getInstance(properties, new Authenticator() {
 
+            /**
+             * Supplies this instance's SMTP {@link SmtpEmailSender#username}/{@link
+             * SmtpEmailSender#password} to the Jakarta Mail session on demand.
+             *
+             * @return credentials for the configured SMTP account
+             */
             @Override
             protected PasswordAuthentication getPasswordAuthentication() {
                 return new PasswordAuthentication(SmtpEmailSender.this.username, SmtpEmailSender.this.password);
@@ -59,6 +72,12 @@ public final class SmtpEmailSender implements EmailSender {
     }
 
     /**
+     * Sends {@code body} to {@code toAddress} as a plain-text e-mail with subject {@code
+     * subject}, from {@link #fromAddress}, over this instance's SMTP session.
+     *
+     * @param toAddress the recipient address
+     * @param subject the e-mail subject
+     * @param body the plain-text e-mail body
      * @throws EmailDeliveryException if the underlying {@link Transport#send} call fails for any
      *     reason (unreachable host, rejected credentials, rejected recipient, ...)
      */

@@ -15,6 +15,7 @@ import java.util.logging.LogRecord;
  */
 public final class TerminalLogFormatter extends Formatter {
 
+    /** Formats a record's timestamp as {@code HH:mm:ss}. */
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     /**
@@ -56,6 +57,13 @@ public final class TerminalLogFormatter extends Formatter {
         }
     }
 
+    /**
+     * Picks the {@code &x} legacy ansi color code for a log level's severity.
+     *
+     * @param level the level to pick a color for
+     * @return {@code &c} at/above {@link Level#SEVERE}, {@code &e} at/above {@link
+     * Level#WARNING}, {@code &f} at/above {@link Level#INFO}, {@code &b} otherwise
+     */
     private String colorFor(final Level level) {
         final int value = level.intValue();
         if (value >= Level.SEVERE.intValue()) return "&c";

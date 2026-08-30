@@ -51,11 +51,19 @@ public final class AuthService implements IAuthService {
     /** How long a verification code issued by {@link #register} remains valid: 10 minutes. */
     private static final long VERIFICATION_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
 
+    /** Source of randomness for {@link #generateVerificationCode()}. */
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
+    /** Persists/looks up {@link AuthUser}/{@link PendingRegistration} rows. */
     private final DataFactory dataFactory;
+
+    /** Hashes a new password and verifies a login candidate against a stored hash. */
     private final PasswordHasher hasher;
+
+    /** Issues and verifies the JWTs returned by {@link #login}/{@link #confirmRegistration}/{@link #validate}. */
     private final JwtSigner signer;
+
+    /** Delivers the verification code {@link #register} generates. */
     private final EmailSender emailSender;
 
     /**

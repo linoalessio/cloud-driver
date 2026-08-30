@@ -51,13 +51,25 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class EntityDatabaseClient {
 
+    /** The {@link JsonDocument} field name an entity's {@link EncryptedEntityRecord} is stored under. */
     private static final String DATA_KEY = "data";
+
+    /** Default per-type cache time-to-live, used by the single-argument constructor. */
     private static final Duration DEFAULT_CACHE_TTL = Duration.ofSeconds(30);
+
+    /** Default per-type cache maximum entry count, used by the single-argument constructor. */
     private static final long DEFAULT_CACHE_MAX_SIZE = 1_000;
 
+    /** The provider every entity type's {@link DatabaseSection} is resolved against. */
     private final DatabaseProvider databaseProvider;
+
+    /** Envelope-encrypts/decrypts entities before/after they reach the database. */
     private final SecureEntityChannel secureEntityChannel;
+
+    /** Per-type decrypted-entity cache time-to-live; {@code null} means unbounded. */
     private final Duration cacheTtl;
+
+    /** Per-type decrypted-entity cache maximum entry count; {@code <= 0} means unbounded. */
     private final long cacheMaxSize;
 
     /** One cache per entity type, created lazily via {@link #cacheFor}. */
@@ -141,6 +153,13 @@ public final class EntityDatabaseClient {
         cachePut(entity);
     }
 
+    /**
+     * Write-through helper: puts {@code entity} directly into its type's cache
+     * under its primary key, so a just-written entity is served from cache
+     * without a redundant round trip back through the database.
+     *
+     * @param entity the entity to cache
+     */
     @SuppressWarnings("unchecked") // safe: meta's own runtime type is always a valid Class<T> for meta itself
     private <T extends Serialized> void cachePut(final T entity) {
         final Class<T> type = (Class<T>) entity.getClass();
@@ -198,6 +217,12 @@ public final class EntityDatabaseClient {
         joinAllStore(futures);
     }
 
+    /**
+     * {@link #update} wrapper for dispatch on {@link MultiTaskingFactory}'s
+     * executor: rethrows a checked failure wrapped in a {@link CompletionException}.
+     *
+     * @param entity the entity to update
+     */
     private <T extends Serialized> void updateUnchecked(final T entity) {
         try {
             update(entity);
@@ -229,6 +254,12 @@ public final class EntityDatabaseClient {
         joinAllStore(futures);
     }
 
+    /**
+     * {@link #store} wrapper for dispatch on {@link MultiTaskingFactory}'s
+     * executor: rethrows a checked failure wrapped in a {@link CompletionException}.
+     *
+     * @param entity the entity to store
+     */
     private <T extends Serialized> void storeUnchecked(final T entity) {
         try {
             store(entity);
@@ -379,6 +410,13 @@ public final class EntityDatabaseClient {
         joinAllDelete(futures);
     }
 
+    /**
+     * {@link #delete} wrapper for dispatch on {@link MultiTaskingFactory}'s
+     * executor: rethrows a checked failure wrapped in a {@link CompletionException}.
+     *
+     * @param objectId the primary key to delete
+     * @param type the entity type
+     */
     private <T extends Serialized> void deleteUnchecked(final String objectId, final Class<T> type) {
         try {
             delete(objectId, type);
@@ -445,6 +483,14 @@ public final class EntityDatabaseClient {
         this.databaseProvider.shutdown();
     }
 
+    /**
+     * Returns {@code type}'s read-through, write-through {@link Cache},
+     * creating it lazily (bounded by {@link #cacheTtl}/{@link #cacheMaxSize})
+     * with a loader that fetches and decrypts from the database on a miss.
+     *
+     * @param type the entity type
+     * @return the cache backing {@code type}
+     */
     @SuppressWarnings("unchecked") // safe: every cache is both created and looked up keyed by the same Class<T>
     private <T extends Serialized> Cache<String, T> cacheFor(final Class<T> type) {
         return (Cache<String, T>) caches.computeIfAbsent(
@@ -452,10 +498,29 @@ public final class EntityDatabaseClient {
         );
     }
 
+    /**
+     * {@link #loadFromDatabase} dispatched onto {@link MultiTaskingFactory}'s
+     * shared virtual-thread executor - the cache loader a {@link Cache} miss invokes.
+     *
+     * @param objectId the primary key to look up
+     * @param type the entity type
+     * @return a future completing with the decrypted entity, or exceptionally with a {@link CompletionException}
+     */
     private <T extends Serialized> CompletableFuture<T> loadFromDatabaseAsync(final String objectId, final Class<T> type) {
         return MultiTaskingFactory.getInstance().supplyAsync(() -> loadFromDatabase(objectId, type));
     }
 
+    /**
+     * Reads {@code objectId}'s raw {@link DatabaseEntry} from {@code type}'s
+     * section, unwraps its {@link EncryptedEntityRecord}, and decrypts it via
+     * {@link SecureEntityChannel#receive}. Any failure (missing entry,
+     * corrupted record, key-wrap/authentication failure) is thrown wrapped in
+     * a {@link CompletionException}, since this runs as a {@link Cache} loader.
+     *
+     * @param objectId the primary key to look up
+     * @param type the entity type
+     * @return the decrypted entity
+     */
     private <T extends Serialized> T loadFromDatabase(final String objectId, final Class<T> type) {
         final Optional<DatabaseEntry> entry;
         try {
@@ -486,6 +551,16 @@ public final class EntityDatabaseClient {
         }
     }
 
+    /**
+     * {@link #joinAll} for a batch of pure-store futures, which never decrypt
+     * anything: narrows the throws clause to {@link DatabaseClientException}/
+     * {@link KeyWrapException} by wrapping an (impossible in practice) {@link
+     * AuthenticationFailedException} in an {@link IllegalStateException}.
+     *
+     * @param futures the futures to await
+     * @throws DatabaseClientException if any future failed with one
+     * @throws KeyWrapException if any future failed with one
+     */
     private static void joinAllStore(final List<CompletableFuture<Void>> futures) throws DatabaseClientException, KeyWrapException {
         try {
             joinAll(futures);
@@ -496,6 +571,15 @@ public final class EntityDatabaseClient {
         }
     }
 
+    /**
+     * {@link #joinAll} for a batch of pure-delete futures, which never touch
+     * keys or decrypt anything: narrows the throws clause to {@link
+     * DatabaseClientException} by wrapping an (impossible in practice) {@link
+     * KeyWrapException}/{@link AuthenticationFailedException} in an {@link IllegalStateException}.
+     *
+     * @param futures the futures to await
+     * @throws DatabaseClientException if any future failed with one
+     */
     private static void joinAllDelete(final List<CompletableFuture<Void>> futures) throws DatabaseClientException {
         try {
             joinAll(futures);
@@ -506,11 +590,34 @@ public final class EntityDatabaseClient {
         }
     }
 
+    /**
+     * Waits for every future in {@code futures} to complete (success or
+     * failure) and unwraps the first failure encountered, if any, via {@link
+     * #unwrap}. Since the futures are already running concurrently, this
+     * blocks until all of them have finished before surfacing any failure.
+     *
+     * @param futures the futures to await
+     * @throws DatabaseClientException if any future failed with one
+     * @throws KeyWrapException if any future failed with one
+     * @throws AuthenticationFailedException if any future failed with one
+     */
     private static void joinAll(final List<? extends CompletableFuture<?>> futures)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
         unwrap(CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)));
     }
 
+    /**
+     * Joins {@code future} and, if it completed exceptionally via a {@link
+     * CompletionException}, rethrows its cause as the matching checked
+     * exception this class's own methods declare (or as-is if already an
+     * unchecked {@link RuntimeException}), rather than leaving it wrapped.
+     *
+     * @param future the future to join
+     * @return the future's result
+     * @throws DatabaseClientException if the future failed with one
+     * @throws KeyWrapException if the future failed with one
+     * @throws AuthenticationFailedException if the future failed with one
+     */
     private static <T> T unwrap(final CompletableFuture<T> future)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
         try {

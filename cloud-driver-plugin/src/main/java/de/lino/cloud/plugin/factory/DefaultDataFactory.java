@@ -20,6 +20,7 @@ import java.util.Optional;
  */
 public final class DefaultDataFactory extends DataFactory {
 
+    /** The client every operation on this factory delegates to. */
     private final EntityDatabaseClient entityDatabaseClient;
 
     /**

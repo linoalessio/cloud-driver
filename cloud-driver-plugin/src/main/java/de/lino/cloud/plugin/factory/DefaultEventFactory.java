@@ -26,6 +26,7 @@ import java.util.concurrent.CompletionException;
  */
 public final class DefaultEventFactory extends EventFactory {
 
+    /** Registered events, keyed by their own {@code Class}; no TTL/size bound, backed by {@link #construct} as its loader. */
     private final Cache<Class<? extends Event>, Event> events =
             Caches.newCache(DefaultEventFactory::construct, null, -1);
 
@@ -66,6 +67,7 @@ public final class DefaultEventFactory extends EventFactory {
         return Optional.ofNullable(this.events.snapshot().get(eventClass)).map(eventClass::cast);
     }
 
+    /** Returns a snapshot copy of every currently registered event, without triggering construction. */
     @NotNull
     @Override
     public List<Event> getEvents() {

@@ -61,16 +61,27 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class DefaultRestFactory extends RestFactory {
 
+    /** HTTP request header {@link #requireValidApiKey} checks against {@link #apiKey}. */
     private static final String API_KEY_HEADER = "X-API-Key";
+    /** Path mounted by {@link #start} for {@link #handleLogin}, exempted from {@link #requireValidBearerToken}. */
     private static final String LOGIN_PATH = "/auth/login";
+    /** Path mounted by {@link #start} for {@link #handleRegister}, exempted from {@link #requireValidBearerToken}. */
     private static final String REGISTER_PATH = "/auth/register";
+    /** Path mounted by {@link #start} for {@link #handleConfirmRegistration}, exempted from {@link #requireValidBearerToken}. */
     private static final String REGISTER_CONFIRM_PATH = "/auth/register/confirm";
+    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
+    /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
+    /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
     private static final String BEARER_PREFIX = "Bearer ";
+    /** Query parameter {@link #resolveBearerToken} falls back to when no {@link #AUTHORIZATION_HEADER} is present. */
     private static final String TOKEN_QUERY_PARAM = "token";
+    /** Javalin request attribute key {@link #requireValidBearerToken} stores the validated user id under. */
     private static final String USER_ID_ATTRIBUTE = "userId";
+    /** JSON field name {@link #parseOwnedBody} overwrites with the authenticated caller's user id. */
     private static final String OWNER_ID_FIELD = "ownerId";
+    /** Query parameter {@link #handleUploadFile} reads the uploaded file's name from. */
     private static final String FILE_NAME_QUERY_PARAM = "fileName";
 
     /**
@@ -83,19 +94,28 @@ public final class DefaultRestFactory extends RestFactory {
      */
     private static final long MAX_REQUEST_SIZE_BYTES = 26_8435_456;
 
+    /** The {@link DataFactory} every registered {@code (path, type)} resource is backed by. */
     private final DataFactory dataFactory;
+    /** Checked by {@link #requireValidApiKey}, or {@code null} if this instance isn't API-key-gated. */
     private final ApiKey apiKey;
+    /** Shared Gson instance used to (de)serialize request/response bodies. */
     private final Gson gson = new Gson();
 
+    /** Verifies login/registration and issued JWTs, or {@code null} if this instance isn't JWT-gated. */
     @Getter
     private final AuthService authService;
 
+    /** Backs the {@code /files} routes, or {@code null} if they aren't mounted. */
     @Getter
     private final CloudUserService cloudUserService;
 
+    /** Paths with a {@code POST} handler registered via {@link #register}. */
     private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
+    /** Paths with a {@code GET} handler registered via {@link #fetch}. */
     private final Map<String, Class<? extends Serialized>> fetchResources = Maps.newHashMap();
+    /** Paths with a {@code PUT} handler registered via {@link #update}. */
     private final Map<String, Class<? extends Serialized>> updateResources = Maps.newHashMap();
+    /** Paths with a {@code DELETE} handler registered via {@link #delete}. */
     private final Map<String, Class<? extends Serialized>> deleteResources = Maps.newHashMap();
 
     /** The running Javalin app, or {@code null} before {@link #start} / after {@link #stop}. */
@@ -205,6 +225,11 @@ public final class DefaultRestFactory extends RestFactory {
      * #update}/{@link #delete}; {@link Map#putIfAbsent} makes the duplicate-path
      * check atomic.
      *
+     * @param operationResources the registry ({@link #registerResources}/{@link #fetchResources}/{@link
+     * #updateResources}/{@link #deleteResources}) to record {@code path} in
+     * @param path the route path being registered
+     * @param type the entity type {@code path} is registered for
+     * @param operationName the calling operation's name, used in error messages
      * @throws IllegalStateException if called after {@link #start}, or if {@code path} already has a handler for this operation
      */
     private <T extends Serialized> void registerOperation(final Map<String, Class<? extends Serialized>> operationResources,
@@ -409,9 +434,22 @@ public final class DefaultRestFactory extends RestFactory {
                 }));
     }
 
+    /**
+     * The {@code {"username", "password"}} JSON body shape shared by {@code POST /auth/login}
+     * and {@code POST /auth/register}.
+     *
+     * @param username the account's e-mail address (named {@code username} to match the wire shape)
+     * @param password the plaintext password
+     */
     private record LoginRequest(String username, String password) {
     }
 
+    /**
+     * The {@code {"token"}} JSON response body returned by a successful login or completed
+     * registration.
+     *
+     * @param token the signed JWT
+     */
     private record LoginResponse(String token) {
     }
 
@@ -445,9 +483,21 @@ public final class DefaultRestFactory extends RestFactory {
                 }));
     }
 
+    /**
+     * The {@code {"message"}} JSON response body returned by {@code POST /auth/register} on
+     * successfully starting registration.
+     *
+     * @param message a human-readable status message
+     */
     private record MessageResponse(String message) {
     }
 
+    /**
+     * The {@code {"username", "code"}} JSON body shape read by {@code POST /auth/register/confirm}.
+     *
+     * @param username the account's e-mail address being confirmed
+     * @param code the verification code e-mailed by {@code POST /auth/register}
+     */
     private record ConfirmRegistrationRequest(String username, String code) {
     }
 
@@ -680,7 +730,13 @@ public final class DefaultRestFactory extends RestFactory {
         });
     }
 
-    /** @throws UnauthorizedResponse if {@link #USER_ID_ATTRIBUTE} isn't set - should be unreachable behind {@link #requireValidBearerToken}. */
+    /**
+     * Reads the authenticated caller's user id stashed by {@link #requireValidBearerToken}.
+     *
+     * @param ctx the request context
+     * @return the validated user id
+     * @throws UnauthorizedResponse if {@link #USER_ID_ATTRIBUTE} isn't set - should be unreachable behind {@link #requireValidBearerToken}
+     */
     private static String requireUserId(@NotNull final Context ctx) {
         final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
         if (userId == null) {

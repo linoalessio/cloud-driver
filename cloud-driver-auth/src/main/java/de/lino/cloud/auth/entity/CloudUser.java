@@ -30,6 +30,7 @@ import java.util.Objects;
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
 public final class CloudUser extends Serialized implements ICloudUser, Owned {
 
+    /** The owning {@link AuthUser#getId()} - this entity's primary key and its own {@link #ownerId()}. */
     private final String authUserId;
 
     /**

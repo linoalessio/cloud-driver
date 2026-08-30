@@ -21,6 +21,7 @@ public enum HashAlgorithm {
      */
     SHA_512("SHA-512");
 
+    /** The JCA {@link java.security.MessageDigest} algorithm name for this hash algorithm. */
     private final String jcaName;
 
     /**

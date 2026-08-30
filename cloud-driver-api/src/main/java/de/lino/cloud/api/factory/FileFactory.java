@@ -17,17 +17,18 @@ import java.util.concurrent.CompletionException;
 /**
  * Uploads, downloads, and deletes {@link StoredFile}s of any content type -
  * the file-persistence counterpart of {@link DataFactory}, reached through
- * {@code CloudDriver#getFileFactory()}. Every download verifies both the
- * AES-256-GCM authentication tag over the stored ciphertext ({@link
- * AuthenticationFailedException}) and the plaintext checksum against {@link
- * StoredFile#checksum()} ({@link FileIntegrityException}) before handing
- * content back.
+ * {@code CloudDriver#getFactoryContainer()}'s {@code getFileFactory()}. Every
+ * download verifies both the AES-256-GCM authentication tag over the stored
+ * ciphertext ({@link AuthenticationFailedException}) and the plaintext
+ * checksum against {@link StoredFile#checksum()} ({@link
+ * FileIntegrityException}) before handing content back.
  *
  * <p>{@link #upload(StoredFile)}, {@link #upload(StoredFile[])}, {@link
- * #download(String)}, {@link #download(String[])}, {@link #findById}, and
- * {@link #delete(String)}/{@link #delete(String[])} are abstract; every
- * {@code *Async} variant plus {@link #metadata} is implemented here
- * generically in terms of those.
+ * #download(String)}, {@link #download(String[])}, {@link #findById}, {@link
+ * #getEntities()}, {@link #delete(String)}, {@link #delete(String[])},
+ * {@link #clear()}, and {@link #deleteSection()} are abstract; every {@code
+ * *Async} variant plus {@link #metadata} is implemented here generically in
+ * terms of those.
  */
 public abstract class FileFactory {
 

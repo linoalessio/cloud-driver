@@ -31,9 +31,12 @@ import java.util.jar.JarFile;
  */
 public final class ExtensionJarLoader {
 
+    /** The file-name suffix a jar entry must have to be considered a compiled class. */
     private static final String CLASS_SUFFIX = ".class";
+    /** The single class-file entry name skipped even though it ends with {@link #CLASS_SUFFIX} - a module descriptor, never an {@link Extension}. */
     private static final String MODULE_INFO = "module-info.class";
 
+    /** Not instantiable - every member is static. */
     private ExtensionJarLoader() {}
 
     /**
@@ -65,6 +68,18 @@ public final class ExtensionJarLoader {
         return extensions;
     }
 
+    /**
+     * Builds a dedicated {@link URLClassLoader} for one jar: class loading stays
+     * parent-first (delegating to {@link Extension}'s own class loader), but
+     * resource loading is overridden to be child-first, checking this jar's own
+     * URL via {@link URLClassLoader#findResource(String)} before falling back to
+     * the parent, so a same-named resource already on the host classpath (e.g.
+     * another jar's {@code extension.json}) can never shadow this jar's own.
+     *
+     * @param jarPath the jar file to build a class loader for
+     * @return a new class loader scoped to {@code jarPath}, parented at {@link Extension}'s own class loader
+     * @throws IllegalArgumentException if {@code jarPath} cannot be converted to a valid URL
+     */
     @NotNull
     private static URLClassLoader newClassLoader(@NotNull final Path jarPath) {
         try {
@@ -84,6 +99,15 @@ public final class ExtensionJarLoader {
         }
     }
 
+    /**
+     * Resolves {@code className} through {@code classLoader} (without running its
+     * static initializer) and reports it back only if it is a concrete (non-abstract)
+     * {@link Extension} subclass other than {@link Extension} itself.
+     *
+     * @param classLoader the class loader to resolve {@code className} through
+     * @param className the fully-qualified class name to resolve
+     * @return the resolved class, if it is a usable concrete {@link Extension} subclass; {@link Optional#empty()} otherwise, including if it cannot be resolved at all
+     */
     @SuppressWarnings("unchecked")
     private static Optional<Class<? extends Extension>> extensionClassNamed(final URLClassLoader classLoader, final String className) {
         try {
@@ -99,6 +123,16 @@ public final class ExtensionJarLoader {
         }
     }
 
+    /**
+     * Reflectively constructs {@code extensionClass} via its declared no-arg
+     * constructor, forcing it accessible first. {@link Extension}'s own
+     * constructor throws if the class has no bundled {@code extension.json},
+     * which surfaces here as a {@link ReflectiveOperationException} and is
+     * treated as "skip this class" rather than propagated.
+     *
+     * @param extensionClass the concrete {@link Extension} subclass to construct
+     * @return the constructed instance, or {@link Optional#empty()} if construction failed for any reason
+     */
     @NotNull
     private static Optional<Extension> instantiate(@NotNull final Class<? extends Extension> extensionClass) {
         try {

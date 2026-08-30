@@ -20,9 +20,13 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class AesGcmEncryptionService implements AeadEncryptionService {
 
+    /** The AES-GCM variant used when no {@link CryptoAlgorithm} is given explicitly. */
     private static final CryptoAlgorithm DEFAULT_ALGORITHM = CryptoAlgorithm.AES_256_GCM;
 
+    /** The AES-GCM variant this instance encrypts/decrypts with. */
     private final CryptoAlgorithm algorithm;
+
+    /** Source of fresh, unpredictable nonces for {@link #encrypt}. */
     private final SecureRandom secureRandom;
 
     /**

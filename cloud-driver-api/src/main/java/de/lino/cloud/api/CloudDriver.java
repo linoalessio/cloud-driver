@@ -77,6 +77,16 @@ public abstract class CloudDriver {
      */
     public abstract IFactoryContainer getFactoryContainer();
 
+    /**
+     * Returns the container bundling higher-level services built on top of
+     * {@link #getFactoryContainer()}'s raw facets - {@link
+     * de.lino.cloud.api.user.ICloudUserService} and {@link
+     * de.lino.cloud.api.jwt.auth.IAuthService}. Unlike {@link #getFactoryContainer()},
+     * this container may start out with both services unset - see {@link
+     * IServiceContainer}'s Javadoc for when/how they get published.
+     *
+     * @return the {@link IServiceContainer}
+     */
     public abstract IServiceContainer getServiceContainer();
 
     /**

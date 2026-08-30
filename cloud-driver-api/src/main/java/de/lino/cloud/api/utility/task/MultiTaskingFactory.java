@@ -23,6 +23,7 @@ public final class MultiTaskingFactory {
 
     /** Lazily-initialized singleton holder (initialization-on-demand holder idiom). */
     private static final class InstanceHolder {
+        /** The single shared {@link MultiTaskingFactory} instance, created on first access. */
         private static final MultiTaskingFactory INSTANCE = new MultiTaskingFactory();
     }
 

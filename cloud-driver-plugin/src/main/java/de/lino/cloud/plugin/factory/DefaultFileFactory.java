@@ -41,8 +41,11 @@ import java.util.concurrent.CompletionException;
  */
 public final class DefaultFileFactory extends FileFactory {
 
+    /** The {@link DataFactory} {@link StoredFile}s are persisted through. */
     private final DataFactory dataFactory;
+    /** Where files are queued while connectivity is unavailable; see {@link #getPendingUploadCache()}. */
     private final PendingUploadCache pendingUploadCache;
+    /** Reports whether connectivity is currently available; see {@link #getConnectivityChecker()}. */
     private final ConnectivityChecker connectivityChecker;
 
     /**
@@ -212,6 +215,14 @@ public final class DefaultFileFactory extends FileFactory {
         return file;
     }
 
+    /**
+     * Same as {@link #verifyIntegrity(StoredFile)}, but rethrows a checksum
+     * mismatch wrapped in a {@link CompletionException} so it can be run inside
+     * a {@link CompletableFuture} task by {@link #verifyAll}.
+     *
+     * @param file the file to verify
+     * @throws CompletionException wrapping a {@link FileIntegrityException} if the content does not match
+     */
     private static void verifyIntegrityUnchecked(final StoredFile file) {
         try {
             verifyIntegrity(file);
@@ -220,6 +231,15 @@ public final class DefaultFileFactory extends FileFactory {
         }
     }
 
+    /**
+     * Waits for every verification task in {@code futures} to complete, unwrapping
+     * the first failure encountered from its {@link CompletionException} wrapper.
+     *
+     * @param futures the in-flight verification tasks, as produced by {@link #verifyAll}
+     * @throws FileIntegrityException if any task failed a checksum check
+     * @throws RuntimeException the original unchecked cause, if a task failed with something other than {@link FileIntegrityException}
+     * @throws IllegalStateException if a task failed with a non-{@link RuntimeException} cause
+     */
     private static void joinAllVerifications(final List<CompletableFuture<Void>> futures) throws FileIntegrityException {
         try {
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();

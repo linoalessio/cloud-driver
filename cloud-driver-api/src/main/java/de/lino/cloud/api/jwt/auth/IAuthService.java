@@ -101,6 +101,11 @@ public interface IAuthService {
     @NonNull
     String validate(@NonNull final String jwt) throws InvalidJwtException;
 
+    /**
+     * Lists every currently-registered account.
+     *
+     * @return every registered {@link AuthUser}, in no particular guaranteed order
+     */
     @NonNull
     List<AuthUser> getAuthUsers();
 

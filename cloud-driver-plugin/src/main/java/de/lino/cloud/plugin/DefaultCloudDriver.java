@@ -39,17 +39,27 @@ import java.util.logging.Logger;
 @Getter
 public final class DefaultCloudDriver extends CloudDriver {
 
+    /** The container bundling the data/file/extension/event/REST facets this instance was built with. */
     private final IFactoryContainer factoryContainer;
+    /** The container bundling higher-level services built on top of {@link #factoryContainer}'s raw facets. */
     private final IServiceContainer serviceContainer;
 
+    /** The outbound-connectivity-reporting facet, shared with {@link #factoryContainer}'s {@code FileFactory}. */
     private final ConnectivityChecker connectivityChecker;
+    /** The interactive terminal facet, constructed and log-attached in {@link #setInstance}. */
     private final Terminal terminal;
 
     /** Guards {@link #shutdown()} so a second (or concurrent) call is a no-op. */
     private final AtomicBoolean shutdownStarted = new AtomicBoolean(false);
 
     /**
+     * Assembles a new instance from its already-constructed facets. Only called
+     * from {@link #setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)}.
+     *
      * @param connectivityChecker the outbound-connectivity-reporting facet
+     * @param terminal the interactive terminal facet
+     * @param factoryContainer the container bundling the data/file/extension/event/REST facets
+     * @param serviceContainer the container bundling higher-level services
      * @throws NullPointerException if any argument is {@code null}
      */
     private DefaultCloudDriver(@NotNull final ConnectivityChecker connectivityChecker, @NonNull final Terminal terminal, @NonNull final IFactoryContainer factoryContainer, @NonNull final IServiceContainer serviceContainer) {
@@ -118,7 +128,8 @@ public final class DefaultCloudDriver extends CloudDriver {
      * one was constructed. Each step - and each extension/event within its
      * step - is attempted independently and a failure is logged rather than
      * thrown, so one broken facet cannot block the rest from being torn
-     * down. Idempotent - a second call is a no-op.
+     * down. Idempotent - a second call is a no-op. Finally calls {@link
+     * System#exit(int)} with status {@code 0}, terminating the JVM.
      */
     @Override
     public void shutdown() {

@@ -19,8 +19,10 @@ import java.util.stream.Stream;
  */
 public final class ExtensionFolderScanner {
 
+    /** The file-name suffix a top-level entry must have to be scanned as a jar. */
     private static final String JAR_SUFFIX = ".jar";
 
+    /** Not instantiable - every member is static. */
     private ExtensionFolderScanner() {}
 
     /**

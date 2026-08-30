@@ -15,10 +15,19 @@ public enum CryptoAlgorithm {
     /** AES-128-GCM, a 16-byte (128-bit) key. */
     AES_128_GCM("AES-128-GCM", "AES/GCM/NoPadding", 16, 12, 128);
 
+    /** Stable identifier persisted alongside encrypted payloads for crypto agility. */
     private final String id;
+
+    /** The JCA cipher transformation implementing this algorithm. */
     private final String transformation;
+
+    /** Length, in bytes, of the key this algorithm uses. */
     private final int keyLengthBytes;
+
+    /** Length, in bytes, of the nonce/IV a single encryption operation must use. */
     private final int nonceLengthBytes;
+
+    /** Length, in bits, of the GCM authentication tag this algorithm produces. */
     private final int tagLengthBits;
 
     /**

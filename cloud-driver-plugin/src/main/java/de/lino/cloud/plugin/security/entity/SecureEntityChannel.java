@@ -20,8 +20,10 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class SecureEntityChannel {
 
+    /** Prefix tag baked into every associated-data value, so a future format change can be distinguished from this one. */
     private static final String PROTOCOL_VERSION = "v1";
 
+    /** Performs the actual envelope encryption/decryption {@link #send}/{@link #receive} wrap. */
     private final EnvelopeEncryptionService envelopeEncryptionService;
 
     /**
@@ -84,6 +86,14 @@ public final class SecureEntityChannel {
         return Serialized.fromByteArray(data, expectedType);
     }
 
+    /**
+     * Builds the authenticated associated data binding a payload to one
+     * entity type and primary key: {@code "<PROTOCOL_VERSION>:<type name>:<primary key>"}.
+     *
+     * @param type the entity type
+     * @param primaryKey the entity's primary key
+     * @return the associated-data bytes, UTF-8 encoded
+     */
     private static byte[] associatedData(final Class<?> type, final String primaryKey) {
         return (PROTOCOL_VERSION + ":" + type.getName() + ":" + primaryKey).getBytes(StandardCharsets.UTF_8);
     }

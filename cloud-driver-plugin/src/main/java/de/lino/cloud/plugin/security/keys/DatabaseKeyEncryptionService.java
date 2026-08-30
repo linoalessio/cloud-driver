@@ -32,15 +32,31 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class DatabaseKeyEncryptionService implements KeyEncryptionService {
 
+    /** JCA cipher transformation used to wrap/unwrap data-encryption keys under a key-encryption key. */
     private static final String WRAP_TRANSFORMATION = "AESWrapPad";
+
+    /** Length, in bytes, of each freshly generated key-encryption key's material. */
     private static final int KEY_ENCRYPTION_KEY_LENGTH_BYTES = CryptoAlgorithm.AES_256_GCM.keyLengthBytes();
+
+    /** Primary key of the single {@link DatabaseEntry} the whole key-encryption-key registry is persisted under. */
     private static final String REGISTRY_ENTRY_ID = "key-encryption-keys";
+
+    /** {@link JsonDocument} field name holding the currently active key-encryption key's id. */
     private static final String ACTIVE_KEY_ID_FIELD = "activeKeyId";
+
+    /** {@link JsonDocument} field name holding the map of every retained key-encryption key, keyed by id. */
     private static final String KEY_ENCRYPTION_KEYS_FIELD = "keyEncryptionKeys";
 
+    /** The section {@link #REGISTRY_ENTRY_ID} is persisted to/loaded from. */
     private final DatabaseSection databaseSection;
+
+    /** Source of the random key material {@link #rotate()} draws from. */
     private final SecureRandom secureRandom = new SecureRandom();
+
+    /** Every retained key-encryption key's raw material, keyed by its id - superseded keys are kept so old wrapped data stays unwrappable. */
     private final Map<String, byte[]> keyEncryptionKeys = new ConcurrentHashMap<>();
+
+    /** Id of the key-encryption key currently used for new {@link #wrap} calls. */
     private volatile String activeKeyId;
 
     /**
@@ -140,6 +156,12 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
         return keyId;
     }
 
+    /**
+     * Loads {@link #REGISTRY_ENTRY_ID}'s document from {@link #databaseSection}
+     * and populates {@link #activeKeyId}/{@link #keyEncryptionKeys} from it.
+     *
+     * @throws IllegalStateException if the registry entry vanishes between the constructor's {@code exists} check and this read
+     */
     private void load() {
         final JsonDocument document = databaseSection.findEntryById(REGISTRY_ENTRY_ID)
                 .orElseThrow(() -> new IllegalStateException(
@@ -156,6 +178,11 @@ public final class DatabaseKeyEncryptionService implements KeyEncryptionService 
         }
     }
 
+    /**
+     * Serializes {@link #activeKeyId}/{@link #keyEncryptionKeys} (each key's
+     * material base64-encoded) and inserts or updates {@link
+     * #REGISTRY_ENTRY_ID}'s document in {@link #databaseSection} with it.
+     */
     private synchronized void persist() {
         final JsonDocument keys = new JsonDocument();
         keyEncryptionKeys.forEach((keyId, material) -> keys.append(keyId, Base64.getEncoder().encodeToString(material)));

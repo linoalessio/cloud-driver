@@ -427,7 +427,7 @@ Not represented by an interface in this module - both `SecretRedactor` (defense-
 
 ## The `terminal` package
 
-A separate, self-contained concern from everything else in this module: an interactive terminal/console engine (styled after, and ported from, [PoloCloud](https://github.com/thePolocloud/polocloud)'s own `cli` module), under `de.lino.cloud.api.terminal`. Unlike every other facet, a `Terminal` does **not** go through `CloudDriver` at all - it is constructed directly (`new Terminal()` or `new Terminal(PromptProvider)`), independently of whether `CloudDriver.getInstance()` is set up.
+A separate, self-contained concern from everything else in this module: an interactive terminal/console engine, under `de.lino.cloud.api.terminal`. Unlike every other facet, a `Terminal` does **not** go through `CloudDriver` at all - it is constructed directly (`new Terminal()` or `new Terminal(PromptProvider)`), independently of whether `CloudDriver.getInstance()` is set up.
 
 This module implements the terminal **engine** only, deliberately not any concrete command - `Command`/`CommandService` exist so the reading loop has something to dispatch into, not as a catalog of real commands (those live in `cloud-driver-extensions-terminal`).
 

@@ -93,6 +93,10 @@ public interface Command {
             return this.args.length;
         }
 
+        /**
+         * @param index the argument position to check
+         * @return {@code true} if {@code index} is negative or not less than {@link #length()}
+         */
         private boolean outOfBounds(final int index) {
             return index < 0 || index >= args.length;
         }

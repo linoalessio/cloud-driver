@@ -15,7 +15,10 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class DataEncryptionKey {
 
+    /** The algorithm this key's material is used with. */
     private final CryptoAlgorithm algorithm;
+
+    /** This key's raw material; zeroed in place by {@link #destroy()} once no longer needed. */
     private final byte[] keyMaterial;
 
     /**

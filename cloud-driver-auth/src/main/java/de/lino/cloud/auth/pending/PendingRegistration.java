@@ -34,9 +34,16 @@ import java.util.Objects;
 @EqualsAndHashCode(callSuper = false)
 public final class PendingRegistration extends Serialized {
 
+    /** The address this pending registration is for; also this entity's primary key. */
     private final String emailAddress;
+
+    /** A PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password. */
     private final String passwordHash;
+
+    /** The code e-mailed to {@link #emailAddress}, expected back verbatim at {@link AuthService#confirmRegistration}. */
     private final String verificationCode;
+
+    /** The instant (epoch millis) after which {@link #isExpired()} reports {@code true}. */
     private final long expiresAtEpochMillis;
 
     /**

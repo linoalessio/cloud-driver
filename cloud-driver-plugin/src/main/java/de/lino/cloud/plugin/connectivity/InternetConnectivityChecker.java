@@ -18,13 +18,17 @@ import java.util.List;
  */
 public final class InternetConnectivityChecker implements ConnectivityChecker {
 
+    /** The well-known public DNS resolvers (Cloudflare, Google) probed by default, in order. */
     private static final List<InetSocketAddress> DEFAULT_PROBES = List.of(
             new InetSocketAddress("1.1.1.1", 53),
             new InetSocketAddress("8.8.8.8", 53)
     );
+    /** The per-probe connection timeout used by the no-arg constructor. */
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(2);
 
+    /** The addresses probed by {@link #isAvailable()}, tried in order until one accepts a connection. */
     private final List<InetSocketAddress> probes;
+    /** The maximum time to wait for each probe's connection attempt. */
     private final Duration timeout;
 
     /**
@@ -44,6 +48,13 @@ public final class InternetConnectivityChecker implements ConnectivityChecker {
         this.timeout = Asserts.requireNonNull(timeout, "@InternetConnectivityChecker: timeout cannot be null");
     }
 
+    /**
+     * Tries each of {@link #probes} in order, opening a short-lived {@link Socket}
+     * to it with a timeout of {@link #timeout}; reports available on the first
+     * probe that accepts a connection.
+     *
+     * @return {@code true} if any probe accepted a connection within {@link #timeout}, {@code false} if all did not
+     */
     @Override
     public boolean isAvailable() {
         for (final InetSocketAddress probe : this.probes) {

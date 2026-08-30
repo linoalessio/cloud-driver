@@ -73,11 +73,26 @@ public enum AnsiColors {
      */
     private final String ansi;
 
+    /**
+     * Builds a color constant, deriving its ANSI SGR sequence from a base color number and
+     * whether it is the bright ({@code 9X}) or standard ({@code 3X}) variant.
+     *
+     * @param code   the legacy ansi code this constant is triggered by
+     * @param color  the base SGR color number (0-7)
+     * @param bright {@code true} for the bright ({@code 9X}) variant, {@code false} for standard ({@code 3X})
+     */
     AnsiColors(final String code, final Integer color, final boolean bright) {
         this.code = code;
         this.ansi = "[" + (bright ? "9" : "3") + color + "m";
     }
 
+    /**
+     * Builds a constant from an explicit, already-complete ANSI escape sequence - used for
+     * {@link #RESET} and the text-style constants, which don't fit the color/bright pattern.
+     *
+     * @param code the legacy ansi code this constant is triggered by
+     * @param ansi the full ANSI escape sequence (e.g. {@code "[1m"})
+     */
     AnsiColors(final String code, final String ansi) {
         this.code = code;
         this.ansi = ansi;

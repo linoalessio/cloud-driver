@@ -25,11 +25,19 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class InMemoryKeyEncryptionService implements KeyEncryptionService {
 
+    /** JCA cipher transformation used to wrap/unwrap data-encryption keys under a key-encryption key. */
     private static final String WRAP_TRANSFORMATION = "AESWrapPad";
+
+    /** Length, in bytes, of each freshly generated key-encryption key's material. */
     private static final int KEY_ENCRYPTION_KEY_LENGTH_BYTES = CryptoAlgorithm.AES_256_GCM.keyLengthBytes();
 
+    /** Source of the random key material {@link #rotate()} draws from. */
     private final SecureRandom secureRandom = new SecureRandom();
+
+    /** Every retained key-encryption key's raw material, keyed by its id - superseded keys are kept so old wrapped data stays unwrappable. */
     private final Map<String, byte[]> keyEncryptionKeys = new ConcurrentHashMap<>();
+
+    /** Id of the key-encryption key currently used for new {@link #wrap} calls. */
     private volatile String activeKeyId;
 
     /**

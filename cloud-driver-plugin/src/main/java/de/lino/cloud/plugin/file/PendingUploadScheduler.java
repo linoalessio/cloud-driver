@@ -35,9 +35,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class PendingUploadScheduler {
 
+    /** The factory retried uploads are attempted against, via {@code registerAsync}. */
     private final DataFactory dataFactory;
+    /** The cache polled and drained on every tick. */
     private final PendingUploadCache pendingUploadCache;
+    /** Reports whether connectivity is currently available. */
     private final ConnectivityChecker connectivityChecker;
+    /** Single-thread, daemon-backed executor driving the tick schedule. */
     private final ScheduledExecutorService scheduledExecutorService;
 
     /** Guards against a tick starting a second, concurrent flush while one is still running. */
@@ -98,6 +102,11 @@ public final class PendingUploadScheduler {
         this.scheduledExecutorService.shutdown();
     }
 
+    /**
+     * One scheduled check: does nothing if {@link #pendingUploadCache} is empty or {@link
+     * #connectivityChecker} reports unavailable, and does nothing if a flush is already in
+     * progress (guarded by {@link #flushing}); otherwise runs {@link #flushPending()}.
+     */
     private void tick() {
 
         if (this.pendingUploadCache.isEmpty()) return;
@@ -112,6 +121,10 @@ public final class PendingUploadScheduler {
 
     }
 
+    /**
+     * Snapshots {@link #pendingUploadCache} and retries every queued file concurrently via
+     * {@link #retryUpload}, blocking until every retry has completed (success or failure).
+     */
     private void flushPending() {
         final List<StoredFile> snapshot = this.pendingUploadCache.snapshot();
         final List<CompletableFuture<Void>> retries = snapshot.stream().map(this::retryUpload).toList();
@@ -119,9 +132,14 @@ public final class PendingUploadScheduler {
     }
 
     /**
-     * Retries {@code file} via {@link DataFactory#registerAsync}, removing it
-     * from the cache on success. Failures are swallowed (the future still
-     * completes normally) so one failing retry doesn't abort the whole flush.
+     * Retries {@code file} via {@link DataFactory#registerAsync}, removing it from {@link
+     * #pendingUploadCache} and dispatching a {@link PendingUploadEvent} through the {@link
+     * CloudDriver#getInstance()}'s {@code EventFactory} on success. Failures are swallowed
+     * (the returned future still completes normally) so one failing retry doesn't abort the
+     * whole flush - the file is simply left queued for the next tick.
+     *
+     * @param file the file to retry
+     * @return a future that completes once this file's retry has finished, success or failure
      */
     private CompletableFuture<Void> retryUpload(final StoredFile file) {
         return this.dataFactory.registerAsync(file)
@@ -132,6 +150,13 @@ public final class PendingUploadScheduler {
                 .exceptionally(stillFailing -> null);
     }
 
+    /**
+     * Builds a {@link ThreadFactory} producing a single, named, daemon thread
+     * ({@code "pending-upload-scheduler"}) for {@link #scheduledExecutorService}, so this
+     * scheduler never by itself keeps the JVM alive.
+     *
+     * @return a daemon-thread-producing factory
+     */
     private static ThreadFactory daemonThreadFactory() {
         return runnable -> {
             final Thread thread = new Thread(runnable, "pending-upload-scheduler");

@@ -10,10 +10,16 @@ import java.util.regex.Pattern;
  */
 public final class SecretRedactor {
 
+    /** The fixed placeholder every match is replaced with. */
     private static final String REPLACEMENT = "[REDACTED]";
 
+    /** Matches an {@code Authorization: Bearer <token>}-style bearer token value (case-insensitive), keeping the {@code "bearer "} prefix. */
     private static final Pattern BEARER_TOKEN = Pattern.compile("(?i)(bearer\\s+)[A-Za-z0-9\\-._~+/]+=*");
+
+    /** Matches a whole {@code authorization: ...} header line (case-insensitive), keeping the {@code "authorization:"} prefix. */
     private static final Pattern AUTHORIZATION_HEADER = Pattern.compile("(?i)(authorization\\s*:\\s*)\\S+.*");
+
+    /** Matches a common secret query-string parameter's value (e.g. {@code ?api_key=...}, {@code &token=...}), keeping the {@code name=} prefix. */
     private static final Pattern QUERY_STRING_SECRET =
             Pattern.compile("(?i)([?&](?:api[_-]?key|token|secret|password|client_secret)=)[^&\\s]+");
 

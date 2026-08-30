@@ -15,6 +15,7 @@ import java.util.logging.LogRecord;
  */
 public final class TerminalLogHandler extends Handler {
 
+    /** The terminal every published record is routed through. */
     private final Terminal terminal;
 
     /**

@@ -32,7 +32,10 @@ import java.util.UUID;
  */
 public final class CloudUserService implements ICloudUserService {
 
+    /** Persists/looks up {@link CloudUser} and {@link StoredFileOwnership} rows. */
     private final DataFactory dataFactory;
+
+    /** Uploads/downloads/deletes the underlying {@link StoredFile} content. */
     private final FileFactory fileFactory;
 
     /**

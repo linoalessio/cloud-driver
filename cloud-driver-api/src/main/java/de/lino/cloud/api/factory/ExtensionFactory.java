@@ -99,6 +99,22 @@ public abstract class ExtensionFactory {
         return ordered;
     }
 
+    /**
+     * Depth-first visits {@code extension} and every extension it
+     * (transitively) depends on, appending each to {@code ordered} only
+     * after all of its own dependencies have already been appended - the
+     * core step of {@link #dependencyOrder()}'s topological sort. A
+     * dependency name with no registered match is silently skipped here
+     * (left for {@link #start} to reject later). Already-visited extensions
+     * are skipped; an extension still on the current DFS path being
+     * revisited indicates a dependency cycle.
+     *
+     * @param extension the extension to visit
+     * @param visited names already fully processed and appended to {@code ordered}
+     * @param visiting names currently on the DFS call stack, used for cycle detection
+     * @param ordered the output list being built in dependency order
+     * @throws IllegalStateException if {@code extension}'s dependencies form a cycle back to itself
+     */
     private void visit(final Extension extension, final Set<String> visited, final Set<String> visiting, final List<Extension> ordered) {
         final String name = extension.getExtensionProperties().getExtensionName();
 
@@ -170,6 +186,15 @@ public abstract class ExtensionFactory {
         return MultiTaskingFactory.getInstance().runAsync(() -> start(extension, args));
     }
 
+    /**
+     * Checks that every dependency {@code properties} declares is both
+     * registered and currently {@link ExtensionStatus#RUNNING}, called by
+     * {@link #start} before driving an extension through {@code onLoading}/
+     * {@code onRunning}.
+     *
+     * @param properties the properties of the extension whose dependencies to check
+     * @throws IllegalStateException if a declared dependency is not registered, or is registered but not yet running
+     */
     private void requireDependenciesRunning(final ExtensionProperties properties) {
 
         for (final String dependencyName : properties.getDependencies()) {

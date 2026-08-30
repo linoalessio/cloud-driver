@@ -19,6 +19,7 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class InMemoryPendingUploadCache implements PendingUploadCache {
 
+    /** Queued files, keyed by {@link StoredFile#fileId()}; no TTL/size bound, loader unreachable in normal operation. */
     private final Cache<String, StoredFile> cache =
             Caches.newCache(InMemoryPendingUploadCache::unreachableLoader, null, -1);
 
@@ -83,6 +84,9 @@ public final class InMemoryPendingUploadCache implements PendingUploadCache {
      * Never actually invoked - a file only ever enters this cache via
      * {@link #enqueue}. Fails loudly rather than returning {@code null}, in
      * case a future caller mistakenly calls {@link Cache#get} on this cache.
+     *
+     * @param fileId the id a caller mistakenly tried to load
+     * @return a future that always fails with {@link UnsupportedOperationException}
      */
     private static CompletableFuture<StoredFile> unreachableLoader(final String fileId) {
         return CompletableFuture.failedFuture(new UnsupportedOperationException(

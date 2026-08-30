@@ -24,11 +24,19 @@ import de.lino.cloud.api.utility.Asserts;
  */
 public final class EnvelopeEncryptionService {
 
+    /** Version tag stamped into every {@link EnvelopeEncryptedPayload} produced by {@link #encrypt}. */
     private static final int SCHEMA_VERSION = 1;
 
+    /** Generates the fresh data-encryption key used by each {@link #encrypt} call. */
     private final DataEncryptionKeyGenerator dataEncryptionKeyGenerator;
+
+    /** Encrypts/decrypts payloads under a data-encryption key. */
     private final AeadEncryptionService aeadEncryptionService;
+
+    /** Wraps/unwraps data-encryption keys under the active key-encryption key. */
     private final KeyEncryptionService keyEncryptionService;
+
+    /** Algorithm used to generate each fresh data-encryption key. */
     private final CryptoAlgorithm dataEncryptionKeyAlgorithm;
 
     /**
