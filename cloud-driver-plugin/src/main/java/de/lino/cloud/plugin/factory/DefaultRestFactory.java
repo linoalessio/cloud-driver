@@ -143,7 +143,7 @@ public final class DefaultRestFactory extends RestFactory {
     /** Paths with a {@code DELETE} handler registered via {@link #delete}. */
     private final Map<String, Class<? extends Serialized>> deleteResources = Maps.newHashMap();
 
-    /** The running Javalin app, or {@code null} before {@link #start} / after {@link #stop}. */
+    /** The running Javalin desktop, or {@code null} before {@link #start} / after {@link #stop}. */
     private volatile Javalin app;
 
     /**
@@ -298,7 +298,7 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Builds the Javalin app from every route registered so far and starts listening on
+     * Builds the Javalin desktop from every route registered so far and starts listening on
      * {@code host}:{@code port} - see {@link RestFactory#start(String, int)}'s own Javadoc for
      * why {@code host} matters (plain HTTP, no TLS). Silences Javalin's/Jetty's own logging
      * entirely before doing so - see {@link #silenceJavalinLogging}.
@@ -347,7 +347,7 @@ public final class DefaultRestFactory extends RestFactory {
         this.app.start(host, port);
     }
 
-    /** Stops the running Javalin app, if any. Idempotent. */
+    /** Stops the running Javalin desktop, if any. Idempotent. */
     @Override
     public void stop() {
         if (this.app != null) {
@@ -364,7 +364,7 @@ public final class DefaultRestFactory extends RestFactory {
      *     the "Javalin started" line, and anything else it logs directly), set {@code false}
      *     wholesale rather than {@link JavalinLogger#startupInfo} alone (which only covers
      *     the startup line). A plain flag Javalin checks on every log call, so setting it
-     *     here - right before {@link #start} builds the app - always takes effect.</li>
+     *     here - right before {@link #start} builds the desktop - always takes effect.</li>
      *     <li>Jetty's own server/connector logging, which goes through SLF4J directly, not
      *     through {@code JavalinLogger}. This module's {@code slf4j-simple} binding is
      *     already silenced wholesale via {@code src/main/resources/simplelogger.properties}

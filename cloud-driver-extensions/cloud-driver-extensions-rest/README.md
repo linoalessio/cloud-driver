@@ -94,7 +94,7 @@ mvn -pl cloud-driver-extensions/cloud-driver-extensions-rest -am package
 ```
 
 Once registered and running, a client talks to it purely over HTTP - see
-`cloud-driver-platform-rest`'s `ApiClient` for a full Java HTTP client built against these exact
+`cloud-driver-platforms-rest`'s `ApiClient` for a full Java HTTP client built against these exact
 routes, or call them directly:
 
 ```

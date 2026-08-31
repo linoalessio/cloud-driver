@@ -43,7 +43,7 @@ public class DispatchCommand implements Command {
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
-        if (arguments.length() == 0) {
+        if (arguments.isEmpty()) {
             this.terminal().displayApproved("&fdispatch <service> [args...]");
             return;
         }

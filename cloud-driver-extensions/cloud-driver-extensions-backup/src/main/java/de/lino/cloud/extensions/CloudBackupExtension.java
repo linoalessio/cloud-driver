@@ -56,6 +56,8 @@ public class CloudBackupExtension extends Extension {
     @Override
     public void onEnding() {
 
+        if (this.backupScheduler != null) this.backupScheduler.shutdown();
+
     }
 
     /**
@@ -66,6 +68,7 @@ public class CloudBackupExtension extends Extension {
     @Override
     public void onException(RuntimeException reason) {
 
+        if (this.backupScheduler != null) this.backupScheduler.shutdown();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud backup extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 

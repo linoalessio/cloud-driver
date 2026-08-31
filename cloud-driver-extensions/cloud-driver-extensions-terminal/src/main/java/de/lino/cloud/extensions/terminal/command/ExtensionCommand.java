@@ -56,7 +56,7 @@ public class ExtensionCommand implements Command {
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
-        if (arguments.length() == 0) {
+        if (arguments.isEmpty()) {
             this.sendHelp();
             return;
         }

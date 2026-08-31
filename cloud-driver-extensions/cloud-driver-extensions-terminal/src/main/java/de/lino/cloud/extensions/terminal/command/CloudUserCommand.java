@@ -2,7 +2,6 @@ package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.file.StoredFile;
-import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUser;
@@ -12,6 +11,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CloudUserCommand implements Command {
 
@@ -33,14 +33,13 @@ public class CloudUserCommand implements Command {
     @Override
     public void execute(@NotNull CommandArguments arguments) {
 
-        if (arguments.length() == 0) {
+        if (arguments.isEmpty()) {
             this.sendHelp();
             return;
         }
 
         final Terminal terminal = this.terminal();
         final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
-        final IAuthService authService = CloudDriver.getInstance().getServiceContainer().getAuthService();
 
         if (arguments.hasCommand(0, "list")) {
 

@@ -94,6 +94,13 @@ public interface Command {
         }
 
         /**
+         * @return {@code true} if {@code args.length} is zero
+         */
+        public boolean isEmpty() {
+            return this.args.length == 0;
+        }
+
+        /**
          * @param index the argument position to check
          * @return {@code true} if {@code index} is negative or not less than {@link #length()}
          */

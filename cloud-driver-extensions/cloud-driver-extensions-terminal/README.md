@@ -42,7 +42,7 @@ Depends only on `"cloud-driver-bootstrap"` being registered and `RUNNING` first.
 | `HelpCommand` | `help`/`?`/`h` | Lists every registered command, its aliases, and description |
 | `ClearCommand` | `clear`/`clc` | Clears the screen and reprints the banner |
 | `ExtensionCommand` | `extensions`/`extension`/`ext` | `list`/`info <name>`/`start <name>`/`stop <name>` against `ExtensionFactory` |
-| `AboutCommand` | `about`/`ab` | Prints uptime, uploaded file count, and used storage |
+| `StatisticsCommand` | `about`/`ab` | Prints uptime, uploaded file count, and used storage |
 | `LeaveCommand` | `screen-leave`/`l`/`sl` | Detaches the current `screen` session without killing it |
 | `DispatchCommand` | `dispatch`/`exec`/`sudo`/`d` | Runs an arbitrary shell command via `ProcessBuilder`, streaming its output |
 
@@ -52,7 +52,7 @@ Depends only on `"cloud-driver-bootstrap"` being registered and `RUNNING` first.
 
 - **`CloudTerminalExtension`** (`de.lino.cloud.extensions.terminal`) - the extension; resolves `CommandService` once at field-initialization time via `this.cloudDriver().getTerminal().getCommandService()`.
 - **`command/`** - one class per `Command`:
-  - `ExitCommand`, `HelpCommand`, `ClearCommand`, `AboutCommand` - simple, single-purpose, no sub-arguments.
+  - `ExitCommand`, `HelpCommand`, `ClearCommand`, `StatisticsCommand` - simple, single-purpose, no sub-arguments.
   - `ExtensionCommand` - the one command with real sub-argument dispatch (`list`/`info`/`start`/`stop`), and the only one that mutates extension lifecycle state from the terminal; refuses to `start`/`stop` `"cloud-driver-bootstrap"` itself.
   - `DispatchCommand`/`LeaveCommand` - shell out via `ProcessBuilder` (an arbitrary command, and `screen -X -S $STY detach`, respectively); both stream output and interpret exit codes rather than blocking silently.
 
