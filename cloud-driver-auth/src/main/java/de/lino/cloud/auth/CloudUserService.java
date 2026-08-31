@@ -5,6 +5,7 @@ import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
@@ -99,8 +100,7 @@ public final class CloudUserService implements ICloudUserService {
             final Optional<AuthUser> authUser = this.dataFactory.getEntities(AuthUser.class).stream()
                     .filter(user -> user.getEmailAddress().equals(emailAddress))
                     .findFirst();
-            if (authUser.isEmpty()) return Optional.empty();
-            return this.getCloudUser(authUser.get().getId());
+            return authUser.flatMap(user -> this.getCloudUser(user.getId()));
 
         } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.getCloudUserByEmail: failed to look up CloudUser for " + emailAddress, e);
@@ -227,7 +227,7 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         try {
-            this.dataFactory.register(new StoredFileOwnership(authUserId, storedFile.fileId(), folderId));
+            this.dataFactory.register(StoredFileOwnership.of(authUserId, storedFile, folderId));
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(
                     "@CloudUserService.uploadFile: failed to track ownership of " + storedFile.fileId() + " for " + authUserId, e
@@ -308,6 +308,104 @@ public final class CloudUserService implements ICloudUserService {
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.resolveFilesWithFolder: failed to download files", e);
+        }
+    }
+
+    /**
+     * Same as {@link #listFilesWithFolder(String)}, but without any file's content - just each
+     * {@link StoredFileOwnership} row's own recorded name/size/content-type/timestamps/folder.
+     * Unlike {@link #listFilesWithFolder(String)}/{@link #listFiles(String)}, this never calls
+     * {@link FileFactory#download} at all: every {@link StoredFileOwnership} row already carries
+     * its own file's descriptive fields (captured once, at upload time - see {@link
+     * StoredFileOwnership#hasMetadata()}), so building a listing is just reading rows this method
+     * already scans regardless. This is the efficient path for rendering a file list; reach for
+     * {@link #listFilesWithFolder(String)} only once a specific file's actual content is needed.
+     *
+     * @param authUserId the user whose files should be listed
+     * @return a {@link StoredFileSummary} for every file currently tracked as belonging to {@code authUserId}
+     */
+    @NonNull
+    @Override
+    public List<StoredFileSummary> listFileSummaries(@NonNull final String authUserId) {
+        return this.resolveFileSummaries(this.ownedFileOwnerships(authUserId));
+    }
+
+    /**
+     * Same as {@link #listFileSummaries(String)}, filtered to only the files directly inside {@code folderId}.
+     *
+     * @param authUserId the user whose files should be listed
+     * @param folderId the folder to list files from, or {@code null} for the root
+     * @return a {@link StoredFileSummary} for every file directly inside {@code folderId} (or the root) that belongs to {@code authUserId}
+     */
+    @NonNull
+    @Override
+    public List<StoredFileSummary> listFileSummaries(@NonNull final String authUserId, @Nullable final String folderId) {
+        final List<StoredFileOwnership> filtered = this.ownedFileOwnerships(authUserId).stream()
+                .filter(ownership -> Objects.equals(ownership.getFolderId(), folderId))
+                .toList();
+        return this.resolveFileSummaries(filtered);
+    }
+
+    /** {@link #resolveFileSummary}, applied to every entry. */
+    private List<StoredFileSummary> resolveFileSummaries(final List<StoredFileOwnership> ownerships) {
+        return ownerships.stream().map(this::resolveFileSummary).toList();
+    }
+
+    /**
+     * Builds one {@link StoredFileSummary} straight from {@code ownership}'s own fields - unless
+     * it predates metadata capture ({@link StoredFileOwnership#hasMetadata()} {@code false}), in
+     * which case this falls back to downloading the full {@link StoredFile} exactly once,
+     * persisting a {@link StoredFileOwnership#withMetadata(StoredFile)} copy so every later call
+     * for this same row takes the fast, no-download path.
+     */
+    private StoredFileSummary resolveFileSummary(final StoredFileOwnership ownership) {
+        final String storedFileId = ownership.getStoredFileId();
+        StoredFileOwnership resolved = ownership;
+        if (!resolved.hasMetadata()) {
+            final StoredFile file;
+            try {
+                file = this.fileFactory.findById(storedFileId)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "@CloudUserService.resolveFileSummary: owned file not found: " + storedFileId));
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+                throw new RuntimeException(
+                        "@CloudUserService.resolveFileSummary: failed to backfill metadata for " + storedFileId, e);
+            }
+            resolved = resolved.withMetadata(file);
+            try {
+                this.dataFactory.update(resolved);
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException(
+                        "@CloudUserService.resolveFileSummary: failed to persist backfilled metadata for " + storedFileId, e);
+            }
+        }
+        return new StoredFileSummary(resolved.getStoredFileId(), resolved.getFileName(), resolved.getContentType(),
+                resolved.getSizeBytes(), resolved.getCreatedAtEpochMilli(), resolved.getUpdatedAtEpochMilli(), resolved.getFolderId());
+    }
+
+    /**
+     * Fetches one file's full content, paired with its current folder placement - unlike {@link
+     * #listFileSummaries(String)}, this does pay the decrypt/decompress cost {@link
+     * FileFactory#findById} incurs, the same cost {@link #listFilesWithFolder(String)} pays for
+     * every entry it returns; only reach for this once a specific file's actual content is needed
+     * (e.g. the user opened/downloaded it).
+     *
+     * @param authUserId the requesting user's id, checked against the ownership record
+     * @param storedFileId the file to fetch
+     * @return the file's full content, paired with its current folder
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     */
+    @NonNull
+    @Override
+    public FileWithFolder getFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+        try {
+            final StoredFile file = this.fileFactory.findById(storedFileId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "@CloudUserService.getFile: owned file not found: " + storedFileId));
+            return new FileWithFolder(file, ownership.getFolderId());
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.getFile: failed to download " + storedFileId, e);
         }
     }
 
@@ -507,7 +605,11 @@ public final class CloudUserService implements ICloudUserService {
         this.requireOwnedFolder(authUserId, folderId);
 
         final boolean hasChildFolders = !this.listFolders(authUserId, folderId).isEmpty();
-        final boolean hasChildFiles = !this.listFilesWithFolder(authUserId, folderId).isEmpty();
+        // A plain ownership-row check, not listFilesWithFolder(...).isEmpty() - this only needs a
+        // yes/no answer, so there's no reason to download and decrypt every file's content just to
+        // count them.
+        final boolean hasChildFiles = this.ownedFileOwnerships(authUserId).stream()
+                .anyMatch(ownership -> Objects.equals(ownership.getFolderId(), folderId));
         if (hasChildFolders || hasChildFiles) {
             throw new IllegalStateException("@CloudUserService.deleteFolder: " + folderId + " is not empty");
         }

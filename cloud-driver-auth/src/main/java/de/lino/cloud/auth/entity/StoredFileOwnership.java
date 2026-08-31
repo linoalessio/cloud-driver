@@ -54,6 +54,28 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     private final String folderId;
 
     /**
+     * {@code storedFileId}'s {@link StoredFile#fileName()}, captured at upload time so a listing
+     * (see {@link CloudUserService#listFileSummaries}) never needs to decrypt the full {@link
+     * StoredFile} just to render a list entry. {@code null} only for a row written before this
+     * metadata was captured at all - see {@link #hasMetadata()}.
+     */
+    @Nullable
+    private final String fileName;
+
+    /** {@code storedFileId}'s {@link StoredFile#contentType()} - see {@link #fileName} for the {@code null} case. */
+    @Nullable
+    private final String contentType;
+
+    /** {@code storedFileId}'s {@link StoredFile#sizeBytes()}. Only meaningful when {@link #hasMetadata()}. */
+    private final long sizeBytes;
+
+    /** {@code storedFileId}'s {@link StoredFile#createdAt()}, as epoch millis. Only meaningful when {@link #hasMetadata()}. */
+    private final long createdAtEpochMilli;
+
+    /** {@code storedFileId}'s {@link StoredFile#updatedAt()}, as epoch millis. Only meaningful when {@link #hasMetadata()}. */
+    private final long updatedAtEpochMilli;
+
+    /**
      * Same as {@link #StoredFileOwnership(String, String, String)}, placing the file at the root
      * ({@code folderId} {@code null}).
      *
@@ -65,24 +87,95 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     }
 
     /**
+     * Same as {@link #StoredFileOwnership(String, String, String, String, String, long, long, long)},
+     * leaving every metadata field unset - only appropriate when the caller has no {@link
+     * StoredFile} in hand yet (e.g. a purely-structural row); prefer the full constructor whenever
+     * one is available, since {@link #hasMetadata()} otherwise stays {@code false} until a later
+     * caller backfills it via {@link #withMetadata(StoredFile)}.
+     *
      * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
      * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
      */
     public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
                                 @Nullable final String folderId) {
+        this(authUserId, storedFileId, folderId, null, null, 0L, 0L, 0L);
+    }
+
+    /**
+     * Full constructor, additionally capturing {@code fileName}/{@code contentType}/{@code
+     * sizeBytes}/timestamps from the {@link StoredFile} being tracked - see {@link #fileName}'s
+     * own Javadoc for why. Prefer {@link #StoredFileOwnership(String, String, String, StoredFile)}
+     * when a {@link StoredFile} instance is directly in hand.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     * @param fileName {@code storedFileId}'s {@link StoredFile#fileName()}, or {@code null} if unknown
+     * @param contentType {@code storedFileId}'s {@link StoredFile#contentType()}, or {@code null} if unknown
+     * @param sizeBytes {@code storedFileId}'s {@link StoredFile#sizeBytes()}
+     * @param createdAtEpochMilli {@code storedFileId}'s {@link StoredFile#createdAt()}, as epoch millis
+     * @param updatedAtEpochMilli {@code storedFileId}'s {@link StoredFile#updatedAt()}, as epoch millis
+     */
+    public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
+                                @Nullable final String folderId, @Nullable final String fileName,
+                                @Nullable final String contentType, final long sizeBytes,
+                                final long createdAtEpochMilli, final long updatedAtEpochMilli) {
         this.authUserId = Objects.requireNonNull(authUserId, "@StoredFileOwnership.init: authUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@StoredFileOwnership.init: storedFileId cannot be null");
         this.folderId = folderId;
+        this.fileName = fileName;
+        this.contentType = contentType;
+        this.sizeBytes = sizeBytes;
+        this.createdAtEpochMilli = createdAtEpochMilli;
+        this.updatedAtEpochMilli = updatedAtEpochMilli;
+    }
+
+    /**
+     * Same as the full constructor, reading every metadata field directly off {@code file} instead
+     * of requiring the caller to unpack it first.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param file the file being tracked as owned - {@link StoredFile#fileId()} becomes {@link #storedFileId}
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     * @return a fresh {@code StoredFileOwnership} row for {@code file}
+     */
+    @NotNull
+    public static StoredFileOwnership of(@NotNull final String authUserId, @NotNull final StoredFile file, @Nullable final String folderId) {
+        return new StoredFileOwnership(authUserId, file.fileId(), folderId, file.fileName(), file.contentType(),
+                file.sizeBytes(), file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli());
     }
 
     /**
      * @param newFolderId the {@link Folder#getFolderId()} to move this file into, or {@code null} for the root
-     * @return a copy of this row with {@link #folderId} changed to {@code newFolderId}
+     * @return a copy of this row with {@link #folderId} changed to {@code newFolderId}, every other field (metadata included) carried over unchanged
      */
     @NotNull
     public StoredFileOwnership movedTo(@Nullable final String newFolderId) {
-        return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId);
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId,
+                this.fileName, this.contentType, this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli);
+    }
+
+    /**
+     * @return {@code true} once this row carries {@link #fileName}/{@link #contentType}/etc. -
+     * {@code false} only for a row written before this metadata existed at all, in which case a
+     * caller (see {@link CloudUserService#listFileSummaries}) falls back to fetching the full
+     * {@link StoredFile} once and backfilling it via {@link #withMetadata(StoredFile)}.
+     */
+    public boolean hasMetadata() {
+        return this.fileName != null;
+    }
+
+    /**
+     * @param file the full {@link StoredFile} this row tracks ownership of ({@link
+     * StoredFile#fileId()} must equal {@link #storedFileId})
+     * @return a copy of this row with every metadata field populated from {@code file}
+     */
+    @NotNull
+    public StoredFileOwnership withMetadata(@NotNull final StoredFile file) {
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId,
+                file.fileName(), file.contentType(), file.sizeBytes(),
+                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli());
     }
 
     /**

@@ -40,12 +40,13 @@ public final class Dtos {
     }
 
     /**
-     * Shape of one entry in the {@code GET /files} response array, and of the object
-     * {@code POST /files} returns on success. Mirrors {@code StoredFile}'s Gson-serialized
-     * fields; {@code checksum} is left as a raw {@code String} here since the client only
-     * needs {@code fileId}/{@code fileName}/{@code contentBase64} to download and save a file.
-     * {@code folderId} is not a {@code StoredFile} field at all - the server merges it in from
-     * the file's {@code StoredFileOwnership} row (see {@code DefaultRestFactory#toJsonArray}) -
+     * Shape of the object {@code POST /files} and {@code GET /files/{id}} return on success -
+     * <b>not</b> {@code GET /files}'s own listing, which returns {@link StoredFileSummaryResponse}
+     * instead (see that record's Javadoc). Mirrors {@code StoredFile}'s Gson-serialized fields;
+     * {@code checksum} is left out entirely here since the client only needs {@code
+     * fileId}/{@code fileName}/{@code contentBase64} to download and save a file. {@code
+     * folderId} is not a {@code StoredFile} field at all - the server merges it in from the
+     * file's {@code StoredFileOwnership} row (see {@code DefaultRestFactory#toJsonObject}) -
      * {@code null} for a file at the root.
      */
     public record StoredFileResponse(
@@ -54,6 +55,24 @@ public final class Dtos {
             String contentType,
             String contentBase64,
             boolean contentCompressed,
+            long createdAtEpochMilli,
+            long updatedAtEpochMilli,
+            String folderId
+    ) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files} response array - a file's descriptive fields
+     * plus its folder placement, deliberately without content (mirrors the server's {@code
+     * StoredFileSummary}). Fetch a specific file's full content afterwards via {@code
+     * GET /files/{id}} ({@link ApiClient#downloadFile}), which returns a {@link
+     * StoredFileResponse} instead.
+     */
+    public record StoredFileSummaryResponse(
+            String fileId,
+            String fileName,
+            String contentType,
+            long sizeBytes,
             long createdAtEpochMilli,
             long updatedAtEpochMilli,
             String folderId

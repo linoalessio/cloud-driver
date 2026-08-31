@@ -11,6 +11,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 
 import java.io.Closeable;
@@ -68,12 +69,13 @@ import java.util.stream.StreamSupport;
  * cloud-driver-platform-desktop}), not the calling thread itself. Both forms share one {@link
  * #parseResponse} for response handling, so behavior never drifts between them.
  *
- * <p>Response bodies are read via {@link BodyHandlers#ofInputStream()}, never {@code ofString()}:
- * for {@link #listFiles()}/{@link #listFilesAsync()} this avoids materializing the entire {@code
- * GET /files} response (every owned file's full base64 content, in one JSON array with no
- * pagination - see {@code CloudUserService#listFiles} server-side) as a single {@code String}
- * before Gson even starts parsing it. {@link #listFilesStream()} goes further and never
- * materializes the array at all - see its own Javadoc.
+ * <p>Response bodies are read via {@link BodyHandlers#ofInputStream()}, never {@code ofString()}.
+ * {@code GET /files} itself returns lightweight {@link StoredFileSummaryResponse} entries with no
+ * content at all (see {@code CloudUserService#listFileSummaries} server-side) - {@link
+ * #listFiles()}/{@link #listFilesAsync()}/{@link #listFilesStream()} never touch a single file's
+ * content just to list it; fetch a specific file's full base64 content afterwards via {@link
+ * #downloadFile(String)}. {@link #listFilesStream()} still avoids materializing the whole
+ * response array at once - see its own Javadoc.
  *
  * <p>{@link #uploadFile(Path)}/{@link #uploadFileAsync(Path)} stream the request body straight
  * from disk via {@link BodyPublishers#ofFile}, rather than requiring the caller to first read the
@@ -422,41 +424,41 @@ public final class ApiClient implements AutoCloseable {
     // --- files: list ------------------------------------------------------
 
     /**
-     * {@code GET /files} on the main REST API - every file tracked as owned by the
-     * authenticated caller, fully materialized as a {@link List} once the whole response has
-     * arrived. Prefer {@link #listFilesStream()} if the caller only needs to process files one at
-     * a time (e.g. saving each to disk) and would rather not wait for/hold the entire response -
-     * including every owned file's full base64 content, in one JSON array with no pagination -
-     * in memory at once.
+     * {@code GET /files} on the main REST API - every file tracked as owned by the authenticated
+     * caller, as lightweight {@link StoredFileSummaryResponse} entries (no content) fully
+     * materialized as a {@link List} once the whole response has arrived. Prefer {@link
+     * #listFilesStream()} if the caller only needs to process entries one at a time and would
+     * rather not wait for the entire response at once. Fetch a specific file's full content via
+     * {@link #downloadFile(String)} once actually needed.
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
-    public List<StoredFileResponse> listFiles() throws ApiException {
-        final StoredFileResponse[] files = this.send(this.listFilesRequest(), StoredFileResponse[].class);
+    public List<StoredFileSummaryResponse> listFiles() throws ApiException {
+        final StoredFileSummaryResponse[] files = this.send(this.listFilesRequest(), StoredFileSummaryResponse[].class);
         return List.of(files);
     }
 
     /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<List<StoredFileResponse>> listFilesAsync() {
-        return this.sendAsync(this.listFilesRequest(), StoredFileResponse[].class).thenApply(List::of);
+    public CompletableFuture<List<StoredFileSummaryResponse>> listFilesAsync() {
+        return this.sendAsync(this.listFilesRequest(), StoredFileSummaryResponse[].class).thenApply(List::of);
     }
 
     /**
      * Same route as {@link #listFiles()}, scoped to just one folder's direct contents instead of
      * every file the caller owns - {@code folderId} {@code null} lists the root's own files.
-     * Every {@link StoredFileResponse#folderId()} in the result equals {@code folderId} (or is
-     * {@code null}, for a root listing).
+     * Every {@link StoredFileSummaryResponse#folderId()} in the result equals {@code folderId}
+     * (or is {@code null}, for a root listing).
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
-    public List<StoredFileResponse> listFiles(final String folderId) throws ApiException {
-        final StoredFileResponse[] files = this.send(this.listFilesRequest(folderId), StoredFileResponse[].class);
+    public List<StoredFileSummaryResponse> listFiles(final String folderId) throws ApiException {
+        final StoredFileSummaryResponse[] files = this.send(this.listFilesRequest(folderId), StoredFileSummaryResponse[].class);
         return List.of(files);
     }
 
     /** Async form of {@link #listFiles(String)} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<List<StoredFileResponse>> listFilesAsync(final String folderId) {
-        return this.sendAsync(this.listFilesRequest(folderId), StoredFileResponse[].class).thenApply(List::of);
+    public CompletableFuture<List<StoredFileSummaryResponse>> listFilesAsync(final String folderId) {
+        return this.sendAsync(this.listFilesRequest(folderId), StoredFileSummaryResponse[].class).thenApply(List::of);
     }
 
     private HttpRequest listFilesRequest(final String folderId) {
@@ -468,10 +470,10 @@ public final class ApiClient implements AutoCloseable {
      * Same route as {@link #listFiles()}, but never materializes the full response as one JSON
      * array or {@code byte[]}/{@code String}: the returned {@link Stream} is backed by a {@link
      * JsonReader} incrementally parsing directly off the still-open HTTP response body, one
-     * {@link StoredFileResponse} at a time, as bytes arrive on the wire. This both bounds peak
-     * memory to roughly one file's worth of content (instead of every owned file's content at
-     * once) and lets a caller start acting on the first file before the rest have even arrived -
-     * useful once an account has many/large files.
+     * {@link StoredFileSummaryResponse} at a time, as bytes arrive on the wire. Since each entry
+     * already carries no content, this mainly bounds peak memory against a very large file count
+     * rather than large file sizes, and lets a caller start acting on the first entry before the
+     * rest have even arrived.
      *
      * <p><b>The caller must close the returned {@link Stream}</b> (a try-with-resources block, or
      * an explicit {@code close()}/{@link Stream#onClose}) once done consuming it, even if not
@@ -485,7 +487,7 @@ public final class ApiClient implements AutoCloseable {
      *                       unchecked {@link UncheckedIOException} from that terminal operation,
      *                       since {@link Iterator#next()} cannot declare a checked exception
      */
-    public Stream<StoredFileResponse> listFilesStream() throws ApiException {
+    public Stream<StoredFileSummaryResponse> listFilesStream() throws ApiException {
         final HttpRequest request = this.listFilesRequest();
         final HttpResponse<InputStream> response;
         try {
@@ -509,7 +511,7 @@ public final class ApiClient implements AutoCloseable {
         return streamJsonArray(response.body());
     }
 
-    private static Stream<StoredFileResponse> streamJsonArray(final InputStream body) throws ApiException {
+    private static Stream<StoredFileSummaryResponse> streamJsonArray(final InputStream body) throws ApiException {
         final JsonReader jsonReader = new JsonReader(new InputStreamReader(body, StandardCharsets.UTF_8));
         try {
             jsonReader.beginArray();
@@ -518,7 +520,7 @@ public final class ApiClient implements AutoCloseable {
             throw new ApiException(0, "malformed response body", e);
         }
 
-        final Spliterator<StoredFileResponse> spliterator = Spliterators.spliteratorUnknownSize(
+        final Spliterator<StoredFileSummaryResponse> spliterator = Spliterators.spliteratorUnknownSize(
                 new JsonArrayIterator(jsonReader), Spliterator.ORDERED | Spliterator.NONNULL
         );
         return StreamSupport.stream(spliterator, false).onClose(() -> closeQuietly(jsonReader));
@@ -528,8 +530,8 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files"), true).GET().build();
     }
 
-    /** Lazily pulls one {@link StoredFileResponse} at a time off an open {@link JsonReader} positioned inside a JSON array. */
-    private static final class JsonArrayIterator implements Iterator<StoredFileResponse> {
+    /** Lazily pulls one {@link StoredFileSummaryResponse} at a time off an open {@link JsonReader} positioned inside a JSON array. */
+    private static final class JsonArrayIterator implements Iterator<StoredFileSummaryResponse> {
 
         private final JsonReader jsonReader;
         private Boolean hasNextCache;
@@ -554,15 +556,39 @@ public final class ApiClient implements AutoCloseable {
         }
 
         @Override
-        public StoredFileResponse next() {
+        public StoredFileSummaryResponse next() {
             if (!this.hasNext()) {
                 throw new NoSuchElementException();
             }
-            final StoredFileResponse value = GSON.fromJson(this.jsonReader, StoredFileResponse.class);
+            final StoredFileSummaryResponse value = GSON.fromJson(this.jsonReader, StoredFileSummaryResponse.class);
             this.hasNextCache = null;
             return value;
         }
 
+    }
+
+    // --- files: download ------------------------------------------------
+
+    /**
+     * {@code GET /files/{id}} on the main REST API - fetches one file's full content (unlike
+     * {@link #listFiles()}, which never carries content). Call this once a specific file from a
+     * {@link #listFiles()}/{@link #listFilesStream()} entry is actually needed (e.g. the user
+     * opened or saved it).
+     *
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired
+     */
+    public StoredFileResponse downloadFile(final String fileId) throws ApiException {
+        return this.send(this.downloadFileRequest(fileId), StoredFileResponse.class);
+    }
+
+    /** Async form of {@link #downloadFile(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileResponse> downloadFileAsync(final String fileId) {
+        return this.sendAsync(this.downloadFileRequest(fileId), StoredFileResponse.class);
+    }
+
+    private HttpRequest downloadFileRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId), true).GET().build();
     }
 
     // --- files: delete ------------------------------------------------

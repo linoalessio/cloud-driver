@@ -2,14 +2,13 @@ package de.lino.cloud.plugin.factory;
 
 import com.google.common.collect.Maps;
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
-import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
@@ -73,7 +72,7 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String REGISTER_PATH = "/auth/register";
     /** Path mounted by {@link #start} for {@link #handleConfirmRegistration}, exempted from {@link #requireValidBearerToken}. */
     private static final String REGISTER_CONFIRM_PATH = "/auth/register/confirm";
-    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDeleteFile}. */
+    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";
@@ -201,8 +200,8 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Same as {@link #DefaultRestFactory(DataFactory, AuthService)}, additionally mounting
-     * {@code POST /files}/{@code GET /files}/{@code DELETE /files/{id}}/{@code PUT
-     * /files/{id}/folder} and {@code POST /folders}/{@code GET /folders}/{@code PUT
+     * {@code POST /files}/{@code GET /files}/{@code GET /files/{id}}/{@code DELETE /files/{id}}/
+     * {@code PUT /files/{id}/folder} and {@code POST /folders}/{@code GET /folders}/{@code PUT
      * /folders/{id}}/{@code DELETE /folders/{id}} - each user's own {@link StoredFile} uploads
      * and {@link Folder} organization, backed by {@code cloudUserService}. Unlike {@link
      * #register}/{@link #fetch}/{@link #update}/{@link #delete}, these routes are not generic
@@ -329,6 +328,7 @@ public final class DefaultRestFactory extends RestFactory {
             if (this.cloudUserService != null) {
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
+                config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
 
@@ -465,22 +465,14 @@ public final class DefaultRestFactory extends RestFactory {
         return raw == null || ROOT_FOLDER_SENTINEL.equals(raw) ? null : raw;
     }
 
-    /** {@link #toJsonObject(StoredFile, String)}, applied to every entry - backs {@link #handleListFiles}. */
-    private JsonArray toJsonArray(final List<FileWithFolder> files) {
-        final JsonArray array = new JsonArray();
-        for (final FileWithFolder entry : files) {
-            array.add(this.toJsonObject(entry.file(), entry.folderId()));
-        }
-        return array;
-    }
-
     /**
      * Merges {@code folderId} into {@code file}'s own serialized JSON, under {@link
      * #FOLDER_ID_FIELD} - the same {@link JsonObject}-merge idiom {@link #parseOwnedBody}
      * already uses, applied here since {@link StoredFile} carries no folder field of its own to
-     * serialize (see {@link Folder}'s Javadoc for why). Used by both {@link #handleListFiles}
-     * (via {@link #toJsonArray}) and {@link #handleUploadFile}, so a freshly uploaded file's
-     * response reflects the folder it was placed in exactly like every other route does.
+     * serialize (see {@link Folder}'s Javadoc for why). Used by both {@link #handleUploadFile} and
+     * {@link #handleDownloadFile}, so a freshly uploaded or individually-fetched file's response
+     * reflects its folder exactly like every other route does. {@link #handleListFiles} does not
+     * need this - its {@link StoredFileSummary} entries already carry their own {@code folderId}.
      */
     private JsonObject toJsonObject(final StoredFile file, @Nullable final String folderId) {
         final JsonObject json = this.gson.toJsonTree(file).getAsJsonObject();
@@ -642,23 +634,46 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * {@code GET /files}, optionally {@code ?folderId=<id-or-{@value #ROOT_FOLDER_SENTINEL}>}:
-     * lists every {@link StoredFile} tracked as belonging to the caller, each entry carrying an
-     * additional {@link #FOLDER_ID_FIELD} property (merged in via {@link #toJsonArray}, since
-     * {@link StoredFile} itself has no folder field - see {@link CloudUserService#listFilesWithFolder}).
-     * {@link #FOLDER_ID_FIELD} <b>omitted</b> lists every file regardless of folder - the
-     * pre-folders behavior this route always had, kept as the default for any client that
-     * doesn't yet know about folders; present (including {@link #ROOT_FOLDER_SENTINEL}) scopes
-     * the list to just that one folder (or the root).
+     * lists every {@link StoredFile} tracked as belonging to the caller as a {@link
+     * StoredFileSummary} - descriptive fields plus folder placement, deliberately without content
+     * (see {@link CloudUserService#listFileSummaries}), so this route never decrypts/decompresses
+     * a single file's content just to render a list. Fetch a specific file's content afterwards
+     * via {@code GET /files/{id}} ({@link #handleDownloadFile}). {@link #FOLDER_ID_FIELD}
+     * <b>omitted</b> lists every file regardless of folder - the pre-folders behavior this route
+     * always had, kept as the default for any client that doesn't yet know about folders; present
+     * (including {@link #ROOT_FOLDER_SENTINEL}) scopes the list to just that one folder (or the
+     * root).
      */
     private void handleListFiles(@NotNull final Context ctx) {
         final String folderIdParam = ctx.queryParam(FOLDER_ID_FIELD);
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> folderIdParam == null
-                        ? this.cloudUserService.listFilesWithFolder(userId)
-                        : this.cloudUserService.listFilesWithFolder(
+                        ? this.cloudUserService.listFileSummaries(userId)
+                        : this.cloudUserService.listFileSummaries(
                                 userId, ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam))
-                .thenAccept(files -> ctx.contentType("application/json").result(this.gson.toJson(toJsonArray(files)))));
+                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /**
+     * {@code GET /files/{id}}: fetches one {@link StoredFile}'s full content via {@link
+     * CloudUserService#getFile}, which checks the caller actually owns it - an {@link
+     * IllegalArgumentException} from that check is translated into {@link NotFoundResponse}, the
+     * same "don't confirm existence" idiom {@link #handleDeleteFile} already uses. The response
+     * carries the same {@link #FOLDER_ID_FIELD}-merged shape {@link #handleUploadFile} returns.
+     */
+    private void handleDownloadFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.getFile(userId, id))
+                .handle((entry, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(this.toJsonObject(entry.file(), entry.folderId())));
+                        return null;
+                    }
+                    throw notFoundOrPropagate(failure, StoredFile.class, id);
+                }));
     }
 
     /**

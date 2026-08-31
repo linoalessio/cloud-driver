@@ -3,6 +3,7 @@ package de.lino.cloud.api.user;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.StoredFileSummary;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -119,6 +120,43 @@ public interface ICloudUserService {
      */
     @NotNull
     List<FileWithFolder> listFilesWithFolder(@NotNull String authUserId, @Nullable String folderId);
+
+    /**
+     * Same as {@link #listFilesWithFolder(String)}, but without any file's content - just its
+     * descriptive fields (name, size, content type, timestamps) plus its folder placement. Prefer
+     * this for rendering a file list: unlike {@link #listFilesWithFolder(String)}, it never
+     * decrypts or decompresses a file's actual content, a cost that scales with total file bytes
+     * regardless of what a caller does with the result.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list
+     * @return a {@link StoredFileSummary} for every file currently tracked as belonging to {@code authUserId}
+     */
+    @NotNull
+    List<StoredFileSummary> listFileSummaries(@NotNull String authUserId);
+
+    /**
+     * Same as {@link #listFileSummaries(String)}, filtered to only the files directly inside {@code folderId}.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list
+     * @param folderId the folder to list files from, or {@code null} for the root
+     * @return a {@link StoredFileSummary} for every file directly inside {@code folderId} (or the root) that belongs to {@code authUserId}
+     */
+    @NotNull
+    List<StoredFileSummary> listFileSummaries(@NotNull String authUserId, @Nullable String folderId);
+
+    /**
+     * Fetches one file's full content, paired with its current folder placement. Unlike {@link
+     * #listFileSummaries(String)}, this does decrypt/decompress the file's actual content - only
+     * reach for this once a specific file's content is actually needed (e.g. the user opened or
+     * downloaded it).
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to fetch
+     * @return the file's full content, paired with its current folder
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     */
+    @NotNull
+    FileWithFolder getFile(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
      * Moves {@code storedFileId} into {@code folderId} (or back to the root, if {@code null}),
