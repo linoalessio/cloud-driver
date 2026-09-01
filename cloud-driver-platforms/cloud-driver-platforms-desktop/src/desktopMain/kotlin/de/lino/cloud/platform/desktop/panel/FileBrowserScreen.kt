@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -205,35 +204,13 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 UploadMenuButton(viewModel)
 
                 // Only shown once something is selected - an empty toolbar slot for an action
-                // with nothing to act on just adds visual noise, per this app's own spec.
+                // with nothing to act on just adds visual noise, per this app's own spec. Bundled
+                // behind one "Options" dropdown, rather than three always-visible buttons, since
+                // three inline buttons plus the toolbar's other buttons could overflow this Row's
+                // width once "Delete selected" was added - which pushed "Delete selected" itself
+                // off-screen with no scroll affordance to reach it, the exact bug this fixes.
                 if (viewModel.selected.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = { chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY)?.let { viewModel.downloadSelected(it) } },
-                        enabled = !viewModel.busy,
-                    ) {
-                        Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Download selected")
-                    }
-
-                    OutlinedButton(
-                        onClick = { viewModel.duplicateSelected() },
-                        enabled = !viewModel.busy,
-                    ) {
-                        Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Duplicate selected")
-                    }
-
-                    Button(
-                        onClick = { viewModel.deleteSelected() },
-                        enabled = !viewModel.busy,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Delete selected")
-                    }
+                    SelectionOptionsMenuButton(viewModel)
                 }
             }
 
@@ -472,6 +449,53 @@ private fun UploadMenuButton(viewModel: AppViewModel) {
                 onClick = {
                     expanded = false
                     chooseDirectory("Select folder to upload (will be zipped)")?.let { viewModel.uploadFolderAsZip(it) }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * "Options" - the toolbar's bulk actions on the current selection (Download/Duplicate/Delete
+ * selected), bundled behind one dropdown button the same way [UploadMenuButton] bundles its own
+ * two upload actions, rather than three always-visible buttons. Fixes a real layout bug: with
+ * three separate buttons inline, this toolbar's total width could exceed the available `Row`
+ * width once a selection was made, and "Delete selected" - the last of the three - was the one
+ * that ended up pushed off-screen, with no scroll affordance to reach it. One fixed-width trigger
+ * button avoids that regardless of how many bulk actions this menu ever grows to.
+ */
+@Composable
+private fun SelectionOptionsMenuButton(viewModel: AppViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Column {
+        OutlinedButton(onClick = { expanded = true }, enabled = !viewModel.busy) {
+            Text("Options")
+            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Download selected") },
+                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY)?.let { viewModel.downloadSelected(it) }
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Duplicate selected") },
+                leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    viewModel.duplicateSelected()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Delete selected") },
+                leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                onClick = {
+                    expanded = false
+                    viewModel.deleteSelected()
                 },
             )
         }
