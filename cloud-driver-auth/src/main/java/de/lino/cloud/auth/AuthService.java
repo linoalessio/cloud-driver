@@ -15,6 +15,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.auth.pending.PendingEmailChange;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;
 import lombok.NonNull;
@@ -55,6 +56,9 @@ public final class AuthService implements IAuthService {
 
     /** How long a verification code issued by {@link #requestPasswordReset} remains valid: 10 minutes. */
     private static final long PASSWORD_RESET_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
+
+    /** How long a verification code issued by {@link #requestEmailChange} remains valid: 10 minutes. */
+    private static final long EMAIL_CHANGE_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
 
     /** Source of randomness for {@link #generateVerificationCode()}. */
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -460,6 +464,127 @@ public final class AuthService implements IAuthService {
         this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
 
         return this.signer.sign(updated.getId(), ACCESS_TOKEN_TTL_SECONDS);
+    }
+
+    /**
+     * Starts an e-mail change for {@code authUserId}: validates {@code newEmailAddress} the same
+     * way {@link #register} validates a fresh address (syntax, then a live MX-record lookup), and
+     * - unlike {@link #requestPasswordReset}'s deliberately leaky-nothing contract - confirms
+     * whether it's already taken by throwing {@link EmailAlreadyRegisteredException}, since {@code
+     * authUserId} is already an authenticated account holder here, not an anonymous caller this
+     * could hand a login-enumeration oracle to. Does <b>not</b> change the account's address yet -
+     * persists a {@link PendingEmailChange} (fresh code, valid for {@link
+     * #EMAIL_CHANGE_CODE_TTL_MILLIS}) and e-mails it to {@code newEmailAddress}; {@link
+     * #confirmEmailChange} is what actually applies the change.
+     *
+     * @param authUserId the already-authenticated account requesting the change
+     * @param newEmailAddress the address this account would move to on confirmation
+     * @throws InvalidCredentialsException if {@code newEmailAddress} fails the syntax check or its domain has no MX record
+     * @throws EmailAlreadyRegisteredException if another account already exists under {@code newEmailAddress}
+     * @throws DatabaseClientException if persisting the pending change fails
+     * @throws KeyWrapException if the pending change's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @Override
+    public void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress)
+            throws DatabaseClientException, KeyWrapException {
+
+        if (!EMAIL_PATTERN.matcher(newEmailAddress).matches())
+            throw new InvalidCredentialsException("Invalid email address: " + newEmailAddress);
+
+        final String domain = newEmailAddress.substring(newEmailAddress.indexOf('@') + 1);
+        if (!domainHasMxRecord(domain))
+            throw new InvalidCredentialsException("Email domain cannot receive mail (no MX record): " + domain);
+
+        final boolean alreadyRegistered;
+        try {
+            alreadyRegistered = this.dataFactory.getEntities(AuthUser.class).stream()
+                    .anyMatch(candidate -> candidate.getEmailAddress().equals(newEmailAddress));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.requestEmailChange: failed to check for an existing account under " + newEmailAddress, e);
+        }
+        if (alreadyRegistered) {
+            throw new EmailAlreadyRegisteredException(newEmailAddress);
+        }
+
+        final String verificationCode = generateVerificationCode();
+        final long expiresAt = System.currentTimeMillis() + EMAIL_CHANGE_CODE_TTL_MILLIS;
+        final PendingEmailChange pending = new PendingEmailChange(authUserId, newEmailAddress, verificationCode, expiresAt);
+        this.dataFactory.register(pending);
+
+        try {
+
+            final String[] emailMessage = new String[] {
+                    String.format("Hello %s,", newEmailAddress)
+                    , ""
+                    , "We have received a request to change the e-mail address for this account to this one."
+                    , ""
+                    , String.format("Your verification code is '%s'", verificationCode)
+                    , ""
+                    , "If you did not request this change, just ignore this email - your account's e-mail address will not change."
+                    , "This code will expire within 10 minutes."
+            };
+
+            this.emailSender.send(newEmailAddress, "Confirm your new e-mail address", String.join("\n", emailMessage));
+
+        } catch (final EmailDeliveryException e) {
+            throw new RuntimeException("@AuthService.requestEmailChange: failed to send verification email to " + newEmailAddress, e);
+        }
+
+    }
+
+    /**
+     * Completes an e-mail change previously started by {@link #requestEmailChange}: looks up the
+     * {@link PendingEmailChange} stored under {@code authUserId}, rejects it (via {@link
+     * InvalidVerificationCodeException}, the same message either way, matching {@link
+     * #confirmRegistration}'s idiom) if it doesn't exist, has expired, or {@code code} doesn't
+     * match its {@link PendingEmailChange#getVerificationCode()} - an expired row is deleted as
+     * part of that rejection. On success, replaces the matching {@link AuthUser}'s address with
+     * the pending change's {@link PendingEmailChange#getNewEmailAddress()} and deletes the pending
+     * row. Returns nothing to sign - a JWT's subject is the account's id, never its e-mail
+     * address, so the caller's existing token remains valid across this change.
+     *
+     * @param authUserId the already-authenticated account confirming the change
+     * @param code the verification code e-mailed to the pending change's new address
+     * @throws InvalidVerificationCodeException if there is no pending change under {@code
+     *     authUserId}, it has expired, {@code code} doesn't match, or (defense-in-depth) the
+     *     account itself no longer exists
+     * @throws DatabaseClientException if updating the account fails
+     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @Override
+    public void confirmEmailChange(@NonNull final String authUserId, @NonNull final String code)
+            throws DatabaseClientException, KeyWrapException {
+
+        final Optional<PendingEmailChange> pendingOpt;
+        try {
+            pendingOpt = this.dataFactory.findById(authUserId, PendingEmailChange.class);
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmEmailChange: failed to look up pending change for " + authUserId, e);
+        }
+
+        final PendingEmailChange pending = pendingOpt.orElseThrow(
+                () -> new InvalidVerificationCodeException("invalid or expired verification code"));
+
+        if (pending.isExpired()) {
+            this.dataFactory.delete(authUserId, PendingEmailChange.class);
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        if (!pending.getVerificationCode().equals(code)) {
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new InvalidVerificationCodeException("invalid or expired verification code"));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmEmailChange: failed to look up account " + authUserId, e);
+        }
+
+        final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash());
+        this.dataFactory.update(updated);
+        this.dataFactory.delete(authUserId, PendingEmailChange.class);
     }
 
 }

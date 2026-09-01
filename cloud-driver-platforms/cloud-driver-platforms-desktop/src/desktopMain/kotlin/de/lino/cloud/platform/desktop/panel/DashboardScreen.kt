@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.desktop.panel
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +19,8 @@ import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.LockReset
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -25,8 +28,12 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -192,6 +199,12 @@ private fun UninstallConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> 
 
 @Composable
 private fun AccountInfoCard(viewModel: AppViewModel) {
+    // Local, transient UI state - which of the settings-menu dialogs (if any) is currently open.
+    // Not on AppViewModel: purely dialog visibility, the same "local remember, not view-model
+    // state" reasoning FileBrowserScreen.kt's own moveDialogEntry/showUninstallConfirmation use.
+    var settingsMenuExpanded by remember { mutableStateOf(false) }
+    var showChangeEmailDialog by remember { mutableStateOf(false) }
+
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -202,7 +215,33 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.CloudQueue, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
                 Spacer(Modifier.width(10.dp))
-                Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+
+                // The account settings entry point - a gear icon opening "Reset Password"/"Change
+                // Email", the two account-security actions this card exposes beyond plain display.
+                Box {
+                    IconButton(onClick = { settingsMenuExpanded = true }, enabled = !viewModel.busy) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Account settings", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(expanded = settingsMenuExpanded, onDismissRequest = { settingsMenuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Reset Password") },
+                            leadingIcon = { Icon(Icons.Filled.LockReset, contentDescription = null) },
+                            onClick = {
+                                settingsMenuExpanded = false
+                                viewModel.currentUserEmail?.let { viewModel.requestPasswordReset(it) }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Change Email") },
+                            leadingIcon = { Icon(Icons.Filled.AlternateEmail, contentDescription = null) },
+                            onClick = {
+                                settingsMenuExpanded = false
+                                showChangeEmailDialog = true
+                            },
+                        )
+                    }
+                }
             }
             InfoRow(Icons.Filled.AlternateEmail, "Email address", viewModel.currentUserEmail ?: "-")
             InfoRow(Icons.Filled.Storage, "Storage", formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload))
@@ -210,6 +249,101 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
             InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
         }
     }
+
+    if (showChangeEmailDialog) {
+        ChangeEmailDialog(viewModel = viewModel, onDismiss = { showChangeEmailDialog = false })
+    }
+}
+
+/**
+ * The "Change Email" settings action - a two-step dialog mirroring [AppViewModel.requestEmailChange]/
+ * [AppViewModel.confirmEmailChange]'s own two-step shape: step one collects the new address and
+ * e-mails a code there, step two collects that code and actually applies the change. Which step is
+ * showing is driven directly by [AppViewModel.pendingEmailChangeAddress] rather than separate local
+ * state, so the dialog always reflects the real flow state (e.g. if it's reopened while a request
+ * from an earlier open is still pending). [enteredCodeStep] only exists to notice the *transition*
+ * from step two back to "no pending change" (a successful confirmation) so the dialog can close
+ * itself automatically - [AppViewModel.cancelEmailChangeRequest]/a failed [AppViewModel.confirmEmailChange]
+ * both leave [AppViewModel.pendingEmailChangeAddress] in a state this same effect handles correctly
+ * (dismissed explicitly, or simply left in step two with [AppViewModel.errorMessage] set).
+ */
+@Composable
+private fun ChangeEmailDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    var newEmail by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var enteredCodeStep by remember { mutableStateOf(viewModel.pendingEmailChangeAddress != null) }
+
+    LaunchedEffect(viewModel.pendingEmailChangeAddress) {
+        if (viewModel.pendingEmailChangeAddress != null) {
+            enteredCodeStep = true
+        } else if (enteredCodeStep) {
+            onDismiss()
+        }
+    }
+
+    val pendingAddress = viewModel.pendingEmailChangeAddress
+
+    AlertDialog(
+        onDismissRequest = {
+            if (pendingAddress != null) viewModel.cancelEmailChangeRequest()
+            onDismiss()
+        },
+        icon = { Icon(Icons.Filled.AlternateEmail, contentDescription = null) },
+        title = { Text(if (pendingAddress == null) "Change email address" else "Confirm new email") },
+        text = {
+            Column {
+                if (pendingAddress == null) {
+                    Text(
+                        "Enter the new address you'd like to use. We'll e-mail a verification code there first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newEmail,
+                        onValueChange = { newEmail = it },
+                        label = { Text("New email address") },
+                        singleLine = true,
+                        enabled = !viewModel.busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    Text(
+                        "Enter the code we sent to $pendingAddress.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it },
+                        label = { Text("Verification code") },
+                        singleLine = true,
+                        enabled = !viewModel.busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                viewModel.errorMessage?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (pendingAddress == null) viewModel.requestEmailChange(newEmail) else viewModel.confirmEmailChange(code) },
+                enabled = !viewModel.busy && (if (pendingAddress == null) newEmail.isNotBlank() else code.isNotBlank()),
+            ) {
+                Text(if (pendingAddress == null) "Send code" else "Confirm")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                if (pendingAddress != null) viewModel.cancelEmailChangeRequest()
+                onDismiss()
+            }) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

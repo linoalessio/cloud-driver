@@ -87,6 +87,10 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String RESET_PASSWORD_PATH = "/auth/reset-password";
     /** Path mounted by {@link #start} for {@link #handleConfirmPasswordReset}, exempted from {@link #requireValidBearerToken}. */
     private static final String RESET_PASSWORD_CONFIRM_PATH = "/auth/reset-password/confirm";
+    /** Path mounted by {@link #start} for {@link #handleRequestEmailChange} - bearer-gated, unlike the paths above: this changes an already-authenticated account's own address. */
+    private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
+    /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
+    private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
@@ -364,6 +368,8 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(REGISTER_CONFIRM_PATH, this::handleConfirmRegistration);
                 config.routes.post(RESET_PASSWORD_PATH, this::handleRequestPasswordReset);
                 config.routes.post(RESET_PASSWORD_CONFIRM_PATH, this::handleConfirmPasswordReset);
+                config.routes.post(CHANGE_EMAIL_PATH, this::handleRequestEmailChange);
+                config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
                 config.routes.before(this::requireValidBearerToken);
             }
 
@@ -717,6 +723,87 @@ public final class DefaultRestFactory extends RestFactory {
                 .handle((token, failure) -> {
                     if (failure == null) {
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"newEmail"}} JSON body shape read by {@code POST /auth/change-email}.
+     *
+     * @param newEmail the address the authenticated caller's account would move to on confirmation
+     */
+    private record ChangeEmailRequest(String newEmail) {
+    }
+
+    /**
+     * {@code POST /auth/change-email}: unlike every other {@code /auth/*} route above, this one
+     * is <b>not</b> exempted from {@link #requireValidBearerToken} - it changes an already
+     * authenticated account's own address, identified from the caller's own bearer token (via
+     * {@link #requireUserId}), not from anything in the request body. Reads {@code {"newEmail":
+     * ...}} and starts the change via {@link AuthService#requestEmailChange} - which e-mails a
+     * verification code to {@code newEmail} rather than applying the change outright. Does
+     * <b>not</b> return a JWT; the caller must follow up with {@link #handleConfirmEmailChange}
+     * once it has the code. Dispatched off the Jetty worker thread since this runs a live MX
+     * lookup/database I/O/an e-mail send. {@code 202 Accepted} on success.
+     */
+    private void handleRequestEmailChange(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final ChangeEmailRequest request = this.gson.fromJson(ctx.body(), ChangeEmailRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> {
+                    try {
+                        this.authService.requestEmailChange(userId, request.newEmail());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleRequestEmailChange: failed to start email change for " + userId, e);
+                    }
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(202).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Verification code sent to " + request.newEmail())));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"code"}} JSON body shape read by {@code POST /auth/change-email/confirm}.
+     *
+     * @param code the verification code e-mailed by {@code POST /auth/change-email} to the pending new address
+     */
+    private record ConfirmChangeEmailRequest(String code) {
+    }
+
+    /**
+     * {@code POST /auth/change-email/confirm}: bearer-gated like {@link #handleRequestEmailChange}
+     * - the account being changed is the caller's own, from {@link #requireUserId}, not the
+     * request body. Reads {@code {"code": ...}} and completes the change via {@link
+     * AuthService#confirmEmailChange} - replacing the account's e-mail address. No fresh JWT is
+     * returned (unlike {@link #handleConfirmRegistration}/{@link #handleConfirmPasswordReset}): a
+     * token's subject is the account's id, never its e-mail address, so the caller's existing
+     * token remains valid across this change. Dispatched off the Jetty worker thread since this
+     * runs database I/O. {@code 200 OK} on success.
+     */
+    private void handleConfirmEmailChange(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final ConfirmChangeEmailRequest request = this.gson.fromJson(ctx.body(), ConfirmChangeEmailRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> {
+                    try {
+                        this.authService.confirmEmailChange(userId, request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleConfirmEmailChange: failed to complete email change for " + userId, e);
+                    }
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("E-mail address updated")));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);

@@ -162,4 +162,47 @@ public interface IAuthService {
     String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
             throws DatabaseClientException, KeyWrapException;
 
+    /**
+     * Starts an e-mail address change for the already-authenticated account {@code authUserId}:
+     * checks that no other account already exists under {@code newEmailAddress}, then persists a
+     * pending change (a freshly generated verification code, valid for a short window) and
+     * e-mails that code to {@code newEmailAddress} itself - proving the caller actually controls
+     * the new address before this account ever moves to it. Does <b>not</b> change {@code
+     * authUserId}'s e-mail address yet - see {@link #confirmEmailChange}. Unlike {@link
+     * #register}, this deliberately confirms whether {@code newEmailAddress} is already taken
+     * (via {@link EmailAlreadyRegisteredException}) rather than hiding it - the caller is already
+     * an authenticated account holder at this point, not an anonymous visitor, so this isn't a
+     * login-enumeration risk the way {@link #requestPasswordReset} has to guard against. Exposed
+     * over HTTP as {@code POST /auth/change-email} by {@code cloud-driver-plugin}'s {@code
+     * DefaultRestFactory} whenever it's constructed with an {@code AuthService}.
+     *
+     * @param authUserId the already-authenticated account requesting the change (from its own bearer token, not user input)
+     * @param newEmailAddress the address this account would move to on confirmation
+     * @throws EmailAlreadyRegisteredException if another account already exists under {@code newEmailAddress}
+     * @throws DatabaseClientException if persisting the pending change fails
+     * @throws KeyWrapException if the pending change's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress)
+            throws DatabaseClientException, KeyWrapException;
+
+    /**
+     * Completes an e-mail change previously started by {@link #requestEmailChange}: verifies
+     * {@code code} against the pending change stored under {@code authUserId} (and that it hasn't
+     * expired), then replaces the account's e-mail address with the pending change's own {@code
+     * newEmailAddress}. Does not return a fresh JWT - a signed token's subject is the account's
+     * id, never its e-mail address, so an already-authenticated caller's existing token remains
+     * valid across this change. Exposed over HTTP as {@code POST /auth/change-email/confirm}.
+     *
+     * @param authUserId the already-authenticated account confirming the change (from its own bearer token, not user input)
+     * @param code the verification code e-mailed to the pending change's new address
+     * @throws InvalidVerificationCodeException if there is no pending change under {@code
+     *     authUserId}, it has expired, or {@code code} doesn't match - also thrown (with the same
+     *     message) if the pending change somehow outlives its account, so this method never
+     *     distinguishes "bad code" from "account gone" either
+     * @throws DatabaseClientException if updating the account fails
+     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    void confirmEmailChange(@NonNull final String authUserId, @NonNull final String code)
+            throws DatabaseClientException, KeyWrapException;
+
 }

@@ -65,6 +65,18 @@ class CloudDriverClient(
         this.apiClient.confirmPasswordResetAsync(emailAddress, code, newPassword).await()
 
     /**
+     * Step one of changing the signed-in account's e-mail address - e-mails a verification code
+     * to [newEmailAddress]; the account's address is not changed yet. Bearer-gated, unlike
+     * [register]/[requestPasswordReset] - acts on the currently signed-in session.
+     */
+    suspend fun requestEmailChange(newEmailAddress: String): MessageResponse =
+        this.apiClient.requestEmailChangeAsync(newEmailAddress).await()
+
+    /** Step two - submits the e-mailed [code], which actually changes the signed-in account's e-mail address server-side. No fresh token is issued - a JWT's subject is the account id, never its e-mail address. */
+    suspend fun confirmEmailChange(code: String): MessageResponse =
+        this.apiClient.confirmEmailChangeAsync(code).await()
+
+    /**
      * Uploads [content] as [fileName], optionally directly into [folderId] (`null` = root).
      * Returns a [StoredFileSummaryResponse] - not the uploaded content echoed back, since the
      * caller already has the bytes it just sent (see [ApiClient.uploadFile]'s own Javadoc).

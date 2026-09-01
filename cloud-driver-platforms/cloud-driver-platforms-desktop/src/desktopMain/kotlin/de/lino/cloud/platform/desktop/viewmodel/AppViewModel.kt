@@ -505,6 +505,58 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         return items
     }
 
+    /** Duplicates every currently-selected entry - see [duplicateEntries]. */
+    fun duplicateSelected() = this.duplicateEntries(this.selected.toList())
+
+    /**
+     * Duplicates every entry in [entries] within the current folder, concurrently (capped - see
+     * [mapConcurrently]) - backs both the toolbar's "Duplicate selected" and a single entry's
+     * context-menu "Duplicate". Each copy's name is picked up front, sequentially (not inside the
+     * concurrent batch itself, to avoid two duplicates racing to the same name), via
+     * [uniqueCopyName] against this folder's already-loaded [folders]/[files] - Finder's own
+     * "name copy", "name copy 2", ... convention. A file is duplicated by [duplicateFileInto]
+     * (download to a local temp file, re-upload under the new name); a folder is duplicated by
+     * [duplicateFolderInto] (a fresh folder, then every contained file/subfolder copied into it
+     * recursively - nested names never collide, since the destination folder starts out empty).
+     */
+    fun duplicateEntries(entries: List<Entry>) = run {
+        val existingNames = (this.folders.map { it.name() } + this.files.map { it.fileName() }).toMutableSet()
+        val plannedCopies = entries.map { entry ->
+            val copyName = uniqueCopyName(entry.name, existingNames)
+            existingNames += copyName
+            entry to copyName
+        }
+        plannedCopies.mapConcurrently { (entry, copyName) ->
+            when (entry) {
+                is Entry.FileEntry -> this.duplicateFileInto(entry.id, copyName, this.currentFolderId)
+                is Entry.FolderEntry -> this.duplicateFolderInto(entry.id, copyName, this.currentFolderId)
+            }
+        }
+        this.refreshCurrentFolder()
+    }
+
+    /** Downloads [fileId] to a fresh, throwaway local temp directory and re-uploads it as [newName] into [targetFolderId], then cleans the temp file/directory up regardless of outcome. */
+    private suspend fun duplicateFileInto(fileId: String, newName: String, targetFolderId: String?) {
+        val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-duplicate") }
+        val tempFile = tempDir.resolve(newName)
+        try {
+            this.client.downloadFileToPath(fileId, tempFile)
+            this.client.uploadFile(newName, tempFile, targetFolderId)
+        } finally {
+            withContext(Dispatchers.IO) {
+                Files.deleteIfExists(tempFile)
+                Files.deleteIfExists(tempDir)
+            }
+        }
+    }
+
+    /** Creates a new folder named [newName] under [targetParentFolderId], then recursively copies every file/subfolder of [folderId] into it. */
+    private suspend fun duplicateFolderInto(folderId: String, newName: String, targetParentFolderId: String?) {
+        val newFolder = this.client.createFolder(newName, targetParentFolderId)
+        this.client.listFiles(folderId).mapConcurrently { file -> this.duplicateFileInto(file.fileId(), file.fileName(), newFolder.folderId()) }
+        this.client.listFolders(folderId).mapConcurrently { subFolder -> this.duplicateFolderInto(subFolder.folderId(), subFolder.name(), newFolder.folderId()) }
+    }
+
     /**
      * Moves every entry in [entriesToMove] into [targetFolderId], concurrently (capped - see
      * [mapConcurrently]) - the action a drag-and-drop drop in [FileBrowserScreen] resolves to.
@@ -534,4 +586,54 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         }
     }
 
+    // --- account: change email --------------------------------------------
+
+    /**
+     * The new address a [requestEmailChange] call is currently mid-flight for - `null` outside of
+     * that flow. Drives the Dashboard's settings-menu "Change Email" dialog from step one (enter a
+     * new address) to step two (enter the code just e-mailed there); [confirmEmailChange] resolves
+     * it back to `null` on success, [cancelEmailChangeRequest] does the same if the user backs out.
+     */
+    var pendingEmailChangeAddress: String? by mutableStateOf(null)
+        private set
+
+    /** Step one of changing the signed-in account's e-mail address - e-mails a verification code to [newEmailAddress]; the account's address itself is not changed yet. */
+    fun requestEmailChange(newEmailAddress: String) = run {
+        this.client.requestEmailChange(newEmailAddress)
+        this.pendingEmailChangeAddress = newEmailAddress
+    }
+
+    /** Abandons an in-progress [requestEmailChange] flow (e.g. the user closed the code-entry dialog) without changing anything server-side - the pending code simply expires unused. */
+    fun cancelEmailChangeRequest() {
+        this.pendingEmailChangeAddress = null
+    }
+
+    /** Step two - submits [code], which (on success) actually changes the account's e-mail address to [pendingEmailChangeAddress] server-side; updates [currentUserEmail] to match locally, since there is no `GET /me` to re-fetch it from. */
+    fun confirmEmailChange(code: String) = run {
+        this.client.confirmEmailChange(code)
+        this.currentUserEmail = this.pendingEmailChangeAddress
+        this.pendingEmailChangeAddress = null
+    }
+
+}
+
+/**
+ * Picks a name for a duplicate of [originalName] that doesn't collide with anything in
+ * [existingNames] - Finder's own "name copy", "name copy 2", ... convention, preserving
+ * [originalName]'s file extension (if any, and not for a folder name, which never has one in this
+ * app's own sense) so a duplicated file's content type stays recognizable by name.
+ */
+private fun uniqueCopyName(originalName: String, existingNames: Set<String>): String {
+    val dotIndex = originalName.lastIndexOf('.')
+    val hasExtension = dotIndex > 0 && dotIndex < originalName.length - 1
+    val baseName = if (hasExtension) originalName.substring(0, dotIndex) else originalName
+    val extension = if (hasExtension) originalName.substring(dotIndex) else ""
+
+    var candidate = "$baseName copy$extension"
+    var suffix = 2
+    while (candidate in existingNames) {
+        candidate = "$baseName copy $suffix$extension"
+        suffix++
+    }
+    return candidate
 }

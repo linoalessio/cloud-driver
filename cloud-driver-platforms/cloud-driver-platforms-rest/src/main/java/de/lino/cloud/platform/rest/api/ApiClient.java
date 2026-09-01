@@ -4,7 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
@@ -343,6 +345,59 @@ public final class ApiClient implements AutoCloseable {
     private HttpRequest confirmPasswordResetRequest(final String emailAddress, final String code, final String newPassword) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/reset-password/confirm"),
                 new ConfirmPasswordResetRequest(emailAddress, code, newPassword), false);
+    }
+
+    /**
+     * {@code POST /auth/change-email} on the main REST API - bearer-gated, unlike {@link #login}/
+     * {@link #register}/{@link #requestPasswordReset} above: the account being changed is the
+     * currently signed-in caller's own, resolved server-side from its bearer token, not from
+     * anything in the request body. Starts an e-mail change: e-mails a 6-digit verification code
+     * (valid 10 minutes) to {@code newEmailAddress} itself, proving the caller controls it before
+     * the account ever moves there. Does <b>not</b> change the address yet - call {@link
+     * #confirmEmailChange} with that code to actually apply it.
+     *
+     * @return the server's acknowledgement message - purely informational, nothing to act on
+     * @throws ApiException {@code 409} if another account already exists under {@code
+     *                       newEmailAddress}, {@code 400} if it fails the server's email
+     *                       validity/deliverability check, {@code 401} if not logged in / token
+     *                       expired, or any other transport/HTTP failure
+     */
+    public MessageResponse requestEmailChange(final String newEmailAddress) throws ApiException {
+        return this.send(this.requestEmailChangeRequest(newEmailAddress), MessageResponse.class);
+    }
+
+    /** Async form of {@link #requestEmailChange} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> requestEmailChangeAsync(final String newEmailAddress) {
+        return this.sendAsync(this.requestEmailChangeRequest(newEmailAddress), MessageResponse.class);
+    }
+
+    private HttpRequest requestEmailChangeRequest(final String newEmailAddress) {
+        return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email"), new ChangeEmailRequest(newEmailAddress), true);
+    }
+
+    /**
+     * {@code POST /auth/change-email/confirm} on the main REST API - completes an e-mail change
+     * previously started by {@link #requestEmailChange}: submits the e-mailed code, which (on
+     * success) actually changes the signed-in caller's account e-mail address server-side. Does
+     * <b>not</b> return/store a fresh token - a JWT's subject is the account's id, never its
+     * e-mail address, so the session already held by this {@code ApiClient} remains valid across
+     * the change.
+     *
+     * @return the server's acknowledgement message - purely informational, nothing to act on
+     * @throws ApiException {@code 400} if the code is missing, expired, or does not match, {@code
+     *                       401} if not logged in / token expired, or any other transport/HTTP failure
+     */
+    public MessageResponse confirmEmailChange(final String code) throws ApiException {
+        return this.send(this.confirmEmailChangeRequest(code), MessageResponse.class);
+    }
+
+    /** Async form of {@link #confirmEmailChange} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> confirmEmailChangeAsync(final String code) {
+        return this.sendAsync(this.confirmEmailChangeRequest(code), MessageResponse.class);
+    }
+
+    private HttpRequest confirmEmailChangeRequest(final String code) {
+        return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email/confirm"), new ConfirmChangeEmailRequest(code), true);
     }
 
     // --- files: upload --------------------------------------------------

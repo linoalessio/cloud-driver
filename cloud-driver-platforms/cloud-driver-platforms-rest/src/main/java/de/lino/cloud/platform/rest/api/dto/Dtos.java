@@ -44,6 +44,23 @@ public final class Dtos {
     }
 
     /**
+     * Body for {@code POST /auth/change-email} - bearer-gated (unlike every other request record
+     * in this class): the account being changed is the caller's own, resolved server-side from
+     * its bearer token, not from anything in this body. Starts an e-mail change for the
+     * already-authenticated caller; {@code newEmail} is not live yet - only {@link
+     * ApiClient#confirmEmailChange} actually applies it.
+     */
+    public record ChangeEmailRequest(String newEmail) {
+    }
+
+    /**
+     * Body for {@code POST /auth/change-email/confirm} - submits the 6-digit code {@code
+     * POST /auth/change-email} e-mailed to the pending new address.
+     */
+    public record ConfirmChangeEmailRequest(String code) {
+    }
+
+    /**
      * Response of {@code POST /auth/register} ({@code 202 Accepted}) - registration is not
      * complete yet at this point, this only acknowledges that a verification code was e-mailed.
      */
