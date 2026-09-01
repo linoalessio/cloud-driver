@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -215,6 +216,15 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         Text("Download selected")
                     }
 
+                    OutlinedButton(
+                        onClick = { viewModel.duplicateSelected() },
+                        enabled = !viewModel.busy,
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Duplicate selected")
+                    }
+
                     Button(
                         onClick = { viewModel.deleteSelected() },
                         enabled = !viewModel.busy,
@@ -320,6 +330,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                             }
                         },
                         onMoveRequest = { moveDialogEntry = entry },
+                        onDuplicateRequest = { viewModel.duplicateEntries(listOf(entry)) },
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
                     )
                 }
@@ -475,8 +486,8 @@ private fun UploadMenuButton(viewModel: AppViewModel) {
  * [onRegisterBounds]/[onUnregisterBounds] track this row's own on-screen position (in window
  * coordinates) so the caller can resolve which folder row, if any, a drag is currently hovering.
  *
- * Right-clicking anywhere on the row opens a context menu (Download/Move to.../Delete) at the
- * cursor - detected via a second, independent `pointerInput` block reading raw pointer events
+ * Right-clicking anywhere on the row opens a context menu (Download/Duplicate/Move to.../Delete)
+ * at the cursor - detected via a second, independent `pointerInput` block reading raw pointer events
  * rather than [androidx.compose.foundation.ContextMenuArea] (which replaces the platform's own
  * text-selection context menu, not a good fit for a whole row) - it only *observes* the press
  * (never calls `change.consume()`), so left-click/drag handling above is untouched.
@@ -499,6 +510,7 @@ private fun EntryRow(
     onDragCancel: () -> Unit,
     onDownloadRequest: () -> Unit,
     onMoveRequest: () -> Unit,
+    onDuplicateRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
 ) {
     var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
@@ -577,6 +589,12 @@ private fun EntryRow(
                 leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
                 enabled = enabled,
                 onClick = { contextMenuExpanded = false; onDownloadRequest() },
+            )
+            DropdownMenuItem(
+                text = { Text("Duplicate") },
+                leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                enabled = enabled,
+                onClick = { contextMenuExpanded = false; onDuplicateRequest() },
             )
             DropdownMenuItem(
                 text = { Text("Move to...") },
