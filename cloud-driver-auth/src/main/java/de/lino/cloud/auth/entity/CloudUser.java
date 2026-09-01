@@ -34,6 +34,8 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     /** The owning {@link AuthUser#getId()} - this entity's primary key and its own {@link #ownerId()}. */
     private final String authUserId;
 
+    private final long timeStamp;
+
     /**
      * @param authUserId the owning {@link AuthUser#getId()} - not the full entity, since
      *                    this class (and every caller of it, e.g. after JWT validation)
@@ -41,6 +43,7 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      */
     public CloudUser(@NotNull final String authUserId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@CloudUser.init: authUserId cannot be null");
+        this.timeStamp = System.currentTimeMillis();
     }
 
     @Override

@@ -222,7 +222,17 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.files.addAll(newFiles)
     }
 
+    /**
+     * Navigates into [folder], pushing it onto [breadcrumbs]. Guarded against re-entry: a no-op
+     * while [busy] (a load is already in flight) or if [folder] is already [currentFolderId] -
+     * fixes a real bug where a fast double/triple-click on the same folder row pushed a duplicate
+     * breadcrumb entry for every extra click landing before the listing swapped out from under
+     * it (the row stayed clickable for the whole round trip, unlike every toolbar button, which
+     * already disables itself via `enabled = !viewModel.busy`), showing the same folder opened
+     * more than once in the sidebar's breadcrumb trail.
+     */
     fun openFolder(folder: FolderResponse) {
+        if (this.busy || folder.folderId() == this.currentFolderId) return
         this.breadcrumbs.add(folder)
         this.currentFolderId = folder.folderId()
         this.loadCurrentFolder()
@@ -315,6 +325,27 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.listFiles(folderId).mapConcurrently { file -> this.client.downloadFile(file.fileId()).downloadTo(destination) }
         this.client.listFolders(folderId).mapConcurrently { subFolder ->
             this.downloadFolderRecursively(subFolder.folderId(), destination.resolve(subFolder.name()))
+        }
+    }
+
+    /**
+     * Moves every entry in [entriesToMove] into [targetFolderId], concurrently (capped - see
+     * [mapConcurrently]) - the action a drag-and-drop drop in [FileBrowserScreen] resolves to.
+     * [targetFolderId] is always a real folder id here (never root/`null`) since the only drop
+     * targets [FileBrowserScreen] currently offers are folder rows within the listing being
+     * dragged from.
+     */
+    fun moveEntriesToFolder(entriesToMove: List<Entry>, targetFolderId: String) = run {
+        entriesToMove.mapConcurrently { entry -> this.moveEntry(entry, targetFolderId) }
+        this.selected.clear()
+        this.refreshCurrentFolder()
+    }
+
+    /** Moves a single [entry] into [targetFolderId] - a file via [CloudDriverClient.moveFile], a folder via a name-preserving [CloudDriverClient.updateFolder] (only its parent changes). */
+    private suspend fun moveEntry(entry: Entry, targetFolderId: String) {
+        when (entry) {
+            is Entry.FileEntry -> this.client.moveFile(entry.id, targetFolderId)
+            is Entry.FolderEntry -> this.client.updateFolder(entry.id, entry.name, targetFolderId)
         }
     }
 

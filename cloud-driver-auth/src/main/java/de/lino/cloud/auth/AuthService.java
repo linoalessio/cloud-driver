@@ -14,6 +14,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;
 import lombok.NonNull;
@@ -71,19 +72,28 @@ public final class AuthService implements IAuthService {
     private final EmailSender emailSender;
 
     /**
+     * Creates/looks up the {@link de.lino.cloud.auth.entity.CloudUser} row for a newly-confirmed
+     * {@link AuthUser} - see {@link #confirmRegistration}'s Javadoc for why this call exists.
+     */
+    private final ICloudUserService cloudUserService;
+
+    /**
      * Creates an {@code AuthService} backed by the given collaborators.
      *
      * @param dataFactory persists/looks up {@link AuthUser}/{@link PendingRegistration} rows
      * @param hasher hashes a new password and verifies a login candidate against a stored hash
      * @param signer issues and verifies the JWTs returned by {@link #login}/{@link #confirmRegistration}/{@link #validate}
      * @param emailSender delivers the verification code {@link #register} generates
+     * @param cloudUserService creates/looks up the {@link de.lino.cloud.auth.entity.CloudUser} row {@link #confirmRegistration} eagerly creates for a newly-confirmed account
      */
     public AuthService(@NonNull final DataFactory dataFactory, @NonNull final PasswordHasher hasher,
-                        @NonNull final JwtSigner signer, @NonNull final EmailSender emailSender) {
+                        @NonNull final JwtSigner signer, @NonNull final EmailSender emailSender,
+                        @NonNull final ICloudUserService cloudUserService) {
         this.dataFactory = dataFactory;
         this.hasher = hasher;
         this.signer = signer;
         this.emailSender = emailSender;
+        this.cloudUserService = cloudUserService;
     }
 
     /**
@@ -177,8 +187,13 @@ public final class AuthService implements IAuthService {
      * match its {@link PendingRegistration#getVerificationCode()} - an expired row is deleted
      * as part of that rejection, rather than left to be overwritten by a later {@link
      * #register} call. On success, creates the real {@link AuthUser} from the pending row's
-     * already-hashed password, deletes the pending row, and returns a signed JWT the same way
-     * {@link #login} does.
+     * already-hashed password, deletes the pending row, eagerly creates that account's {@link
+     * de.lino.cloud.auth.entity.CloudUser} row via {@link ICloudUserService#getOrCreate} (rather
+     * than leaving it to be lazily created on the account's first upload/folder-create - see
+     * {@link ICloudUserService#getOrCreate}'s own Javadoc - a freshly-registered account used to
+     * be invisible to {@code stats}/{@code cu list} in the terminal package until it uploaded
+     * something, which read as a bug rather than the intended lazy-creation behavior), and
+     * returns a signed JWT the same way {@link #login} does.
      *
      * @param emailAddress the e-mail address {@link #register} was called with
      * @param code the verification code e-mailed to {@code emailAddress}
@@ -215,6 +230,7 @@ public final class AuthService implements IAuthService {
         final AuthUser user = new AuthUser(UUID.randomUUID().toString(), emailAddress, pending.getPasswordHash());
         this.dataFactory.register(user);
         this.dataFactory.delete(emailAddress, PendingRegistration.class);
+        this.cloudUserService.getOrCreate(user.getId());
 
         return this.signer.sign(user.getId(), ACCESS_TOKEN_TTL_SECONDS);
     }

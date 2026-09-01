@@ -1,7 +1,9 @@
 package de.lino.cloud.platform.desktop.panel
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -45,7 +48,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.Entry
@@ -188,6 +197,16 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 derivedStateOf { viewModel.folders.map { Entry.FolderEntry(it) } + viewModel.files.map { Entry.FileEntry(it) } }
             }
 
+            // Drag-and-drop-to-move state, local to this screen - none of it is persisted, so it
+            // lives here rather than on AppViewModel. rowBounds is a plain (non-Compose-state) map:
+            // it's only ever read/written imperatively from inside drag-gesture callbacks, never
+            // during composition, so making it observable state would just cost recompositions for
+            // no benefit. draggedEntries/hoveredFolderId, in contrast, ARE read during composition
+            // (to render the dragged-row dim/drop-target highlight below), so those stay Compose state.
+            val rowBounds = remember { mutableMapOf<String, Rect>() }
+            var draggedEntries by remember { mutableStateOf<List<Entry>>(emptyList()) }
+            var hoveredFolderId by remember { mutableStateOf<String?>(null) }
+
             if (entries.isEmpty() && !viewModel.busy) {
                 Column(
                     Modifier.fillMaxSize(),
@@ -210,8 +229,36 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                     EntryRow(
                         entry = entry,
                         selected = viewModel.selected.contains(entry),
+                        enabled = !viewModel.busy,
+                        isBeingDragged = draggedEntries.any { it.id == entry.id },
+                        isDropTarget = entry.id == hoveredFolderId,
                         onToggleSelect = { viewModel.toggleSelected(entry) },
                         onOpen = { if (entry is Entry.FolderEntry) viewModel.openFolder(entry.folder) },
+                        onRegisterBounds = { bounds -> if (entry is Entry.FolderEntry) rowBounds[entry.id] = bounds },
+                        onUnregisterBounds = { if (entry is Entry.FolderEntry) rowBounds.remove(entry.id) },
+                        // Dragging an entry that's part of the current multi-selection moves the
+                        // whole selection, the same "drag what's under the pointer, unless a
+                        // multi-selection is already active" convention Finder uses; dragging
+                        // anything else moves only that one entry, leaving the selection untouched.
+                        onDragStart = {
+                            draggedEntries = if (viewModel.selected.contains(entry)) viewModel.selected.toList() else listOf(entry)
+                        },
+                        onDragMove = { windowPosition ->
+                            hoveredFolderId = rowBounds.entries
+                                .firstOrNull { (folderId, bounds) -> bounds.contains(windowPosition) && draggedEntries.none { it.id == folderId } }
+                                ?.key
+                        },
+                        onDragEnd = {
+                            val target = hoveredFolderId
+                            val moving = draggedEntries
+                            draggedEntries = emptyList()
+                            hoveredFolderId = null
+                            if (target != null && moving.isNotEmpty()) viewModel.moveEntriesToFolder(moving, target)
+                        },
+                        onDragCancel = {
+                            draggedEntries = emptyList()
+                            hoveredFolderId = null
+                        },
                     )
                 }
             }
@@ -252,20 +299,69 @@ private fun UploadMenuButton(viewModel: AppViewModel) {
     }
 }
 
+/**
+ * One row in the file browser. Also doubles as a drag-and-drop source (any entry) and, if it's a
+ * [Entry.FolderEntry], a drop target: press-and-hold-then-move (`detectDragGesturesAfterLongPress`,
+ * rather than a plain drag detector) so a quick tap still reaches the `.clickable` below it
+ * unchanged - opening a folder, or toggling selection via the checkbox, works exactly as before.
+ * [onRegisterBounds]/[onUnregisterBounds] track this row's own on-screen position (in window
+ * coordinates) so the caller can resolve which folder row, if any, a drag is currently hovering.
+ */
 @Composable
-private fun EntryRow(entry: Entry, selected: Boolean, onToggleSelect: () -> Unit, onOpen: () -> Unit) {
+private fun EntryRow(
+    entry: Entry,
+    selected: Boolean,
+    enabled: Boolean,
+    isBeingDragged: Boolean,
+    isDropTarget: Boolean,
+    onToggleSelect: () -> Unit,
+    onOpen: () -> Unit,
+    onRegisterBounds: (Rect) -> Unit,
+    onUnregisterBounds: () -> Unit,
+    onDragStart: () -> Unit,
+    onDragMove: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+) {
+    var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
+
+    DisposableEffect(entry.id) {
+        onDispose { onUnregisterBounds() }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { coordinates ->
+                rowBoundsInWindow = coordinates.boundsInWindow()
+                onRegisterBounds(rowBoundsInWindow)
+            }
             .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                when {
+                    isDropTarget -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                    selected -> MaterialTheme.colorScheme.primaryContainer
+                    else -> Color.Transparent
+                },
                 RoundedCornerShape(10.dp),
             )
-            .clickable(onClick = onOpen)
+            .let { base -> if (isDropTarget) base.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp)) else base }
+            .alpha(if (isBeingDragged) 0.4f else 1f)
+            .pointerInput(entry.id) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { onDragStart() },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        onDragMove(rowBoundsInWindow.topLeft + change.position)
+                    },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragCancel() },
+                )
+            }
+            .clickable(enabled = enabled, onClick = onOpen)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = selected, onCheckedChange = { onToggleSelect() }, modifier = Modifier.width(40.dp))
+        Checkbox(checked = selected, onCheckedChange = { onToggleSelect() }, enabled = enabled, modifier = Modifier.width(40.dp))
         Icon(
             iconFor(entry),
             contentDescription = null,

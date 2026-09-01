@@ -8,10 +8,18 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.factory.service.IServiceContainer;
+import de.lino.cloud.api.file.Folder;
+import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.auth.entity.CloudUser;
+import de.lino.cloud.auth.entity.StoredFileOwnership;
+import de.lino.cloud.auth.pending.PendingPasswordReset;
+import de.lino.cloud.auth.pending.PendingRegistration;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.factory.container.FactoryContainer;
@@ -24,6 +32,7 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -161,6 +170,61 @@ public final class DefaultCloudDriver extends CloudDriver {
             this.runShutdownStep("Terminal", this.terminal::shutdown);
 
         System.exit(0);
+
+    }
+
+    /**
+     * Wipes every {@link de.lino.database.database.entity.Serialized} entity section this
+     * repository defines - every {@link AuthUser}, {@link CloudUser}, {@link Folder}, {@link
+     * StoredFile}, {@link StoredFileOwnership}, {@link PendingRegistration}, {@link
+     * PendingPasswordReset}, and {@link ApiKey} row, across the whole database. Called by the
+     * terminal package's {@code HardResetCommand} (aliased {@code reset}) after its own two-step
+     * confirmation - there is no undo.
+     *
+     * <p>Deliberately does <b>not</b> touch key-encryption-key (KEK) material: KEK rotation state
+     * lives in its own raw {@code "kek"} {@link de.lino.database.database.DatabaseSection}
+     * (constructed directly by {@code DatabaseKeyEncryptionService}, given that section by {@code
+     * CloudBootstrap.initiateCloudDriver()} - see {@code CloudBootstrap.java}), not through a
+     * {@link Serialized} entity class reachable via {@link DataFactory#deleteSection}, so it isn't
+     * reachable from here without new plumbing (e.g. exposing the raw {@link DatabaseProvider}
+     * through {@link IFactoryContainer}). Once every entity above is gone there is nothing left
+     * for that KEK to protect anyway, so leaving it in place is safe, not merely an oversight -
+     * but it does mean a KEK rotated before this reset stays around after it. An earlier revision
+     * of this method tried to reach it via {@code dataFactory.deleteSectionAsync(
+     * DatabaseKeyEncryptionService.class)} - that never compiled ({@code
+     * DatabaseKeyEncryptionService} implements {@link
+     * de.lino.cloud.api.security.keys.KeyEncryptionService}, not {@link Serialized}, so it can't
+     * satisfy {@link DataFactory#deleteSectionAsync}'s {@code <T extends Serialized>} bound) and,
+     * even had it compiled, would have deleted the wrong section - {@code deleteSection} derives
+     * a section name from {@code type.getSimpleName()} ({@code "DatabaseKeyEncryptionService"}),
+     * not the {@code "kek"} section the KEK material actually lives in.
+     *
+     * <p>Every deletion runs concurrently (each {@link DataFactory#deleteSectionAsync} call
+     * dispatches its own task); unlike the previous revision, this method now waits for every one
+     * to finish (via {@link CompletableFuture#allOf}) before returning, and propagates the first
+     * failure encountered once every deletion has been attempted - the same "attempt everything
+     * concurrently, don't report until all are attempted" convention {@code
+     * EntityDatabaseClient}'s own batch operations use - rather than firing eight requests and
+     * discarding every result, which previously left both the caller and {@code HardResetCommand}
+     * with no way to know whether the reset actually completed or silently failed partway through.
+     */
+    @Override
+    public void reset() {
+
+        final DataFactory dataFactory = this.getFactoryContainer().getDataFactory();
+
+        final List<CompletableFuture<Void>> deletions = List.of(
+                dataFactory.deleteSectionAsync(AuthUser.class),
+                dataFactory.deleteSectionAsync(CloudUser.class),
+                dataFactory.deleteSectionAsync(Folder.class),
+                dataFactory.deleteSectionAsync(PendingRegistration.class),
+                dataFactory.deleteSectionAsync(PendingPasswordReset.class),
+                dataFactory.deleteSectionAsync(StoredFile.class),
+                dataFactory.deleteSectionAsync(StoredFileOwnership.class),
+                dataFactory.deleteSectionAsync(ApiKey.class)
+        );
+
+        CompletableFuture.allOf(deletions.toArray(new CompletableFuture[0])).join();
 
     }
 

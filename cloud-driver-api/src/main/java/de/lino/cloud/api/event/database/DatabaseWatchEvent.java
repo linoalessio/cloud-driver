@@ -1,6 +1,5 @@
 package de.lino.cloud.api.event.database;
 
-import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.database.json.JsonDocument;
@@ -40,12 +39,9 @@ public class DatabaseWatchEvent extends Event {
         this.cloudDriver().getFactoryContainer().getDataFactory().reload(StoredFile.class);
         final Optional<StoredFile> uploadedFile = this.cloudDriver().getFactoryContainer().getFileFactory().findById(id);
 
-        if (uploadedFile.isEmpty()) {
-            this.cloudDriver().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));
-            return;
-        }
+        if (uploadedFile.isPresent()) return;
 
-        this.cloudDriver().getLogger().info(String.format("Received new file: '%s'", uploadedFile.get()));
+        this.cloudDriver().getLogger().warning(String.format("Received change notification for unknown file id '%s' - ignoring", id));
 
     }
 

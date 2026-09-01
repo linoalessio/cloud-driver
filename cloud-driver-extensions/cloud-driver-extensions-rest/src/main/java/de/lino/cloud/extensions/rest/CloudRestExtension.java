@@ -119,8 +119,8 @@ public class CloudRestExtension extends Extension {
         final JwtSigner jwtSigner = new JjwtSigner(signingKey);
 
         final EmailSender emailSender = this.buildEmailSender();
-        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender);
         final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory);
+        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService);
 
         // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal
         // Command, or CloudUser#getStoredFiles()) reaches these exact instances via

@@ -99,6 +99,8 @@ public abstract class CloudDriver {
     /** Shuts down every facet owned by this instance. */
     public abstract void shutdown();
 
+    public abstract void reset();
+
     /**
      * Loads this deployment's local configuration file (e.g. {@code "rest-api-port"},
      * {@code "jwt-signing-key"}), re-reading it from disk on every call rather than caching it.

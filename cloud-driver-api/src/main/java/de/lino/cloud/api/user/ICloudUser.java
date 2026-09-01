@@ -28,6 +28,9 @@ public interface ICloudUser {
     @NonNull
     AuthUser getAuthUser();
 
+    @NonNull
+    long getTimeStamp();
+
     /**
      * Every {@link StoredFile} currently owned by this user, resolved on demand from the
      * per-(user, file) ownership records described in this interface's own Javadoc - not state
