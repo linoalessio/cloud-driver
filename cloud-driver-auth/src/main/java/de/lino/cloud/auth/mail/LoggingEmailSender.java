@@ -25,11 +25,16 @@ public final class LoggingEmailSender implements EmailSender {
         this.logger = logger;
     }
 
-    /** Never throws - there is nothing to fail, this only logs. */
+    /**
+     * Never throws - there is nothing to fail, this only logs. Logs {@code plainTextBody} only,
+     * not {@code htmlBody} - the plain-text version already carries the same information (e.g.
+     * the verification code) in a form that reads cleanly in a console/log file.
+     */
     @Override
-    public void send(@NonNull final String toAddress, @NonNull final String subject, @NonNull final String body) {
+    public void send(@NonNull final String toAddress, @NonNull final String subject, @NonNull final String htmlBody,
+                      @NonNull final String plainTextBody) {
         this.logger.info(
-                "[LoggingEmailSender] Would send email to " + toAddress + " - subject: '" + subject + "' - body: " + body);
+                "[LoggingEmailSender] Would send email to " + toAddress + " - subject: '" + subject + "' - body: " + plainTextBody);
     }
 
 }

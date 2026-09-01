@@ -16,6 +16,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.auth.mail.EmailTemplates;
 import de.lino.cloud.auth.pending.PendingEmailChange;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;
@@ -30,6 +31,8 @@ import java.util.Hashtable;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 /**
@@ -182,21 +185,14 @@ public final class AuthService implements IAuthService {
         this.dataFactory.register(pending);
 
         try {
-
-            final String[] emailMessage = new String[] {
-                    String.format("Hello %s,", emailAddress)
-                    , ""
-                    , "We have noticed that you wanted to register a new cloud user account."
-                    , "To verify your registration, enter the following account."
-                    , ""
-                    , String.format("Your verification code is '%s'", verificationCode)
-                    , ""
-                    , "If you have not tried to register a new account, just ignore this email."
-                    , "The register attempt will be deleted within 10 minutes when the account will not be confirmed."
-            };
-
-            this.emailSender.send(emailAddress, "Registration confirmation", String.join("\n", emailMessage));
-
+            this.sendVerificationEmail(
+                    emailAddress,
+                    "Confirm your registration",
+                    "Confirm your registration.",
+                    "We noticed you wanted to register a new Cloud Driver account. Enter the code below to verify your registration.",
+                    verificationCode,
+                    "If you did not try to register an account, just ignore this e-mail - the registration attempt will be deleted within 10 minutes if it isn't confirmed."
+            );
         } catch (final EmailDeliveryException e) {
             throw new RuntimeException("@AuthService.register: failed to send verification email to " + emailAddress, e);
         }
@@ -211,6 +207,28 @@ public final class AuthService implements IAuthService {
      */
     private static String generateVerificationCode() {
         return String.format("%06d", SECURE_RANDOM.nextInt(1_000_000));
+    }
+
+    /**
+     * Sends a verification e-mail (built via {@link EmailTemplates}) to {@code toAddress} - a failure to deliver
+     * that copy is logged, never thrown, so it can never turn a real caller's registration/reset/
+     * e-mail-change request into a failure.
+     *
+     * @param toAddress the real recipient
+     * @param subject the e-mail subject, shared by both the real send and the test copy
+     * @param headline the large heading {@link EmailTemplates#buildVerificationHtml} renders
+     * @param introText the paragraph explaining why this e-mail was sent
+     * @param code the verification code
+     * @param noticeText the closing paragraph (expiry/"ignore this if it wasn't you")
+     * @throws EmailDeliveryException if delivering to {@code toAddress} itself fails
+     */
+    private void sendVerificationEmail(final String toAddress, final String subject, final String headline,
+                                        final String introText, final String code, final String noticeText)
+            throws EmailDeliveryException {
+        final String html = EmailTemplates.buildVerificationHtml(headline, toAddress, introText, code, noticeText);
+        final String plainText = EmailTemplates.buildVerificationPlainText(toAddress, introText, code, noticeText);
+
+        this.emailSender.send(toAddress, subject, html, plainText);
     }
 
     /**
@@ -462,20 +480,14 @@ public final class AuthService implements IAuthService {
         this.dataFactory.register(pending);
 
         try {
-
-            final String[] emailMessage = new String[] {
-                    String.format("Hello %s,", emailAddress)
-                    , ""
-                    , "We have received a request to reset the password for this account."
-                    , ""
-                    , String.format("Your password reset code is '%s'", verificationCode)
-                    , ""
-                    , "If you did not request a password reset, just ignore this email - your password will not change."
-                    , "This code will expire within 10 minutes."
-            };
-
-            this.emailSender.send(emailAddress, "Password reset", String.join("\n", emailMessage));
-
+            this.sendVerificationEmail(
+                    emailAddress,
+                    "Reset your password",
+                    "Reset your password.",
+                    "We received a request to reset the password for this account. Enter the code below to continue.",
+                    verificationCode,
+                    "If you did not request a password reset, just ignore this e-mail - your password will not change. This code will expire within 10 minutes."
+            );
         } catch (final EmailDeliveryException e) {
             throw new RuntimeException("@AuthService.requestPasswordReset: failed to send reset email to " + emailAddress, e);
         }
@@ -594,20 +606,14 @@ public final class AuthService implements IAuthService {
         this.dataFactory.register(pending);
 
         try {
-
-            final String[] emailMessage = new String[] {
-                    String.format("Hello %s,", newEmailAddress)
-                    , ""
-                    , "We have received a request to change the e-mail address for this account to this one."
-                    , ""
-                    , String.format("Your verification code is '%s'", verificationCode)
-                    , ""
-                    , "If you did not request this change, just ignore this email - your account's e-mail address will not change."
-                    , "This code will expire within 10 minutes."
-            };
-
-            this.emailSender.send(newEmailAddress, "Confirm your new e-mail address", String.join("\n", emailMessage));
-
+            this.sendVerificationEmail(
+                    newEmailAddress,
+                    "Confirm your new e-mail address",
+                    "Confirm your new e-mail address.",
+                    "We received a request to change this account's e-mail address to this one. Enter the code below to confirm.",
+                    verificationCode,
+                    "If you did not request this change, just ignore this e-mail - your account's e-mail address will not change. This code will expire within 10 minutes."
+            );
         } catch (final EmailDeliveryException e) {
             throw new RuntimeException("@AuthService.requestEmailChange: failed to send verification email to " + newEmailAddress, e);
         }
