@@ -99,6 +99,7 @@ public abstract class CloudDriver {
     /** Shuts down every facet owned by this instance. */
     public abstract void shutdown();
 
+    /** Hard reset the entire cloud systems data */
     public abstract void reset();
 
     /**
