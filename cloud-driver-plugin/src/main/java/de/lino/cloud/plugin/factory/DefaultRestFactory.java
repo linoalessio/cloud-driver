@@ -4,6 +4,7 @@ import com.google.common.collect.Maps;
 import com.google.gson.Gson;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.file.Folder;
@@ -32,6 +33,7 @@ import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.event.Level;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -1338,6 +1340,13 @@ public final class DefaultRestFactory extends RestFactory {
      * for {@link Owned} entities). Any other cause is rethrown as-is to reach Javalin's
      * default (500) handling.
      *
+     * <p>Any other cause is printed directly to {@link System#err} (bypassing this module's own
+     * deliberately-silenced {@code slf4j-simple}/{@link JavalinLogger} logging, see {@link
+     * #silenceJavalinLogging}) before being rethrown as-is to reach Javalin's default (500)
+     * handling - without this, an unmapped cause here reaches the client as a bare {@code 500
+     * Server Error} with zero trace of why on the server side, the same fix {@link
+     * #registrationFailureOrPropagate} already applied.
+     *
      * @param failure the raw failure from a {@code *Async} call
      * @param type the entity type being handled
      * @param id the entity id being handled
@@ -1348,6 +1357,8 @@ public final class DefaultRestFactory extends RestFactory {
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
         }
+        CloudDriver.getInstance().getLogger().severe("@DefaultRestFactorynotFoundOrPropagate: unmapped " + type.getSimpleName() + " failure (id " + id + "), returning 500:");
+        cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }
 
@@ -1360,8 +1371,13 @@ public final class DefaultRestFactory extends RestFactory {
      * same way a missing/foreign record is - translated to {@link ConflictResponse} (409); and
      * {@link UploadQuotaExceededException} - translated to {@link ContentTooLargeResponse} (413),
      * the same status family Javalin's own {@code maxRequestSize} cap already uses, just scoped
-     * per-account instead of per-request. Any other cause is rethrown as-is to reach Javalin's
-     * default (500) handling.
+     * per-account instead of per-request. Any other cause is printed directly to {@link
+     * System#err} (bypassing this module's own deliberately-silenced {@code
+     * slf4j-simple}/{@link JavalinLogger} logging, see {@link #silenceJavalinLogging}) before
+     * being rethrown as-is to reach Javalin's default (500) handling - without this, an unmapped
+     * cause from {@link #handleUploadFile}/{@link #handleMoveFile}/the folder handlers reached
+     * the client as a bare {@code 500 Server Error} with zero trace of why on the server side;
+     * confirmed missing (2026-09-01) while diagnosing exactly that against a real upload.
      *
      * @param failure the raw failure from a {@code *Async} call
      * @param type the entity type being handled
@@ -1379,19 +1395,27 @@ public final class DefaultRestFactory extends RestFactory {
         if (cause instanceof UploadQuotaExceededException uploadQuotaExceeded) {
             return new ContentTooLargeResponse(uploadQuotaExceeded.getMessage());
         }
+        CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.folderFailureOrPropagate: unmapped " + type.getSimpleName() + " failure (id " + id + "), returning 500:");
+        cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }
 
     /**
      * Unwraps an {@link AuthService#login} failure's {@link CompletionException} and
      * translates {@link InvalidCredentialsException} into {@link UnauthorizedResponse}; any
-     * other cause is rethrown as-is to reach Javalin's default (500) handling.
+     * other cause is printed directly to {@link System#err} (bypassing this module's own
+     * deliberately-silenced {@code slf4j-simple}/{@link JavalinLogger} logging, see {@link
+     * #silenceJavalinLogging}) before being rethrown as-is to reach Javalin's default (500)
+     * handling - same reasoning as {@link #registrationFailureOrPropagate}/{@link
+     * #folderFailureOrPropagate}.
      */
     private static RuntimeException unauthorizedOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
         if (cause instanceof InvalidCredentialsException) {
             return new UnauthorizedResponse("invalid credentials");
         }
+        CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.unauthorizedOrPropagate: unmapped login failure, returning 500:");
+        cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }
 
@@ -1434,7 +1458,7 @@ public final class DefaultRestFactory extends RestFactory {
         if (cause instanceof InvalidVerificationCodeException invalidVerificationCode) {
             return new BadRequestResponse(invalidVerificationCode.getMessage());
         }
-        System.err.println("[DefaultRestFactory] unmapped registration failure, returning 500:");
+        CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.registrationFailureOrPropagate: unmapped registration failure, returning 500:");
         cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }

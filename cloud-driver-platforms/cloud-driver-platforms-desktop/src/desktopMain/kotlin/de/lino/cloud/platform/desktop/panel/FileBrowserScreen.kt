@@ -85,6 +85,7 @@ import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.Entry
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
+import de.lino.cloud.platform.desktop.utils.isZipArchive
 import de.lino.cloud.platform.desktop.utils.rememberThumbnail
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
@@ -354,7 +355,13 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         isDropTarget = entry.id == hoveredFolderId,
                         onToggleSelect = { viewModel.toggleSelected(entry) },
                         onOpen = { if (entry is Entry.FolderEntry) viewModel.openFolder(entry.folder) },
-                        onPreviewRequest = { if (entry is Entry.FileEntry) previewEntry = entry },
+                        // A double-clicked ZIP archive is extracted into the current folder
+                        // instead of opening a preview - see AppViewModel.extractArchive.
+                        onPreviewRequest = {
+                            if (entry is Entry.FileEntry) {
+                                if (isZipArchive(entry.summary.contentType())) viewModel.extractArchive(entry) else previewEntry = entry
+                            }
+                        },
                         onRegisterBounds = { bounds -> if (entry is Entry.FolderEntry) rowBounds[entry.id] = bounds },
                         onUnregisterBounds = { if (entry is Entry.FolderEntry) rowBounds.remove(entry.id) },
                         // Dragging an entry that's part of the current multi-selection moves the
@@ -632,13 +639,15 @@ private fun SelectionOptionsMenuButton(viewModel: AppViewModel) {
  *
  * A single click still only opens a folder (via [onOpen], unchanged - a file's single click is a
  * no-op, same as before this row could preview anything). A **double**-click (two clicks within
- * [DOUBLE_CLICK_THRESHOLD_MILLIS]) on a file row calls [onPreviewRequest] instead, opening
- * `FilePreviewDialog` - detected with a plain click-timestamp check inside the same
- * `.clickable(...)` this row already had, rather than a second `detectTapGestures` `pointerInput`
- * block, to avoid two independent tap-gesture recognizers racing over the same pointer stream
- * (this row already layers a long-press-drag detector and a raw-event right-click detector
- * alongside `.clickable` - both of those coexist safely with it specifically because neither
- * consumes a plain, quick tap).
+ * [DOUBLE_CLICK_THRESHOLD_MILLIS]) on a file row calls [onPreviewRequest] instead - detected with
+ * a plain click-timestamp check inside the same `.clickable(...)` this row already had, rather
+ * than a second `detectTapGestures` `pointerInput` block, to avoid two independent tap-gesture
+ * recognizers racing over the same pointer stream (this row already layers a long-press-drag
+ * detector and a raw-event right-click detector alongside `.clickable` - both of those coexist
+ * safely with it specifically because neither consumes a plain, quick tap). Despite the callback's
+ * name, [onPreviewRequest]'s caller (`FileBrowserScreen`) branches on the file's content type: a
+ * ZIP archive is extracted into the current folder instead of opening `FilePreviewDialog` - see
+ * `AppViewModel.extractArchive`.
  *
  * The row's own icon is [iconFor]'s generic per-content-type glyph, except for an image file under
  * [de.lino.cloud.platform.desktop.utils.isThumbnailable]'s size ceiling - there,

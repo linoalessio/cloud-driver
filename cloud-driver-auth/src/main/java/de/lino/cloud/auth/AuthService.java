@@ -31,8 +31,6 @@ import java.util.Hashtable;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 /**
@@ -210,17 +208,17 @@ public final class AuthService implements IAuthService {
     }
 
     /**
-     * Sends a verification e-mail (built via {@link EmailTemplates}) to {@code toAddress} - a failure to deliver
-     * that copy is logged, never thrown, so it can never turn a real caller's registration/reset/
-     * e-mail-change request into a failure.
+     * Builds (via {@link EmailTemplates}) and sends a verification e-mail to {@code toAddress} -
+     * the shared send path for {@link #register}/{@link #requestPasswordReset}/{@link
+     * #requestEmailChange}, each supplying its own headline/intro/notice text.
      *
-     * @param toAddress the real recipient
-     * @param subject the e-mail subject, shared by both the real send and the test copy
+     * @param toAddress the recipient
+     * @param subject the e-mail subject
      * @param headline the large heading {@link EmailTemplates#buildVerificationHtml} renders
      * @param introText the paragraph explaining why this e-mail was sent
      * @param code the verification code
      * @param noticeText the closing paragraph (expiry/"ignore this if it wasn't you")
-     * @throws EmailDeliveryException if delivering to {@code toAddress} itself fails
+     * @throws EmailDeliveryException if delivering to {@code toAddress} fails
      */
     private void sendVerificationEmail(final String toAddress, final String subject, final String headline,
                                         final String introText, final String code, final String noticeText)

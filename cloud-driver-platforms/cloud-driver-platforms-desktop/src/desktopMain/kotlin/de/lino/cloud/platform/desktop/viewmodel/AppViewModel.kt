@@ -13,6 +13,7 @@ import de.lino.cloud.platform.desktop.theme.ThemeMode
 import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
+import de.lino.cloud.platform.desktop.utils.extractZip
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
 import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
@@ -466,6 +467,48 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
             withContext(Dispatchers.IO) { zippedDirectories.forEach { (_, zipPath) -> Files.deleteIfExists(zipPath) } }
         }
         this.refreshCurrentFolder()
+    }
+
+    /**
+     * The desktop app's "double-click a ZIP archive to unarchive it" behavior (see
+     * `FileBrowserScreen`'s `EntryRow` double-click wiring, gated on
+     * [de.lino.cloud.platform.desktop.utils.isZipArchive]): downloads [entry] to a throwaway temp
+     * file, extracts it into a fresh temp directory via [extractZip], then recreates its entire
+     * contents - every folder and file, nested structure included - directly inside the current
+     * folder via [uploadDirectoryTreeInto]. The archive file itself is left in place; extraction
+     * only adds new entries alongside it, per this app's "never silently delete something the user
+     * didn't ask to delete" convention.
+     */
+    fun extractArchive(entry: Entry.FileEntry) = run {
+        val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-extract") }
+        val archiveTempFile = tempDir.resolve(entry.name)
+        val extractedDir = tempDir.resolve("extracted")
+        try {
+            this.client.downloadFileToPath(entry.id, archiveTempFile)
+            extractZip(archiveTempFile, extractedDir)
+            this.uploadDirectoryTreeInto(extractedDir, this.currentFolderId)
+        } finally {
+            withContext(Dispatchers.IO) { tempDir.toFile().deleteRecursively() }
+        }
+        this.refreshCurrentFolder()
+    }
+
+    /**
+     * Recursively uploads every file/subfolder directly inside [localDirectory] into
+     * [remoteParentFolderId] (`null` = root) - the local-filesystem-sourced counterpart to
+     * [duplicateFolderInto]'s "create the folder remotely first, then recurse into it" shape.
+     * Files at each level upload concurrently (capped - see [mapConcurrently]); each subdirectory
+     * is likewise processed concurrently with its siblings, but its own remote folder must exist
+     * before recursing into it (a child file/folder needs a real parent id to upload/create under).
+     */
+    private suspend fun uploadDirectoryTreeInto(localDirectory: Path, remoteParentFolderId: String?) {
+        val children = withContext(Dispatchers.IO) { Files.list(localDirectory).use { it.toList() } }
+        val (directories, files) = children.partition { Files.isDirectory(it) }
+        files.mapConcurrently { file -> this.client.uploadFile(file.fileName.toString(), file, remoteParentFolderId) }
+        directories.mapConcurrently { directory ->
+            val remoteFolder = this.client.createFolder(directory.fileName.toString(), remoteParentFolderId)
+            this.uploadDirectoryTreeInto(directory, remoteFolder.folderId())
+        }
     }
 
     /** Deletes every currently-selected entry - see [deleteEntries]. */

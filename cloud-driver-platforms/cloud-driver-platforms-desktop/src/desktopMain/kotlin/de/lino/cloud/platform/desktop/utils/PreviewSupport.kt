@@ -16,6 +16,22 @@ private val TEXT_PREVIEW_CONTENT_TYPES = setOf(
     "application/json", "application/xml", "application/yaml", "application/toml",
 )
 
+/** The content type `Constraints.CONTENT_TYPES` (`cloud-driver-api`) maps the `.zip` extension to, server-side - see [isZipArchive]. */
+private const val ZIP_CONTENT_TYPE = "application/zip"
+
+/**
+ * Whether a file identified by [contentType] is a ZIP archive - double-clicking such a file
+ * extracts it into the current folder instead of opening a preview (see
+ * `AppViewModel.extractArchive`, `FileBrowserScreen`'s `EntryRow` double-click wiring). Content-type
+ * only, not a filename-extension fallback: [contentType] is always server-derived from the file's
+ * own extension (`StoredFile#contentType()`, `cloud-driver-api`), so a file actually named `.zip`
+ * is guaranteed to carry [ZIP_CONTENT_TYPE] already. Deliberately narrower than [iconFor]'s own
+ * archive-icon classification (which also covers 7z/tar/gzip/rar/bzip2/xz for icon purposes) -
+ * double-click-to-extract only supports ZIP, the one format the JDK can read without a
+ * third-party library.
+ */
+fun isZipArchive(contentType: String?): Boolean = contentType?.lowercase() == ZIP_CONTENT_TYPE
+
 /**
  * Classifies [contentType] (a file's already-server-assigned content type, e.g.
  * `StoredFileSummaryResponse#contentType()`) into a [PreviewKind] - [PreviewKind.NONE] means
