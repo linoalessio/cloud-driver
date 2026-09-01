@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.desktop.client
 
 import de.lino.cloud.platform.rest.api.ApiClient
+import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
@@ -115,6 +116,10 @@ class CloudDriverClient(
     suspend fun deleteFolder(folderId: String) {
         this.apiClient.deleteFolderAsync(folderId).await()
     }
+
+    /** The caller's own [CloudUserResponse] - its `timeStamp` is the account's creation time (see that DTO's own Javadoc). */
+    suspend fun getCloudUser(authUserId: String): CloudUserResponse =
+        this.apiClient.getCloudUserAsync(authUserId).await()
 
     /** Shuts down the wrapped [ApiClient]'s executor. Idempotent. */
     override fun close() = this.apiClient.close()

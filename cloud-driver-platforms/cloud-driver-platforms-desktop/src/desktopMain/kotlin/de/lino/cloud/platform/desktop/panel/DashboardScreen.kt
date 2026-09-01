@@ -33,6 +33,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+// DateTimeFormatter is immutable/thread-safe (unlike SimpleDateFormat), so one shared instance is safe -
+// same pattern FileBrowserScreen.kt's own ENTRY_DATE_FORMAT uses.
+private val JOINED_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
+
+private fun formatJoinedDate(epochMilli: Long): String = JOINED_DATE_FORMAT.format(Instant.ofEpochMilli(epochMilli))
 
 /** The after-login account overview - email/account id, plus aggregate file/folder/storage stats (see [AccountStats]). */
 @Composable
@@ -94,6 +103,7 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
                 Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             InfoRow(Icons.Filled.AlternateEmail, "Email address", viewModel.currentUserEmail ?: "-")
+            InfoRow(Icons.Filled.Badge, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
             InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
         }
     }

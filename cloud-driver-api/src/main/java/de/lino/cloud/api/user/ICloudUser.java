@@ -28,8 +28,11 @@ public interface ICloudUser {
     @NonNull
     AuthUser getAuthUser();
 
-    @NonNull
     long getTimeStamp();
+
+    long getMaxBytesToUpload();
+
+    void setMaxBytesToUpload(final long maxBytesToUpload);
 
     /**
      * Every {@link StoredFile} currently owned by this user, resolved on demand from the

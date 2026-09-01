@@ -73,12 +73,30 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     var currentUserId: String? by mutableStateOf(null)
         private set
 
+    /**
+     * The signed-in account's creation time (epoch millis) - fetched via [CloudDriverClient.getCloudUser]
+     * right after authenticating, since a `CloudUser`'s `timeStamp` is set once, at account-confirmation
+     * time (see `CloudUserResponse`'s own Javadoc). `null` until that fetch completes, and left `null`
+     * (rather than failing the whole sign-in) if it errors - this is Dashboard-only display information,
+     * not something the rest of the app depends on.
+     */
+    var currentUserCreatedAtEpochMillis: Long? by mutableStateOf(null)
+        private set
+
     var dashboardStats: AccountStats? by mutableStateOf(null)
         private set
 
-    private fun onAuthenticated(email: String, jwt: String) {
+    private suspend fun onAuthenticated(email: String, jwt: String) {
         this.currentUserEmail = email
-        this.currentUserId = decodeJwtSubject(jwt)
+        val userId = decodeJwtSubject(jwt)
+        this.currentUserId = userId
+        this.currentUserCreatedAtEpochMillis = try {
+            userId?.let { this.client.getCloudUser(it).timeStamp() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // --- file browser state ---------------------------------------------
@@ -177,6 +195,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.logout()
         this.currentUserEmail = null
         this.currentUserId = null
+        this.currentUserCreatedAtEpochMillis = null
         this.dashboardStats = null
         this.breadcrumbs.clear()
         this.currentFolderId = null

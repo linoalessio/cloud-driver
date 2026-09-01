@@ -51,8 +51,8 @@ public class HardResetCommand implements Command {
             RESET_TIMEOUT.set(null);
 
             CloudDriver.getInstance().reset();
-            terminal.displayApproved("The entire cloud data has been reset.");
-            terminal.displayApproved("Shutting down cloud driver...");
+            terminal.displayApproved("&c&lThe entire cloud data has been reset.");
+            terminal.displayApproved("&c&lShutting down cloud driver...");
             CloudDriver.getInstance().shutdown();
 
             return;

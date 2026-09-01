@@ -1,5 +1,6 @@
 package de.lino.cloud.platform.desktop
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.DpSize
@@ -7,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import java.awt.Dimension
 import de.lino.cloud.platform.desktop.theme.CloudDriverTheme
 import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -24,6 +26,15 @@ import org.jetbrains.compose.resources.painterResource
  */
 private const val DEFAULT_SERVER_URL = "https://api.cloud-driver.de"
 
+/**
+ * Floor on how small the window can be resized/minimized to - Compose Desktop has no
+ * `Window`-level "minimum size" parameter of its own, so this is applied imperatively via
+ * `WindowScope.window` (the underlying `ComposeWindow`/AWT `Window`) below. Fixes a real bug:
+ * without it, the window could be dragged smaller and smaller until it shrank to nothing and
+ * effectively vanished, with no way to grab an edge to resize it back up.
+ */
+private val MINIMUM_WINDOW_SIZE = Dimension(1200, 800)
+
 fun main() = application {
     val scope = rememberCoroutineScope()
     // Loaded synchronously - see AppSettingsStore#loadThemeMode's own Javadoc for why that's fine here.
@@ -38,6 +49,8 @@ fun main() = application {
         state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
         icon = painterResource(Res.drawable.app_icon),
     ) {
+        LaunchedEffect(Unit) { window.minimumSize = MINIMUM_WINDOW_SIZE }
+
         CloudDriverTheme(viewModel.themeMode) {
             App(viewModel)
         }

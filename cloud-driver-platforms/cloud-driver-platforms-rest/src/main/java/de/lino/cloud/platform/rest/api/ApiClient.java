@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
@@ -810,6 +811,31 @@ public final class ApiClient implements AutoCloseable {
 
     private HttpRequest deleteFolderRequest(final String folderId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true).DELETE().build();
+    }
+
+    // --- cloud users ------------------------------------------------------
+
+    /**
+     * {@code GET /cloudUsers/{id}} on the main REST API - the caller's own {@link
+     * CloudUserResponse}, whose {@code timeStamp} is set once at account-confirmation time and
+     * therefore doubles as the account's creation timestamp (see {@link CloudUserResponse}'s own
+     * Javadoc). The server 404s for any id other than the authenticated caller's own.
+     *
+     * @throws ApiException {@code 404} if {@code authUserId} doesn't match the caller's own id
+     *                       (or has no {@code CloudUser} record yet), {@code 401} if not logged
+     *                       in / token expired
+     */
+    public CloudUserResponse getCloudUser(final String authUserId) throws ApiException {
+        return this.send(this.getCloudUserRequest(authUserId), CloudUserResponse.class);
+    }
+
+    /** Async form of {@link #getCloudUser(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<CloudUserResponse> getCloudUserAsync(final String authUserId) {
+        return this.sendAsync(this.getCloudUserRequest(authUserId), CloudUserResponse.class);
+    }
+
+    private HttpRequest getCloudUserRequest(final String authUserId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/" + authUserId), true).GET().build();
     }
 
     // --- internals -------------------------------------------------------

@@ -7,10 +7,7 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.NonNull;
-import lombok.ToString;
+import lombok.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -28,13 +25,16 @@ import java.util.Objects;
  * user already owned. {@link CloudUserService} now manages ownership through
  * dedicated {@link StoredFileOwnership} rows instead, one per (user, file) pair.
  */
-@Getter @ToString @EqualsAndHashCode(callSuper = false)
+@Getter @Setter
+@ToString @EqualsAndHashCode(callSuper = false)
 public final class CloudUser extends Serialized implements ICloudUser, Owned {
 
     /** The owning {@link AuthUser#getId()} - this entity's primary key and its own {@link #ownerId()}. */
     private final String authUserId;
 
     private final long timeStamp;
+
+    private long maxBytesToUpload;
 
     /**
      * @param authUserId the owning {@link AuthUser#getId()} - not the full entity, since

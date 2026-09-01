@@ -126,4 +126,13 @@ public final class Dtos {
     public record ErrorResponse(String title) {
     }
 
+    /**
+     * Shape of the object {@code GET /cloudUsers/{id}} returns - mirrors {@code CloudUser}'s
+     * Gson-serialized fields. {@code timeStamp} is set once, when the {@code CloudUser} record is
+     * first created (account confirmation time), so it doubles as the account's creation
+     * timestamp - see {@code CloudUser}'s own Javadoc server-side.
+     */
+    public record CloudUserResponse(String authUserId, long timeStamp) {
+    }
+
 }
