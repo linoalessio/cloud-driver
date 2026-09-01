@@ -1,10 +1,11 @@
 package de.lino.cloud.plugin.security.database;
 
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.database.EncryptedEntityRecord;
-import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.plugin.security.entity.SecureEntityChannel;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
@@ -23,7 +24,6 @@ import org.jetbrains.annotations.NotNull;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import de.lino.cloud.api.utility.Asserts;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -472,6 +472,10 @@ public final class EntityDatabaseClient {
      */
     public <T extends Serialized> void deleteSection(@NotNull final Class<T> type) {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.deleteSection: type cannot be null");
+
+        final String databaseName = type.getSimpleName();
+
+        if (this.databaseProvider.getSection(databaseName).isEmpty()) return;
 
         this.databaseProvider.deleteSection(type.getSimpleName());
         this.sections.remove(type);

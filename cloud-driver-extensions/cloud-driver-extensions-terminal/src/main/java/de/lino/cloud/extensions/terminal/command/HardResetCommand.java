@@ -30,7 +30,7 @@ public class HardResetCommand implements Command {
 
     @Override
     public @NotNull String description() {
-        return "Clear the entire data set of the cloud driver (@not-recommended)";
+        return "Clear the entire data set of the cloud driver (&c@not-recommended&7)";
     }
 
     @Override
@@ -41,7 +41,7 @@ public class HardResetCommand implements Command {
         if (RESET_STARTED.get() && RESET_TIMEOUT.get() != null) {
 
             if (RESET_TIMEOUT.get() <= System.currentTimeMillis()) {
-                terminal.displayApproved("The timeout has been reached. Re-try the reset.");
+                terminal.displayApproved("The &ctimeout &7has been $breached&7. Re-try the reset.");
                 RESET_STARTED.set(false);
                 RESET_TIMEOUT.set(null);
                 return;
@@ -52,14 +52,16 @@ public class HardResetCommand implements Command {
 
             CloudDriver.getInstance().reset();
             terminal.displayApproved("The entire cloud data has been reset.");
+            terminal.displayApproved("Shutting down cloud driver...");
+            CloudDriver.getInstance().shutdown();
 
             return;
         }
 
         RESET_STARTED.set(true);
         RESET_TIMEOUT.set(System.currentTimeMillis() + TIMEOUT.toMillis());
-        terminal.displayApproved("To delete the entire cloud data, re-run this command for confirmation.");
-        terminal.displayApproved("You got 5 seconds to confirm before you have to re-try it.");
+        terminal.displayApproved("To &cdelete the entire cloud data&7, re-run this command for confirmation.");
+        terminal.displayApproved("You got &b5 seconds &7to &aconfirm &7before you have to re-try it.");
 
     }
 

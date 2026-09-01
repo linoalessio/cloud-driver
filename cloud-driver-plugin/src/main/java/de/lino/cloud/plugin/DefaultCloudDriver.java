@@ -26,12 +26,14 @@ import de.lino.cloud.plugin.factory.container.FactoryContainer;
 import de.lino.cloud.plugin.factory.container.ServiceContainer;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.DatabaseSection;
 import de.lino.database.json.JsonDocument;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -212,7 +214,7 @@ public final class DefaultCloudDriver extends CloudDriver {
     public void reset() {
 
         final DataFactory dataFactory = this.getFactoryContainer().getDataFactory();
-
+        
         final List<CompletableFuture<Void>> deletions = List.of(
                 dataFactory.deleteSectionAsync(AuthUser.class),
                 dataFactory.deleteSectionAsync(CloudUser.class),
