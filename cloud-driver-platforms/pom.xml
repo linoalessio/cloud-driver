@@ -15,6 +15,7 @@
 
     <modules>
         <module>cloud-driver-platforms-rest</module>
+        <module>cloud-driver-platforms-desktop</module>
     </modules>
 
 </project>
