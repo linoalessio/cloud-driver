@@ -12,6 +12,7 @@ import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
@@ -134,10 +135,44 @@ public final class CloudBootstrap {
         final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
-        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
+        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER);
 
         return Optional.of(CloudDriver.getInstance());
     }
+
+    /**
+     * This deployment's own {@link ConnectivityChecker}, passed to {@link DefaultCloudDriver#setInstance}
+     * instead of the default {@code InternetConnectivityChecker} - always reports available.
+     *
+     * <p>{@code InternetConnectivityChecker} probes outbound DNS resolvers (Cloudflare/Google, port
+     * 53) to answer "is there a network connection at all" - the right question for a genuinely
+     * mobile/offline-capable client (see {@code CloudBootstrapSample}, wired against a local
+     * JSON-file database with no real network dependency at all), but the wrong one for this
+     * process: {@code CloudBootstrap} always runs on the same machine as the Postgres instance it
+     * persists to (see {@code postgres-database.json}'s own {@code address}), so "can I reach two
+     * arbitrary public IPs" has nothing to do with whether a local database write can succeed.
+     *
+     * <p><b>Fixed a real bug (2026-09-01):</b> {@link DefaultFileFactory#upload} calls {@link
+     * ConnectivityChecker#isAvailable()} - a fresh, up-to-4-second (two 2-second probes, tried in
+     * order) outbound socket-connect check - on <em>every single upload</em>, synchronously,
+     * before persisting. Under a burst of many concurrent uploads (e.g. the desktop app's
+     * "double-click a ZIP archive to extract it" feature, which can fire off dozens of {@code
+     * POST /files} calls at once), several of these probes racing for outbound sockets/bandwidth
+     * on a small VPS spuriously timed out, making {@code isAvailable()} report "offline" even
+     * though the server's own database connection never wavered. When that happened, {@link
+     * DefaultFileFactory#upload} silently queued the file into its {@code PendingUploadCache}
+     * instead of persisting it - but {@code CloudUserService#uploadFile} has no way to tell the
+     * difference and proceeded as if the upload had fully succeeded (created the {@code
+     * StoredFileOwnership} row, updated the account's usage total, returned a {@code 201} to the
+     * caller). The file only became readable again once {@link PendingUploadScheduler}'s next
+     * tick (every minute) actually persisted it - in the meantime, opening/downloading/previewing
+     * it 500'd with {@code IllegalStateException: owned file not found}, exactly what happened
+     * opening a PDF right after extracting a ZIP. Wiring an always-available checker here removes
+     * the false signal at its root, for this specific deployment topology (database co-located
+     * with the app server) - the general offline-queueing machinery itself is untouched, and
+     * still fully exercised by {@code CloudBootstrapSample}'s own, genuinely-disconnected scenario.
+     */
+    private static final ConnectivityChecker ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER = () -> true;
 
     /**
      * Wires one shutdown hook that runs every given action, in registration order, before
