@@ -130,9 +130,12 @@ public final class Dtos {
      * Shape of the object {@code GET /cloudUsers/{id}} returns - mirrors {@code CloudUser}'s
      * Gson-serialized fields. {@code timeStamp} is set once, when the {@code CloudUser} record is
      * first created (account confirmation time), so it doubles as the account's creation
-     * timestamp - see {@code CloudUser}'s own Javadoc server-side.
+     * timestamp - see {@code CloudUser}'s own Javadoc server-side. {@code maxBytesToUpload}/{@code
+     * currentUploadedBytes} back the Dashboard's storage-quota display - see {@code
+     * ICloudUser#getMaxBytesToUpload()}/{@code #getCurrentUploadedBytes()} server-side for what
+     * each actually tracks.
      */
-    public record CloudUserResponse(String authUserId, long timeStamp) {
+    public record CloudUserResponse(String authUserId, long timeStamp, long maxBytesToUpload, long currentUploadedBytes) {
     }
 
 }

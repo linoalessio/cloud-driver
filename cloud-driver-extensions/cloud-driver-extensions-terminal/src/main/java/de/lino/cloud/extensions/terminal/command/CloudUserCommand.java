@@ -136,11 +136,11 @@ public class CloudUserCommand implements Command {
                     return;
                 }
 
-                cloudUserService.updateCloudUserBytesUsage(cloudUser.get().getAuthUserId(), bytes);
+                cloudUserService.updateCloudUserBytesLimit(cloudUser.get().getAuthUserId(), bytes);
                 terminal.displayApproved("Cloud user '%b%s&7' can now uploaded up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(bytes));
 
 
-            } catch (NumberFormatException e) {
+            } catch (final NumberFormatException e) {
                 terminal.displayApproved("Please enter a valid bytes value");
                 return;
             }

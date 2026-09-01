@@ -80,7 +80,7 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
         final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
         return configuration.contains(MAX_BYTES_TO_UPLOAD_CONFIG_KEY)
                 ? configuration.getLong(MAX_BYTES_TO_UPLOAD_CONFIG_KEY)
-                : Long.MAX_VALUE;
+                : 1_048_576L;
     }
 
     @Override

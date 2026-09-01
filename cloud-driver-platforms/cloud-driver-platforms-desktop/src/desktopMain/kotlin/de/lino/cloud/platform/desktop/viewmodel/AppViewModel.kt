@@ -83,6 +83,12 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     var currentUserCreatedAtEpochMillis: Long? by mutableStateOf(null)
         private set
 
+    /** The signed-in account's current upload usage/quota (bytes) - fetched alongside [currentUserCreatedAtEpochMillis], same `null`-on-failure/Dashboard-only reasoning. */
+    var currentUserUploadedBytes: Long? by mutableStateOf(null)
+        private set
+    var currentUserMaxBytesToUpload: Long? by mutableStateOf(null)
+        private set
+
     var dashboardStats: AccountStats? by mutableStateOf(null)
         private set
 
@@ -90,12 +96,17 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserEmail = email
         val userId = decodeJwtSubject(jwt)
         this.currentUserId = userId
-        this.currentUserCreatedAtEpochMillis = try {
-            userId?.let { this.client.getCloudUser(it).timeStamp() }
+        try {
+            val cloudUser = userId?.let { this.client.getCloudUser(it) }
+            this.currentUserCreatedAtEpochMillis = cloudUser?.timeStamp()
+            this.currentUserUploadedBytes = cloudUser?.currentUploadedBytes()
+            this.currentUserMaxBytesToUpload = cloudUser?.maxBytesToUpload()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            null
+            this.currentUserCreatedAtEpochMillis = null
+            this.currentUserUploadedBytes = null
+            this.currentUserMaxBytesToUpload = null
         }
     }
 
@@ -196,6 +207,8 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserEmail = null
         this.currentUserId = null
         this.currentUserCreatedAtEpochMillis = null
+        this.currentUserUploadedBytes = null
+        this.currentUserMaxBytesToUpload = null
         this.dashboardStats = null
         this.breadcrumbs.clear()
         this.currentFolderId = null

@@ -81,6 +81,8 @@ public interface ICloudUserService {
      */
     void updateCloudUserBytesUsage(@NonNull String authUserId, final long delta);
 
+    void updateCloudUserBytesLimit(@NonNull String authUserId, final long delta);
+
     /**
      * Uploads {@code fileName}/{@code content} as a new {@link StoredFile} and tracks
      * it on {@code authUserId}'s {@link ICloudUser} record.

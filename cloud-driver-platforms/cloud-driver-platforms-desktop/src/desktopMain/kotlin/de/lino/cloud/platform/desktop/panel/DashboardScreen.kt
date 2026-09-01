@@ -43,6 +43,19 @@ private val JOINED_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private fun formatJoinedDate(epochMilli: Long): String = JOINED_DATE_FORMAT.format(Instant.ofEpochMilli(epochMilli))
 
+/**
+ * Formats the account's storage status as `"<used> / <limit>"`, mirroring the server's own
+ * `ICloudUser#getCurrentUploadedBytes()`/`#getMaxBytesToUpload()` pattern (see `CloudUserCommand`'s
+ * terminal equivalent) - both values via [formatBytes], the client-side port of `Constraints`'s
+ * `resolveBytesToUnit` this module already uses everywhere else (see `ByteFormat.kt`'s own Javadoc
+ * on why this module ports that algorithm by hand instead of depending on `cloud-driver-api`).
+ * `"-"` while either value hasn't loaded yet.
+ */
+private fun formatStorageStatus(uploadedBytes: Long?, maxBytes: Long?): String {
+    if (uploadedBytes == null || maxBytes == null) return "-"
+    return "${formatBytes(uploadedBytes)} / ${formatBytes(maxBytes)}"
+}
+
 /** The after-login account overview - email/account id, plus aggregate file/folder/storage stats (see [AccountStats]). */
 @Composable
 fun DashboardScreen(viewModel: AppViewModel) {
@@ -103,6 +116,7 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
                 Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             InfoRow(Icons.Filled.AlternateEmail, "Email address", viewModel.currentUserEmail ?: "-")
+            InfoRow(Icons.Filled.Storage, "Storage", formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload))
             InfoRow(Icons.Filled.Badge, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
             InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
         }

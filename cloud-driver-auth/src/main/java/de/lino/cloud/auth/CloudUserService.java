@@ -169,6 +169,23 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
+    @Override
+    public void updateCloudUserBytesLimit(@NonNull String authUserId, long bytes) {
+
+        final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
+        if (cloudUser.isEmpty()) return;
+
+        final ICloudUser existing = cloudUser.get();
+        existing.setMaxBytesToUpload(Math.max(0, bytes));
+
+        try {
+            this.dataFactory.update((CloudUser) existing);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.updateCloudUserBytesLimit: failed to persist usage update for " + authUserId, e);
+        }
+
+    }
+
     /**
      * Deletes every {@link Folder} owned by {@code authUserId}, regardless of nesting depth,
      * by repeatedly deleting whichever folders are currently leaves (no other remaining folder

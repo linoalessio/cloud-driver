@@ -124,14 +124,34 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String ROOT_FOLDER_SENTINEL = "root";
 
     /**
-     * Overrides Javalin's own {@link JavalinConfig#http}{@code .maxRequestSize} default of
-     * 1,000,000 bytes (1 MB) - too small for {@code POST /files}, whose body is a base64-encoded
-     * {@link StoredFile} (roughly 1.37x the raw file size) read whole via {@link Context#body()}
-     * in {@link #handleUploadFile}; without this override, any upload over ~730 KB of raw file
-     * content fails with Javalin's own 413 {@code CONTENT_TOO_LARGE} ("Content Too Large").
-     * 256 MB comfortably covers a 64 MB file's ~85 MB base64 encoding with headroom to spare.
+     * The upload size ceiling, enforced two ways: it overrides Javalin's own {@link
+     * JavalinConfig#http}{@code .maxRequestSize} default of 1,000,000 bytes (1 MB, Jetty's own
+     * backstop check), and it's the running-total cap {@link #receiveUploadToScratchFile} checks
+     * incrementally while streaming a {@code POST /files} body to disk, rejecting early rather
+     * than only after the whole body has been received.
+     *
+     * <p><b>Stale reasoning, corrected:</b> this constant's value (256 MB) was originally sized
+     * around base64-encoded JSON bodies read whole via {@link Context#body()}/{@link
+     * Context#bodyAsBytes()} (~1.37x the raw file size) - the client has sent a raw {@code
+     * application/octet-stream} body instead for some time, and as of Phase 3 of {@code
+     * architecture/OPTIMIZE_UPLOAD.md}, {@link #handleUploadFile} streams that body straight to a
+     * scratch file rather than buffering it in heap at all. The constraint that originally sized
+     * this number - JVM heap - no longer applies to the receive step; what this number should be
+     * today is a deliberate disk/quota decision (available scratch-disk space, how large a single
+     * file this deployment ever expects to serve), not a leftover memory-safety number. Left at
+     * 256 MB pending that decision - raise it (or wire it to {@code configuration.json}, the same
+     * way {@code CloudUser#getMaxBytesToUpload()}'s own per-account quota is configured) once a
+     * deliberate ceiling is chosen.
      */
     private static final long MAX_REQUEST_SIZE_BYTES = 26_8435_456;
+
+    /**
+     * Chunk size {@link #receiveUploadToScratchFile} reads/writes at a time while streaming an
+     * upload to disk - the only per-upload heap cost that scales with buffer size, not file size,
+     * regardless of how large the upload is. Matches {@code StoredFile}'s own DEFLATE/inflate
+     * buffer size, for the same "a plain, unremarkable streaming chunk size" reasoning.
+     */
+    private static final int UPLOAD_STREAM_BUFFER_SIZE = 8192;
 
     /** The {@link DataFactory} every registered {@code (path, type)} resource is backed by. */
     private final DataFactory dataFactory;
@@ -704,19 +724,29 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * {@code POST /files?fileName=<url-encoded name>&folderId=<id-or-omitted>}: reads the raw
-     * request body as the file's bytes ({@code application/octet-stream}, not base64-encoded
-     * JSON - a base64 body inflates the transferred/parsed size by ~37% and forces {@link
-     * #gson} to parse one huge JSON string field, both pure overhead on top of {@link
-     * #MAX_REQUEST_SIZE_BYTES}'s own size-limit concern; large uploads pay for both) via {@link
-     * Context#bodyAsBytes()} - subject to the same {@link JavalinConfig#http}{@code
-     * .maxRequestSize} limit {@link Context#body()} enforces - and uploads it via {@link
+     * {@code POST /files?fileName=<url-encoded name>&folderId=<id-or-omitted>}: streams the raw
+     * request body ({@code application/octet-stream}, not base64-encoded JSON - a base64 body
+     * inflates the transferred/parsed size by ~37% and forces {@link #gson} to parse one huge
+     * JSON string field, both pure overhead on top of the size-limit concern below; large uploads
+     * pay for both) to a scratch file via {@link #receiveUploadToScratchFile} - <b>not</b> {@link
+     * Context#bodyAsBytes()}, which fully buffers the whole body in JVM heap before this method
+     * ever sees it - then uploads the received bytes via {@link
      * CloudUserService#uploadFile(String, String, byte[], String)}, tracked under the caller's
      * own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link #requireValidBearerToken}).
      * {@link #FOLDER_ID_FIELD} is resolved via {@link #resolveFolderIdOrRoot} - omitted (or
      * {@link #ROOT_FOLDER_SENTINEL}) places the file at the root, matching this route's
-     * pre-folders behavior. Dispatched off the Jetty worker thread since {@code uploadFile}
-     * does real database/encryption I/O.
+     * pre-folders behavior.
+     *
+     * <p>The receive-to-scratch-file step runs synchronously on the calling (Jetty worker)
+     * thread, same as the {@link Context#bodyAsBytes()} call it replaces - no threading
+     * regression, since that call was already a blocking read for the whole request-body
+     * duration; the difference is heap stays bounded to one small copy buffer regardless of file
+     * size, rather than one giant {@code byte[]}, and an oversized upload is rejected (via {@link
+     * #receiveUploadToScratchFile} throwing {@link ContentTooLargeResponse} mid-stream) before
+     * the rest of the body is even read. Only the scratch file's <em>own</em> read (into the
+     * {@code byte[]} {@link CloudUserService#uploadFile} still needs - see Phase 3 Option 1 in
+     * {@code architecture/OPTIMIZE_UPLOAD.md}) plus the real database/encryption I/O are
+     * dispatched off the Jetty worker thread, via {@link MultiTaskingFactory}, as before.
      *
      * <p>Responds with a {@link StoredFileSummary} of the uploaded file - not the full {@link
      * StoredFile} (content included) the way this route used to - since the caller already has
@@ -730,10 +760,30 @@ public final class DefaultRestFactory extends RestFactory {
             throw new BadRequestResponse("Missing '" + FILE_NAME_QUERY_PARAM + "' query parameter");
         }
         final String folderId = resolveFolderIdOrRoot(ctx, FOLDER_ID_FIELD);
-        final byte[] content = ctx.bodyAsBytes();
         final String userId = requireUserId(ctx);
+
+        final Path scratchFile = receiveUploadToScratchFile(ctx.bodyInputStream());
+
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.uploadFile(userId, fileName, content, folderId))
+                .supplyAsync(() -> {
+                    // Delete the scratch file on every path out of this block - a successful
+                    // upload, a business-rule failure (e.g. UploadQuotaExceededException), or an
+                    // I/O failure reading it back - matching Phase 4's "delete on both success
+                    // and failure" requirement. By the time uploadFile returns (or throws), its
+                    // content is already fully in hand (copied into the StoredFile it built, or
+                    // queued as one by DefaultFileFactory's offline path) - the scratch file's
+                    // job is done either way, so this never collides with PendingUploadScheduler's
+                    // own, separate retry-later machinery.
+                    try {
+                        final byte[] content = Files.readAllBytes(scratchFile);
+                        return this.cloudUserService.uploadFile(userId, fileName, content, folderId);
+                    } catch (final IOException e) {
+                        throw new UncheckedIOException(
+                                "@DefaultRestFactory.handleUploadFile: failed to read scratch file for '" + fileName + "'", e);
+                    } finally {
+                        deleteScratchFileQuietly(scratchFile);
+                    }
+                })
                 .handle((storedFile, failure) -> {
                     if (failure == null) {
                         ctx.status(201).contentType("application/json").result(this.gson.toJson(toSummary(storedFile, folderId)));
@@ -741,6 +791,64 @@ public final class DefaultRestFactory extends RestFactory {
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, fileName);
                 }));
+    }
+
+    /**
+     * Streams {@code requestBody} to a fresh temp file under {@link Constraints#UPLOAD_SCRATCH_PATH}
+     * (created on first use), in fixed-size chunks - never holding more than one {@link
+     * #UPLOAD_STREAM_BUFFER_SIZE}-byte buffer in memory regardless of how large the upload is.
+     * Rejects early, via {@link ContentTooLargeResponse} (before reading the rest of the stream,
+     * deleting the partially-written scratch file first), the moment the running total exceeds
+     * {@link #MAX_REQUEST_SIZE_BYTES} - unlike {@link Context#bodyAsBytes()}'s enforcement of
+     * {@link JavalinConfig#http}{@code .maxRequestSize}, which only ever catches an oversized
+     * body <em>after</em> the whole thing has already been buffered.
+     *
+     * @param requestBody the request's raw body stream ({@link Context#bodyInputStream()})
+     * @return the scratch file's path, fully written - the caller is responsible for deleting it
+     */
+    private static Path receiveUploadToScratchFile(@NotNull final InputStream requestBody) {
+        final Path scratchFile;
+        try {
+            Files.createDirectories(Constraints.UPLOAD_SCRATCH_PATH);
+            scratchFile = Files.createTempFile(Constraints.UPLOAD_SCRATCH_PATH, "upload-", ".tmp");
+        } catch (final IOException e) {
+            throw new UncheckedIOException(
+                    "@DefaultRestFactory.receiveUploadToScratchFile: failed to create a scratch file under "
+                            + Constraints.UPLOAD_SCRATCH_PATH, e);
+        }
+
+        try (OutputStream scratchOutput = Files.newOutputStream(scratchFile)) {
+            final byte[] buffer = new byte[UPLOAD_STREAM_BUFFER_SIZE];
+            long totalBytesReceived = 0;
+            int bytesRead;
+            while ((bytesRead = requestBody.read(buffer)) != -1) {
+                totalBytesReceived += bytesRead;
+                if (totalBytesReceived > MAX_REQUEST_SIZE_BYTES) {
+                    throw new ContentTooLargeResponse(
+                            "Upload exceeds the " + MAX_REQUEST_SIZE_BYTES + " byte limit");
+                }
+                scratchOutput.write(buffer, 0, bytesRead);
+            }
+        } catch (final IOException e) {
+            deleteScratchFileQuietly(scratchFile);
+            throw new UncheckedIOException(
+                    "@DefaultRestFactory.receiveUploadToScratchFile: failed to receive upload body", e);
+        } catch (final RuntimeException oversizedOrOther) {
+            deleteScratchFileQuietly(scratchFile);
+            throw oversizedOrOther;
+        }
+
+        return scratchFile;
+    }
+
+    /** Best-effort delete of a Phase-3 scratch file - a failure here is logged nowhere, matching this class's other quiet-cleanup helpers; the file is small and transient either way. */
+    private static void deleteScratchFileQuietly(final Path scratchFile) {
+        try {
+            Files.deleteIfExists(scratchFile);
+        } catch (final IOException ignored) {
+            // Best-effort cleanup only - the file is under Constraints.UPLOAD_SCRATCH_PATH, an
+            // operator can clear it manually if this ever fails (e.g. a permissions problem).
+        }
     }
 
     /**
