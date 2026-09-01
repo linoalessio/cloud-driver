@@ -530,11 +530,16 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      * [PlannedUpload] list with its size already known (a local [Files.size] read) - the "plan"
      * half of [extractArchive]'s two-phase extraction, split out from the actual upload so
      * [runTransfer] can report one accurate, aggregated percentage across the whole tree instead
-     * of restarting per subfolder. Mirrors [duplicateFolderInto]'s own "create the folder remotely
+     * of restarting per subfolder. Mirrors [planFolderDuplicate]'s own "create the folder remotely
      * first, then recurse into it" shape, just sourced from the local filesystem instead of
      * another remote folder. Subdirectories are processed concurrently with their siblings (capped
      * - see [mapConcurrently]), each after its own remote folder is created (a child file/folder
-     * needs a real parent id to upload/create under).
+     * needs a real parent id to upload/create under) - **note this still nests one
+     * [mapConcurrently] call per directory level, the same uncoordinated-semaphore shape flagged
+     * (and fixed) in [deleteEntries]/[duplicateEntries]'s own Javadoc**; not fixed here since a
+     * source archive's own directory tree is typically shallow/narrow relative to a whole cloud
+     * account, but the same "too many concurrent streams" risk applies in principle to a large
+     * enough archive.
      */
     private suspend fun planAndCreateDirectoryTree(localDirectory: Path, remoteParentFolderId: String?): List<PlannedUpload> {
         val children = withContext(Dispatchers.IO) { Files.list(localDirectory).use { it.toList() } }
@@ -651,15 +656,25 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun duplicateSelected() = this.duplicateEntries(this.selected.toList())
 
     /**
-     * Duplicates every entry in [entries] within the current folder, concurrently (capped - see
-     * [mapConcurrently]) - backs both the toolbar's "Duplicate selected" and a single entry's
-     * context-menu "Duplicate". Each copy's name is picked up front, sequentially (not inside the
-     * concurrent batch itself, to avoid two duplicates racing to the same name), via
-     * [uniqueCopyName] against this folder's already-loaded [folders]/[files] - Finder's own
-     * "name copy", "name copy 2", ... convention. A file is duplicated by [duplicateFileInto]
-     * (download to a local temp file, re-upload under the new name); a folder is duplicated by
-     * [duplicateFolderInto] (a fresh folder, then every contained file/subfolder copied into it
-     * recursively - nested names never collide, since the destination folder starts out empty).
+     * Duplicates every entry in [entries] within the current folder - backs both the toolbar's
+     * "Duplicate selected" and a single entry's context-menu "Duplicate". Each copy's name is
+     * picked up front, sequentially (not inside the concurrent batch itself, to avoid two
+     * duplicates racing to the same name), via [uniqueCopyName] against this folder's
+     * already-loaded [folders]/[files] - Finder's own "name copy", "name copy 2", ... convention.
+     *
+     * Plans the whole batch first ([planFolderDuplicate] - creates every needed destination folder
+     * sequentially, top-down, while flattening every file to duplicate into one
+     * [PlannedDuplicateFile] list with its already-created target folder id known) rather than
+     * duplicating recursively as each folder is discovered. **Fixed a real bug (2026-09-01): the
+     * previous recursive shape (`duplicateFolderInto`) ran one [mapConcurrently] call over a
+     * folder's own files, and a second, independent one over its subfolders, at *every* level of
+     * recursion** - the identical uncoordinated-nested-semaphore shape that made
+     * [deleteEntries] throw `"too many concurrent streams"` on a large-enough tree (see that
+     * function's own Javadoc for the full mechanism); duplication is if anything worse per file,
+     * since each one opens *two* concurrent HTTP/2 streams (a download and a re-upload) rather
+     * than one. A file is duplicated by [duplicateFileInto] (download to a local temp file,
+     * re-upload under the new name) - now only ever invoked from the one flat, capped
+     * [mapConcurrently] batch below, never nested inside the folder-walking recursion itself.
      */
     fun duplicateEntries(entries: List<Entry>) = run {
         val existingNames = (this.folders.map { it.name() } + this.files.map { it.fileName() }).toMutableSet()
@@ -668,14 +683,19 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
             existingNames += copyName
             entry to copyName
         }
-        plannedCopies.mapConcurrently { (entry, copyName) ->
+        val filePlans = mutableListOf<PlannedDuplicateFile>()
+        for ((entry, copyName) in plannedCopies) {
             when (entry) {
-                is Entry.FileEntry -> this.duplicateFileInto(entry.id, copyName, this.currentFolderId)
-                is Entry.FolderEntry -> this.duplicateFolderInto(entry.id, copyName, this.currentFolderId)
+                is Entry.FileEntry -> filePlans += PlannedDuplicateFile(entry.id, copyName, this.currentFolderId)
+                is Entry.FolderEntry -> this.planFolderDuplicate(entry.id, copyName, this.currentFolderId, filePlans)
             }
         }
+        filePlans.mapConcurrently { plan -> this.duplicateFileInto(plan.sourceFileId, plan.newName, plan.targetFolderId) }
         this.refreshCurrentFolder()
     }
+
+    /** One file's worth of a planned duplicate - a source file id plus the name/already-resolved target folder its copy uploads under - see [planFolderDuplicate]. */
+    private data class PlannedDuplicateFile(val sourceFileId: String, val newName: String, val targetFolderId: String?)
 
     /** Downloads [fileId] to a fresh, throwaway local temp directory and re-uploads it as [newName] into [targetFolderId], then cleans the temp file/directory up regardless of outcome. */
     private suspend fun duplicateFileInto(fileId: String, newName: String, targetFolderId: String?) {
@@ -692,11 +712,19 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         }
     }
 
-    /** Creates a new folder named [newName] under [targetParentFolderId], then recursively copies every file/subfolder of [folderId] into it. */
-    private suspend fun duplicateFolderInto(folderId: String, newName: String, targetParentFolderId: String?) {
+    /**
+     * Creates a new folder named [newName] under [targetParentFolderId], then recursively walks
+     * [folderId]'s contents *sequentially* (listings + folder-creation only - cheap, single-call
+     * operations - no file duplication issued yet), appending every contained file to [filePlans]
+     * with its already-resolved target folder id. See [duplicateEntries] for why the actual
+     * file-duplicating work (a download + a re-upload per file) only ever runs afterward, as one
+     * flat, capped batch - never nested inside this recursive walk. Nested copies never need
+     * [uniqueCopyName] themselves, since each destination folder starts out empty.
+     */
+    private suspend fun planFolderDuplicate(folderId: String, newName: String, targetParentFolderId: String?, filePlans: MutableList<PlannedDuplicateFile>) {
         val newFolder = this.client.createFolder(newName, targetParentFolderId)
-        this.client.listFiles(folderId).mapConcurrently { file -> this.duplicateFileInto(file.fileId(), file.fileName(), newFolder.folderId()) }
-        this.client.listFolders(folderId).mapConcurrently { subFolder -> this.duplicateFolderInto(subFolder.folderId(), subFolder.name(), newFolder.folderId()) }
+        this.client.listFiles(folderId).forEach { file -> filePlans += PlannedDuplicateFile(file.fileId(), file.fileName(), newFolder.folderId()) }
+        this.client.listFolders(folderId).forEach { subFolder -> this.planFolderDuplicate(subFolder.folderId(), subFolder.name(), newFolder.folderId(), filePlans) }
     }
 
     /**

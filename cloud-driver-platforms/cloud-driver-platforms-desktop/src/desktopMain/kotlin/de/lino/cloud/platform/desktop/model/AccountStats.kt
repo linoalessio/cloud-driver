@@ -1,9 +1,6 @@
 package de.lino.cloud.platform.desktop.model
 
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
-import de.lino.cloud.platform.desktop.utils.mapConcurrently
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /** Aggregate counts for [DashboardScreen] - everything the signed-in account owns, across every folder. */
 data class AccountStats(
@@ -13,23 +10,26 @@ data class AccountStats(
 )
 
 /**
- * Walks the caller's entire folder tree from the root, concurrently (via [mapConcurrently], same
- * cap as every other batch operation in this app), summing file counts/folder counts/byte sizes
- * as it goes. There is no server-side "give me totals" endpoint - `GET /files`/`GET /folders` are
- * both scoped to one folder at a time (see CLAUDE.md's "Folder organization" section) - so this
- * is a client-side recursive walk, each folder's own children fetched/summed concurrently with
- * its siblings. Unlike `AppViewModel`'s own file-mutating batch operations (delete/duplicate/
- * download), this only ever issues read-only listing calls, so the same uncoordinated-nested-
- * [mapConcurrently] concurrency-explosion risk that made deletion throw `"too many concurrent
- * streams"` on a large tree (see `AppViewModel.deleteEntries`'s own Javadoc) is a smaller concern
- * here in practice - but the same underlying shape is still present and could in principle hit
- * the same limit against a very large/wide account.
+ * Walks the caller's entire folder tree from the root, summing file counts/folder counts/byte
+ * sizes as it goes. There is no server-side "give me totals" endpoint - `GET /files`/`GET
+ * /folders` are both scoped to one folder at a time (see CLAUDE.md's "Folder organization"
+ * section) - so this is a client-side recursive walk.
  *
- * A plain `Int`/`Long` accumulator would race across concurrently-running branches of the walk,
- * so counts are folded through a small [Mutex]-guarded accumulator rather than closed-over `var`s.
+ * **Deliberately sequential, not concurrent (fixed a real bug, 2026-09-01).** This used to recurse
+ * via `mapConcurrently` (one call per folder level, each with its own fresh, uncoordinated
+ * semaphore) - the identical shape that made `AppViewModel.deleteEntries` throw `"too many
+ * concurrent streams"` on a large-enough folder tree (see that function's own Javadoc for the full
+ * mechanism): the real number of simultaneously in-flight HTTP requests multiplied with the tree's
+ * depth/breadth instead of ever being capped, risking the same error here too against a wide/deep
+ * enough account. Since this only ever issues read-only listing calls (no file content, no
+ * upload/download), a plain sequential walk removes the risk entirely at a cost this call site can
+ * afford - unlike `AppViewModel`'s file-duplicating/-deleting batches, there is no expensive
+ * per-item network transfer here to parallelize; `listFiles`/`listFolders` are cheap metadata-only
+ * calls. A single-threaded walk also means no concurrent branches can race the running totals, so
+ * the `Mutex`-guarded accumulator this function used to need is gone too - plain closed-over `var`s
+ * are enough.
  */
 suspend fun CloudDriverClient.computeAccountStats(): AccountStats {
-    val mutex = Mutex()
     var fileCount = 0
     var folderCount = 0
     var totalBytes = 0L
@@ -38,13 +38,11 @@ suspend fun CloudDriverClient.computeAccountStats(): AccountStats {
         val files = this.listFiles(folderId)
         val folders = this.listFolders(folderId)
 
-        mutex.withLock {
-            fileCount += files.size
-            folderCount += folders.size
-            totalBytes += files.sumOf { it.sizeBytes() }
-        }
+        fileCount += files.size
+        folderCount += folders.size
+        totalBytes += files.sumOf { it.sizeBytes() }
 
-        folders.mapConcurrently { folder -> walk(folder.folderId()) }
+        folders.forEach { folder -> walk(folder.folderId()) }
     }
 
     walk(null)
