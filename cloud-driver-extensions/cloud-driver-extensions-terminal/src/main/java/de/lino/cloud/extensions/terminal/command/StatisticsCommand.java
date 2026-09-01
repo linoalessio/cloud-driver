@@ -49,6 +49,7 @@ public class StatisticsCommand implements Command {
 
         final String cloudRunningFor = Constraints.resolveMilliSecondsToUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
         final String usedStorage = Constraints.resolveBytesToUnit(fileFactory.getEntitiesAsync().join().stream().mapToLong(StoredFile::sizeBytes).sum());
+        final String totalCloudServerStorage = Constraints.resolveBytesToUnit(CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available"));
 
         final String totalFiles = String.valueOf(fileFactory.getEntitiesAsync().join().size());
         final String totalCloudUsers = cloudUserService != null ? String.valueOf(cloudUserService.getCloudUsers().size()) : "N/A";
@@ -58,8 +59,9 @@ public class StatisticsCommand implements Command {
 
         terminal.emptyLine();
         terminal.displayApproved("Cloud running for (&bv%s&7): &b%s", cloudVersion, cloudRunningFor);
-        terminal.displayApproved("Extensions: &b" + totalExtensions);
-        terminal.displayApproved("Cloud users: &b" + totalCloudUsers);
+        terminal.displayApproved("Server storage: &b%s", totalCloudServerStorage);
+        terminal.displayApproved("Extensions: &b%s", totalExtensions);
+        terminal.displayApproved("Cloud users: &b%s", totalCloudUsers);
         terminal.displayApproved("Uploaded files &7(&b%s&7): &b%s", usedStorage, totalFiles);
         terminal.emptyLine();
 

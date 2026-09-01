@@ -28,9 +28,14 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublisher;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandler;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.net.http.HttpResponse.BodySubscriber;
+import java.net.http.HttpResponse.BodySubscribers;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -47,11 +52,14 @@ import java.util.Spliterators;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -416,9 +424,28 @@ public final class ApiClient implements AutoCloseable {
 
     /** Same as {@link #uploadFile(String, Path)}, placing the new file directly into {@code folderId} instead of the root. */
     public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath, final String folderId) throws ApiException {
+        return this.uploadFile(fileName, filePath, folderId, bytesTransferred -> { });
+    }
+
+    /**
+     * Same as {@link #uploadFile(String, Path, String)}, additionally invoking {@code
+     * onBytesTransferred} with the cumulative number of bytes handed off to the underlying {@link
+     * HttpClient} so far, each time a new chunk is read off {@code filePath} - a caller (e.g. a
+     * desktop UI's progress bar) can divide this by {@link Files#size(Path)} itself to derive a
+     * percentage; this method doesn't compute one, since it has no simpler way to report "not yet
+     * known" than the caller already has by just not calling {@link Files#size} first. Invoked on
+     * whatever thread is driving the request body (an internal {@link HttpClient} I/O thread, not
+     * {@link #executor()}) - keep the callback itself cheap and non-blocking, the same expectation
+     * any {@link Flow.Subscriber} callback carries.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
+     *                       folderId} doesn't exist or isn't owned by the caller, or any other failure
+     */
+    public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath, final String folderId,
+                                                 final LongConsumer onBytesTransferred) throws ApiException {
         final HttpRequest request;
         try {
-            request = this.uploadFileRequest(fileName, filePath, folderId);
+            request = this.uploadFileRequest(fileName, filePath, folderId, onBytesTransferred);
         } catch (final FileNotFoundException e) {
             throw new ApiException(0, "file not found or unreadable: " + filePath, e);
         }
@@ -437,19 +464,90 @@ public final class ApiClient implements AutoCloseable {
 
     /** Async form of {@link #uploadFile(String, Path, String)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final Path filePath, final String folderId) {
+        return this.uploadFileAsync(fileName, filePath, folderId, bytesTransferred -> { });
+    }
+
+    /** Async form of {@link #uploadFile(String, Path, String, LongConsumer)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final Path filePath, final String folderId,
+                                                                         final LongConsumer onBytesTransferred) {
         final HttpRequest request;
         try {
-            request = this.uploadFileRequest(fileName, filePath, folderId);
+            request = this.uploadFileRequest(fileName, filePath, folderId, onBytesTransferred);
         } catch (final FileNotFoundException e) {
             return CompletableFuture.failedFuture(new ApiException(0, "file not found or unreadable: " + filePath, e));
         }
         return this.sendAsync(request, StoredFileSummaryResponse.class);
     }
 
-    private HttpRequest uploadFileRequest(final String fileName, final Path filePath, final String folderId) throws FileNotFoundException {
+    private HttpRequest uploadFileRequest(final String fileName, final Path filePath, final String folderId,
+                                           final LongConsumer onBytesTransferred) throws FileNotFoundException {
         return this.uploadRequestBuilder(fileName, folderId)
-                .POST(BodyPublishers.ofFile(filePath))
+                .POST(progressTrackingFilePublisher(filePath, onBytesTransferred))
                 .build();
+    }
+
+    /**
+     * Wraps {@link BodyPublishers#ofFile}'s publisher so every {@link ByteBuffer} it hands to the
+     * underlying {@link HttpClient} is also counted before being forwarded - the request body sent
+     * over the wire is identical either way, this only observes it in transit. {@code
+     * onBytesTransferred} receives the cumulative count, not a per-chunk delta, matching {@link
+     * #uploadFile(String, Path, String, LongConsumer)}'s own contract.
+     */
+    private static BodyPublisher progressTrackingFilePublisher(final Path filePath, final LongConsumer onBytesTransferred)
+            throws FileNotFoundException {
+        final BodyPublisher delegate = BodyPublishers.ofFile(filePath);
+        return new BodyPublisher() {
+            @Override
+            public long contentLength() {
+                return delegate.contentLength();
+            }
+
+            @Override
+            public void subscribe(final Flow.Subscriber<? super ByteBuffer> subscriber) {
+                delegate.subscribe(new ProgressTrackingSubscriber(subscriber, onBytesTransferred));
+            }
+        };
+    }
+
+    /**
+     * Reports cumulative bytes as each {@link ByteBuffer} passes through, before forwarding it
+     * downstream unchanged - safe to read {@link ByteBuffer#remaining()} before the downstream
+     * subscriber gets a chance to consume/advance the buffer's position, since Reactive Streams
+     * guarantees {@code onNext} calls on one subscription are always sequential, never concurrent.
+     */
+    private static final class ProgressTrackingSubscriber implements Flow.Subscriber<ByteBuffer> {
+
+        private final Flow.Subscriber<? super ByteBuffer> downstream;
+        private final LongConsumer onBytesTransferred;
+        private long transferred = 0;
+
+        private ProgressTrackingSubscriber(final Flow.Subscriber<? super ByteBuffer> downstream, final LongConsumer onBytesTransferred) {
+            this.downstream = downstream;
+            this.onBytesTransferred = onBytesTransferred;
+        }
+
+        @Override
+        public void onSubscribe(final Flow.Subscription subscription) {
+            this.downstream.onSubscribe(subscription);
+        }
+
+        @Override
+        public void onNext(final ByteBuffer item) {
+            this.transferred += item.remaining();
+            this.onBytesTransferred.accept(this.transferred);
+            this.downstream.onNext(item);
+        }
+
+        @Override
+        public void onError(final Throwable throwable) {
+            this.downstream.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            this.downstream.onComplete();
+        }
+
     }
 
     /** {@code folderId} {@code null} places the upload at the root, omitting the query parameter entirely. */
@@ -695,10 +793,27 @@ public final class ApiClient implements AutoCloseable {
      *                       caller, {@code 401} if not logged in / token expired, or any other failure
      */
     public Path downloadFileToPath(final String fileId, final Path destination) throws ApiException {
+        return this.downloadFileToPath(fileId, destination, bytesTransferred -> { });
+    }
+
+    /**
+     * Same as {@link #downloadFileToPath(String, Path)}, additionally invoking {@code
+     * onBytesTransferred} with the cumulative number of bytes written to {@code destination} so
+     * far, as each chunk arrives off the wire - a caller wanting a percentage needs the file's
+     * total size from elsewhere (e.g. a prior {@link #listFiles()}/{@link #listFiles(String)}
+     * entry's own size field), since this response carries no {@code Content-Length} guarantee
+     * this method relies on. Invoked on whatever thread is driving the response body (an internal
+     * {@link HttpClient} I/O thread, not {@link #executor()}) - keep the callback cheap and
+     * non-blocking, the same expectation any {@link Flow.Subscriber} callback carries.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Path downloadFileToPath(final String fileId, final Path destination, final LongConsumer onBytesTransferred) throws ApiException {
         final HttpRequest request = this.downloadFileContentRequest(fileId);
         final HttpResponse<Path> response;
         try {
-            response = this.httpClient.send(request, BodyHandlers.ofFile(destination));
+            response = this.httpClient.send(request, progressTrackingFileHandler(destination, onBytesTransferred));
         } catch (final IOException e) {
             throw new ApiException(0, "network error calling " + request.uri(), e);
         } catch (final InterruptedException e) {
@@ -710,8 +825,13 @@ public final class ApiClient implements AutoCloseable {
 
     /** Async form of {@link #downloadFileToPath(String, Path)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Path> downloadFileToPathAsync(final String fileId, final Path destination) {
+        return this.downloadFileToPathAsync(fileId, destination, bytesTransferred -> { });
+    }
+
+    /** Async form of {@link #downloadFileToPath(String, Path, LongConsumer)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Path> downloadFileToPathAsync(final String fileId, final Path destination, final LongConsumer onBytesTransferred) {
         final HttpRequest request = this.downloadFileContentRequest(fileId);
-        return this.httpClient.sendAsync(request, BodyHandlers.ofFile(destination))
+        return this.httpClient.sendAsync(request, progressTrackingFileHandler(destination, onBytesTransferred))
                 .thenApply(response -> {
                     try {
                         return requireSuccessfulFileDownload(response);
@@ -720,6 +840,61 @@ public final class ApiClient implements AutoCloseable {
                         throw new CompletionException(e);
                     }
                 });
+    }
+
+    /** Wraps {@link BodySubscribers#ofFile} so every chunk written to disk is also counted first - see {@link ProgressTrackingBodySubscriber}. */
+    private static BodyHandler<Path> progressTrackingFileHandler(final Path destination, final LongConsumer onBytesTransferred) {
+        return responseInfo -> new ProgressTrackingBodySubscriber<>(BodySubscribers.ofFile(destination), onBytesTransferred);
+    }
+
+    /**
+     * Reports cumulative bytes as each chunk (a {@code List<ByteBuffer>}, per {@link
+     * BodySubscriber}'s own shape) passes through, before forwarding it downstream unchanged - the
+     * download-side mirror of {@link ProgressTrackingSubscriber}, wrapping a {@link BodySubscriber}
+     * (used for a response body) rather than a {@link Flow.Subscriber} (used for a request body).
+     */
+    private static final class ProgressTrackingBodySubscriber<T> implements BodySubscriber<T> {
+
+        private final BodySubscriber<T> delegate;
+        private final LongConsumer onBytesTransferred;
+        private long transferred = 0;
+
+        private ProgressTrackingBodySubscriber(final BodySubscriber<T> delegate, final LongConsumer onBytesTransferred) {
+            this.delegate = delegate;
+            this.onBytesTransferred = onBytesTransferred;
+        }
+
+        @Override
+        public CompletionStage<T> getBody() {
+            return this.delegate.getBody();
+        }
+
+        @Override
+        public void onSubscribe(final Flow.Subscription subscription) {
+            this.delegate.onSubscribe(subscription);
+        }
+
+        @Override
+        public void onNext(final List<ByteBuffer> item) {
+            long chunkBytes = 0;
+            for (final ByteBuffer buffer : item) {
+                chunkBytes += buffer.remaining();
+            }
+            this.transferred += chunkBytes;
+            this.onBytesTransferred.accept(this.transferred);
+            this.delegate.onNext(item);
+        }
+
+        @Override
+        public void onError(final Throwable throwable) {
+            this.delegate.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            this.delegate.onComplete();
+        }
+
     }
 
     private HttpRequest downloadFileContentRequest(final String fileId) {

@@ -72,13 +72,22 @@ class CloudDriverClient(
     suspend fun uploadFile(fileName: String, content: ByteArray, folderId: String? = null): StoredFileSummaryResponse =
         this.apiClient.uploadFileAsync(fileName, content, folderId).await()
 
-    /** Streams [filePath] straight from disk as the uploaded file's content, optionally into [folderId] (`null` = root). */
-    suspend fun uploadFile(filePath: Path, folderId: String? = null): StoredFileSummaryResponse =
-        this.apiClient.uploadFileAsync(filePath.fileName.toString(), filePath, folderId).await()
+    /**
+     * Streams [filePath] straight from disk as the uploaded file's content, optionally into
+     * [folderId] (`null` = root). [onBytesTransferred], if given, is invoked with the cumulative
+     * number of bytes sent so far as the upload progresses - see [ApiClient.uploadFileAsync]'s own
+     * Javadoc on which thread this runs on (not this coroutine's own dispatcher).
+     */
+    suspend fun uploadFile(filePath: Path, folderId: String? = null, onBytesTransferred: (Long) -> Unit = {}): StoredFileSummaryResponse =
+        this.apiClient.uploadFileAsync(filePath.fileName.toString(), filePath, folderId, onBytesTransferred).await()
 
     /** Same as [uploadFile] on a [Path], with an explicit [fileName] instead of the path's own file name. */
-    suspend fun uploadFile(fileName: String, filePath: Path, folderId: String? = null): StoredFileSummaryResponse =
-        this.apiClient.uploadFileAsync(fileName, filePath, folderId).await()
+    suspend fun uploadFile(
+        fileName: String,
+        filePath: Path,
+        folderId: String? = null,
+        onBytesTransferred: (Long) -> Unit = {},
+    ): StoredFileSummaryResponse = this.apiClient.uploadFileAsync(fileName, filePath, folderId, onBytesTransferred).await()
 
     /**
      * Every file directly inside [folderId] (`null` = the root's own files, **not** every file
@@ -99,10 +108,12 @@ class CloudDriverClient(
     /**
      * Streams a file's content directly to [destination] on disk - no base64 decode, content
      * never fully materializes as a Kotlin [ByteArray] in this process. [destination] must not
-     * already exist (see [ApiClient.downloadFileToPath]'s own Javadoc).
+     * already exist (see [ApiClient.downloadFileToPath]'s own Javadoc). [onBytesTransferred], if
+     * given, is invoked with the cumulative number of bytes written so far as the download
+     * progresses - see [ApiClient.downloadFileToPathAsync]'s own Javadoc on which thread this runs on.
      */
-    suspend fun downloadFileToPath(fileId: String, destination: Path): Path =
-        this.apiClient.downloadFileToPathAsync(fileId, destination).await()
+    suspend fun downloadFileToPath(fileId: String, destination: Path, onBytesTransferred: (Long) -> Unit = {}): Path =
+        this.apiClient.downloadFileToPathAsync(fileId, destination, onBytesTransferred).await()
 
     suspend fun deleteFile(fileId: String) {
         this.apiClient.deleteFileAsync(fileId).await()

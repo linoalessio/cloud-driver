@@ -16,16 +16,25 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -60,6 +69,8 @@ private fun formatStorageStatus(uploadedBytes: Long?, maxBytes: Long?): String {
 @Composable
 fun DashboardScreen(viewModel: AppViewModel) {
     LaunchedEffect(Unit) { viewModel.loadDashboardStats() }
+
+    var showUninstallConfirmation by remember { mutableStateOf(false) }
 
     AuthenticatedShell(viewModel) {
         Column(Modifier.fillMaxSize().padding(32.dp)) {
@@ -97,8 +108,86 @@ fun DashboardScreen(viewModel: AppViewModel) {
                     StatCard(Icons.Filled.Storage, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
                 }
             }
+
+            Spacer(Modifier.height(20.dp))
+
+            DangerZoneCard(busy = viewModel.busy, onUninstallClick = { showUninstallConfirmation = true })
         }
     }
+
+    if (showUninstallConfirmation) {
+        UninstallConfirmationDialog(
+            onConfirm = {
+                showUninstallConfirmation = false
+                viewModel.uninstall()
+            },
+            onDismiss = { showUninstallConfirmation = false },
+        )
+    }
+}
+
+/**
+ * A "Danger Zone" card housing the app's one destructive, machine-wide action: uninstalling
+ * itself. Kept visually separate (its own bordered card, an error-tinted button) from the
+ * account-info/stat cards above so it doesn't read as just another piece of account information.
+ */
+@Composable
+private fun DangerZoneCard(busy: Boolean, onUninstallClick: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Danger zone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Permanently remove cloud-driver and its local settings from this computer. This does not delete anything from your account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Button(
+                onClick = onUninstallClick,
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) {
+                Icon(Icons.Filled.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Uninstall")
+            }
+        }
+    }
+}
+
+/** Blocks the "Uninstall" action from ever firing without an explicit, separate confirmation click - the app is deleted and the process exits the moment [onConfirm] runs. */
+@Composable
+private fun UninstallConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text("Uninstall cloud-driver?") },
+        text = {
+            Text(
+                "This removes the cloud-driver app and its local settings from this computer, then closes it. " +
+                    "Your uploaded files and account are not affected and remain in the cloud. This cannot be undone.",
+            )
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                Text("Uninstall")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

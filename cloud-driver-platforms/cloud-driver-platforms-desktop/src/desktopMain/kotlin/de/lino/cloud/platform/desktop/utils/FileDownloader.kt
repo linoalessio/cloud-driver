@@ -26,13 +26,21 @@ import java.util.UUID
  * `suspend`; the blocking directory-creation/existence-check runs on [Dispatchers.IO], the same
  * dispatcher every other blocking local-filesystem call in this app uses.
  *
+ * [onBytesTransferred], if given, is invoked with the cumulative number of bytes written so far -
+ * see [CloudDriverClient.downloadFileToPath]'s own Javadoc on which thread this runs on.
+ *
  * @return the path the file was actually written to (may differ from `destinationDirectory/fileName` - see above)
  */
-suspend fun CloudDriverClient.downloadFileStreaming(fileId: String, fileName: String, destinationDirectory: Path): Path {
+suspend fun CloudDriverClient.downloadFileStreaming(
+    fileId: String,
+    fileName: String,
+    destinationDirectory: Path,
+    onBytesTransferred: (Long) -> Unit = {},
+): Path {
     val target = withContext(Dispatchers.IO) {
         Files.createDirectories(destinationDirectory)
         val candidate = destinationDirectory.resolve(fileName)
         if (Files.exists(candidate)) destinationDirectory.resolve("${UUID.randomUUID()}_$fileName") else candidate
     }
-    return this.downloadFileToPath(fileId, target)
+    return this.downloadFileToPath(fileId, target, onBytesTransferred)
 }

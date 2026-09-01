@@ -69,7 +69,7 @@ public class CloudUserCommand implements Command {
             terminal.displayApproved("Cloud user: &b%s", cloudUser.get().getAuthUser().getEmailAddress());
             terminal.displayApproved("AuthId: &b%s", cloudUser.get().getAuthUserId());
             terminal.displayApproved("Uploaded files: &b%s", cloudUser.get().getStoredFiles().size());
-            terminal.displayApproved("Uploaded storage: &b%s", Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes()));
+            terminal.displayApproved("Uploaded storage: &b%s&8 / &b%s", Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes()), Constraints.resolveBytesToUnit(cloudUser.get().getMaxBytesToUpload()));
             terminal.emptyLine();
 
             return;
@@ -137,7 +137,7 @@ public class CloudUserCommand implements Command {
                 }
 
                 cloudUserService.updateCloudUserBytesLimit(cloudUser.get().getAuthUserId(), bytes);
-                terminal.displayApproved("Cloud user '%b%s&7' can now uploaded up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(bytes));
+                terminal.displayApproved("Cloud user '&b%s&7' can now upload up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(bytes));
 
 
             } catch (final NumberFormatException e) {

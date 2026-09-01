@@ -14,6 +14,7 @@ import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
+import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
@@ -24,6 +25,30 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+
+/** Which kind of batch transfer [AppViewModel.transferProgress] is currently reporting on. */
+enum class TransferKind { UPLOAD, DOWNLOAD }
+
+/**
+ * A snapshot of an in-flight upload/download batch - [AppViewModel.transferProgress] is `null`
+ * whenever no transfer is running. [transferredBytes]/[totalBytes] are summed across every item in
+ * the batch (not just the item currently in flight), since [AppViewModel]'s transfers run several
+ * files concurrently at once (see [de.lino.cloud.platform.desktop.utils.mapConcurrently]) rather
+ * than one at a time - a per-item-only progress bar would jump backwards every time one file
+ * finished and the next one started.
+ */
+data class TransferProgress(
+    val kind: TransferKind,
+    val totalFiles: Int,
+    val completedFiles: Int,
+    val totalBytes: Long,
+    val transferredBytes: Long,
+) {
+    /** `1f` if [totalBytes] is `0` (nothing to divide by, e.g. every selected file happened to be empty) - a full bar reads better than a division-by-zero `NaN` for a batch with nothing left to transfer. */
+    val fraction: Float get() = if (this.totalBytes <= 0L) 1f else (this.transferredBytes.toFloat() / this.totalBytes.toFloat()).coerceIn(0f, 1f)
+}
 
 /**
  * All mutable state and actions for the app, in one place - navigation ([screen]), the current
@@ -94,10 +119,22 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
 
     private suspend fun onAuthenticated(email: String, jwt: String) {
         this.currentUserEmail = email
-        val userId = decodeJwtSubject(jwt)
-        this.currentUserId = userId
+        this.currentUserId = decodeJwtSubject(jwt)
+        this.refreshAccountInfo()
+    }
+
+    /**
+     * Re-fetches [currentUserCreatedAtEpochMillis]/[currentUserUploadedBytes]/[currentUserMaxBytesToUpload]
+     * from the server via [CloudDriverClient.getCloudUser] - called once from [onAuthenticated], and
+     * again from [loadDashboardStats] every time the Dashboard is shown, since an operator can change
+     * an account's upload quota out-of-band (e.g. the terminal's `cu update <email> <bytes>` command)
+     * while this client is already signed in; without a re-fetch here the Dashboard's "Storage" row
+     * would keep showing whatever quota was in effect at login time until the next full sign-in.
+     */
+    private suspend fun refreshAccountInfo() {
+        val userId = this.currentUserId ?: return
         try {
-            val cloudUser = userId?.let { this.client.getCloudUser(it) }
+            val cloudUser = this.client.getCloudUser(userId)
             this.currentUserCreatedAtEpochMillis = cloudUser?.timeStamp()
             this.currentUserUploadedBytes = cloudUser?.currentUploadedBytes()
             this.currentUserMaxBytesToUpload = cloudUser?.maxBytesToUpload()
@@ -121,6 +158,62 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     val folders = mutableStateListOf<FolderResponse>()
     val files = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
     val selected = mutableStateListOf<Entry>()
+
+    /** The currently in-flight upload/download batch, if any - `null` otherwise. Rendered as a bottom progress bar (see `App.kt`/`Sidebar.kt`). Set/cleared exclusively by [runTransfer]. */
+    var transferProgress: TransferProgress? by mutableStateOf(null)
+        private set
+
+    /**
+     * Drives [uploadFiles]/[uploadFolderAsZip]/[downloadEntries] uniformly: runs [transfer] over
+     * every item in [items] concurrently (capped - see [mapConcurrently]), publishing an
+     * aggregated [transferProgress] (summed across every item, not just the one currently in
+     * flight - see [TransferProgress]'s own Javadoc for why) as each item's own progress callback
+     * fires, and clears [transferProgress] back to `null` once the whole batch finishes (success or
+     * failure alike - a `finally` block, so a failed transfer doesn't leave a stale progress bar
+     * on screen forever). A no-op (no bar shown at all) if [items] is empty.
+     *
+     * [sizeOf] must be cheap/already-known (a local [Files.size] read, or a size already carried on
+     * a listing entry) - this does not fetch sizes itself. The per-item byte callback each call to
+     * [transfer] receives may fire from a background HTTP I/O thread, not this coroutine's own
+     * dispatcher (see [de.lino.cloud.platform.rest.api.ApiClient]'s own Javadoc on this) - safe
+     * here since every write below only replaces [transferProgress] wholesale (no in-place
+     * mutation), and Compose's snapshot state system tolerates writes from any thread.
+     */
+    private suspend fun <T> runTransfer(
+        kind: TransferKind,
+        items: List<T>,
+        sizeOf: (T) -> Long,
+        transfer: suspend (T, onBytesTransferred: (Long) -> Unit) -> Unit,
+    ) {
+        if (items.isEmpty()) return
+        val totalBytes = items.sumOf(sizeOf)
+        val transferredByItem = ConcurrentHashMap<Int, Long>()
+        val completedFiles = AtomicInteger(0)
+
+        fun publish() {
+            this.transferProgress = TransferProgress(
+                kind = kind,
+                totalFiles = items.size,
+                completedFiles = completedFiles.get(),
+                totalBytes = totalBytes,
+                transferredBytes = transferredByItem.values.sum(),
+            )
+        }
+
+        publish()
+        try {
+            items.withIndex().toList().mapConcurrently { (index, item) ->
+                transfer(item) { bytesTransferred ->
+                    transferredByItem[index] = bytesTransferred
+                    publish()
+                }
+                completedFiles.incrementAndGet()
+                publish()
+            }
+        } finally {
+            this.transferProgress = null
+        }
+    }
 
     /**
      * Runs [action] on [scope], toggling [busy] and surfacing any failure as [errorMessage].
@@ -202,6 +295,25 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         kotlin.system.exitProcess(0)
     }
 
+    /**
+     * Deletes the installed app and this app's local settings (see [uninstallApp] for the exact,
+     * per-OS locations it mirrors from `build-app.sh`), then terminates the process - the
+     * Dashboard's "Uninstall" action. The caller (`DashboardScreen`) is responsible for confirming
+     * with the user first via a dialog; this function performs the deletion unconditionally, the
+     * same way [deleteSelected]/[deleteFolderRecursively] assume their own caller already
+     * confirmed. Dispatched on [Dispatchers.IO] rather than run directly on the calling (UI)
+     * thread, matching this class's own "blocking local I/O off the UI dispatcher" convention -
+     * even though the process exits immediately after, so the UI never actually gets a chance to
+     * visibly block either way.
+     */
+    fun uninstall() {
+        this.scope.launch(Dispatchers.IO) {
+            this@AppViewModel.client.close()
+            uninstallApp()
+            kotlin.system.exitProcess(0)
+        }
+    }
+
     fun logout() {
         this.client.logout()
         this.currentUserEmail = null
@@ -226,6 +338,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     }
 
     fun loadDashboardStats() = run {
+        this.refreshAccountInfo()
         this.dashboardStats = this.client.computeAccountStats()
     }
 
@@ -294,40 +407,52 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     }
 
     /**
-     * Uploads every chosen local file concurrently (capped - see [mapConcurrently]) rather than
-     * one at a time; `ApiClient`'s own batch upload can't be reused here since it has no
-     * `folderId` parameter (always targets the root), unlike [CloudDriverClient.uploadFile].
+     * Uploads every chosen local file concurrently (capped - see [mapConcurrently]), reporting
+     * aggregate progress via [transferProgress] - see [runTransfer]. `ApiClient`'s own batch
+     * upload can't be reused here since it has no `folderId` parameter (always targets the root),
+     * unlike [CloudDriverClient.uploadFile].
      */
     fun uploadFiles(paths: List<Path>) = run {
-        paths.mapConcurrently { path -> this.client.uploadFile(path, this.currentFolderId) }
+        val sizes = withContext(Dispatchers.IO) { paths.associateWith { Files.size(it) } }
+        this.runTransfer(TransferKind.UPLOAD, paths, { sizes.getValue(it) }) { path, onBytesTransferred ->
+            this.client.uploadFile(path, this.currentFolderId, onBytesTransferred)
+        }
         this.refreshCurrentFolder()
     }
 
-    /** Zips [directory] client-side and uploads the archive as a single file, per this app's "folder upload = zip" spec. */
+    /** Zips [directory] client-side and uploads the archive as a single file, per this app's "folder upload = zip" spec - a one-item [runTransfer] batch, so it still reports byte-level progress via [transferProgress]. */
     fun uploadFolderAsZip(directory: Path) = run {
         val zipPath = zipDirectory(directory)
         try {
-            this.client.uploadFile("${directory.fileName}.zip", zipPath, this.currentFolderId)
+            val zipName = "${directory.fileName}.zip"
+            val zipSize = withContext(Dispatchers.IO) { Files.size(zipPath) }
+            this.runTransfer(TransferKind.UPLOAD, listOf(zipPath), { zipSize }) { path, onBytesTransferred ->
+                this.client.uploadFile(zipName, path, this.currentFolderId, onBytesTransferred)
+            }
         } finally {
             withContext(Dispatchers.IO) { Files.deleteIfExists(zipPath) }
         }
         this.refreshCurrentFolder()
     }
 
+    /** Deletes every currently-selected entry - see [deleteEntries]. */
+    fun deleteSelected() = this.deleteEntries(this.selected.toList())
+
     /**
-     * Deletes every currently-selected entry, concurrently (capped - see [mapConcurrently]). A
-     * selected folder is cascade-deleted client-side (every contained file and nested folder
-     * first, then the folder itself) since the server's `deleteFolder` 409s on a non-empty
-     * folder by design - see [deleteFolderRecursively].
+     * Deletes every entry in [entries], concurrently (capped - see [mapConcurrently]) - backs both
+     * [deleteSelected] (the toolbar's "Delete selected") and a single entry's context-menu
+     * "Delete". A folder among [entries] is cascade-deleted client-side (every contained file and
+     * nested folder first, then the folder itself) since the server's `deleteFolder` 409s on a
+     * non-empty folder by design - see [deleteFolderRecursively].
      */
-    fun deleteSelected() = run {
-        this.selected.toList().mapConcurrently { entry ->
+    fun deleteEntries(entries: List<Entry>) = run {
+        entries.mapConcurrently { entry ->
             when (entry) {
                 is Entry.FileEntry -> this.client.deleteFile(entry.id)
                 is Entry.FolderEntry -> this.deleteFolderRecursively(entry.id)
             }
         }
-        this.selected.clear()
+        this.selected.removeAll(entries)
         this.refreshCurrentFolder()
     }
 
@@ -337,27 +462,47 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.deleteFolder(folderId)
     }
 
+    /** Downloads every currently-selected entry into [destinationDirectory] - see [downloadEntries]. */
+    fun downloadSelected(destinationDirectory: Path) = this.downloadEntries(this.selected.toList(), destinationDirectory)
+
     /**
-     * Downloads every currently-selected entry into [destinationDirectory], concurrently (capped
-     * - see [mapConcurrently]). A selected folder is recreated under its own name inside
-     * [destinationDirectory], recursively, mirroring its server-side structure - see
-     * [downloadFolderRecursively].
+     * Downloads every entry in [entries] into [destinationDirectory], reporting aggregate progress
+     * via [transferProgress] - backs both [downloadSelected] (the toolbar's "Download selected")
+     * and a single entry's context-menu "Download". A folder among [entries] is recreated under
+     * its own name inside [destinationDirectory], recursively, mirroring its server-side structure.
+     *
+     * Unlike a plain recursive walk, this plans the whole batch first ([planDownload] - a
+     * listings-only walk, no content) so every file's size is known *before* any transfer starts,
+     * letting [runTransfer] report one accurate, aggregated percentage across the entire batch
+     * (files and nested-folder contents alike) rather than restarting/jumping per folder.
      */
-    fun downloadSelected(destinationDirectory: Path) = run {
-        this.selected.toList().mapConcurrently { entry ->
-            when (entry) {
-                is Entry.FileEntry -> this.client.downloadFileStreaming(entry.id, entry.name, destinationDirectory)
-                is Entry.FolderEntry -> this.downloadFolderRecursively(entry.id, destinationDirectory.resolve(entry.name))
-            }
+    fun downloadEntries(entries: List<Entry>, destinationDirectory: Path) = run {
+        val items = this.planDownload(entries, destinationDirectory)
+        this.runTransfer(TransferKind.DOWNLOAD, items, DownloadItem::sizeBytes) { item, onBytesTransferred ->
+            this.client.downloadFileStreaming(item.fileId, item.fileName, item.destinationDirectory, onBytesTransferred)
         }
     }
 
-    private suspend fun downloadFolderRecursively(folderId: String, destination: Path) {
-        withContext(Dispatchers.IO) { Files.createDirectories(destination) }
-        this.client.listFiles(folderId).mapConcurrently { file -> this.client.downloadFileStreaming(file.fileId(), file.fileName(), destination) }
-        this.client.listFolders(folderId).mapConcurrently { subFolder ->
-            this.downloadFolderRecursively(subFolder.folderId(), destination.resolve(subFolder.name()))
+    /** One file's worth of a planned download batch - see [planDownload]. */
+    private data class DownloadItem(val fileId: String, val fileName: String, val sizeBytes: Long, val destinationDirectory: Path)
+
+    /** Flattens [entries] (files and/or folders) into one list of [DownloadItem]s, recursing into every folder via listings only (no content) so each item's size is known up front - see [downloadEntries]. */
+    private suspend fun planDownload(entries: List<Entry>, destinationDirectory: Path): List<DownloadItem> {
+        val items = mutableListOf<DownloadItem>()
+        for (entry in entries) {
+            when (entry) {
+                is Entry.FileEntry -> items += DownloadItem(entry.id, entry.name, entry.sizeBytes, destinationDirectory)
+                is Entry.FolderEntry -> items += this.planFolderDownload(entry.id, destinationDirectory.resolve(entry.name))
+            }
         }
+        return items
+    }
+
+    private suspend fun planFolderDownload(folderId: String, destination: Path): List<DownloadItem> {
+        val items = mutableListOf<DownloadItem>()
+        this.client.listFiles(folderId).forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
+        this.client.listFolders(folderId).forEach { subFolder -> items += this.planFolderDownload(subFolder.folderId(), destination.resolve(subFolder.name())) }
+        return items
     }
 
     /**
@@ -365,7 +510,8 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      * [mapConcurrently]) - the action a drag-and-drop drop in [FileBrowserScreen] resolves to.
      * [targetFolderId] is always a real folder id here (never root/`null`) since the only drop
      * targets [FileBrowserScreen] currently offers are folder rows within the listing being
-     * dragged from.
+     * dragged from. See [moveEntryToFolder] for a single-entry move that *can* target the root
+     * (the context menu's "Move to...").
      */
     fun moveEntriesToFolder(entriesToMove: List<Entry>, targetFolderId: String) = run {
         entriesToMove.mapConcurrently { entry -> this.moveEntry(entry, targetFolderId) }
@@ -373,8 +519,15 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.refreshCurrentFolder()
     }
 
+    /** Moves a single [entry] into [targetFolderId] (`null` = the root) - backs the context menu's "Move to..." dialog, which (unlike drag-and-drop) can target the root directly. */
+    fun moveEntryToFolder(entry: Entry, targetFolderId: String?) = run {
+        this.moveEntry(entry, targetFolderId)
+        this.selected.remove(entry)
+        this.refreshCurrentFolder()
+    }
+
     /** Moves a single [entry] into [targetFolderId] - a file via [CloudDriverClient.moveFile], a folder via a name-preserving [CloudDriverClient.updateFolder] (only its parent changes). */
-    private suspend fun moveEntry(entry: Entry, targetFolderId: String) {
+    private suspend fun moveEntry(entry: Entry, targetFolderId: String?) {
         when (entry) {
             is Entry.FileEntry -> this.client.moveFile(entry.id, targetFolderId)
             is Entry.FolderEntry -> this.client.updateFolder(entry.id, entry.name, targetFolderId)
