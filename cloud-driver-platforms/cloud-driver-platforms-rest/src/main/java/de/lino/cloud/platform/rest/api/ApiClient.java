@@ -32,6 +32,7 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -350,14 +351,21 @@ public final class ApiClient implements AutoCloseable {
      * <p>Prefer {@link #uploadFile(Path)} when {@code content} is already a file on disk - it
      * streams straight from the filesystem instead of requiring the whole file in memory first.
      *
+     * <p>Returns a {@link StoredFileSummaryResponse} - the same content-free shape {@link
+     * #listFiles()} returns - not the uploaded content echoed back: the caller already has the
+     * bytes it just sent, so round-tripping them again (base64-encoded, in one JSON document) was
+     * pure waste, and the actual ceiling on how large a file this client could handle before it
+     * was fixed. Fetch full content afterward via {@link #downloadFile(String)} if it's ever
+     * actually needed again.
+     *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
-    public StoredFileResponse uploadFile(final String fileName, final byte[] content) throws ApiException {
+    public StoredFileSummaryResponse uploadFile(final String fileName, final byte[] content) throws ApiException {
         return this.uploadFile(fileName, content, null);
     }
 
     /** Async form of {@link #uploadFile(String, byte[])} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final byte[] content) {
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final byte[] content) {
         return this.uploadFileAsync(fileName, content, null);
     }
 
@@ -368,13 +376,13 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
      *                       folderId} doesn't exist or isn't owned by the caller, or any other failure
      */
-    public StoredFileResponse uploadFile(final String fileName, final byte[] content, final String folderId) throws ApiException {
-        return this.send(this.uploadFileRequest(fileName, content, folderId), StoredFileResponse.class);
+    public StoredFileSummaryResponse uploadFile(final String fileName, final byte[] content, final String folderId) throws ApiException {
+        return this.send(this.uploadFileRequest(fileName, content, folderId), StoredFileSummaryResponse.class);
     }
 
     /** Async form of {@link #uploadFile(String, byte[], String)} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final byte[] content, final String folderId) {
-        return this.sendAsync(this.uploadFileRequest(fileName, content, folderId), StoredFileResponse.class);
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final byte[] content, final String folderId) {
+        return this.sendAsync(this.uploadFileRequest(fileName, content, folderId), StoredFileSummaryResponse.class);
     }
 
     private HttpRequest uploadFileRequest(final String fileName, final byte[] content, final String folderId) {
@@ -390,50 +398,52 @@ public final class ApiClient implements AutoCloseable {
      * uploaded {@code fileName}. Avoids doubling peak memory usage for a large file (the content
      * would otherwise exist both as this process's file-system page cache read and as a
      * duplicate on-heap {@code byte[]}) and lets the JDK compute an exact {@code Content-Length}
-     * up front rather than buffering to find it.
+     * up front rather than buffering to find it. Returns the same content-free {@link
+     * StoredFileSummaryResponse} {@link #uploadFile(String, byte[])} does - see that method's
+     * own Javadoc for why.
      *
      * @throws ApiException {@code 401} if not logged in / token expired, if {@code filePath}
      *                       doesn't exist or can't be read, or any other failure
      */
-    public StoredFileResponse uploadFile(final Path filePath) throws ApiException {
+    public StoredFileSummaryResponse uploadFile(final Path filePath) throws ApiException {
         return this.uploadFile(filePath.getFileName().toString(), filePath);
     }
 
     /** Same as {@link #uploadFile(Path)}, with an explicit {@code fileName} instead of the path's own file name. */
-    public StoredFileResponse uploadFile(final String fileName, final Path filePath) throws ApiException {
+    public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath) throws ApiException {
         return this.uploadFile(fileName, filePath, null);
     }
 
     /** Same as {@link #uploadFile(String, Path)}, placing the new file directly into {@code folderId} instead of the root. */
-    public StoredFileResponse uploadFile(final String fileName, final Path filePath, final String folderId) throws ApiException {
+    public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath, final String folderId) throws ApiException {
         final HttpRequest request;
         try {
             request = this.uploadFileRequest(fileName, filePath, folderId);
         } catch (final FileNotFoundException e) {
             throw new ApiException(0, "file not found or unreadable: " + filePath, e);
         }
-        return this.send(request, StoredFileResponse.class);
+        return this.send(request, StoredFileSummaryResponse.class);
     }
 
     /** Async form of {@link #uploadFile(Path)} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<StoredFileResponse> uploadFileAsync(final Path filePath) {
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final Path filePath) {
         return this.uploadFileAsync(filePath.getFileName().toString(), filePath);
     }
 
     /** Async form of {@link #uploadFile(String, Path)} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final Path filePath) {
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final Path filePath) {
         return this.uploadFileAsync(fileName, filePath, null);
     }
 
     /** Async form of {@link #uploadFile(String, Path, String)} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<StoredFileResponse> uploadFileAsync(final String fileName, final Path filePath, final String folderId) {
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileAsync(final String fileName, final Path filePath, final String folderId) {
         final HttpRequest request;
         try {
             request = this.uploadFileRequest(fileName, filePath, folderId);
         } catch (final FileNotFoundException e) {
             return CompletableFuture.failedFuture(new ApiException(0, "file not found or unreadable: " + filePath, e));
         }
-        return this.sendAsync(request, StoredFileResponse.class);
+        return this.sendAsync(request, StoredFileSummaryResponse.class);
     }
 
     private HttpRequest uploadFileRequest(final String fileName, final Path filePath, final String folderId) throws FileNotFoundException {
@@ -457,13 +467,13 @@ public final class ApiClient implements AutoCloseable {
      * concurrently, up to {@link #DEFAULT_MAX_CONCURRENT_TRANSFERS} at once - see {@link
      * #uploadFilesAsync(Map, int)} to change that bound.
      *
-     * @return a future completing with every {@link StoredFileResponse}, in no particular order,
-     * once <em>all</em> uploads have finished (successfully or not); if any failed, the returned
-     * future completes exceptionally with the first failure encountered - matching this
+     * @return a future completing with every {@link StoredFileSummaryResponse}, in no particular
+     * order, once <em>all</em> uploads have finished (successfully or not); if any failed, the
+     * returned future completes exceptionally with the first failure encountered - matching this
      * codebase's own batch-operation convention (see {@code EntityDatabaseClient}'s Javadoc:
      * "throws the first failure encountered once every item has been attempted")
      */
-    public CompletableFuture<List<StoredFileResponse>> uploadFilesAsync(final Map<String, Path> filesByName) {
+    public CompletableFuture<List<StoredFileSummaryResponse>> uploadFilesAsync(final Map<String, Path> filesByName) {
         return this.uploadFilesAsync(filesByName, DEFAULT_MAX_CONCURRENT_TRANSFERS);
     }
 
@@ -475,10 +485,10 @@ public final class ApiClient implements AutoCloseable {
      * ({@link BodyPublishers#ofFile}) and in-flight request state, so uploading e.g. a thousand
      * files at once with no cap risks exhausting file descriptors and overwhelming the server.
      */
-    public CompletableFuture<List<StoredFileResponse>> uploadFilesAsync(final Map<String, Path> filesByName,
+    public CompletableFuture<List<StoredFileSummaryResponse>> uploadFilesAsync(final Map<String, Path> filesByName,
                                                                           final int maxConcurrentTransfers) {
         final Semaphore permits = new Semaphore(Math.max(1, maxConcurrentTransfers));
-        final List<CompletableFuture<StoredFileResponse>> uploads = filesByName.entrySet().stream()
+        final List<CompletableFuture<StoredFileSummaryResponse>> uploads = filesByName.entrySet().stream()
                 .map(entry -> this.withPermit(permits, () -> this.uploadFileAsync(entry.getKey(), entry.getValue())))
                 .toList();
         return awaitAll(uploads);
@@ -663,6 +673,101 @@ public final class ApiClient implements AutoCloseable {
                 .timeout(TRANSFER_TIMEOUT)
                 .GET()
                 .build();
+    }
+
+    /**
+     * {@code GET /files/{id}/content} on the main REST API - streams a file's content directly
+     * to {@code destination} on disk via {@link BodyHandlers#ofFile}, the download-side mirror of
+     * {@link #uploadFile(Path)}'s {@link BodyPublishers#ofFile}: no {@code ByteArrayOutputStream},
+     * no base64 decode, content never fully materializes as a Java object in this process at all.
+     * Prefer this over {@link #downloadFile(String)} whenever the content is headed straight to
+     * disk anyway - reach for {@link #downloadFile(String)} only when the bytes are actually
+     * needed in memory.
+     *
+     * <p>{@code destination} must not already exist - same contract as {@link
+     * BodyHandlers#ofFile(Path)} itself (fails with an {@link ApiException} wrapping a {@link
+     * java.nio.file.FileAlreadyExistsException} otherwise). The caller is responsible for
+     * resolving a fresh, non-colliding path first, the same way {@code StoredFile#downloadToDevice}
+     * does server-side.
+     *
+     * @return {@code destination}, unchanged, once the file has been fully written
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Path downloadFileToPath(final String fileId, final Path destination) throws ApiException {
+        final HttpRequest request = this.downloadFileContentRequest(fileId);
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofFile(destination));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return requireSuccessfulFileDownload(response);
+    }
+
+    /** Async form of {@link #downloadFileToPath(String, Path)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Path> downloadFileToPathAsync(final String fileId, final Path destination) {
+        final HttpRequest request = this.downloadFileContentRequest(fileId);
+        return this.httpClient.sendAsync(request, BodyHandlers.ofFile(destination))
+                .thenApply(response -> {
+                    try {
+                        return requireSuccessfulFileDownload(response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    private HttpRequest downloadFileContentRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/content"), true)
+                .timeout(TRANSFER_TIMEOUT)
+                .GET()
+                .build();
+    }
+
+    /**
+     * Checks {@code response}'s status: {@code 2xx} returns its already-written {@link Path}
+     * unchanged; anything else reads back the (small, JSON) error body {@link BodyHandlers#ofFile}
+     * already wrote to that same path - it has no way to know a response failed before writing its
+     * body - deletes that stray file (it isn't real file content), and throws {@link ApiException}
+     * carrying the extracted message.
+     */
+    private static Path requireSuccessfulFileDownload(final HttpResponse<Path> response) throws ApiException {
+        final int status = response.statusCode();
+        final Path destination = response.body();
+        if (status >= 200 && status < 300) {
+            return destination;
+        }
+        throw new ApiException(status, extractErrorMessageFromFile(destination), null);
+    }
+
+    /** {@link #extractErrorMessage(InputStream)}, reading from a file on disk instead of an open response stream, then deleting it. */
+    private static String extractErrorMessageFromFile(final Path destination) {
+        final String text;
+        try {
+            text = Files.readString(destination, StandardCharsets.UTF_8);
+        } catch (final IOException e) {
+            return "request failed and the error body could not be read";
+        } finally {
+            try {
+                Files.deleteIfExists(destination);
+            } catch (final IOException ignored) {
+                // Best-effort cleanup only - the caller already has an error to report either way.
+            }
+        }
+        if (text.isBlank()) {
+            return "request failed with no response body";
+        }
+        try {
+            final ErrorResponse error = GSON.fromJson(text, ErrorResponse.class);
+            return error != null && error.title() != null ? error.title() : text;
+        } catch (final RuntimeException malformedJson) {
+            return text;
+        }
     }
 
     // --- files: delete ------------------------------------------------

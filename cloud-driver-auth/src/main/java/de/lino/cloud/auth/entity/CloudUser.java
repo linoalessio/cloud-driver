@@ -7,6 +7,7 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
+import de.lino.database.json.JsonDocument;
 import lombok.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -37,6 +38,23 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     private long maxBytesToUpload;
 
     /**
+     * Incrementally-tracked running total of this user's uploaded bytes - updated via {@link
+     * CloudUserService#updateCloudUserBytesUsage} (+{@code content.length} on a successful
+     * upload, -the deleted file's known size on a successful delete) rather than recomputed by
+     * scanning every owned file on each check, so {@link #isUploadLimitReached} stays O(1). Not
+     * backfilled for accounts that already had files before this field existed - such an account
+     * starts at {@code 0} and only reflects usage from uploads/deletes made after this feature
+     * shipped, until a proper backfill is run.
+     */
+    private long currentUploadedBytes;
+
+    /**
+     * {@code configuration.json} key {@link #resolveMaxBytesToUpload} reads {@link
+     * #maxBytesToUpload} from - a sibling of {@code "jwt-signing-key"}/{@code "rest-server-port"}.
+     */
+    private static final String MAX_BYTES_TO_UPLOAD_CONFIG_KEY = "cloud-user-max-bytes-to-upload";
+
+    /**
      * @param authUserId the owning {@link AuthUser#getId()} - not the full entity, since
      *                    this class (and every caller of it, e.g. after JWT validation)
      *                    only ever needs the id, never anything else on {@code AuthUser}
@@ -44,6 +62,25 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     public CloudUser(@NotNull final String authUserId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@CloudUser.init: authUserId cannot be null");
         this.timeStamp = System.currentTimeMillis();
+        this.maxBytesToUpload = resolveMaxBytesToUpload();
+    }
+
+    /**
+     * Reads {@link #MAX_BYTES_TO_UPLOAD_CONFIG_KEY} from {@link CloudDriver#getConfiguration()},
+     * defaulting to {@link Long#MAX_VALUE} (effectively unlimited) if it isn't set - {@link
+     * JsonDocument#getLong} throws {@link NullPointerException} on a missing key rather than
+     * returning a default, so every account confirmation/upload would otherwise start throwing
+     * the moment this constructor ran against a {@code configuration.json} that predates this
+     * quota feature (every existing deployment's, until an operator explicitly opts in). Checked
+     * via {@link JsonDocument#contains} first so an unset quota fails open, not closed - matching
+     * this codebase's existing convention for optional configuration (e.g. a missing {@code
+     * "smtp-host"} falls back to {@code LoggingEmailSender} rather than breaking registration).
+     */
+    private static long resolveMaxBytesToUpload() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(MAX_BYTES_TO_UPLOAD_CONFIG_KEY)
+                ? configuration.getLong(MAX_BYTES_TO_UPLOAD_CONFIG_KEY)
+                : Long.MAX_VALUE;
     }
 
     @Override
@@ -52,12 +89,7 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     }
 
     @Override
-    public long getCurrentUploadedBytes() {
-        return this.getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum();
-    }
-
-    @Override
-    public boolean isMaxBytesToUploadReached(final long bytesToUpload) {
+    public boolean isUploadLimitReached(final long bytesToUpload) {
         return (this.getCurrentUploadedBytes() + bytesToUpload) >= this.maxBytesToUpload;
     }
 
@@ -71,7 +103,7 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      *     to this user
      */
     @UnmodifiableView
-    public List<StoredFile> getStoredFiles() {
+    public @NotNull List<StoredFile> getStoredFiles() {
         return CloudDriver.getInstance().getServiceContainer().getCloudUserService().listFiles(this.authUserId);
     }
 

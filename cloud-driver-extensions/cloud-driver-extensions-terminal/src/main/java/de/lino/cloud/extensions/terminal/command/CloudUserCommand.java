@@ -1,6 +1,7 @@
 package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
@@ -11,7 +12,6 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CloudUserCommand implements Command {
 
@@ -109,6 +109,45 @@ public class CloudUserCommand implements Command {
             return;
         }
 
+        if (arguments.hasCommand(0, "update") && arguments.hasLength(2)) {
+
+            try {
+
+                final String emailAddress = arguments.command(1);
+                final long bytes = Long.parseLong(arguments.command(2));
+                final Optional<ICloudUser> cloudUser = cloudUserService.getCloudUserByEmail(emailAddress);
+
+                if (cloudUser.isEmpty()) {
+                    terminal.displayApproved("Cloud user '&b%s&7' does not exist", emailAddress);
+                    return;
+                }
+
+                if (bytes <= 0) {
+                    terminal.displayApproved("New bytes value cannot be below or equal 0");
+                    return;
+                }
+
+                final FileFactory fileFactory = CloudDriver.getInstance().getFactoryContainer().getFileFactory();
+                final long uploadedBytesToDatabase = fileFactory.getEntitiesAsync().join().stream().mapToLong(StoredFile::sizeBytes).sum();
+                final long exisingBytesInServer = CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available");
+
+                if ((uploadedBytesToDatabase + bytes) >= exisingBytesInServer) {
+                    terminal.displayApproved("The cloud server has &breached &7its &cmaximum storage capacity&7.");
+                    return;
+                }
+
+                cloudUserService.updateCloudUserBytesUsage(cloudUser.get().getAuthUserId(), bytes);
+                terminal.displayApproved("Cloud user '%b%s&7' can now uploaded up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(bytes));
+
+
+            } catch (NumberFormatException e) {
+                terminal.displayApproved("Please enter a valid bytes value");
+                return;
+            }
+
+            return;
+        }
+
         this.sendHelp();
 
 
@@ -117,8 +156,8 @@ public class CloudUserCommand implements Command {
     private void sendHelp() {
         final Terminal terminal = this.terminal();
         terminal.displayApproved("&fcloudUser list");
-        terminal.displayApproved("&fcloudUser <info> <name>");
-        terminal.displayApproved("&fcloudUser <delete:reset> <name>");
+        terminal.displayApproved("&fcloudUser update <email> <bytes>");
+        terminal.displayApproved("&fcloudUser <info:delete:reset> <email>");
     }
 
 }

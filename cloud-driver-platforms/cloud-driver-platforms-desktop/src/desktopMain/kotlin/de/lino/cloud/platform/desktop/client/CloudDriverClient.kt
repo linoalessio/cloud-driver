@@ -64,16 +64,20 @@ class CloudDriverClient(
     suspend fun confirmPasswordReset(emailAddress: String, code: String, newPassword: String): String =
         this.apiClient.confirmPasswordResetAsync(emailAddress, code, newPassword).await()
 
-    /** Uploads [content] as [fileName], optionally directly into [folderId] (`null` = root). */
-    suspend fun uploadFile(fileName: String, content: ByteArray, folderId: String? = null): StoredFileResponse =
+    /**
+     * Uploads [content] as [fileName], optionally directly into [folderId] (`null` = root).
+     * Returns a [StoredFileSummaryResponse] - not the uploaded content echoed back, since the
+     * caller already has the bytes it just sent (see [ApiClient.uploadFile]'s own Javadoc).
+     */
+    suspend fun uploadFile(fileName: String, content: ByteArray, folderId: String? = null): StoredFileSummaryResponse =
         this.apiClient.uploadFileAsync(fileName, content, folderId).await()
 
     /** Streams [filePath] straight from disk as the uploaded file's content, optionally into [folderId] (`null` = root). */
-    suspend fun uploadFile(filePath: Path, folderId: String? = null): StoredFileResponse =
+    suspend fun uploadFile(filePath: Path, folderId: String? = null): StoredFileSummaryResponse =
         this.apiClient.uploadFileAsync(filePath.fileName.toString(), filePath, folderId).await()
 
     /** Same as [uploadFile] on a [Path], with an explicit [fileName] instead of the path's own file name. */
-    suspend fun uploadFile(fileName: String, filePath: Path, folderId: String? = null): StoredFileResponse =
+    suspend fun uploadFile(fileName: String, filePath: Path, folderId: String? = null): StoredFileSummaryResponse =
         this.apiClient.uploadFileAsync(fileName, filePath, folderId).await()
 
     /**
@@ -91,6 +95,14 @@ class CloudDriverClient(
     /** Fetches one file's full content. */
     suspend fun downloadFile(fileId: String): StoredFileResponse =
         this.apiClient.downloadFileAsync(fileId).await()
+
+    /**
+     * Streams a file's content directly to [destination] on disk - no base64 decode, content
+     * never fully materializes as a Kotlin [ByteArray] in this process. [destination] must not
+     * already exist (see [ApiClient.downloadFileToPath]'s own Javadoc).
+     */
+    suspend fun downloadFileToPath(fileId: String, destination: Path): Path =
+        this.apiClient.downloadFileToPathAsync(fileId, destination).await()
 
     suspend fun deleteFile(fileId: String) {
         this.apiClient.deleteFileAsync(fileId).await()

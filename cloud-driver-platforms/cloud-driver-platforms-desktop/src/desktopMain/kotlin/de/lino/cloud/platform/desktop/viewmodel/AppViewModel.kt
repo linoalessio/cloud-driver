@@ -12,7 +12,7 @@ import de.lino.cloud.platform.desktop.model.computeAccountStats
 import de.lino.cloud.platform.desktop.theme.ThemeMode
 import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
-import de.lino.cloud.platform.desktop.utils.downloadTo
+import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
@@ -333,7 +333,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun downloadSelected(destinationDirectory: Path) = run {
         this.selected.toList().mapConcurrently { entry ->
             when (entry) {
-                is Entry.FileEntry -> this.client.downloadFile(entry.id).downloadTo(destinationDirectory)
+                is Entry.FileEntry -> this.client.downloadFileStreaming(entry.id, entry.name, destinationDirectory)
                 is Entry.FolderEntry -> this.downloadFolderRecursively(entry.id, destinationDirectory.resolve(entry.name))
             }
         }
@@ -341,7 +341,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
 
     private suspend fun downloadFolderRecursively(folderId: String, destination: Path) {
         withContext(Dispatchers.IO) { Files.createDirectories(destination) }
-        this.client.listFiles(folderId).mapConcurrently { file -> this.client.downloadFile(file.fileId()).downloadTo(destination) }
+        this.client.listFiles(folderId).mapConcurrently { file -> this.client.downloadFileStreaming(file.fileId(), file.fileName(), destination) }
         this.client.listFolders(folderId).mapConcurrently { subFolder ->
             this.downloadFolderRecursively(subFolder.folderId(), destination.resolve(subFolder.name()))
         }

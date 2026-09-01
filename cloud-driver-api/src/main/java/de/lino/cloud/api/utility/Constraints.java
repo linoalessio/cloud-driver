@@ -35,6 +35,15 @@ public final class Constraints {
      */
     public static final Path EXTENSIONS_PATH = WORKING_DIRECTORY.resolve("extensions");
 
+    /**
+     * Scratch directory {@code DefaultRestFactory#handleUploadFile} streams an in-progress
+     * upload's request body to (a temp file per upload, deleted once the upload completes or
+     * fails) rather than buffering it whole in JVM heap - a top-level {@code upload-scratch}
+     * subdirectory, sibling to {@link #CONFIGURATION_PATH}, not the OS-global temp directory, so
+     * an operator can see/clean it up the same way as every other named path here.
+     */
+    public static final Path UPLOAD_SCRATCH_PATH = WORKING_DIRECTORY.resolve("upload-scratch");
+
     /** Timestamp the process started at, set once during bootstrap. */
     public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 

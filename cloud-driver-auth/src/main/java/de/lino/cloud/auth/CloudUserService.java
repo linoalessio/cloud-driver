@@ -7,6 +7,7 @@ import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -142,6 +143,33 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Adjusts {@code authUserId}'s {@link ICloudUser#getCurrentUploadedBytes()} running total by
+     * {@code delta} (positive after a successful upload, negative after a successful delete) and
+     * persists the change - a single-row {@link DataFactory#update}, not a rewrite of anything
+     * else on the account. Clamped at a minimum of {@code 0}: a negative running total would be
+     * nonsensical and would under-report usage to {@link CloudUser#isUploadLimitReached}, letting
+     * a caller upload past its real quota. A no-op if {@code authUserId} has no {@link CloudUser}
+     * record yet (nothing to adjust).
+     *
+     * @param authUserId the account whose running total to adjust
+     * @param delta how many bytes to add (or, if negative, remove) from the running total
+     */
+    @Override
+    public void updateCloudUserBytesUsage(@NonNull final String authUserId, final long delta) {
+        final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
+        if (cloudUser.isEmpty()) return;
+
+        final ICloudUser existing = cloudUser.get();
+        existing.setCurrentUploadedBytes(Math.max(0, existing.getCurrentUploadedBytes() + delta));
+
+        try {
+            this.dataFactory.update((CloudUser) existing);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.updateCloudUserBytesUsage: failed to persist usage update for " + authUserId, e);
+        }
+    }
+
+    /**
      * Deletes every {@link Folder} owned by {@code authUserId}, regardless of nesting depth,
      * by repeatedly deleting whichever folders are currently leaves (no other remaining folder
      * points at them via {@link Folder#getParentFolderId()}) until none are left - the same
@@ -209,13 +237,21 @@ public final class CloudUserService implements ICloudUserService {
      * @param folderId the folder to place the new file in, or {@code null} for the root
      * @return the newly-created {@link StoredFile}
      * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}
+     * @throws UploadQuotaExceededException if {@code authUserId} has reached its {@link
+     *                                       ICloudUser#getMaxBytesToUpload()} upload quota
      */
     @NonNull
     @Override
     public StoredFile uploadFile(@NonNull final String authUserId, @NonNull final String fileName, final byte[] content,
                                   @Nullable final String folderId) {
 
-        this.getOrCreate(authUserId);
+        final ICloudUser cloudUser = this.getOrCreate(authUserId);
+        // Checked before requireOwnedFolder/constructing the StoredFile (which DEFLATE-compresses
+        // and base64-encodes content up front) - no reason to pay for either on a rejected upload.
+        if (cloudUser.isUploadLimitReached(content.length)) {
+            throw new UploadQuotaExceededException(
+                    authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
+        }
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final StoredFile storedFile = new StoredFile(UUID.randomUUID().toString(), fileName, content);
@@ -233,6 +269,8 @@ public final class CloudUserService implements ICloudUserService {
                     "@CloudUserService.uploadFile: failed to track ownership of " + storedFile.fileId() + " for " + authUserId, e
             );
         }
+
+        this.updateCloudUserBytesUsage(authUserId, content.length);
 
         return storedFile;
     }
@@ -461,11 +499,10 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public void deleteFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
 
-        final String ownershipKey = StoredFileOwnership.compositeKey(authUserId, storedFileId);
-        if (!this.ownsFile(ownershipKey)) {
-            throw new IllegalArgumentException(
-                    "@CloudUserService.deleteFile: " + authUserId + " does not own " + storedFileId);
-        }
+        // Fetches the ownership row itself (not just a boolean) - its own recorded sizeBytes
+        // (when known, see StoredFileOwnership#hasMetadata()) is what lets the usage decrement
+        // below avoid a full FileFactory#download just to find out how large the deleted file was.
+        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
 
         try {
             this.fileFactory.delete(storedFileId);
@@ -474,11 +511,15 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         try {
-            this.dataFactory.delete(ownershipKey, StoredFileOwnership.class);
+            this.dataFactory.delete(StoredFileOwnership.compositeKey(authUserId, storedFileId), StoredFileOwnership.class);
         } catch (final DatabaseClientException e) {
             throw new RuntimeException(
                     "@CloudUserService.deleteFile: failed to untrack ownership of " + storedFileId + " for " + authUserId, e
             );
+        }
+
+        if (ownership.hasMetadata()) {
+            this.updateCloudUserBytesUsage(authUserId, -ownership.getSizeBytes());
         }
     }
 
@@ -618,15 +659,6 @@ public final class CloudUserService implements ICloudUserService {
             this.dataFactory.delete(folderId, Folder.class);
         } catch (final DatabaseClientException e) {
             throw new RuntimeException("@CloudUserService.deleteFolder: failed to delete " + folderId, e);
-        }
-    }
-
-    /** O(1) point lookup - a single row fetch under the composite {@code authUserId:storedFileId} key. */
-    private boolean ownsFile(final String ownershipKey) {
-        try {
-            return this.dataFactory.findById(ownershipKey, StoredFileOwnership.class).isPresent();
-        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
-            throw new RuntimeException("@CloudUserService.ownsFile: failed to look up ownership record " + ownershipKey, e);
         }
     }
 

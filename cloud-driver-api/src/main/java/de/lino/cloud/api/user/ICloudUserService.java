@@ -70,6 +70,18 @@ public interface ICloudUserService {
     void resetCloudUser(@NonNull String authUserId);
 
     /**
+     * Adjusts {@code authUserId}'s {@link ICloudUser#getCurrentUploadedBytes()} running total by
+     * {@code delta} and persists the change - called with a positive delta after a successful
+     * {@link #uploadFile(String, String, byte[], String)} and a negative delta after a successful
+     * {@link #deleteFile(String, String)} (when the deleted file's size is known). Clamped at a
+     * minimum of {@code 0}. A no-op if {@code authUserId} has no {@link ICloudUser} record yet.
+     *
+     * @param authUserId the account whose running total to adjust
+     * @param delta how many bytes to add (or, if negative, remove) from the running total
+     */
+    void updateCloudUserBytesUsage(@NonNull String authUserId, final long delta);
+
+    /**
      * Uploads {@code fileName}/{@code content} as a new {@link StoredFile} and tracks
      * it on {@code authUserId}'s {@link ICloudUser} record.
      *

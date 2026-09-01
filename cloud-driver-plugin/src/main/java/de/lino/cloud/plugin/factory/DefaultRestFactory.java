@@ -9,6 +9,7 @@ import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
+import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
@@ -17,6 +18,7 @@ import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
+import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
@@ -30,6 +32,15 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -208,9 +219,10 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Same as {@link #DefaultRestFactory(DataFactory, AuthService)}, additionally mounting
-     * {@code POST /files}/{@code GET /files}/{@code GET /files/{id}}/{@code DELETE /files/{id}}/
-     * {@code PUT /files/{id}/folder} and {@code POST /folders}/{@code GET /folders}/{@code PUT
-     * /folders/{id}}/{@code DELETE /folders/{id}} - each user's own {@link StoredFile} uploads
+     * {@code POST /files}/{@code GET /files}/{@code GET /files/{id}}/{@code GET
+     * /files/{id}/content}/{@code DELETE /files/{id}}/{@code PUT /files/{id}/folder} and {@code
+     * POST /folders}/{@code GET /folders}/{@code PUT /folders/{id}}/{@code DELETE /folders/{id}} -
+     * each user's own {@link StoredFile} uploads
      * and {@link Folder} organization, backed by {@code cloudUserService}. Unlike {@link
      * #register}/{@link #fetch}/{@link #update}/{@link #delete}, these routes are not generic
      * over a {@code (path, type)} pair registered separately - they're fixed, mounted directly
@@ -339,6 +351,7 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
+                config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
 
@@ -704,6 +717,12 @@ public final class DefaultRestFactory extends RestFactory {
      * {@link #ROOT_FOLDER_SENTINEL}) places the file at the root, matching this route's
      * pre-folders behavior. Dispatched off the Jetty worker thread since {@code uploadFile}
      * does real database/encryption I/O.
+     *
+     * <p>Responds with a {@link StoredFileSummary} of the uploaded file - not the full {@link
+     * StoredFile} (content included) the way this route used to - since the caller already has
+     * the bytes it just uploaded and doesn't need them echoed back; base64-round-tripping an
+     * entire large file on every upload was pure waste. Fetch full content afterward via {@code
+     * GET /files/{id}}/{@code GET /files/{id}/content} if it's ever actually needed again.
      */
     private void handleUploadFile(@NotNull final Context ctx) {
         final String fileName = ctx.queryParam(FILE_NAME_QUERY_PARAM);
@@ -717,11 +736,22 @@ public final class DefaultRestFactory extends RestFactory {
                 .supplyAsync(() -> this.cloudUserService.uploadFile(userId, fileName, content, folderId))
                 .handle((storedFile, failure) -> {
                     if (failure == null) {
-                        ctx.status(201).contentType("application/json").result(this.gson.toJson(this.toJsonObject(storedFile, folderId)));
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(toSummary(storedFile, folderId)));
                         return null;
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, fileName);
                 }));
+    }
+
+    /**
+     * Builds a {@link StoredFileSummary} straight from a freshly uploaded/fetched {@link
+     * StoredFile} plus its resolved folder placement - the same descriptive-fields-only shape
+     * {@link CloudUserService#resolveFileSummary} builds for a listing, reused here by {@link
+     * #handleUploadFile} so an upload's response never carries content.
+     */
+    private static StoredFileSummary toSummary(final StoredFile file, @Nullable final String folderId) {
+        return new StoredFileSummary(file.fileId(), file.fileName(), file.contentType(), file.sizeBytes(),
+                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), folderId);
     }
 
     /**
@@ -762,6 +792,42 @@ public final class DefaultRestFactory extends RestFactory {
                 .handle((entry, failure) -> {
                     if (failure == null) {
                         ctx.contentType("application/json").result(this.gson.toJson(this.toJsonObject(entry.file(), entry.folderId())));
+                        return null;
+                    }
+                    throw notFoundOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/{id}/content}: streams one {@link StoredFile}'s decrypted, decompressed
+     * content directly to the response body - {@code Content-Type} set from the file's own {@link
+     * StoredFile#contentType()}, {@code Content-Disposition: attachment} carrying its {@link
+     * StoredFile#fileName()} (RFC 5987 {@code filename*=} encoding, so a non-ASCII name survives
+     * intact) - rather than the base64-in-JSON shape {@link #handleDownloadFile} (kept unmounted,
+     * unchanged, alongside this route) returns. Ownership-checked the same way via {@link
+     * CloudUserService#getFile}.
+     *
+     * <p>{@link StoredFile#content()} still fully materializes the decrypted plaintext in memory
+     * before this method runs - {@code EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot,
+     * not chunked (see {@code architecture/OPTIMIZE_UPLOAD.md}'s "Open decision" - a real,
+     * deliberately out-of-scope limitation, not an oversight here). What this route actually
+     * eliminates is everything downstream of that plaintext: the ~1.37x base64 string, the
+     * enclosing JSON document, and the UTF-8 re-encoding {@link Context#result(String)} would
+     * otherwise perform on top of it - {@link Context#writeSeekableStream(java.io.InputStream,
+     * String, long)} streams the already-resolved bytes straight to the response instead.
+     */
+    private void handleDownloadFileContent(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.getFile(userId, id))
+                .handle((entry, failure) -> {
+                    if (failure == null) {
+                        final StoredFile file = entry.file();
+                        final byte[] content = file.content();
+                        final String encodedFileName = URLEncoder.encode(file.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                        ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
+                        ctx.writeSeekableStream(new ByteArrayInputStream(content), file.contentType(), content.length);
                         return null;
                     }
                     throw notFoundOrPropagate(failure, StoredFile.class, id);
@@ -1090,13 +1156,15 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * {@link #notFoundOrPropagate}, extended with one more case {@link CloudUserService}'s
-     * folder operations can throw: {@link IllegalStateException} - a validation failure that
-     * <em>does</em> confirm the resource's existence rather than hiding it (unlike {@link
-     * IllegalArgumentException}'s "not yours"/"doesn't exist" case above), since "this folder
-     * still has files in it" or "that would create a cycle" are normal, expected client-facing
-     * feedback, not something to hide the same way a missing/foreign record is - translated to
-     * {@link ConflictResponse} (409). Any other cause is rethrown as-is to reach Javalin's
+     * {@link #notFoundOrPropagate}, extended with two more cases: {@link IllegalStateException} -
+     * a {@link CloudUserService} folder-operation validation failure that <em>does</em> confirm
+     * the resource's existence rather than hiding it (unlike {@link IllegalArgumentException}'s
+     * "not yours"/"doesn't exist" case above), since "this folder still has files in it" or "that
+     * would create a cycle" are normal, expected client-facing feedback, not something to hide the
+     * same way a missing/foreign record is - translated to {@link ConflictResponse} (409); and
+     * {@link UploadQuotaExceededException} - translated to {@link ContentTooLargeResponse} (413),
+     * the same status family Javalin's own {@code maxRequestSize} cap already uses, just scoped
+     * per-account instead of per-request. Any other cause is rethrown as-is to reach Javalin's
      * default (500) handling.
      *
      * @param failure the raw failure from a {@code *Async} call
@@ -1111,6 +1179,9 @@ public final class DefaultRestFactory extends RestFactory {
         }
         if (cause instanceof IllegalStateException illegalState) {
             return new ConflictResponse(illegalState.getMessage());
+        }
+        if (cause instanceof UploadQuotaExceededException uploadQuotaExceeded) {
+            return new ContentTooLargeResponse(uploadQuotaExceeded.getMessage());
         }
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }

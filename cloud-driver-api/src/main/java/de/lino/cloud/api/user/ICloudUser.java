@@ -32,11 +32,15 @@ public interface ICloudUser {
 
     long getMaxBytesToUpload();
 
+    /** This account's persisted, incrementally-tracked running total - see {@code CloudUserService#updateCloudUserBytesUsage}. */
     long getCurrentUploadedBytes();
 
     void setMaxBytesToUpload(final long maxBytesToUpload);
 
-    boolean isMaxBytesToUploadReached(final long bytesToUpload);
+    /** Backs {@code CloudUserService#updateCloudUserBytesUsage} - not meant to be called directly by other callers. */
+    void setCurrentUploadedBytes(final long currentUploadedBytes);
+
+    boolean isUploadLimitReached(final long bytesToUpload);
 
     /**
      * Every {@link StoredFile} currently owned by this user, resolved on demand from the
