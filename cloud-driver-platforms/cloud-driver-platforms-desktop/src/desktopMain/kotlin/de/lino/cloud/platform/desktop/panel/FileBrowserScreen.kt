@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -113,6 +114,20 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
             Spacer(Modifier.height(16.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Re-fetches this folder's listing straight from the server (so, transitively,
+                // straight from the database) rather than trusting whatever this client last
+                // saw - useful after a change made from elsewhere (another device, a teammate,
+                // the terminal package's own Command implementations) that this client's own
+                // listFolders/listFiles calls wouldn't otherwise have a reason to re-run.
+                OutlinedButton(
+                    onClick = { viewModel.loadCurrentFolder() },
+                    enabled = !viewModel.busy,
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Refresh")
+                }
+
                 OutlinedButton(
                     onClick = { promptForName("New folder", "Folder name")?.let { viewModel.createFolder(it) } },
                     enabled = !viewModel.busy,

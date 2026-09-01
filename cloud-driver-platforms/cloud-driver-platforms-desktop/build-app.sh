@@ -25,7 +25,11 @@
 # reproducible issue hit while building this very app - confirmed the bundle itself is otherwise
 # complete when this happens, just unsigned). If the Gradle build fails and a .app is present,
 # this script strips extended attributes and re-signs it directly, then re-checks the result,
-# rather than treating that specific failure as fatal.
+# rather than treating that specific failure as fatal - in a short retry loop with a brief pause
+# between attempts, since whatever re-tags the directory (Finder/Spotlight indexing, most likely)
+# does so asynchronously and can otherwise re-contaminate it faster than a single immediate
+# clear-then-sign attempt: an immediate retry was observed to lose that race during testing, while
+# a retry a couple of seconds later succeeded reliably.
 
 set -euo pipefail
 
@@ -58,11 +62,15 @@ if [ "$gradle_build_ok" = false ]; then
         APP_BUNDLE="$(find "$APP_IMAGE_DIR" -mindepth 1 -maxdepth 1 -name "*.app" | head -n 1)"
         if [ -n "$APP_BUNDLE" ]; then
             echo "==> Gradle build failed, but a .app bundle exists - retrying the macOS codesign workaround..."
-            xattr -cr "$APP_BUNDLE"
-            if codesign -s - -vvvv --force "$APP_BUNDLE"; then
-                echo "==> Re-signed successfully; treating the build as complete."
-                gradle_build_ok=true
-            fi
+            for attempt in 1 2 3 4 5; do
+                xattr -cr "$APP_BUNDLE"
+                if codesign -s - -vvvv --force "$APP_BUNDLE"; then
+                    echo "==> Re-signed successfully (attempt $attempt); treating the build as complete."
+                    gradle_build_ok=true
+                    break
+                fi
+                sleep 2
+            done
         fi
     fi
 fi
