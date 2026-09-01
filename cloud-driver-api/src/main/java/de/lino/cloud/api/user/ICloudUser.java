@@ -32,7 +32,11 @@ public interface ICloudUser {
 
     long getMaxBytesToUpload();
 
+    long getCurrentUploadedBytes();
+
     void setMaxBytesToUpload(final long maxBytesToUpload);
+
+    boolean isMaxBytesToUploadReached(final long bytesToUpload);
 
     /**
      * Every {@link StoredFile} currently owned by this user, resolved on demand from the

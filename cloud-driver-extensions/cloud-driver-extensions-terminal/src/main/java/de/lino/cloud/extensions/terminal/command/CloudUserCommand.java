@@ -47,7 +47,7 @@ public class CloudUserCommand implements Command {
             terminal.displayApproved("Registered cloud users (&b%s&7): ", cloudUserService.getCloudUsers().size());
 
             cloudUserService.getCloudUsers().forEach(cloudUser -> {
-                final String totalStorage = Constraints.resolveBytesToUnit(cloudUser.getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum());
+                final String totalStorage = Constraints.resolveBytesToUnit(cloudUser.getCurrentUploadedBytes());
                 terminal.displayApproved("&8- &7Email: &b%s &8| &7Uploaded files (&b%s&7): &b%s", cloudUser.getAuthUser().getEmailAddress(), totalStorage, cloudUser.getStoredFiles().size());
             });
             terminal.emptyLine();
@@ -69,7 +69,7 @@ public class CloudUserCommand implements Command {
             terminal.displayApproved("Cloud user: &b%s", cloudUser.get().getAuthUser().getEmailAddress());
             terminal.displayApproved("AuthId: &b%s", cloudUser.get().getAuthUserId());
             terminal.displayApproved("Uploaded files: &b%s", cloudUser.get().getStoredFiles().size());
-            terminal.displayApproved("Uploaded storage: &b%s", Constraints.resolveBytesToUnit(cloudUser.get().getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum()));
+            terminal.displayApproved("Uploaded storage: &b%s", Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes()));
             terminal.emptyLine();
 
             return;
@@ -85,7 +85,7 @@ public class CloudUserCommand implements Command {
                 return;
             }
 
-            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum());
+            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes());
             terminal.displayApproved("Cloud user '&b%s&7' successfully &ccleared &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
             cloudUserService.resetCloudUser(cloudUser.get().getAuthUserId());
 
@@ -102,7 +102,7 @@ public class CloudUserCommand implements Command {
                 return;
             }
 
-            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum());
+            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes());
             terminal.displayApproved("Cloud user '&b%s&7' successfully &cdeleted &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
             cloudUserService.deleteCloudUser(cloudUser.get().getAuthUserId());
 

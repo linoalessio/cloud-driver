@@ -51,6 +51,16 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
         return CloudDriver.getInstance().getServiceContainer().getAuthService().getAuthUser(this.authUserId).orElseThrow();
     }
 
+    @Override
+    public long getCurrentUploadedBytes() {
+        return this.getStoredFiles().stream().mapToLong(StoredFile::sizeBytes).sum();
+    }
+
+    @Override
+    public boolean isMaxBytesToUploadReached(final long bytesToUpload) {
+        return (this.getCurrentUploadedBytes() + bytesToUpload) >= this.maxBytesToUpload;
+    }
+
     /**
      * Convenience accessor for every {@link StoredFile} this user owns, resolved on demand
      * through the process-wide {@link CloudDriver} singleton rather than held as state on this
