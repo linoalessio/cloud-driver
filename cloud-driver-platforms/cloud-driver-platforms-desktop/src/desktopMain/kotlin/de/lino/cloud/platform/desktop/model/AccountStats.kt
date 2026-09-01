@@ -17,9 +17,13 @@ data class AccountStats(
  * cap as every other batch operation in this app), summing file counts/folder counts/byte sizes
  * as it goes. There is no server-side "give me totals" endpoint - `GET /files`/`GET /folders` are
  * both scoped to one folder at a time (see CLAUDE.md's "Folder organization" section) - so this
- * is the same shape as [AppViewModel.deleteFolderRecursively]/`#downloadFolderRecursively`: a
- * client-side recursive walk, each folder's own children fetched/summed concurrently with its
- * siblings.
+ * is a client-side recursive walk, each folder's own children fetched/summed concurrently with
+ * its siblings. Unlike `AppViewModel`'s own file-mutating batch operations (delete/duplicate/
+ * download), this only ever issues read-only listing calls, so the same uncoordinated-nested-
+ * [mapConcurrently] concurrency-explosion risk that made deletion throw `"too many concurrent
+ * streams"` on a large tree (see `AppViewModel.deleteEntries`'s own Javadoc) is a smaller concern
+ * here in practice - but the same underlying shape is still present and could in principle hit
+ * the same limit against a very large/wide account.
  *
  * A plain `Int`/`Long` accumulator would race across concurrently-running branches of the walk,
  * so counts are folded through a small [Mutex]-guarded accumulator rather than closed-over `var`s.

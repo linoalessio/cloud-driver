@@ -307,8 +307,8 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      * per-OS locations it mirrors from `build-app.sh`), then terminates the process - the
      * Dashboard's "Uninstall" action. The caller (`DashboardScreen`) is responsible for confirming
      * with the user first via a dialog; this function performs the deletion unconditionally, the
-     * same way [deleteSelected]/[deleteFolderRecursively] assume their own caller already
-     * confirmed. Dispatched on [Dispatchers.IO] rather than run directly on the calling (UI)
+     * same way [deleteSelected]/[deleteEntries] assume their own caller already confirmed the
+     * action first. Dispatched on [Dispatchers.IO] rather than run directly on the calling (UI)
      * thread, matching this class's own "blocking local I/O off the UI dispatcher" convention -
      * even though the process exits immediately after, so the UI never actually gets a chance to
      * visibly block either way.
@@ -553,27 +553,55 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun deleteSelected() = this.deleteEntries(this.selected.toList())
 
     /**
-     * Deletes every entry in [entries], concurrently (capped - see [mapConcurrently]) - backs both
-     * [deleteSelected] (the toolbar's "Delete selected") and a single entry's context-menu
-     * "Delete". A folder among [entries] is cascade-deleted client-side (every contained file and
-     * nested folder first, then the folder itself) since the server's `deleteFolder` 409s on a
-     * non-empty folder by design - see [deleteFolderRecursively].
+     * Deletes every entry in [entries] - backs both [deleteSelected] (the toolbar's "Delete
+     * selected") and a single entry's context-menu "Delete". A folder among [entries] is
+     * cascade-deleted client-side (every contained file and nested folder first, then the folder
+     * itself) since the server's `deleteFolder` 409s on a non-empty folder by design.
+     *
+     * Plans the whole batch first ([planDelete] - a listings-only, sequential walk, no deletes
+     * yet) rather than deleting recursively as each folder is discovered. **Fixed a real bug
+     * (2026-09-01): the previous recursive shape ran one [mapConcurrently] call (capped at
+     * [ApiClient.DEFAULT_MAX_CONCURRENT_TRANSFERS]) *per folder level*, uncoordinated with every
+     * sibling/ancestor call** - each nested call gets its own fresh semaphore, so the actual
+     * number of simultaneously in-flight HTTP/2 requests multiplied with the tree's depth/breadth
+     * instead of ever being capped at 8. Against the one shared HTTP/2 connection [ApiClient]
+     * multiplexes every request over, this could exceed the server's/JDK's concurrent-stream
+     * limit, surfacing as `"too many concurrent streams"` when deleting a folder tree of any real
+     * size. Flattening first means exactly one [mapConcurrently] call ever deletes files, so the
+     * 8-way cap is real; every folder is then deleted sequentially, deepest-first (see
+     * [PlannedDelete.folderIdsDeepestFirst]), so a parent is never asked to delete before its own
+     * (already-emptied) children have been - folder deletes are cheap and typically far fewer than
+     * files, so they don't need their own concurrency.
      */
     fun deleteEntries(entries: List<Entry>) = run {
-        entries.mapConcurrently { entry ->
-            when (entry) {
-                is Entry.FileEntry -> this.client.deleteFile(entry.id)
-                is Entry.FolderEntry -> this.deleteFolderRecursively(entry.id)
-            }
-        }
+        val plan = this.planDelete(entries)
+        plan.fileIds.mapConcurrently { fileId -> this.client.deleteFile(fileId) }
+        plan.folderIdsDeepestFirst.forEach { folderId -> this.client.deleteFolder(folderId) }
         this.selected.removeAll(entries)
         this.refreshCurrentFolder()
     }
 
-    private suspend fun deleteFolderRecursively(folderId: String) {
-        this.client.listFiles(folderId).mapConcurrently { file -> this.client.deleteFile(file.fileId()) }
-        this.client.listFolders(folderId).mapConcurrently { subFolder -> this.deleteFolderRecursively(subFolder.folderId()) }
-        this.client.deleteFolder(folderId)
+    /** The flattened result of [planDelete] - every file id to delete, and every folder id to delete afterward, ordered deepest-first (a folder's own children always precede it in this list). */
+    private data class PlannedDelete(val fileIds: List<String>, val folderIdsDeepestFirst: List<String>)
+
+    /** Recursively (sequentially - listings only, no deletes issued) flattens [entries] into one [PlannedDelete] - see [deleteEntries] for why this replaced a per-folder-level recursive delete. */
+    private suspend fun planDelete(entries: List<Entry>): PlannedDelete {
+        val fileIds = mutableListOf<String>()
+        val folderIdsDeepestFirst = mutableListOf<String>()
+
+        suspend fun walkFolder(folderId: String) {
+            this.client.listFiles(folderId).forEach { file -> fileIds += file.fileId() }
+            this.client.listFolders(folderId).forEach { subFolder -> walkFolder(subFolder.folderId()) }
+            folderIdsDeepestFirst += folderId
+        }
+
+        for (entry in entries) {
+            when (entry) {
+                is Entry.FileEntry -> fileIds += entry.id
+                is Entry.FolderEntry -> walkFolder(entry.id)
+            }
+        }
+        return PlannedDelete(fileIds, folderIdsDeepestFirst)
     }
 
     /** Downloads every currently-selected entry into [destinationDirectory] - see [downloadEntries]. */
