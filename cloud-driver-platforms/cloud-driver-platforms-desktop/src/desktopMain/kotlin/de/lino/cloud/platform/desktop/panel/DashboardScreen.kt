@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
@@ -245,7 +246,7 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
             }
             InfoRow(Icons.Filled.AlternateEmail, "Email address", viewModel.currentUserEmail ?: "-")
             InfoRow(Icons.Filled.Storage, "Storage", formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload))
-            InfoRow(Icons.Filled.Badge, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
+            InfoRow(Icons.Filled.CalendarToday, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
             InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
         }
     }

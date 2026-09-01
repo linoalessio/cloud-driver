@@ -232,7 +232,16 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                     // straight into the currently open folder - the drag-into-the-app counterpart
                     // to this screen's existing drag-within-the-app row moving.
                     .dragAndDropTarget(
-                        shouldStartDragAndDrop = { event -> !viewModel.busy && event.dragData() is DragData.FilesList },
+                        // Deliberately not also checking `event.dragData() is DragData.FilesList`
+                        // here: on macOS, AWT's native drag-and-drop only exposes real data
+                        // flavors once the drop actually happens - during dragEnter/dragOver (what
+                        // this "started" event fires from), Transferable#isDataFlavorSupported
+                        // reports nothing, so `dragData()` always resolves to something other than
+                        // FilesList and this check silently rejected every external drag before
+                        // the drop target ever activated (no overlay, no drop effect - nothing).
+                        // The actual FilesList check already happens where the data is guaranteed
+                        // to be available: inside externalDropTarget#onDrop below.
+                        shouldStartDragAndDrop = { !viewModel.busy },
                         target = externalDropTarget,
                     ),
             ) {
