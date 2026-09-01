@@ -348,12 +348,25 @@ public final class EntityDatabaseClient {
     }
 
     /**
-     * Retrieves and decrypts every entity of {@code type} currently stored, via {@link #retrieveAll}.
+     * Retrieves and decrypts every entity of {@code type} currently stored.
+     *
+     * <p>Unlike {@link #retrieveAll} (used when the caller asked for specific
+     * ids and a miss is therefore genuinely exceptional), this lists ids via
+     * {@link DatabaseSection#getEntries()} first and only then retrieves each
+     * one - a real gap in which a concurrent {@link #delete}/{@link
+     * #deleteSection}/{@link #reload} on {@code type} can make an id that was
+     * present at listing time no longer resolve by the time its own retrieval
+     * runs (each is dispatched independently, on its own virtual thread).
+     * Since the caller here asked for "everything currently there" rather
+     * than specific ids, such a raced-away id is treated as {@link
+     * #findById}'s "genuine miss" case (silently omitted) rather than failing
+     * the whole batch - a still-present-but-corrupted record is still
+     * rethrown, the same distinction {@link #findById} already draws.
      *
      * @param type the entity type
-     * @return every decrypted entity of {@code type}
+     * @return every decrypted entity of {@code type} that could still be resolved
      * @throws NullPointerException if {@code type} is {@code null}
-     * @throws DatabaseClientException if any lookup fails
+     * @throws DatabaseClientException if a still-present record is corrupted
      * @throws KeyWrapException if unwrapping a data-encryption key fails
      * @throws AuthenticationFailedException if any authentication tag verification fails
      */
@@ -363,7 +376,30 @@ public final class EntityDatabaseClient {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
 
         final List<String> objectIds = sectionFor(type).getEntries().stream().map(DatabaseEntry::getId).toList();
-        return retrieveAll(objectIds, type);
+        final List<CompletableFuture<Optional<T>>> futures = objectIds.stream()
+                .map(objectId -> MultiTaskingFactory.getInstance().supplyAsync(() -> findByIdUnchecked(objectId, type)))
+                .toList();
+
+        joinAll(futures);
+        // Every future is already complete at this point (joinAll waited on
+        // all of them), so these joins return immediately.
+        return futures.stream().map(CompletableFuture::join).flatMap(Optional::stream).toList();
+    }
+
+    /**
+     * {@link #findById} wrapper for dispatch on {@link MultiTaskingFactory}'s
+     * executor: rethrows a checked failure wrapped in a {@link CompletionException}.
+     *
+     * @param objectId the primary key to look up
+     * @param type the entity type
+     * @return the decrypted entity, or empty if it no longer resolves
+     */
+    private <T extends Serialized> Optional<T> findByIdUnchecked(final String objectId, final Class<T> type) {
+        try {
+            return findById(objectId, type);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new CompletionException(e);
+        }
     }
 
     /**
