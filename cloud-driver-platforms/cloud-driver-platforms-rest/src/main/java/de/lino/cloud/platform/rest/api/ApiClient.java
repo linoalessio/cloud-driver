@@ -4,12 +4,14 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
@@ -264,6 +266,61 @@ public final class ApiClient implements AutoCloseable {
     private HttpRequest confirmRegistrationRequest(final String emailAddress, final String code) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register/confirm"),
                 new ConfirmRegistrationRequest(emailAddress, code), false);
+    }
+
+    /**
+     * {@code POST /auth/reset-password} on the auth-panel host - starts a password reset: if (and
+     * only if) an account exists under {@code emailAddress}, e-mails a 6-digit verification code
+     * (valid 10 minutes). Responds identically either way - the server never reveals whether an
+     * account exists under {@code emailAddress} through this call. Does <b>not</b> change the
+     * password or return a token - call {@link #confirmPasswordReset} with the e-mailed code and
+     * a chosen new password to actually complete the reset.
+     *
+     * @return the server's acknowledgement message - purely informational, nothing to act on
+     * @throws ApiException any transport/HTTP failure
+     */
+    public MessageResponse requestPasswordReset(final String emailAddress) throws ApiException {
+        return this.send(this.requestPasswordResetRequest(emailAddress), MessageResponse.class);
+    }
+
+    /** Async form of {@link #requestPasswordReset} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> requestPasswordResetAsync(final String emailAddress) {
+        return this.sendAsync(this.requestPasswordResetRequest(emailAddress), MessageResponse.class);
+    }
+
+    private HttpRequest requestPasswordResetRequest(final String emailAddress) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/reset-password"), new RequestPasswordResetRequest(emailAddress), false);
+    }
+
+    /**
+     * {@code POST /auth/reset-password/confirm} on the auth-panel host - completes a password
+     * reset previously started by {@link #requestPasswordReset}: submits the e-mailed code
+     * together with {@code newPassword}, which becomes the account's password on success. Same
+     * response shape as {@link #login}/{@link #confirmRegistration} - a successful reset leaves
+     * the caller already authenticated under the new password.
+     *
+     * @return the freshly issued JWT, already stored for subsequent calls
+     * @throws ApiException {@code 400} if the code is missing, expired, or does not match, or
+     *                       any other transport/HTTP failure
+     */
+    public String confirmPasswordReset(final String emailAddress, final String code, final String newPassword) throws ApiException {
+        final AuthResponse response = this.send(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class);
+        this.token.set(response.token());
+        return response.token();
+    }
+
+    /** Async form of {@link #confirmPasswordReset} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> confirmPasswordResetAsync(final String emailAddress, final String code, final String newPassword) {
+        return this.sendAsync(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class)
+                .thenApply(response -> {
+                    this.token.set(response.token());
+                    return response.token();
+                });
+    }
+
+    private HttpRequest confirmPasswordResetRequest(final String emailAddress, final String code, final String newPassword) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/reset-password/confirm"),
+                new ConfirmPasswordResetRequest(emailAddress, code, newPassword), false);
     }
 
     // --- files: upload --------------------------------------------------

@@ -72,6 +72,10 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String REGISTER_PATH = "/auth/register";
     /** Path mounted by {@link #start} for {@link #handleConfirmRegistration}, exempted from {@link #requireValidBearerToken}. */
     private static final String REGISTER_CONFIRM_PATH = "/auth/register/confirm";
+    /** Path mounted by {@link #start} for {@link #handleRequestPasswordReset}, exempted from {@link #requireValidBearerToken}. */
+    private static final String RESET_PASSWORD_PATH = "/auth/reset-password";
+    /** Path mounted by {@link #start} for {@link #handleConfirmPasswordReset}, exempted from {@link #requireValidBearerToken}. */
+    private static final String RESET_PASSWORD_CONFIRM_PATH = "/auth/reset-password/confirm";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
@@ -177,19 +181,23 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Every route requires a valid {@code Authorization: Bearer <jwt>}
      * header, checked via {@code authService}, except {@code POST /auth/login}/{@code POST
-     * /auth/register}/{@code POST /auth/register/confirm} themselves - all three mounted
-     * automatically by this constructor. {@code /auth/login} issues the JWT this filter checks
-     * for in the first place; {@code /auth/register}/{@code /auth/register/confirm} together
-     * are this deployment's chosen, open, e-mail-verified self-registration flow (see {@link
+     * /auth/register}/{@code POST /auth/register/confirm}/{@code POST /auth/reset-password}/
+     * {@code POST /auth/reset-password/confirm} themselves - all five mounted automatically by
+     * this constructor. {@code /auth/login} issues the JWT this filter checks for in the first
+     * place; {@code /auth/register}/{@code /auth/register/confirm} together are this
+     * deployment's chosen, open, e-mail-verified self-registration flow (see {@link
      * de.lino.cloud.api.jwt.auth.IAuthService}'s own Javadoc) - {@code /auth/register} only
      * starts it (via {@link AuthService#register}, which e-mails a verification code rather
      * than creating the account outright), and {@code /auth/register/confirm} (via {@link
      * AuthService#confirmRegistration}) is what actually creates the account and returns a JWT
-     * the same shape {@code /auth/login} does, once the caller supplies that code back. Use
-     * this constructor (instead of the {@link ApiKey} one) when the clients calling this API
-     * are end users authenticating with a username/password, not another service holding a
-     * static key. Any registered entity type implementing {@link Owned} is additionally scoped
-     * to the authenticated caller - see this class's own Javadoc.
+     * the same shape {@code /auth/login} does, once the caller supplies that code back.
+     * {@code /auth/reset-password}/{@code /auth/reset-password/confirm} mirror that same
+     * two-step, e-mail-verified shape for recovering a forgotten password (via {@link
+     * AuthService#requestPasswordReset}/{@link AuthService#confirmPasswordReset}) rather than
+     * creating a new account. Use this constructor (instead of the {@link ApiKey} one) when the
+     * clients calling this API are end users authenticating with a username/password, not
+     * another service holding a static key. Any registered entity type implementing {@link
+     * Owned} is additionally scoped to the authenticated caller - see this class's own Javadoc.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
      * @param authService verifies login and issued JWTs, and backs {@code /auth/register}; must not be {@code null}
@@ -322,6 +330,8 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(LOGIN_PATH, this::handleLogin);
                 config.routes.post(REGISTER_PATH, this::handleRegister);
                 config.routes.post(REGISTER_CONFIRM_PATH, this::handleConfirmRegistration);
+                config.routes.post(RESET_PASSWORD_PATH, this::handleRequestPasswordReset);
+                config.routes.post(RESET_PASSWORD_CONFIRM_PATH, this::handleConfirmPasswordReset);
                 config.routes.before(this::requireValidBearerToken);
             }
 
@@ -399,10 +409,13 @@ public final class DefaultRestFactory extends RestFactory {
 
     /**
      * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link
-     * #REGISTER_PATH}/{@link #REGISTER_CONFIRM_PATH} themselves - {@code LOGIN_PATH} is how a
-     * client obtains the JWT this filter checks for in the first place, and {@code
-     * REGISTER_PATH}/{@code REGISTER_CONFIRM_PATH} together are how a client obtains an account
-     * before it has any JWT at all, so all three must stay reachable without one. The token
+     * #REGISTER_PATH}/{@link #REGISTER_CONFIRM_PATH}/{@link #RESET_PASSWORD_PATH}/{@link
+     * #RESET_PASSWORD_CONFIRM_PATH} themselves - {@code LOGIN_PATH} is how a client obtains the
+     * JWT this filter checks for in the first place, {@code REGISTER_PATH}/{@code
+     * REGISTER_CONFIRM_PATH} together are how a client obtains an account before it has any JWT
+     * at all, and {@code RESET_PASSWORD_PATH}/{@code RESET_PASSWORD_CONFIRM_PATH} together are
+     * how a client recovers access to an account whose password it no longer has (so, by
+     * definition, no valid JWT either) - all five must stay reachable without one. The token
      * itself is resolved by {@link #resolveBearerToken} (header, preferred,
      * or a query parameter fallback). Stores the validated user id as a
      * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
@@ -412,7 +425,8 @@ public final class DefaultRestFactory extends RestFactory {
      * @throws UnauthorizedResponse if no token is present, or it is malformed/invalid/expired
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
-        if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())) {
+        if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
+                || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -592,6 +606,84 @@ public final class DefaultRestFactory extends RestFactory {
                 .handle((token, failure) -> {
                     if (failure == null) {
                         ctx.status(201).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"username"}} JSON body shape read by {@code POST /auth/reset-password}.
+     *
+     * @param username the account's e-mail address to start a password reset for
+     */
+    private record RequestPasswordResetRequest(String username) {
+    }
+
+    /**
+     * {@code POST /auth/reset-password}: reads {@code {"username": ...}} from the request body
+     * and starts a password reset via {@link AuthService#requestPasswordReset} - which e-mails a
+     * verification code only if an account exists under that address, but responds identically
+     * either way (matching {@link AuthService#requestPasswordReset}'s own "don't leak" contract).
+     * Dispatched off the Jetty worker thread since this may run database I/O/an e-mail send.
+     * {@code 202 Accepted} on success, always, regardless of whether an account was found.
+     */
+    private void handleRequestPasswordReset(@NotNull final Context ctx) {
+        final RequestPasswordResetRequest request = this.gson.fromJson(ctx.body(), RequestPasswordResetRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> {
+                    try {
+                        this.authService.requestPasswordReset(request.username());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleRequestPasswordReset: failed to start password reset for " + request.username(), e);
+                    }
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(202).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("If an account exists under " + request.username() + ", a reset code has been sent.")));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"username", "code", "newPassword"}} JSON body shape read by {@code
+     * POST /auth/reset-password/confirm}.
+     *
+     * @param username the account's e-mail address being reset
+     * @param code the verification code e-mailed by {@code POST /auth/reset-password}
+     * @param newPassword the caller's chosen new plaintext password
+     */
+    private record ConfirmPasswordResetRequest(String username, String code, String newPassword) {
+    }
+
+    /**
+     * {@code POST /auth/reset-password/confirm}: reads {@code {"username": ..., "code": ...,
+     * "newPassword": ...}} from the request body and completes the reset via {@link
+     * AuthService#confirmPasswordReset} - replacing the account's password and returning the
+     * resulting JWT under the same {@link LoginResponse} shape {@code POST /auth/login} returns,
+     * so a caller goes straight from a confirmed reset into an authenticated session. Dispatched
+     * off the Jetty worker thread since this runs Argon2id/database I/O. {@code 200 OK} on
+     * success (not {@code 201} - unlike {@link #handleConfirmRegistration}, this doesn't create a
+     * new resource, it replaces an existing account's password).
+     */
+    private void handleConfirmPasswordReset(@NotNull final Context ctx) {
+        final ConfirmPasswordResetRequest request = this.gson.fromJson(ctx.body(), ConfirmPasswordResetRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.confirmPasswordReset(request.username(), request.code(), request.newPassword().toCharArray());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleConfirmPasswordReset: failed to complete password reset for " + request.username(), e);
+                    }
+                })
+                .handle((token, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
@@ -1037,20 +1129,26 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Unwraps a {@link #handleRegister}/{@link #handleConfirmRegistration} failure's {@link
+     * Unwraps a {@link #handleRegister}/{@link #handleConfirmRegistration}/{@link
+     * #handleRequestPasswordReset}/{@link #handleConfirmPasswordReset} failure's {@link
      * CompletionException} and translates {@link EmailAlreadyRegisteredException} into {@link
      * ConflictResponse} (409 - unlike login, confirming an email is already taken is normal,
      * expected signup-form feedback, not an enumeration risk), {@link
      * InvalidCredentialsException} - reused by {@link AuthService#register} for a syntactically
      * invalid email/undeliverable domain, not a wrong password here - into {@link
-     * BadRequestResponse} (400), and {@link InvalidVerificationCodeException} - thrown by
-     * {@link AuthService#confirmRegistration} for a missing/expired/mismatched code - into
-     * {@link BadRequestResponse} (400) as well; any other cause is printed directly to {@link
-     * System#err} (bypassing this module's own deliberately-silenced {@code slf4j-simple}/{@link
-     * JavalinLogger} logging, see {@link #silenceJavalinLogging} - without this, an unmapped
-     * cause here, e.g. {@code EmailDeliveryException} from a misconfigured SMTP server, reached
-     * the client as a bare {@code 500 Server Error} with zero trace of why on the server side)
-     * before being rethrown as-is to reach Javalin's default (500) handling.
+     * BadRequestResponse} (400), and {@link InvalidVerificationCodeException} - thrown by both
+     * {@link AuthService#confirmRegistration} and {@link AuthService#confirmPasswordReset} for a
+     * missing/expired/mismatched code - into {@link BadRequestResponse} (400) as well; any other
+     * cause is printed directly to {@link System#err} (bypassing this module's own
+     * deliberately-silenced {@code slf4j-simple}/{@link JavalinLogger} logging, see {@link
+     * #silenceJavalinLogging} - without this, an unmapped cause here, e.g. {@code
+     * EmailDeliveryException} from a misconfigured SMTP server, reached the client as a bare
+     * {@code 500 Server Error} with zero trace of why on the server side) before being rethrown
+     * as-is to reach Javalin's default (500) handling. {@link #handleRequestPasswordReset} itself
+     * never actually throws {@link InvalidVerificationCodeException}/{@link
+     * EmailAlreadyRegisteredException} (it has no code to check and never rejects on existing
+     * state) - it shares this helper purely to get the same unmapped-failure logging/500 fallback
+     * as every other auth handler, not because those two branches are reachable from it.
      */
     private static RuntimeException registrationFailureOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;

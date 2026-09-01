@@ -32,6 +32,17 @@ public final class Dtos {
     public record AuthResponse(String token) {
     }
 
+    /** Body for {@code POST /auth/reset-password} - starts a password reset for the account under {@code username}. */
+    public record RequestPasswordResetRequest(String username) {
+    }
+
+    /**
+     * Body for {@code POST /auth/reset-password/confirm} - submits the 6-digit code {@code
+     * POST /auth/reset-password} e-mailed, plus the caller's chosen {@code newPassword}.
+     */
+    public record ConfirmPasswordResetRequest(String username, String code, String newPassword) {
+    }
+
     /**
      * Response of {@code POST /auth/register} ({@code 202 Accepted}) - registration is not
      * complete yet at this point, this only acknowledges that a verification code was e-mailed.

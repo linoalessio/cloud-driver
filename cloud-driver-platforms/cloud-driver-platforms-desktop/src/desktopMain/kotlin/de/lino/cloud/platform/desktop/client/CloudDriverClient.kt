@@ -1,4 +1,4 @@
-package de.lino.cloud.platform.desktop
+package de.lino.cloud.platform.desktop.client
 
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
@@ -51,6 +51,18 @@ class CloudDriverClient(
     suspend fun confirmRegistration(emailAddress: String, code: String): String =
         this.apiClient.confirmRegistrationAsync(emailAddress, code).await()
 
+    /**
+     * Step one of a password reset - if (and only if) an account exists under [emailAddress],
+     * e-mails a 6-digit verification code. Responds identically either way; the server never
+     * reveals through this call whether an account exists.
+     */
+    suspend fun requestPasswordReset(emailAddress: String): MessageResponse =
+        this.apiClient.requestPasswordResetAsync(emailAddress).await()
+
+    /** Step two of a password reset - submits the e-mailed code and [newPassword], returns a fresh JWT. */
+    suspend fun confirmPasswordReset(emailAddress: String, code: String, newPassword: String): String =
+        this.apiClient.confirmPasswordResetAsync(emailAddress, code, newPassword).await()
+
     /** Uploads [content] as [fileName], optionally directly into [folderId] (`null` = root). */
     suspend fun uploadFile(fileName: String, content: ByteArray, folderId: String? = null): StoredFileResponse =
         this.apiClient.uploadFileAsync(fileName, content, folderId).await()
@@ -59,9 +71,21 @@ class CloudDriverClient(
     suspend fun uploadFile(filePath: Path, folderId: String? = null): StoredFileResponse =
         this.apiClient.uploadFileAsync(filePath.fileName.toString(), filePath, folderId).await()
 
-    /** Every file owned by the caller, scoped to [folderId] (`null` = every file, regardless of folder). */
+    /** Same as [uploadFile] on a [Path], with an explicit [fileName] instead of the path's own file name. */
+    suspend fun uploadFile(fileName: String, filePath: Path, folderId: String? = null): StoredFileResponse =
+        this.apiClient.uploadFileAsync(fileName, filePath, folderId).await()
+
+    /**
+     * Every file directly inside [folderId] (`null` = the root's own files, **not** every file
+     * regardless of folder). Always calls [ApiClient]'s one-arg `listFilesAsync(String)` overload
+     * - which maps a `null` argument to `?folderId=root` server-side - and deliberately never the
+     * no-arg `listFilesAsync()` overload, which lists every owned file flat, ignoring folder
+     * placement entirely; calling that one for a `null` [folderId] here previously made every
+     * file appear at the root in addition to its real folder, since "root" and "everything"
+     * are two different server-side scopes even though both start from a `null` Kotlin value.
+     */
     suspend fun listFiles(folderId: String? = null): List<StoredFileSummaryResponse> =
-        if (folderId == null) this.apiClient.listFilesAsync().await() else this.apiClient.listFilesAsync(folderId).await()
+        this.apiClient.listFilesAsync(folderId).await()
 
     /** Fetches one file's full content. */
     suspend fun downloadFile(fileId: String): StoredFileResponse =

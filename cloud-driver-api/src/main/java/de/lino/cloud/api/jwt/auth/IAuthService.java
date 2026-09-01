@@ -122,4 +122,44 @@ public interface IAuthService {
     @NonNull
     Optional<AuthUser> getAuthUser(@NonNull final String authUserId);
 
+    /**
+     * Starts a password reset for the account under {@code emailAddress}: if (and only if) an
+     * {@link AuthUser} exists under it, persists a pending reset (a freshly generated
+     * verification code, valid for a short window) and e-mails that code to {@code
+     * emailAddress}. Does <b>not</b> change the password yet, and does <b>not</b> reveal whether
+     * an account exists under {@code emailAddress} - this method returns identically either way,
+     * the same "don't leak" idiom {@link #login} uses, since confirming account existence here
+     * would hand an attacker a credential-stuffing oracle. Exposed over HTTP as {@code
+     * POST /auth/reset-password} by {@code cloud-driver-plugin}'s {@code DefaultRestFactory}
+     * whenever it's constructed with an {@code AuthService}.
+     *
+     * @param emailAddress the account's identifying e-mail address
+     * @throws DatabaseClientException if persisting the pending reset fails
+     * @throws KeyWrapException if the pending reset's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    void requestPasswordReset(@NonNull final String emailAddress) throws DatabaseClientException, KeyWrapException;
+
+    /**
+     * Completes a password reset previously started by {@link #requestPasswordReset}: verifies
+     * {@code code} against the pending reset stored under {@code emailAddress} (and that it
+     * hasn't expired), then replaces the account's password with {@code newPassword} and returns
+     * a signed JWT for it - the caller goes straight from a confirmed code into an authenticated
+     * session, the same way {@link #confirmRegistration}'s result is used. Exposed over HTTP as
+     * {@code POST /auth/reset-password/confirm}.
+     *
+     * @param emailAddress the e-mail address {@link #requestPasswordReset} was called with
+     * @param code the verification code e-mailed to {@code emailAddress}
+     * @param newPassword the caller's chosen new password, hashed before persistence and never itself retained
+     * @return a freshly signed JWT asserting the account's id
+     * @throws InvalidVerificationCodeException if there is no pending reset under {@code
+     *     emailAddress}, it has expired, or {@code code} doesn't match - also thrown (with the
+     *     same message) if the pending reset somehow outlives its account, so this method never
+     *     distinguishes "bad code" from "account gone" either
+     * @throws DatabaseClientException if updating the account fails
+     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
+            throws DatabaseClientException, KeyWrapException;
+
 }

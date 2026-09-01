@@ -15,7 +15,12 @@
 
     <modules>
         <module>cloud-driver-platforms-rest</module>
-        <module>cloud-driver-platforms-desktop</module>
     </modules>
+
+    <!-- cloud-driver-platforms-desktop lives in this same parent directory but is a Gradle
+         (Kotlin Multiplatform/Compose Desktop) build, not a Maven module - it is deliberately
+         NOT listed here. Build it separately: `cd cloud-driver-platforms-desktop && ./gradlew run`.
+         It depends on cloud-driver-platforms-rest, so `mvn install` that module first. -->
+
 
 </project>

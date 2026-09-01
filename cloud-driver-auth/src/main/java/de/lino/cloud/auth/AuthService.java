@@ -14,6 +14,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;
 import lombok.NonNull;
 
@@ -50,6 +51,9 @@ public final class AuthService implements IAuthService {
 
     /** How long a verification code issued by {@link #register} remains valid: 10 minutes. */
     private static final long VERIFICATION_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
+
+    /** How long a verification code issued by {@link #requestPasswordReset} remains valid: 10 minutes. */
+    private static final long PASSWORD_RESET_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
 
     /** Source of randomness for {@link #generateVerificationCode()}. */
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -323,6 +327,123 @@ public final class AuthService implements IAuthService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.getAuthUser: failed to look up AuthUser " + authUserId, e);
         }
+    }
+
+    /**
+     * Starts a password reset under {@code emailAddress}: looks up the matching {@link AuthUser}
+     * the same way {@link #login} does, and - only if one exists - persists a {@link
+     * PendingPasswordReset} (a freshly generated code, valid for {@link
+     * #PASSWORD_RESET_CODE_TTL_MILLIS}) and e-mails it. Returns identically whether or not an
+     * account exists under {@code emailAddress} - unlike {@link #register}'s deliberately
+     * leaky {@link EmailAlreadyRegisteredException}, confirming account existence here would let
+     * a caller enumerate valid accounts to target for credential stuffing, so this method never
+     * distinguishes the two cases from the outside.
+     *
+     * @param emailAddress the account's identifying e-mail address
+     * @throws DatabaseClientException if persisting the pending reset fails
+     * @throws KeyWrapException if the pending reset's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @Override
+    public void requestPasswordReset(@NonNull final String emailAddress) throws DatabaseClientException, KeyWrapException {
+
+        final boolean accountExists;
+        try {
+            accountExists = this.dataFactory.getEntities(AuthUser.class).stream()
+                    .anyMatch(candidate -> candidate.getEmailAddress().equals(emailAddress));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.requestPasswordReset: failed to look up account for " + emailAddress, e);
+        }
+
+        if (!accountExists) {
+            return;
+        }
+
+        final String verificationCode = generateVerificationCode();
+        final long expiresAt = System.currentTimeMillis() + PASSWORD_RESET_CODE_TTL_MILLIS;
+        final PendingPasswordReset pending = new PendingPasswordReset(emailAddress, verificationCode, expiresAt);
+        this.dataFactory.register(pending);
+
+        try {
+
+            final String[] emailMessage = new String[] {
+                    String.format("Hello %s,", emailAddress)
+                    , ""
+                    , "We have received a request to reset the password for this account."
+                    , ""
+                    , String.format("Your password reset code is '%s'", verificationCode)
+                    , ""
+                    , "If you did not request a password reset, just ignore this email - your password will not change."
+                    , "This code will expire within 10 minutes."
+            };
+
+            this.emailSender.send(emailAddress, "Password reset", String.join("\n", emailMessage));
+
+        } catch (final EmailDeliveryException e) {
+            throw new RuntimeException("@AuthService.requestPasswordReset: failed to send reset email to " + emailAddress, e);
+        }
+
+    }
+
+    /**
+     * Completes a password reset previously started by {@link #requestPasswordReset}: looks up
+     * the {@link PendingPasswordReset} stored under {@code emailAddress}, rejects it (via {@link
+     * InvalidVerificationCodeException}, the same message either way, matching {@link
+     * #confirmRegistration}'s idiom) if it doesn't exist, has expired, or {@code code} doesn't
+     * match its {@link PendingPasswordReset#getVerificationCode()} - an expired row is deleted as
+     * part of that rejection. On success, re-hashes {@code newPassword} onto the matching {@link
+     * AuthUser} (looked up by email, same scan {@link #login} uses), deletes the pending row, and
+     * returns a signed JWT the same way {@link #confirmRegistration} does.
+     *
+     * @param emailAddress the e-mail address {@link #requestPasswordReset} was called with
+     * @param code the verification code e-mailed to {@code emailAddress}
+     * @param newPassword the caller's chosen new password, hashed via {@link PasswordHasher#hash}
+     *     before persistence, never stored or retained in plain form
+     * @return a freshly signed JWT asserting the matched {@link AuthUser#getId()}
+     * @throws InvalidVerificationCodeException if there is no pending reset under {@code
+     *     emailAddress}, it has expired, {@code code} doesn't match, or (defense-in-depth) the
+     *     account itself no longer exists
+     * @throws DatabaseClientException if updating the account fails
+     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    @Override
+    public String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
+            throws DatabaseClientException, KeyWrapException {
+
+        final Optional<PendingPasswordReset> pendingOpt;
+        try {
+            pendingOpt = this.dataFactory.findById(emailAddress, PendingPasswordReset.class);
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmPasswordReset: failed to look up pending reset for " + emailAddress, e);
+        }
+
+        final PendingPasswordReset pending = pendingOpt.orElseThrow(
+                () -> new InvalidVerificationCodeException("invalid or expired verification code"));
+
+        if (pending.isExpired()) {
+            this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        if (!pending.getVerificationCode().equals(code)) {
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.getEntities(AuthUser.class).stream()
+                    .filter(candidate -> candidate.getEmailAddress().equals(emailAddress))
+                    .findFirst()
+                    .orElseThrow(() -> new InvalidVerificationCodeException("invalid or expired verification code"));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmPasswordReset: failed to look up account for " + emailAddress, e);
+        }
+
+        final AuthUser updated = new AuthUser(existing.getId(), existing.getEmailAddress(), this.hasher.hash(newPassword));
+        this.dataFactory.update(updated);
+        this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
+
+        return this.signer.sign(updated.getId(), ACCESS_TOKEN_TTL_SECONDS);
     }
 
 }
