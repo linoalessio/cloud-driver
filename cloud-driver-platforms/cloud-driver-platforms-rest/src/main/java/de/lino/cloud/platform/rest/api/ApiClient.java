@@ -133,6 +133,18 @@ public final class ApiClient implements AutoCloseable {
     public static final int DEFAULT_MAX_CONCURRENT_TRANSFERS = 8;
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * Timeout for requests that transfer file content ({@code POST /files}, {@code GET
+     * /files/{id}}) rather than a small JSON payload. {@link #REQUEST_TIMEOUT} covers the whole
+     * request-response exchange, including the time spent writing/reading the body - 30 seconds
+     * is enough for a login or a file listing, but a multi-megabyte upload/download on a slower
+     * connection can easily exceed it (e.g. a 3.9 MB file needs only ~1 Mbit/s effective
+     * throughput to blow past 30s), surfacing as a spurious {@code HttpTimeoutException} even
+     * though nothing is actually stuck.
+     */
+    private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
+
     private static final Gson GSON = new Gson();
 
     private final ExecutorService executor;
@@ -435,7 +447,8 @@ public final class ApiClient implements AutoCloseable {
         final String query = "/files?fileName=" + encodedFileName
                 + (folderId == null ? "" : "&folderId=" + URLEncoder.encode(folderId, StandardCharsets.UTF_8));
         return this.requestBuilder(this.apiBaseUrl.resolve(query), true)
-                .header("Content-Type", "application/octet-stream");
+                .header("Content-Type", "application/octet-stream")
+                .timeout(TRANSFER_TIMEOUT);
     }
 
     /**
@@ -645,7 +658,10 @@ public final class ApiClient implements AutoCloseable {
     }
 
     private HttpRequest downloadFileRequest(final String fileId) {
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId), true).GET().build();
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId), true)
+                .timeout(TRANSFER_TIMEOUT)
+                .GET()
+                .build();
     }
 
     // --- files: delete ------------------------------------------------
