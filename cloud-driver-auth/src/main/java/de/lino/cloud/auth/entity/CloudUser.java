@@ -33,8 +33,19 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     /** The owning {@link AuthUser#getId()} - this entity's primary key and its own {@link #ownerId()}. */
     private final String authUserId;
 
+    /**
+     * The epoch-millisecond time this {@code CloudUser} row was first created (see the
+     * constructor). Set once and never updated afterwards, so it doubles as the account's
+     * creation timestamp - not a per-login value.
+     */
     private final long timeStamp;
 
+    /**
+     * This account's upload quota ceiling, in bytes, checked by {@link #isUploadLimitReached}.
+     * Read once at construction via {@link #resolveMaxBytesToUpload()} and persisted from then
+     * on (mutable only via {@link CloudUserService#updateCloudUserBytesLimit}, an operator-driven
+     * change, not automatically re-read from configuration afterwards).
+     */
     private long maxBytesToUpload;
 
     /**
@@ -55,6 +66,10 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     private static final String MAX_BYTES_TO_UPLOAD_CONFIG_KEY = "cloud-user-max-bytes-to-upload";
 
     /**
+     * Creates a new {@code CloudUser} row for {@code authUserId}, stamping {@link #timeStamp}
+     * with the current time and resolving {@link #maxBytesToUpload} from {@code
+     * configuration.json} via {@link #resolveMaxBytesToUpload()}.
+     *
      * @param authUserId the owning {@link AuthUser#getId()} - not the full entity, since
      *                    this class (and every caller of it, e.g. after JWT validation)
      *                    only ever needs the id, never anything else on {@code AuthUser}
@@ -67,14 +82,18 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
 
     /**
      * Reads {@link #MAX_BYTES_TO_UPLOAD_CONFIG_KEY} from {@link CloudDriver#getConfiguration()},
-     * defaulting to {@link Long#MAX_VALUE} (effectively unlimited) if it isn't set - {@link
-     * JsonDocument#getLong} throws {@link NullPointerException} on a missing key rather than
-     * returning a default, so every account confirmation/upload would otherwise start throwing
-     * the moment this constructor ran against a {@code configuration.json} that predates this
-     * quota feature (every existing deployment's, until an operator explicitly opts in). Checked
-     * via {@link JsonDocument#contains} first so an unset quota fails open, not closed - matching
-     * this codebase's existing convention for optional configuration (e.g. a missing {@code
-     * "smtp-host"} falls back to {@code LoggingEmailSender} rather than breaking registration).
+     * defaulting to {@code 1_048_576L} (1 MiB) if it isn't set - {@link JsonDocument#getLong}
+     * throws {@link NullPointerException} on a missing key rather than returning a default, so
+     * this checks via {@link JsonDocument#contains} first rather than reading it unconditionally
+     * (which would otherwise NPE on every single account confirmation/upload against a {@code
+     * configuration.json} that predates this quota feature - every existing deployment's, until
+     * an operator explicitly sets the key). Unlike some other optional configuration keys in this
+     * codebase (e.g. a missing {@code "smtp-host"} falls back to {@code LoggingEmailSender} rather
+     * than breaking registration), an absent key here does <b>not</b> fail open to "unlimited" -
+     * it deliberately falls back to a strict 1 MiB quota, so an operator wanting a different (or
+     * effectively unlimited) limit must set {@link #MAX_BYTES_TO_UPLOAD_CONFIG_KEY} explicitly.
+     *
+     * @return the configured upload quota ceiling in bytes, or {@code 1_048_576L} if unset
      */
     private static long resolveMaxBytesToUpload() {
         final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
@@ -83,11 +102,26 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
                 : 1_048_576L;
     }
 
+    /**
+     * Resolves the full {@link AuthUser} this row belongs to, via the process-wide {@link
+     * CloudDriver} singleton's {@code AuthService}.
+     *
+     * @return the matching {@link AuthUser}
+     * @throws java.util.NoSuchElementException if no {@link AuthUser} exists under {@link #authUserId}
+     *     (should not normally happen - a {@code CloudUser} is only ever created for an existing account)
+     */
     @Override
     public @NonNull AuthUser getAuthUser() {
         return CloudDriver.getInstance().getServiceContainer().getAuthService().getAuthUser(this.authUserId).orElseThrow();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Compares {@link #currentUploadedBytes} plus {@code bytesToUpload} against {@link
+     * #maxBytesToUpload} using {@code >=}, so a request landing exactly on the remaining quota is
+     * rejected, not just one that exceeds it.
+     */
     @Override
     public boolean isUploadLimitReached(final long bytesToUpload) {
         return (this.getCurrentUploadedBytes() + bytesToUpload) >= this.maxBytesToUpload;

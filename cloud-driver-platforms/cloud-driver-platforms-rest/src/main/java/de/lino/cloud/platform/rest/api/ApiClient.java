@@ -68,7 +68,7 @@ import java.util.stream.StreamSupport;
 
 /**
  * Talks to a running cloud-driver instance purely over its REST API - no JDBC driver, no
- * database credentials anywhere on this machine, matching the "desktop desktop must never see the
+ * database credentials anywhere on this machine, matching the "desktop client must never see the
  * database" requirement.
  *
  * <p><b>Performance shape, read this before adding a new call.</b> Every network operation has a
@@ -137,13 +137,17 @@ import java.util.stream.StreamSupport;
  *
  * <p>Not thread-safe by design choice, only by accident of {@link HttpClient} itself being
  * thread-safe - the mutable {@link #token} is a single logged-in session, matching a desktop
- * desktop's single-user-at-a-time nature. Wrap in your own synchronization if that ever changes.
+ * client's single-user-at-a-time nature. Wrap in your own synchronization if that ever changes.
  */
 public final class ApiClient implements AutoCloseable {
 
     /** Default cap on simultaneously in-flight transfers for {@link #uploadFilesAsync(Map)}. */
     public static final int DEFAULT_MAX_CONCURRENT_TRANSFERS = 8;
 
+    /**
+     * Timeout for the whole request-response exchange of every call in this class except an
+     * upload/download of file content, which instead uses the longer {@link #TRANSFER_TIMEOUT}.
+     */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     /**
@@ -157,17 +161,28 @@ public final class ApiClient implements AutoCloseable {
      */
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
 
+    /** Shared Gson instance used for every request/response (de)serialization in this class. */
     private static final Gson GSON = new Gson();
 
+    /** Backs every async call and every {@link de.lino.cloud.platform.rest.api.session.TokenStore} call chained onto it; see {@link #executor()}. */
     private final ExecutorService executor;
+
+    /** The single {@link HttpClient} instance every request in this class is sent through. */
     private final HttpClient httpClient;
+
+    /** Base URL of the host serving the auth routes ({@code /auth/login}, {@code /auth/register}, {@code /auth/reset-password}). */
     private final URI authPanelBaseUrl;
+
+    /** Base URL of the host serving the main REST API ({@code /files}, {@code /folders}, {@code /cloudUsers}, {@code /auth/change-email}). */
     private final URI apiBaseUrl;
 
     /** The current session's JWT, once {@link #login} has succeeded; {@code null} until then. */
     private final AtomicReference<String> token = new AtomicReference<>();
 
     /**
+     * Builds a client backed by a fresh {@link HttpClient} and virtual-thread executor; call
+     * {@link #close()} once done with it.
+     *
      * @param authPanelBaseUrl base URL of the auth-panel server, e.g. {@code https://auth.example.com}
      * @param apiBaseUrl       base URL of the main REST API, e.g. {@code https://api.example.com}
      */
@@ -198,7 +213,12 @@ public final class ApiClient implements AutoCloseable {
         return this.token.get() != null;
     }
 
-    /** Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login. */
+    /**
+     * Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login.
+     *
+     * @param previouslyIssuedToken a JWT previously returned by {@link #login}/{@link #confirmRegistration}/
+     *                              {@link #confirmPasswordReset} and persisted by the caller
+     */
     public void restoreSession(final String previouslyIssuedToken) {
         this.token.set(Objects.requireNonNull(previouslyIssuedToken, "previouslyIssuedToken cannot be null"));
     }
@@ -215,6 +235,8 @@ public final class ApiClient implements AutoCloseable {
      * The request body's field is literally named {@code username} (see {@link AuthRequest}),
      * even though {@code emailAddress} is what's actually passed for it.
      *
+     * @param emailAddress the account's e-mail address, sent as the request's {@code username} field
+     * @param password     the account's plaintext password
      * @return the freshly issued JWT, already stored for subsequent calls
      * @throws ApiException {@code 401} on wrong credentials, or any other transport/HTTP failure
      */
@@ -233,6 +255,7 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
+    /** Builds the {@code POST /auth/login} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest loginRequest(final String emailAddress, final String password) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/login"), new AuthRequest(emailAddress, password), false);
     }
@@ -244,6 +267,8 @@ public final class ApiClient implements AutoCloseable {
      * create it. Same request shape as {@link #login} (see {@link AuthRequest}'s own Javadoc on
      * the {@code username} field naming).
      *
+     * @param emailAddress the address to register - sent as the request's {@code username} field
+     * @param password     the plaintext password to hash and store once the account is confirmed
      * @return the server's acknowledgement message - purely informational, nothing to act on
      * @throws ApiException {@code 409} if an account already exists for {@code emailAddress},
      *                       {@code 400} if it fails the server's email validity/deliverability
@@ -258,6 +283,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.registerRequest(emailAddress, password), MessageResponse.class);
     }
 
+    /** Builds the {@code POST /auth/register} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest registerRequest(final String emailAddress, final String password) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register"), new AuthRequest(emailAddress, password), false);
     }
@@ -268,6 +294,8 @@ public final class ApiClient implements AutoCloseable {
      * actually creates the account. Same response shape as {@link #login} - a successful
      * confirmation leaves the caller already authenticated.
      *
+     * @param emailAddress the address being confirmed - the same one passed to {@link #register}
+     * @param code          the 6-digit verification code the server e-mailed
      * @return the freshly issued JWT, already stored for subsequent calls
      * @throws ApiException {@code 400} if the code is missing, expired, or does not match, or
      *                       any other transport/HTTP failure
@@ -287,6 +315,7 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
+    /** Builds the {@code POST /auth/register/confirm} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest confirmRegistrationRequest(final String emailAddress, final String code) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/register/confirm"),
                 new ConfirmRegistrationRequest(emailAddress, code), false);
@@ -300,6 +329,7 @@ public final class ApiClient implements AutoCloseable {
      * password or return a token - call {@link #confirmPasswordReset} with the e-mailed code and
      * a chosen new password to actually complete the reset.
      *
+     * @param emailAddress the address to attempt a reset for - never confirmed to exist or not
      * @return the server's acknowledgement message - purely informational, nothing to act on
      * @throws ApiException any transport/HTTP failure
      */
@@ -312,6 +342,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.requestPasswordResetRequest(emailAddress), MessageResponse.class);
     }
 
+    /** Builds the {@code POST /auth/reset-password} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest requestPasswordResetRequest(final String emailAddress) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/reset-password"), new RequestPasswordResetRequest(emailAddress), false);
     }
@@ -323,6 +354,9 @@ public final class ApiClient implements AutoCloseable {
      * response shape as {@link #login}/{@link #confirmRegistration} - a successful reset leaves
      * the caller already authenticated under the new password.
      *
+     * @param emailAddress the address the reset was requested for
+     * @param code          the 6-digit verification code the server e-mailed
+     * @param newPassword   the plaintext password to set on success
      * @return the freshly issued JWT, already stored for subsequent calls
      * @throws ApiException {@code 400} if the code is missing, expired, or does not match, or
      *                       any other transport/HTTP failure
@@ -342,6 +376,7 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
+    /** Builds the {@code POST /auth/reset-password/confirm} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest confirmPasswordResetRequest(final String emailAddress, final String code, final String newPassword) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/reset-password/confirm"),
                 new ConfirmPasswordResetRequest(emailAddress, code, newPassword), false);
@@ -356,6 +391,7 @@ public final class ApiClient implements AutoCloseable {
      * the account ever moves there. Does <b>not</b> change the address yet - call {@link
      * #confirmEmailChange} with that code to actually apply it.
      *
+     * @param newEmailAddress the address to move the signed-in account to, pending confirmation
      * @return the server's acknowledgement message - purely informational, nothing to act on
      * @throws ApiException {@code 409} if another account already exists under {@code
      *                       newEmailAddress}, {@code 400} if it fails the server's email
@@ -371,6 +407,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.requestEmailChangeRequest(newEmailAddress), MessageResponse.class);
     }
 
+    /** Builds the bearer-gated {@code POST /auth/change-email} request against {@link #apiBaseUrl}. */
     private HttpRequest requestEmailChangeRequest(final String newEmailAddress) {
         return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email"), new ChangeEmailRequest(newEmailAddress), true);
     }
@@ -383,6 +420,7 @@ public final class ApiClient implements AutoCloseable {
      * e-mail address, so the session already held by this {@code ApiClient} remains valid across
      * the change.
      *
+     * @param code the 6-digit verification code e-mailed to the new address by {@link #requestEmailChange}
      * @return the server's acknowledgement message - purely informational, nothing to act on
      * @throws ApiException {@code 400} if the code is missing, expired, or does not match, {@code
      *                       401} if not logged in / token expired, or any other transport/HTTP failure
@@ -396,6 +434,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.confirmEmailChangeRequest(code), MessageResponse.class);
     }
 
+    /** Builds the bearer-gated {@code POST /auth/change-email/confirm} request against {@link #apiBaseUrl}. */
     private HttpRequest confirmEmailChangeRequest(final String code) {
         return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email/confirm"), new ConfirmChangeEmailRequest(code), true);
     }
@@ -421,6 +460,8 @@ public final class ApiClient implements AutoCloseable {
      * was fixed. Fetch full content afterward via {@link #downloadFile(String)} if it's ever
      * actually needed again.
      *
+     * @param fileName the name to store the file under
+     * @param content  the file's raw bytes, sent as the request body verbatim
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public StoredFileSummaryResponse uploadFile(final String fileName, final byte[] content) throws ApiException {
@@ -436,6 +477,9 @@ public final class ApiClient implements AutoCloseable {
      * Same as {@link #uploadFile(String, byte[])}, placing the new file directly into {@code
      * folderId} instead of the root.
      *
+     * @param fileName the name to store the file under
+     * @param content  the file's raw bytes, sent as the request body verbatim
+     * @param folderId the destination folder's id, or {@code null} for the root
      * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
      *                       folderId} doesn't exist or isn't owned by the caller, or any other failure
      */
@@ -448,6 +492,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.uploadFileRequest(fileName, content, folderId), StoredFileSummaryResponse.class);
     }
 
+    /** Builds the {@code POST /files} request against {@link #apiBaseUrl}, with {@code content} as a raw byte-array body. */
     private HttpRequest uploadFileRequest(final String fileName, final byte[] content, final String folderId) {
         return this.uploadRequestBuilder(fileName, folderId)
                 .POST(BodyPublishers.ofByteArray(content))
@@ -465,6 +510,7 @@ public final class ApiClient implements AutoCloseable {
      * StoredFileSummaryResponse} {@link #uploadFile(String, byte[])} does - see that method's
      * own Javadoc for why.
      *
+     * @param filePath the local file to stream as the upload body; its own file name is used as the uploaded {@code fileName}
      * @throws ApiException {@code 401} if not logged in / token expired, if {@code filePath}
      *                       doesn't exist or can't be read, or any other failure
      */
@@ -472,12 +518,28 @@ public final class ApiClient implements AutoCloseable {
         return this.uploadFile(filePath.getFileName().toString(), filePath);
     }
 
-    /** Same as {@link #uploadFile(Path)}, with an explicit {@code fileName} instead of the path's own file name. */
+    /**
+     * Same as {@link #uploadFile(Path)}, with an explicit {@code fileName} instead of the path's own file name.
+     *
+     * @param fileName the name to store the file under
+     * @param filePath the local file to stream as the upload body
+     * @throws ApiException {@code 401} if not logged in / token expired, if {@code filePath}
+     *                       doesn't exist or can't be read, or any other failure
+     */
     public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath) throws ApiException {
         return this.uploadFile(fileName, filePath, null);
     }
 
-    /** Same as {@link #uploadFile(String, Path)}, placing the new file directly into {@code folderId} instead of the root. */
+    /**
+     * Same as {@link #uploadFile(String, Path)}, placing the new file directly into {@code folderId} instead of the root.
+     *
+     * @param fileName the name to store the file under
+     * @param filePath the local file to stream as the upload body
+     * @param folderId the destination folder's id, or {@code null} for the root
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
+     *                       folderId} doesn't exist or isn't owned by the caller, if {@code
+     *                       filePath} doesn't exist or can't be read, or any other failure
+     */
     public StoredFileSummaryResponse uploadFile(final String fileName, final Path filePath, final String folderId) throws ApiException {
         return this.uploadFile(fileName, filePath, folderId, bytesTransferred -> { });
     }
@@ -493,6 +555,10 @@ public final class ApiClient implements AutoCloseable {
      * {@link #executor()}) - keep the callback itself cheap and non-blocking, the same expectation
      * any {@link Flow.Subscriber} callback carries.
      *
+     * @param fileName           the name to store the file under
+     * @param filePath           the local file to stream as the upload body
+     * @param folderId           the destination folder's id, or {@code null} for the root
+     * @param onBytesTransferred invoked with the cumulative bytes handed to the {@link HttpClient} so far
      * @throws ApiException {@code 401} if not logged in / token expired, {@code 404} if {@code
      *                       folderId} doesn't exist or isn't owned by the caller, or any other failure
      */
@@ -534,6 +600,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(request, StoredFileSummaryResponse.class);
     }
 
+    /** Builds the {@code POST /files} request against {@link #apiBaseUrl}, streaming {@code filePath} as the body. */
     private HttpRequest uploadFileRequest(final String fileName, final Path filePath, final String folderId,
                                            final LongConsumer onBytesTransferred) throws FileNotFoundException {
         return this.uploadRequestBuilder(fileName, folderId)
@@ -547,6 +614,11 @@ public final class ApiClient implements AutoCloseable {
      * over the wire is identical either way, this only observes it in transit. {@code
      * onBytesTransferred} receives the cumulative count, not a per-chunk delta, matching {@link
      * #uploadFile(String, Path, String, LongConsumer)}'s own contract.
+     *
+     * @param filePath           the file {@link BodyPublishers#ofFile} will stream from
+     * @param onBytesTransferred invoked with the cumulative bytes published so far
+     * @return a {@link BodyPublisher} with the same content/length as {@link BodyPublishers#ofFile(Path)}, instrumented for progress
+     * @throws FileNotFoundException if {@code filePath} doesn't exist or can't be read, per {@link BodyPublishers#ofFile(Path)}
      */
     private static BodyPublisher progressTrackingFilePublisher(final Path filePath, final LongConsumer onBytesTransferred)
             throws FileNotFoundException {
@@ -572,20 +644,31 @@ public final class ApiClient implements AutoCloseable {
      */
     private static final class ProgressTrackingSubscriber implements Flow.Subscriber<ByteBuffer> {
 
+        /** The real subscriber (owned by {@link BodyPublishers#ofFile}'s publisher) every event is forwarded to unchanged. */
         private final Flow.Subscriber<? super ByteBuffer> downstream;
+
+        /** Invoked with the cumulative byte count on every {@link #onNext}. */
         private final LongConsumer onBytesTransferred;
+
+        /** Running total of bytes observed across every {@link #onNext} call so far. */
         private long transferred = 0;
 
+        /**
+         * @param downstream          the real subscriber to forward every event to, unchanged
+         * @param onBytesTransferred  invoked with the cumulative bytes observed so far
+         */
         private ProgressTrackingSubscriber(final Flow.Subscriber<? super ByteBuffer> downstream, final LongConsumer onBytesTransferred) {
             this.downstream = downstream;
             this.onBytesTransferred = onBytesTransferred;
         }
 
+        /** {@inheritDoc} Forwarded to {@link #downstream} unchanged. */
         @Override
         public void onSubscribe(final Flow.Subscription subscription) {
             this.downstream.onSubscribe(subscription);
         }
 
+        /** {@inheritDoc} Counts {@code item}'s remaining bytes, reports the running total, then forwards {@code item} to {@link #downstream} unchanged. */
         @Override
         public void onNext(final ByteBuffer item) {
             this.transferred += item.remaining();
@@ -593,11 +676,13 @@ public final class ApiClient implements AutoCloseable {
             this.downstream.onNext(item);
         }
 
+        /** {@inheritDoc} Forwarded to {@link #downstream} unchanged. */
         @Override
         public void onError(final Throwable throwable) {
             this.downstream.onError(throwable);
         }
 
+        /** {@inheritDoc} Forwarded to {@link #downstream} unchanged. */
         @Override
         public void onComplete() {
             this.downstream.onComplete();
@@ -620,6 +705,7 @@ public final class ApiClient implements AutoCloseable {
      * concurrently, up to {@link #DEFAULT_MAX_CONCURRENT_TRANSFERS} at once - see {@link
      * #uploadFilesAsync(Map, int)} to change that bound.
      *
+     * @param filesByName map from the name each file should be stored under to its local {@link Path}
      * @return a future completing with every {@link StoredFileSummaryResponse}, in no particular
      * order, once <em>all</em> uploads have finished (successfully or not); if any failed, the
      * returned future completes exceptionally with the first failure encountered - matching this
@@ -637,6 +723,10 @@ public final class ApiClient implements AutoCloseable {
      * one connection cheap on the wire, but each open upload still holds its own file handle
      * ({@link BodyPublishers#ofFile}) and in-flight request state, so uploading e.g. a thousand
      * files at once with no cap risks exhausting file descriptors and overwhelming the server.
+     *
+     * @param filesByName             map from the name each file should be stored under to its local {@link Path}
+     * @param maxConcurrentTransfers  the maximum number of uploads to have in flight at once (clamped to at least 1)
+     * @return a future completing the same way {@link #uploadFilesAsync(Map)} does - see its own Javadoc
      */
     public CompletableFuture<List<StoredFileSummaryResponse>> uploadFilesAsync(final Map<String, Path> filesByName,
                                                                           final int maxConcurrentTransfers) {
@@ -647,7 +737,13 @@ public final class ApiClient implements AutoCloseable {
         return awaitAll(uploads);
     }
 
-    /** Acquires a permit (asynchronously, on {@link #executor}) before running {@code action}, and always releases it once that action's future completes. */
+    /**
+     * Acquires a permit (asynchronously, on {@link #executor}) before running {@code action}, and always releases it once that action's future completes.
+     *
+     * @param permits the semaphore to acquire/release a permit from
+     * @param action  the action to run once a permit is held
+     * @return a future completing the same way {@code action}'s own future does
+     */
     private <T> CompletableFuture<T> withPermit(final Semaphore permits, final Supplier<CompletableFuture<T>> action) {
         return CompletableFuture
                 .runAsync(permits::acquireUninterruptibly, this.executor)
@@ -683,6 +779,7 @@ public final class ApiClient implements AutoCloseable {
      * Every {@link StoredFileSummaryResponse#folderId()} in the result equals {@code folderId}
      * (or is {@code null}, for a root listing).
      *
+     * @param folderId the folder to scope the listing to, or {@code null} for the root
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<StoredFileSummaryResponse> listFiles(final String folderId) throws ApiException {
@@ -695,6 +792,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.listFilesRequest(folderId), StoredFileSummaryResponse[].class).thenApply(List::of);
     }
 
+    /** Builds the {@code GET /files?folderId=...} request against {@link #apiBaseUrl}, scoped to one folder (or the root). */
     private HttpRequest listFilesRequest(final String folderId) {
         final String encodedFolderId = URLEncoder.encode(folderId == null ? "root" : folderId, StandardCharsets.UTF_8);
         return this.requestBuilder(this.apiBaseUrl.resolve("/files?folderId=" + encodedFolderId), true).GET().build();
@@ -745,6 +843,14 @@ public final class ApiClient implements AutoCloseable {
         return streamJsonArray(response.body());
     }
 
+    /**
+     * Wraps {@code body} in a {@link JsonReader} positioned just inside its top-level array, then
+     * exposes it as a lazily-consumed {@link Stream} via {@link JsonArrayIterator}.
+     *
+     * @param body the still-open, successful response body to parse
+     * @return a stream the caller must close to release {@code body}/the underlying connection
+     * @throws ApiException if {@code body} isn't a JSON array
+     */
     private static Stream<StoredFileSummaryResponse> streamJsonArray(final InputStream body) throws ApiException {
         final JsonReader jsonReader = new JsonReader(new InputStreamReader(body, StandardCharsets.UTF_8));
         try {
@@ -760,6 +866,7 @@ public final class ApiClient implements AutoCloseable {
         return StreamSupport.stream(spliterator, false).onClose(() -> closeQuietly(jsonReader));
     }
 
+    /** Builds the unscoped {@code GET /files} request against {@link #apiBaseUrl} - every file the caller owns, regardless of folder. */
     private HttpRequest listFilesRequest() {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files"), true).GET().build();
     }
@@ -767,13 +874,23 @@ public final class ApiClient implements AutoCloseable {
     /** Lazily pulls one {@link StoredFileSummaryResponse} at a time off an open {@link JsonReader} positioned inside a JSON array. */
     private static final class JsonArrayIterator implements Iterator<StoredFileSummaryResponse> {
 
+        /** The reader this iterator pulls elements from; positioned just inside the array's opening bracket. */
         private final JsonReader jsonReader;
+
+        /** Cached result of the last {@link JsonReader#hasNext()} probe, cleared once that element is consumed by {@link #next()}; {@code null} means not yet probed. */
         private Boolean hasNextCache;
 
+        /** @param jsonReader a reader already positioned just inside the array to iterate */
         private JsonArrayIterator(final JsonReader jsonReader) {
             this.jsonReader = jsonReader;
         }
 
+        /**
+         * {@inheritDoc} Probes (and caches) whether another array element remains, ending the
+         * array on the reader once it doesn't.
+         *
+         * @throws UncheckedIOException if the underlying {@link JsonReader} fails to read
+         */
         @Override
         public boolean hasNext() {
             if (this.hasNextCache == null) {
@@ -789,6 +906,11 @@ public final class ApiClient implements AutoCloseable {
             return this.hasNextCache;
         }
 
+        /**
+         * {@inheritDoc}
+         *
+         * @throws NoSuchElementException if no further element remains, per {@link #hasNext()}
+         */
         @Override
         public StoredFileSummaryResponse next() {
             if (!this.hasNext()) {
@@ -809,6 +931,7 @@ public final class ApiClient implements AutoCloseable {
      * {@link #listFiles()}/{@link #listFilesStream()} entry is actually needed (e.g. the user
      * opened or saved it).
      *
+     * @param fileId the file to fetch
      * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
      *                       caller, {@code 401} if not logged in / token expired
      */
@@ -821,6 +944,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.downloadFileRequest(fileId), StoredFileResponse.class);
     }
 
+    /** Builds the {@code GET /files/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest downloadFileRequest(final String fileId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId), true)
                 .timeout(TRANSFER_TIMEOUT)
@@ -843,6 +967,8 @@ public final class ApiClient implements AutoCloseable {
      * resolving a fresh, non-colliding path first, the same way {@code StoredFile#downloadToDevice}
      * does server-side.
      *
+     * @param fileId      the file to fetch
+     * @param destination the local path to write the file to; must not already exist
      * @return {@code destination}, unchanged, once the file has been fully written
      * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
      *                       caller, {@code 401} if not logged in / token expired, or any other failure
@@ -861,6 +987,10 @@ public final class ApiClient implements AutoCloseable {
      * {@link HttpClient} I/O thread, not {@link #executor()}) - keep the callback cheap and
      * non-blocking, the same expectation any {@link Flow.Subscriber} callback carries.
      *
+     * @param fileId             the file to fetch
+     * @param destination        the local path to write the file to; must not already exist
+     * @param onBytesTransferred invoked with the cumulative bytes written to {@code destination} so far
+     * @return {@code destination}, unchanged, once the file has been fully written
      * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
      *                       caller, {@code 401} if not logged in / token expired, or any other failure
      */
@@ -897,7 +1027,13 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
-    /** Wraps {@link BodySubscribers#ofFile} so every chunk written to disk is also counted first - see {@link ProgressTrackingBodySubscriber}. */
+    /**
+     * Wraps {@link BodySubscribers#ofFile} so every chunk written to disk is also counted first - see {@link ProgressTrackingBodySubscriber}.
+     *
+     * @param destination        the local path {@link BodySubscribers#ofFile} will write to
+     * @param onBytesTransferred invoked with the cumulative bytes written so far
+     * @return a {@link BodyHandler} producing a {@link ProgressTrackingBodySubscriber} for each response
+     */
     private static BodyHandler<Path> progressTrackingFileHandler(final Path destination, final LongConsumer onBytesTransferred) {
         return responseInfo -> new ProgressTrackingBodySubscriber<>(BodySubscribers.ofFile(destination), onBytesTransferred);
     }
@@ -907,28 +1043,42 @@ public final class ApiClient implements AutoCloseable {
      * BodySubscriber}'s own shape) passes through, before forwarding it downstream unchanged - the
      * download-side mirror of {@link ProgressTrackingSubscriber}, wrapping a {@link BodySubscriber}
      * (used for a response body) rather than a {@link Flow.Subscriber} (used for a request body).
+     *
+     * @param <T> the type the wrapped {@link BodySubscriber} ultimately produces
      */
     private static final class ProgressTrackingBodySubscriber<T> implements BodySubscriber<T> {
 
+        /** The real subscriber (e.g. one from {@link BodySubscribers#ofFile}) every chunk is forwarded to unchanged. */
         private final BodySubscriber<T> delegate;
+
+        /** Invoked with the cumulative byte count on every {@link #onNext}. */
         private final LongConsumer onBytesTransferred;
+
+        /** Running total of bytes observed across every {@link #onNext} call so far. */
         private long transferred = 0;
 
+        /**
+         * @param delegate            the real subscriber to forward every chunk to, unchanged
+         * @param onBytesTransferred  invoked with the cumulative bytes observed so far
+         */
         private ProgressTrackingBodySubscriber(final BodySubscriber<T> delegate, final LongConsumer onBytesTransferred) {
             this.delegate = delegate;
             this.onBytesTransferred = onBytesTransferred;
         }
 
+        /** {@inheritDoc} Delegated to {@link #delegate}. */
         @Override
         public CompletionStage<T> getBody() {
             return this.delegate.getBody();
         }
 
+        /** {@inheritDoc} Forwarded to {@link #delegate} unchanged. */
         @Override
         public void onSubscribe(final Flow.Subscription subscription) {
             this.delegate.onSubscribe(subscription);
         }
 
+        /** {@inheritDoc} Sums {@code item}'s remaining bytes, reports the running total, then forwards {@code item} to {@link #delegate} unchanged. */
         @Override
         public void onNext(final List<ByteBuffer> item) {
             long chunkBytes = 0;
@@ -940,11 +1090,13 @@ public final class ApiClient implements AutoCloseable {
             this.delegate.onNext(item);
         }
 
+        /** {@inheritDoc} Forwarded to {@link #delegate} unchanged. */
         @Override
         public void onError(final Throwable throwable) {
             this.delegate.onError(throwable);
         }
 
+        /** {@inheritDoc} Forwarded to {@link #delegate} unchanged. */
         @Override
         public void onComplete() {
             this.delegate.onComplete();
@@ -952,6 +1104,7 @@ public final class ApiClient implements AutoCloseable {
 
     }
 
+    /** Builds the {@code GET /files/{id}/content} request against {@link #apiBaseUrl}. */
     private HttpRequest downloadFileContentRequest(final String fileId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/content"), true)
                 .timeout(TRANSFER_TIMEOUT)
@@ -965,6 +1118,10 @@ public final class ApiClient implements AutoCloseable {
      * already wrote to that same path - it has no way to know a response failed before writing its
      * body - deletes that stray file (it isn't real file content), and throws {@link ApiException}
      * carrying the extracted message.
+     *
+     * @param response the completed download response, whose body is the path it was written to
+     * @return {@code response}'s body path, unchanged, on a {@code 2xx} status
+     * @throws ApiException on any non-{@code 2xx} status
      */
     private static Path requireSuccessfulFileDownload(final HttpResponse<Path> response) throws ApiException {
         final int status = response.statusCode();
@@ -975,7 +1132,12 @@ public final class ApiClient implements AutoCloseable {
         throw new ApiException(status, extractErrorMessageFromFile(destination), null);
     }
 
-    /** {@link #extractErrorMessage(InputStream)}, reading from a file on disk instead of an open response stream, then deleting it. */
+    /**
+     * {@link #extractErrorMessage(InputStream)}, reading from a file on disk instead of an open response stream, then deleting it.
+     *
+     * @param destination the file a failed response's body was written to; deleted before returning
+     * @return the best available human-readable error message
+     */
     private static String extractErrorMessageFromFile(final Path destination) {
         final String text;
         try {
@@ -1005,6 +1167,7 @@ public final class ApiClient implements AutoCloseable {
     /**
      * {@code DELETE /files/{id}} on the main REST API.
      *
+     * @param fileId the file to delete
      * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
      *                       caller, {@code 401} if not logged in / token expired
      */
@@ -1017,6 +1180,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.deleteFileRequest(fileId), Void.class);
     }
 
+    /** Builds the {@code DELETE /files/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest deleteFileRequest(final String fileId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId), true).DELETE().build();
     }
@@ -1026,6 +1190,7 @@ public final class ApiClient implements AutoCloseable {
      * #uploadFilesAsync}, a delete carries no request body/file handle, so there is nothing
      * costly to throttle).
      *
+     * @param fileIds the ids to delete
      * @return a future completing once <em>every</em> deletion has been attempted; if any failed,
      * completes exceptionally with the first failure encountered (same convention as {@link
      * #uploadFilesAsync(Map)} - see its Javadoc)
@@ -1041,6 +1206,8 @@ public final class ApiClient implements AutoCloseable {
      * {@code PUT /files/{id}/folder}: moves {@code fileId} into {@code folderId} - {@code null}
      * moves it back to the root.
      *
+     * @param fileId   the file to move
+     * @param folderId the destination folder's id, or {@code null} for the root
      * @throws ApiException {@code 404} if {@code fileId}/{@code folderId} doesn't exist or isn't
      *                       owned by the caller, {@code 401} if not logged in / token expired
      */
@@ -1053,6 +1220,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.moveFileRequest(fileId, folderId), Void.class);
     }
 
+    /** Builds the {@code PUT /files/{id}/folder} request against {@link #apiBaseUrl}, with a JSON {@link MoveFileRequest} body. */
     private HttpRequest moveFileRequest(final String fileId, final String folderId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/folder"), true)
                 .header("Content-Type", "application/json")
@@ -1066,6 +1234,8 @@ public final class ApiClient implements AutoCloseable {
      * {@code POST /folders}: creates a new folder owned by the caller - {@code parentFolderId}
      * {@code null} creates a top-level folder.
      *
+     * @param name           the new folder's name
+     * @param parentFolderId the parent folder's id, or {@code null} to create a top-level folder
      * @throws ApiException {@code 404} if {@code parentFolderId} is non-null and doesn't exist or
      *                       isn't owned by the caller, {@code 401} if not logged in / token expired
      */
@@ -1078,6 +1248,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.createFolderRequest(name, parentFolderId), FolderResponse.class);
     }
 
+    /** Builds the {@code POST /folders} request against {@link #apiBaseUrl}, with a JSON {@link CreateFolderRequest} body. */
     private HttpRequest createFolderRequest(final String name, final String parentFolderId) {
         return this.postRequest(this.apiBaseUrl.resolve("/folders"), new CreateFolderRequest(name, parentFolderId), true);
     }
@@ -1086,6 +1257,7 @@ public final class ApiClient implements AutoCloseable {
      * {@code GET /folders}: lists the caller's own folders directly inside {@code parentFolderId}
      * - {@code null} lists their top-level folders.
      *
+     * @param parentFolderId the parent folder's id, or {@code null} to list top-level folders
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<FolderResponse> listFolders(final String parentFolderId) throws ApiException {
@@ -1098,6 +1270,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.listFoldersRequest(parentFolderId), FolderResponse[].class).thenApply(List::of);
     }
 
+    /** Builds the {@code GET /folders?parentFolderId=...} request against {@link #apiBaseUrl}. */
     private HttpRequest listFoldersRequest(final String parentFolderId) {
         final String encodedParentFolderId = URLEncoder.encode(parentFolderId == null ? "root" : parentFolderId, StandardCharsets.UTF_8);
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders?parentFolderId=" + encodedParentFolderId), true).GET().build();
@@ -1108,6 +1281,9 @@ public final class ApiClient implements AutoCloseable {
      * both fields, not a partial patch; {@code newParentFolderId} {@code null} moves it to the
      * top level.
      *
+     * @param folderId          the folder to rename/move
+     * @param newName           the folder's new name
+     * @param newParentFolderId the folder's new parent id, or {@code null} to move it to the top level
      * @throws ApiException {@code 404} if {@code folderId}/{@code newParentFolderId} doesn't
      *                       exist or isn't owned by the caller, {@code 409} if the move would
      *                       create a cycle, {@code 401} if not logged in / token expired
@@ -1121,6 +1297,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.updateFolderRequest(folderId, newName, newParentFolderId), FolderResponse.class);
     }
 
+    /** Builds the {@code PUT /folders/{id}} request against {@link #apiBaseUrl}, with a JSON {@link UpdateFolderRequest} body. */
     private HttpRequest updateFolderRequest(final String folderId, final String newName, final String newParentFolderId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true)
                 .header("Content-Type", "application/json")
@@ -1131,6 +1308,7 @@ public final class ApiClient implements AutoCloseable {
     /**
      * {@code DELETE /folders/{id}}: deletes an empty folder.
      *
+     * @param folderId the folder to delete
      * @throws ApiException {@code 404} if {@code folderId} doesn't exist or isn't owned by the
      *                       caller, {@code 409} if it still has child folders or files, {@code
      *                       401} if not logged in / token expired
@@ -1144,6 +1322,7 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.deleteFolderRequest(folderId), Void.class);
     }
 
+    /** Builds the {@code DELETE /folders/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest deleteFolderRequest(final String folderId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true).DELETE().build();
     }
@@ -1156,6 +1335,7 @@ public final class ApiClient implements AutoCloseable {
      * therefore doubles as the account's creation timestamp (see {@link CloudUserResponse}'s own
      * Javadoc). The server 404s for any id other than the authenticated caller's own.
      *
+     * @param authUserId the account id to fetch - must equal the caller's own id
      * @throws ApiException {@code 404} if {@code authUserId} doesn't match the caller's own id
      *                       (or has no {@code CloudUser} record yet), {@code 401} if not logged
      *                       in / token expired
@@ -1169,12 +1349,21 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(this.getCloudUserRequest(authUserId), CloudUserResponse.class);
     }
 
+    /** Builds the {@code GET /cloudUsers/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest getCloudUserRequest(final String authUserId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/" + authUserId), true).GET().build();
     }
 
     // --- internals -------------------------------------------------------
 
+    /**
+     * Builds a {@code POST} request with {@code body} serialized to JSON, via {@link #requestBuilder}.
+     *
+     * @param uri           the target URI
+     * @param body          the request body, serialized with {@link #GSON}
+     * @param authenticated whether to attach the current session's bearer token
+     * @return the built request
+     */
     private HttpRequest postRequest(final URI uri, final Object body, final boolean authenticated) {
         return this.requestBuilder(uri, authenticated)
                 .header("Content-Type", "application/json")
@@ -1182,6 +1371,15 @@ public final class ApiClient implements AutoCloseable {
                 .build();
     }
 
+    /**
+     * Starts a request builder for {@code uri} with {@link #REQUEST_TIMEOUT} applied, optionally
+     * attaching the current session's bearer token.
+     *
+     * @param uri           the target URI
+     * @param authenticated whether to attach an {@code Authorization: Bearer} header
+     * @return a builder ready for the caller to set its HTTP method/body on
+     * @throws IllegalStateException if {@code authenticated} is {@code true} but no session is active
+     */
     private HttpRequest.Builder requestBuilder(final URI uri, final boolean authenticated) {
         final HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(REQUEST_TIMEOUT);
         if (authenticated) {
@@ -1194,7 +1392,14 @@ public final class ApiClient implements AutoCloseable {
         return builder;
     }
 
-    /** Blocking send, via {@link HttpClient#send} directly - see the class Javadoc for why this isn't {@code sendAsync(...).join()}. */
+    /**
+     * Blocking send, via {@link HttpClient#send} directly - see the class Javadoc for why this isn't {@code sendAsync(...).join()}.
+     *
+     * @param request      the request to send
+     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
+     * @return the deserialized response body, or {@code null} for {@link Void}
+     * @throws ApiException on any non-{@code 2xx} response or transport/I/O failure
+     */
     private <T> T send(final HttpRequest request, final Class<T> responseType) throws ApiException {
         final HttpResponse<InputStream> response;
         try {
@@ -1208,7 +1413,13 @@ public final class ApiClient implements AutoCloseable {
         return parseResponse(response, responseType);
     }
 
-    /** True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread. */
+    /**
+     * True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread.
+     *
+     * @param request      the request to send
+     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
+     * @return a future completing with the deserialized response body, or exceptionally with a {@link CompletionException} wrapping an {@link ApiException}
+     */
     private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Class<T> responseType) {
         return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
                 .thenApply(response -> {
@@ -1223,6 +1434,17 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
+    /**
+     * Shared response-handling logic for both {@link #send} and {@link #sendAsync}: on a {@code
+     * 2xx} status, deserializes the body as JSON into {@code responseType} (or discards it and
+     * returns {@code null} if {@code responseType} is {@link Void}); otherwise closes the body and
+     * throws {@link ApiException} carrying the best available error message.
+     *
+     * @param response     the completed response, whose body is consumed and closed by this method
+     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
+     * @return the deserialized response body, or {@code null} for {@link Void}
+     * @throws ApiException on any non-{@code 2xx} status or I/O failure reading the body
+     */
     private static <T> T parseResponse(final HttpResponse<InputStream> response, final Class<T> responseType) throws ApiException {
         final int status = response.statusCode();
         try (InputStream body = response.body()) {
@@ -1241,6 +1463,14 @@ public final class ApiClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Best-effort extraction of a human-readable message from a failed response body: parses it
+     * as an {@link ErrorResponse} and returns its {@code title}, falling back to the raw body text
+     * if it isn't valid JSON, or a generic message if the body is empty or unreadable.
+     *
+     * @param body the failed response's still-open body; consumed but not closed by this method
+     * @return the best available error message
+     */
     private static String extractErrorMessage(final InputStream body) {
         final String text;
         try {
@@ -1265,6 +1495,10 @@ public final class ApiClient implements AutoCloseable {
      * as any one constituent fails, leaving the rest to finish unobserved in the background).
      * Matches this codebase's own batch-operation convention (see {@code EntityDatabaseClient}'s
      * Javadoc: "throws the first failure encountered once every item has been attempted").
+     *
+     * @param futures the futures to await
+     * @return a future completing with every successful result (in {@code futures}' own order,
+     * successes only), or exceptionally with the first failure encountered
      */
     private static <T> CompletableFuture<List<T>> awaitAll(final List<CompletableFuture<T>> futures) {
         final CompletableFuture<?>[] settled = futures.stream()
@@ -1297,6 +1531,12 @@ public final class ApiClient implements AutoCloseable {
         });
     }
 
+    /**
+     * Closes {@code closeable}, swallowing any {@link IOException} - used only on a best-effort
+     * cleanup path where nothing more useful can be done with a close failure.
+     *
+     * @param closeable the resource to close
+     */
     private static void closeQuietly(final Closeable closeable) {
         try {
             closeable.close();
@@ -1315,8 +1555,14 @@ public final class ApiClient implements AutoCloseable {
     /** Thrown for any non-2xx response or transport failure; {@link #statusCode} is {@code 0} for the latter. */
     public static final class ApiException extends Exception {
 
+        /** The HTTP status code, or {@code 0} for a transport-level failure with no response received. */
         private final int statusCode;
 
+        /**
+         * @param statusCode the HTTP status code, or {@code 0} for a transport-level failure
+         * @param message    a human-readable description of the failure
+         * @param cause      the underlying exception, or {@code null} if there isn't one
+         */
         public ApiException(final int statusCode, final String message, final Throwable cause) {
             super(message, cause);
             this.statusCode = statusCode;

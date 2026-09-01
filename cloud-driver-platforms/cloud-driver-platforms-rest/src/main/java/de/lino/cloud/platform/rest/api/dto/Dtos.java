@@ -3,11 +3,12 @@ package de.lino.cloud.platform.rest.api.dto;
 /**
  * Plain request/response shapes mirrored 1:1 against the server's REST contract - see
  * {@code CloudRestExtension}/{@code DefaultRestFactory} in cloud-driver for the authoritative
- * field names. Deliberately not shared code with the server module: the desktop desktop only
+ * field names. Deliberately not shared code with the server module: the desktop client only
  * ever talks HTTP, so it has no dependency on cloud-driver-api at all.
  */
 public final class Dtos {
 
+    /** Not instantiable - a pure namespace for the nested record types below. */
     private Dtos() {
     }
 

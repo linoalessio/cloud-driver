@@ -25,21 +25,49 @@ public interface ICloudUser {
     @NotNull
     String getAuthUserId();
 
+    /**
+     * Resolves the full {@link AuthUser} account this record belongs to, looked up on demand
+     * (not held as state on this record) through the process-wide {@code CloudDriver} singleton.
+     *
+     * @return the {@link AuthUser} identified by {@link #getAuthUserId()}
+     */
     @NonNull
     AuthUser getAuthUser();
 
+    /**
+     * @return the epoch-millisecond timestamp this record was created at (set once, at
+     *     construction) - effectively the owning account's creation/confirmation time
+     */
     long getTimeStamp();
 
+    /**
+     * @return the maximum total number of bytes this account is allowed to have uploaded at once,
+     *     read from configuration at construction time (see the implementing class for the exact
+     *     key and its default when unset)
+     */
     long getMaxBytesToUpload();
 
     /** This account's persisted, incrementally-tracked running total - see {@code CloudUserService#updateCloudUserBytesUsage}. */
     long getCurrentUploadedBytes();
 
+    /**
+     * Updates this account's upload quota ceiling.
+     *
+     * @param maxBytesToUpload the new maximum total number of bytes this account may have uploaded at once
+     */
     void setMaxBytesToUpload(final long maxBytesToUpload);
 
     /** Backs {@code CloudUserService#updateCloudUserBytesUsage} - not meant to be called directly by other callers. */
     void setCurrentUploadedBytes(final long currentUploadedBytes);
 
+    /**
+     * Reports whether uploading {@code bytesToUpload} more bytes would meet or exceed this
+     * account's quota - {@code (getCurrentUploadedBytes() + bytesToUpload) >= getMaxBytesToUpload()},
+     * so a request landing exactly on the remaining quota is rejected too, not just one that exceeds it.
+     *
+     * @param bytesToUpload the number of additional bytes a caller is proposing to upload
+     * @return {@code true} if the upload would meet or exceed {@link #getMaxBytesToUpload()}
+     */
     boolean isUploadLimitReached(final long bytesToUpload);
 
     /**

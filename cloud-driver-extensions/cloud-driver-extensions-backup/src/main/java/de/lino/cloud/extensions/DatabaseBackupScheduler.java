@@ -69,20 +69,32 @@ import java.util.zip.ZipOutputStream;
  */
 public final class DatabaseBackupScheduler {
 
+    /** Formats a backup cycle's start time into the timestamp used in its archive/staging directory name. */
     private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
 
+    /** Default interval between backup cycles, used by {@link #start()}. */
     private static final Duration DEFAULT_PERIOD = Duration.ofDays(3);
+    /** Prefix every archive file and staging directory name is built with, so {@link #enforceRetention()} can find them among other files in {@link #backupRootDirectory}. */
     private static final String BACKUP_PREFIX = "cloud-driver-backup-";
+    /** File extension of a finished, archived backup. */
     private static final String ARCHIVE_SUFFIX = ".zip";
+    /** File extension of one table's exported, GZIP-compressed, length-prefixed binary file inside the staging directory. */
     private static final String TABLE_FILE_SUFFIX = ".bin.gz";
 
+    /** This scheduler's own, dedicated connection pool - see the class Javadoc for why it never shares the running application's pool. */
     private final SQLExecution sqlExecution;
+    /** Directory finished archives are placed into, and where {@link #enforceRetention()} looks for old ones to delete. */
     private final Path backupRootDirectory;
+    /** Working directory ({@code backupRootDirectory/.staging}) each cycle's per-table export files are written into before archiving. */
     private final Path stagingDirectory;
+    /** Maximum number of rows fetched per keyset page; bounds the memory footprint of a single page regardless of table size. */
     private final int batchSize;
+    /** Number of tables exported concurrently during one backup cycle. */
     private final int tableParallelism;
+    /** Number of most recently created archives {@link #enforceRetention()} keeps; older ones are deleted. */
     private final int retainedBackups;
 
+    /** Single-thread scheduler this instance's periodic ticks run on. */
     private final ScheduledExecutorService scheduledExecutorService;
 
     /** Prevents a new tick from starting while a backup (potentially hours long) is still running. */
@@ -222,6 +234,9 @@ public final class DatabaseBackupScheduler {
     /**
      * One full cycle: determine tables -> parallel, keyset-paginated exports per table ->
      * archiving (without re-compressing) -> placement -> rotation of old archives.
+     *
+     * @throws IOException if creating a working directory, exporting a table, archiving, or
+     *                      rotating old archives fails
      */
     private void runBackupCycle() throws IOException {
 
@@ -339,6 +354,7 @@ public final class DatabaseBackupScheduler {
      *
      * @param table      the table name
      * @param outputFile the target file; overwritten if it already exists
+     * @throws IOException if writing the output file or fetching a page fails
      */
     private void exportTable(final String table, final Path outputFile) throws IOException {
 
@@ -427,6 +443,7 @@ public final class DatabaseBackupScheduler {
      *
      * @param dumpDirectory the directory holding the per-table files from {@link #exportTable}
      * @param output        the target file; overwritten if it already exists
+     * @throws IOException if deleting an existing target file, walking {@code dumpDirectory}, or writing the archive fails
      */
     private void archiveDumpDirectory(final Path dumpDirectory, final Path output) throws IOException {
 
@@ -459,6 +476,8 @@ public final class DatabaseBackupScheduler {
     /**
      * Deletes the oldest archives in {@link #backupRootDirectory}, so that at most
      * {@link #retainedBackups} remain.
+     *
+     * @throws IOException if listing {@link #backupRootDirectory} fails
      */
     private void enforceRetention() throws IOException {
 
@@ -499,6 +518,14 @@ public final class DatabaseBackupScheduler {
      * already binary, low-redundancy BYTEA content.
      */
     private static final class BestSpeedGzipOutputStream extends GZIPOutputStream {
+
+        /**
+         * Wraps {@code out} in a 64KB-buffered {@link GZIPOutputStream} and forces its internal
+         * {@link Deflater} to {@link Deflater#BEST_SPEED}.
+         *
+         * @param out the stream to write compressed bytes to
+         * @throws IOException if the superclass constructor fails to write the GZIP header
+         */
         BestSpeedGzipOutputStream(final OutputStream out) throws IOException {
             super(out, 1 << 16);
             this.def.setLevel(Deflater.BEST_SPEED);

@@ -111,10 +111,11 @@ public final class CloudBootstrap {
     /**
      * Wires a Postgres {@link DatabaseProvider} and envelope encryption service, then installs
      * the {@link CloudDriver} singleton. Package-private (not {@code private}) rather than
-     * {@code public} - it's only meant to be reused by other entry points that live alongside
-     * {@code CloudBootstrap} in this same package (e.g. {@code CreateUserCli}, which needs the
-     * exact same Postgres/key-service wiring to get a real {@code DataFactory} without pulling
-     * in the rest of {@link #main}'s subsystem startup), not as a general-purpose public API.
+     * {@code public} - only {@link #main} in this same class calls it today, but a
+     * package-private visibility leaves room for another entry point living alongside {@code
+     * CloudBootstrap} in this same package to reuse the exact same Postgres/key-service wiring
+     * without pulling in the rest of {@link #main}'s subsystem startup; not a general-purpose
+     * public API.
      *
      * @return the installed {@link CloudDriver}, wrapped in an {@link Optional}
      */

@@ -152,6 +152,12 @@ public class ExtensionCommand implements Command {
 
     }
 
+    /**
+     * Renders an {@link ExtensionStatus} as a colored, human-readable label for terminal output.
+     *
+     * @param extensionStatus the status to render
+     * @return the {@code &}-color-coded label for {@code extensionStatus}
+     */
     private static String extensionStatusOf(@NonNull ExtensionStatus extensionStatus) {
         return switch (extensionStatus) {
             case LOADING -> "&eLoading&7";
@@ -161,6 +167,7 @@ public class ExtensionCommand implements Command {
         };
     }
 
+    /** Prints this command's usage syntax to the terminal. */
     private void sendHelp() {
         final Terminal terminal = this.terminal();
         terminal.displayApproved("&fextension list");

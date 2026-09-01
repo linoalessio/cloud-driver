@@ -77,6 +77,13 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
+    /**
+     * Looks up {@code authUserId}'s {@link CloudUser} record directly, without creating one if it
+     * doesn't exist yet - the read-only counterpart to {@link #getOrCreate(String)}.
+     *
+     * @param authUserId the owning {@link AuthUser#getId()}
+     * @return the matching {@link ICloudUser}, or {@link Optional#empty()} if none is registered under that id
+     */
     @Override
     public @NonNull Optional<ICloudUser> getCloudUser(@NotNull String authUserId) {
         try {
@@ -169,8 +176,16 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
+    /**
+     * Sets {@code authUserId}'s {@link ICloudUser#getMaxBytesToUpload()} upload quota to {@code
+     * bytes} and persists the change - a single-row {@link DataFactory#update}. Clamped at a
+     * minimum of {@code 0}. A no-op if {@code authUserId} has no {@link CloudUser} record yet.
+     *
+     * @param authUserId the account whose quota to change
+     * @param bytes the new quota ceiling, in bytes
+     */
     @Override
-    public void updateCloudUserBytesLimit(@NonNull String authUserId, long bytes) {
+    public void updateCloudUserBytesLimit(@NonNull String authUserId, final long bytes) {
 
         final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
         if (cloudUser.isEmpty()) return;
@@ -193,6 +208,10 @@ public final class CloudUserService implements ICloudUserService {
      * "must be empty first" constraint {@link #deleteFolder} enforces for a single folder,
      * applied bottom-up across the whole tree instead of requiring the caller to do so one
      * folder at a time.
+     *
+     * @param authUserId the owning user whose entire folder tree should be deleted
+     * @throws IllegalStateException if a cycle is detected among the remaining folders (defense-in-depth;
+     *     writes elsewhere already prevent this from occurring)
      */
     private void deleteAllOwnedFolders(final String authUserId) {
         final List<Folder> remaining;
@@ -351,7 +370,12 @@ public final class CloudUserService implements ICloudUserService {
         return this.resolveFilesWithFolder(filtered);
     }
 
-    /** Downloads every file in {@code ownerships} and pairs each with its recorded {@link StoredFileOwnership#getFolderId()}. */
+    /**
+     * Downloads every file in {@code ownerships} and pairs each with its recorded {@link StoredFileOwnership#getFolderId()}.
+     *
+     * @param ownerships the ownership rows whose files should be downloaded and paired
+     * @return each downloaded {@link StoredFile}, paired with its recorded folder placement
+     */
     private List<FileWithFolder> resolveFilesWithFolder(final List<StoredFileOwnership> ownerships) {
         final Map<String, String> folderIdByFileId = new HashMap<>();
         ownerships.forEach(ownership -> folderIdByFileId.put(ownership.getStoredFileId(), ownership.getFolderId()));
@@ -401,7 +425,12 @@ public final class CloudUserService implements ICloudUserService {
         return this.resolveFileSummaries(filtered);
     }
 
-    /** {@link #resolveFileSummary}, applied to every entry. */
+    /**
+     * {@link #resolveFileSummary}, applied to every entry.
+     *
+     * @param ownerships the ownership rows to summarize
+     * @return one {@link StoredFileSummary} per entry in {@code ownerships}
+     */
     private List<StoredFileSummary> resolveFileSummaries(final List<StoredFileOwnership> ownerships) {
         return ownerships.stream().map(this::resolveFileSummary).toList();
     }
@@ -412,6 +441,9 @@ public final class CloudUserService implements ICloudUserService {
      * which case this falls back to downloading the full {@link StoredFile} exactly once,
      * persisting a {@link StoredFileOwnership#withMetadata(StoredFile)} copy so every later call
      * for this same row takes the fast, no-download path.
+     *
+     * @param ownership the ownership row to summarize
+     * @return the resulting {@link StoredFileSummary}
      */
     private StoredFileSummary resolveFileSummary(final StoredFileOwnership ownership) {
         final String storedFileId = ownership.getStoredFileId();
@@ -634,6 +666,11 @@ public final class CloudUserService implements ICloudUserService {
      * (transitively) inside {@code folderId}, so moving {@code folderId} to become a child of
      * {@code targetParent} would create a cycle. O(depth of {@code targetParent}); folder
      * nesting is expected to stay shallow enough for this to be cheap.
+     *
+     * @param authUserId the owning user, used to resolve each ancestor via {@link #requireOwnedFolder}
+     * @param folderId the folder being moved, checked for appearing in {@code targetParent}'s own ancestor chain
+     * @param targetParent the folder {@code folderId} would be moved into
+     * @throws IllegalStateException if {@code folderId} appears in {@code targetParent}'s ancestor chain
      */
     private void requireNotDescendant(final String authUserId, final String folderId, final Folder targetParent) {
         Folder current = targetParent;
@@ -679,7 +716,15 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
-    /** Same O(1) point lookup as {@link #ownsFile}, returning the row itself rather than a boolean. */
+    /**
+     * An O(1) point lookup on {@code storedFileId}'s ownership row, failing if {@code authUserId}
+     * doesn't own it.
+     *
+     * @param authUserId the user expected to own the file
+     * @param storedFileId the file to check ownership of
+     * @return the matching {@link StoredFileOwnership} row
+     * @throws IllegalArgumentException if no such ownership row exists for {@code authUserId}/{@code storedFileId}
+     */
     private StoredFileOwnership requireOwnedFile(final String authUserId, final String storedFileId) {
         final String ownershipKey = StoredFileOwnership.compositeKey(authUserId, storedFileId);
         final Optional<StoredFileOwnership> ownership;
@@ -694,7 +739,15 @@ public final class CloudUserService implements ICloudUserService {
         return ownership.get();
     }
 
-    /** O(1) point lookup, failing if {@code folderId} doesn't exist or belongs to someone other than {@code authUserId}. */
+    /**
+     * An O(1) point lookup on {@code folderId}, failing if it doesn't exist or belongs to someone
+     * other than {@code authUserId}.
+     *
+     * @param authUserId the user expected to own the folder
+     * @param folderId the folder to check ownership of
+     * @return the matching {@link Folder}
+     * @throws IllegalArgumentException if {@code folderId} doesn't exist or isn't owned by {@code authUserId}
+     */
     private Folder requireOwnedFolder(final String authUserId, final String folderId) {
         final Optional<Folder> folder;
         try {
@@ -708,7 +761,13 @@ public final class CloudUserService implements ICloudUserService {
         return folder.get();
     }
 
-    /** Backs {@link #listFiles}/{@link #listFilesWithFolder} - see {@link #listFiles}'s Javadoc for the full-scan trade-off this implies. */
+    /**
+     * Backs {@link #listFiles}/{@link #listFilesWithFolder} - see {@link #listFiles}'s Javadoc for
+     * the full-scan trade-off this implies.
+     *
+     * @param authUserId the user whose ownership rows should be listed
+     * @return every {@link StoredFileOwnership} row belonging to {@code authUserId}
+     */
     private List<StoredFileOwnership> ownedFileOwnerships(final String authUserId) {
         try {
             return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
@@ -719,7 +778,12 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
-    /** {@link #ownedFileOwnerships(String)}, mapped down to just each row's {@link StoredFileOwnership#getStoredFileId()}. */
+    /**
+     * {@link #ownedFileOwnerships(String)}, mapped down to just each row's {@link StoredFileOwnership#getStoredFileId()}.
+     *
+     * @param authUserId the user whose owned file ids should be listed
+     * @return every {@link StoredFile#fileId()} tracked as belonging to {@code authUserId}
+     */
     private List<String> ownedFileIds(final String authUserId) {
         return this.ownedFileOwnerships(authUserId).stream().map(StoredFileOwnership::getStoredFileId).toList();
     }

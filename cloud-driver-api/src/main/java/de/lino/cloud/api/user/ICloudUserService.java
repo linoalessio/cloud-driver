@@ -34,6 +34,13 @@ public interface ICloudUserService {
     @NotNull
     ICloudUser getOrCreate(@NotNull String authUserId);
 
+    /**
+     * Looks up {@code authUserId}'s {@link ICloudUser} record without creating one if it
+     * doesn't exist yet - the read-only counterpart to {@link #getOrCreate(String)}.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} to look up
+     * @return the matching {@link ICloudUser}, or {@link Optional#empty()} if none exists yet
+     */
     @NonNull
     Optional<ICloudUser> getCloudUser(@NotNull String authUserId);
 
@@ -81,7 +88,17 @@ public interface ICloudUserService {
      */
     void updateCloudUserBytesUsage(@NonNull String authUserId, final long delta);
 
-    void updateCloudUserBytesLimit(@NonNull String authUserId, final long delta);
+    /**
+     * Replaces {@code authUserId}'s {@link ICloudUser#getMaxBytesToUpload()} upload-quota ceiling
+     * with {@code delta} (clamped at a minimum of {@code 0}) and persists the change - despite the
+     * parameter name mirroring {@link #updateCloudUserBytesUsage(String, long)}'s own {@code
+     * delta}, this sets the ceiling to that exact value rather than adjusting it incrementally. A
+     * no-op if {@code authUserId} has no {@link ICloudUser} record yet.
+     *
+     * @param authUserId the account whose upload-quota ceiling to replace
+     * @param bytes the new upload-quota ceiling, in bytes
+     */
+    void updateCloudUserBytesLimit(@NonNull String authUserId, final long bytes);
 
     /**
      * Uploads {@code fileName}/{@code content} as a new {@link StoredFile} and tracks

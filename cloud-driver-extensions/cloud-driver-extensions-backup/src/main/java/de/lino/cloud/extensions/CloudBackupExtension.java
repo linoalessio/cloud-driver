@@ -52,7 +52,7 @@ public class CloudBackupExtension extends Extension {
 
     }
 
-    /** No-op; the scheduler is left running until process shutdown. */
+    /** Shuts the backup scheduler down, if it was ever constructed. */
     @Override
     public void onEnding() {
 
@@ -61,7 +61,7 @@ public class CloudBackupExtension extends Extension {
     }
 
     /**
-     * Logs the failure.
+     * Shuts the backup scheduler down, if it was ever constructed, and logs the failure.
      *
      * @param reason the exception that occurred
      */

@@ -82,12 +82,21 @@ public final class StoredFile extends Serialized {
     /** The plaintext checksum this file's content must match on every future download - see {@link #verifyChecksum()}. */
     private final FileChecksum checksum;
 
-    // Stored as epoch millis, not Instant: Serialized.toByteArray() serializes
-    // this class's fields via reflection (Gson), and java.time.Instant's
-    // private fields are not reflectively accessible under the JDK's default
-    // module boundaries (java.base does not open java.time) - a plain long
-    // sidesteps that entirely. createdAt()/updatedAt() still expose Instant.
+    /**
+     * When this file was first uploaded, as epoch milliseconds - exposed as an {@link Instant}
+     * via {@link #createdAt()}. Stored as a plain {@code long} rather than {@link Instant}
+     * directly: {@link Serialized#toByteArray()} serializes this class's fields via reflection
+     * (Gson), and {@link Instant}'s own private fields are not reflectively accessible under the
+     * JDK's default module boundaries ({@code java.base} does not open {@code java.time}) - a
+     * plain {@code long} sidesteps that entirely.
+     */
     private final long createdAtEpochMilli;
+
+    /**
+     * When this file's content was last changed, as epoch milliseconds - exposed as an {@link
+     * Instant} via {@link #updatedAt()}. Stored as a plain {@code long} for the same
+     * reflection-serialization reason documented on {@link #createdAtEpochMilli}.
+     */
     private final long updatedAtEpochMilli;
 
     /**

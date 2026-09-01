@@ -19,7 +19,10 @@ import java.util.concurrent.TimeUnit;
  */
 public final class LinuxSecretServiceTokenStore implements TokenStore {
 
+    /** The libsecret {@code service} attribute value this store's item is keyed under. */
     private static final String SERVICE_ATTR_VALUE = "cloud-driver-desktop";
+
+    /** The libsecret {@code account} attribute value this store's item is keyed under - fixed, since this store only ever holds one session. */
     private static final String ACCOUNT_ATTR_VALUE = "session";
 
     /** @return {@code true} if {@code secret-tool} is installed and reachable on {@code PATH} */
@@ -35,6 +38,13 @@ public final class LinuxSecretServiceTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc} Shells out to {@code secret-tool store}, passing {@code token} on the
+     * child process's standard input rather than as a command-line argument (so it never shows
+     * up in a process listing).
+     *
+     * @throws TokenStoreException if the {@code secret-tool} command fails or cannot be run
+     */
     @Override
     public void save(final String token) throws TokenStoreException {
         final ProcessResult result = run(
@@ -47,6 +57,12 @@ public final class LinuxSecretServiceTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc} Shells out to {@code secret-tool lookup}; any non-zero exit (item not found
+     * included) is treated as "nothing stored" rather than an error.
+     *
+     * @throws TokenStoreException if the {@code secret-tool} command cannot be run at all
+     */
     @Override
     public Optional<String> load() throws TokenStoreException {
         final ProcessResult result = run(
@@ -60,6 +76,11 @@ public final class LinuxSecretServiceTokenStore implements TokenStore {
         return token.isEmpty() ? Optional.empty() : Optional.of(token);
     }
 
+    /**
+     * {@inheritDoc} Shells out to {@code secret-tool clear}.
+     *
+     * @throws TokenStoreException if the {@code secret-tool} command cannot be run at all
+     */
     @Override
     public void clear() throws TokenStoreException {
         final ProcessResult result = run(
@@ -74,6 +95,18 @@ public final class LinuxSecretServiceTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * Runs {@code command} to completion (up to a 10-second timeout, after which the process is
+     * killed), optionally writing {@code stdinInput} to its standard input first, and captures
+     * its exit code plus stdout/stderr.
+     *
+     * @param stdinInput text to write to the process's standard input before reading its output,
+     *                    or {@code null} to close standard input immediately with nothing written
+     * @param command    the command and its arguments, as passed to {@link ProcessBuilder}
+     * @return the process's outcome
+     * @throws TokenStoreException if the process can't be started, doesn't finish within 10s, or
+     *                              this thread is interrupted while waiting for it
+     */
     private static ProcessResult run(final String stdinInput, final String... command) throws TokenStoreException {
         try {
             final Process process = new ProcessBuilder(command).start();
@@ -102,6 +135,13 @@ public final class LinuxSecretServiceTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * The captured outcome of running an external process via {@link #run}.
+     *
+     * @param exitCode the process's exit code
+     * @param stdout   everything the process wrote to standard output
+     * @param stderr   everything the process wrote to standard error
+     */
     private record ProcessResult(int exitCode, String stdout, String stderr) {
     }
 

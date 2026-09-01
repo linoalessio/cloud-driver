@@ -15,9 +15,23 @@ import java.util.concurrent.TimeUnit;
  */
 public final class MacKeychainTokenStore implements TokenStore {
 
+    /**
+     * The keychain item's service identifier. Deliberately still the literal string from a
+     * deleted earlier JavaFX module (see {@code cloud-driver}'s own CLAUDE.md) rather than this
+     * package's current name - renaming it would orphan any token a user already has stored
+     * under the old identifier.
+     */
     private static final String SERVICE = "de.lino.cloud.platform.desktop";
+
+    /** The keychain item's account identifier - fixed, since this store only ever holds one session. */
     private static final String ACCOUNT = "session";
 
+    /**
+     * {@inheritDoc} Shells out to {@code security add-generic-password -U}, which updates the
+     * item in place if one already exists under {@link #SERVICE}/{@link #ACCOUNT}.
+     *
+     * @throws TokenStoreException if the {@code security} command fails or cannot be run
+     */
     @Override
     public void save(final String token) throws TokenStoreException {
         // -U: update the item in place if one already exists, instead of failing with "already exists".
@@ -30,6 +44,12 @@ public final class MacKeychainTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc} Shells out to {@code security find-generic-password}; any non-zero exit
+     * (item not found included) is treated as "nothing stored" rather than an error.
+     *
+     * @throws TokenStoreException if the {@code security} command cannot be run at all
+     */
     @Override
     public Optional<String> load() throws TokenStoreException {
         final ProcessResult result = run(
@@ -45,6 +65,14 @@ public final class MacKeychainTokenStore implements TokenStore {
         return token.isEmpty() ? Optional.empty() : Optional.of(token);
     }
 
+    /**
+     * {@inheritDoc} Shells out to {@code security delete-generic-password}; a non-zero exit
+     * whose stderr indicates the item simply wasn't found is treated as success (the desired end
+     * state - "nothing stored" - is already true).
+     *
+     * @throws TokenStoreException if {@code security delete-generic-password} fails for any
+     *                              other reason, or cannot be run at all
+     */
     @Override
     public void clear() throws TokenStoreException {
         final ProcessResult result = run(
@@ -58,6 +86,15 @@ public final class MacKeychainTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * Runs {@code command} to completion (up to a 10-second timeout, after which the process is
+     * killed) and captures its exit code plus stdout/stderr.
+     *
+     * @param command the command and its arguments, as passed to {@link ProcessBuilder}
+     * @return the process's outcome
+     * @throws TokenStoreException if the process can't be started, doesn't finish within 10s, or
+     *                              this thread is interrupted while waiting for it
+     */
     private static ProcessResult run(final String... command) throws TokenStoreException {
         try {
             final Process process = new ProcessBuilder(command).start();
@@ -77,6 +114,13 @@ public final class MacKeychainTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * The captured outcome of running an external process via {@link #run}.
+     *
+     * @param exitCode the process's exit code
+     * @param stdout   everything the process wrote to standard output
+     * @param stderr   everything the process wrote to standard error
+     */
     private record ProcessResult(int exitCode, String stdout, String stderr) {
     }
 

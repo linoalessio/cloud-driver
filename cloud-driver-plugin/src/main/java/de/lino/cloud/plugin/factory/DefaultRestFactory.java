@@ -92,7 +92,7 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
-    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
+    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";

@@ -26,16 +26,25 @@ import java.util.Set;
  */
 public final class FileTokenStore implements TokenStore {
 
+    /** The owner-only read/write permission set applied to {@link #storageFile} where the filesystem supports POSIX permissions. */
     private static final Set<PosixFilePermission> OWNER_ONLY = EnumSet.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE
     );
 
+    /** The plain file the session token is read from/written to. */
     private final Path storageFile;
 
+    /** Resolves {@link #storageFile} under the current user's home directory. */
     public FileTokenStore() {
-        this.storageFile = Path.of(System.getProperty("user.home"), ".config", "cloud-driver-desktop-desktop", "session.token");
+        this.storageFile = Path.of(System.getProperty("user.home"), ".config", "cloud-driver-token", "session.token");
     }
 
+    /**
+     * {@inheritDoc} Writes {@code token} as plain text to {@link #storageFile} (creating its
+     * parent directory first if needed) and applies owner-only permissions afterward.
+     *
+     * @throws TokenStoreException if creating the parent directory or writing the file fails
+     */
     @Override
     public void save(final String token) throws TokenStoreException {
         try {
@@ -47,6 +56,11 @@ public final class FileTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @throws TokenStoreException if {@link #storageFile} exists but cannot be read
+     */
     @Override
     public Optional<String> load() throws TokenStoreException {
         if (!Files.exists(this.storageFile)) {
@@ -60,6 +74,11 @@ public final class FileTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @throws TokenStoreException if {@link #storageFile} exists but cannot be deleted
+     */
     @Override
     public void clear() throws TokenStoreException {
         try {

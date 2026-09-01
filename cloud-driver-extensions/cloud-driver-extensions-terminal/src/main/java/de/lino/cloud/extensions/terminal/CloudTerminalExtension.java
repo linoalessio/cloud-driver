@@ -8,9 +8,9 @@ import java.util.logging.Level;
 
 /**
  * Registers the built-in terminal {@link de.lino.cloud.api.terminal.service.Command}s
- * ({@code exit}, {@code help}, {@code clear}, {@code extensions}, {@code about},
- * {@code screen-leave}, {@code dispatch}) on the host {@link de.lino.cloud.api.CloudDriver}'s
- * {@link CommandService}.
+ * ({@code exit}, {@code help}, {@code clear}, {@code extensions}, {@code statistics},
+ * {@code screen-leave}, {@code dispatch}, {@code cloudUser}, {@code hardReset}) on the
+ * host {@link de.lino.cloud.api.CloudDriver}'s {@link CommandService}.
  */
 public class CloudTerminalExtension extends Extension {
 

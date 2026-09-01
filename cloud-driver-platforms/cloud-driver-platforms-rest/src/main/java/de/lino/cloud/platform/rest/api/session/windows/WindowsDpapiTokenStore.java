@@ -22,8 +22,10 @@ import java.util.concurrent.TimeUnit;
  */
 public final class WindowsDpapiTokenStore implements TokenStore {
 
+    /** The DPAPI-encrypted ciphertext file, under {@code %APPDATA%} (or its home-directory equivalent if unset). */
     private final Path storageFile;
 
+    /** Resolves {@link #storageFile} under {@code %APPDATA%}, falling back to {@code ~/AppData/Roaming} if that variable isn't set. */
     public WindowsDpapiTokenStore() {
         final String appData = System.getenv("APPDATA");
         final Path baseDir = appData != null
@@ -32,6 +34,13 @@ public final class WindowsDpapiTokenStore implements TokenStore {
         this.storageFile = baseDir.resolve("session.dpapi");
     }
 
+    /**
+     * {@inheritDoc} Encrypts {@code token} via DPAPI (PowerShell's {@code ConvertTo-SecureString}/
+     * {@code ConvertFrom-SecureString}) and writes the resulting ciphertext to {@link #storageFile}.
+     *
+     * @throws TokenStoreException if PowerShell fails, or if creating the parent directory or
+     *                              writing {@link #storageFile} fails
+     */
     @Override
     public void save(final String token) throws TokenStoreException {
         final String encrypted = runPowerShell(
@@ -47,6 +56,13 @@ public final class WindowsDpapiTokenStore implements TokenStore {
         }
     }
 
+    /**
+     * {@inheritDoc} Reads the DPAPI ciphertext from {@link #storageFile} and decrypts it back to
+     * plaintext via PowerShell.
+     *
+     * @throws TokenStoreException if {@link #storageFile} exists but cannot be read, or if
+     *                              decrypting it via PowerShell fails
+     */
     @Override
     public Optional<String> load() throws TokenStoreException {
         if (!Files.exists(this.storageFile)) {
@@ -70,6 +86,11 @@ public final class WindowsDpapiTokenStore implements TokenStore {
         return decrypted.isEmpty() ? Optional.empty() : Optional.of(decrypted);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @throws TokenStoreException if {@link #storageFile} exists but cannot be deleted
+     */
     @Override
     public void clear() throws TokenStoreException {
         try {
@@ -83,6 +104,12 @@ public final class WindowsDpapiTokenStore implements TokenStore {
      * Runs {@code script} via {@code powershell -NoProfile -Command -}, feeding {@code stdinInput}
      * on stdin (never as a command-line argument - keeps the raw token out of the process list a
      * tool like Task Manager could otherwise observe) and returning trimmed stdout.
+     *
+     * @param script     the PowerShell script to execute, reading {@code $input} for stdin
+     * @param stdinInput the text to write to the process's standard input
+     * @return the process's trimmed standard output
+     * @throws TokenStoreException if the process can't be started, exits non-zero, doesn't
+     *                              finish within 10s, or this thread is interrupted while waiting for it
      */
     private static String runPowerShell(final String script, final String stdinInput) throws TokenStoreException {
         try {

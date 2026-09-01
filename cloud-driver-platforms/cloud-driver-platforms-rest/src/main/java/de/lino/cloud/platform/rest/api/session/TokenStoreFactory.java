@@ -13,6 +13,7 @@ import de.lino.cloud.platform.rest.api.session.windows.WindowsDpapiTokenStore;
  */
 public final class TokenStoreFactory {
 
+    /** Not instantiable - a pure static factory. */
     private TokenStoreFactory() {
     }
 
@@ -39,7 +40,12 @@ public final class TokenStoreFactory {
         return new Result(new FileTokenStore(), true);
     }
 
-    /** @param usedFallback {@code true} if {@link #store} is {@link FileTokenStore}, not a real OS keychain */
+    /**
+     * The outcome of {@link #create()}.
+     *
+     * @param store        the {@link TokenStore} chosen for the current OS
+     * @param usedFallback {@code true} if {@link #store} is {@link FileTokenStore}, not a real OS keychain
+     */
     public record Result(TokenStore store, boolean usedFallback) {
     }
 

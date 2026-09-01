@@ -99,7 +99,11 @@ public abstract class CloudDriver {
     /** Shuts down every facet owned by this instance. */
     public abstract void shutdown();
 
-    /** Hard reset the entire cloud systems data */
+    /**
+     * Wipes this instance's persisted entity data back to an empty state,
+     * without stopping any running facet or terminating the process. There
+     * is no undo.
+     */
     public abstract void reset();
 
     /**

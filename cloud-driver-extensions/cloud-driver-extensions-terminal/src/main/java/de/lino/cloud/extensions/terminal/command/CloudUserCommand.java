@@ -13,23 +13,44 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Lists and manages {@link de.lino.cloud.api.user.ICloudUser} accounts from the terminal:
+ * {@code cloudUser list} prints every registered account's email, uploaded storage, and file
+ * count; {@code cloudUser info <email>} prints one account's detail; {@code cloudUser reset
+ * <email>} wipes that account's files/folders via {@link ICloudUserService#resetCloudUser};
+ * {@code cloudUser delete <email>} deletes the account entirely via {@link
+ * ICloudUserService#deleteCloudUser}; {@code cloudUser update <email> <bytes>} changes that
+ * account's upload quota via {@link ICloudUserService#updateCloudUserBytesLimit}, rejecting a
+ * non-positive value and a value that would push the whole server's already-stored bytes past
+ * the {@code "cloud-server-max-bytes-available"} configuration limit.
+ */
 public class CloudUserCommand implements Command {
 
+    /** @return {@code "cloudUser"} */
     @Override
     public @NotNull String name() {
         return "cloudUser";
     }
 
+    /** @return {@code "cu"}, {@code "user"} */
     @Override
     public @NotNull List<String> aliases() {
         return List.of("cu", "user");
     }
 
+    /** @return this command's description */
     @Override
     public @NotNull String description() {
         return "Get information about a specific cloud user";
     }
 
+    /**
+     * Dispatches to one of {@code list}/{@code info}/{@code reset}/{@code delete}/{@code
+     * update} based on {@code arguments}' first token, printing a usage message if it is empty
+     * or unrecognized.
+     *
+     * @param arguments the sub-command and its own arguments, split on whitespace
+     */
     @Override
     public void execute(@NotNull CommandArguments arguments) {
 
@@ -153,6 +174,7 @@ public class CloudUserCommand implements Command {
 
     }
 
+    /** Prints this command's usage syntax to the terminal. */
     private void sendHelp() {
         final Terminal terminal = this.terminal();
         terminal.displayApproved("&fcloudUser list");

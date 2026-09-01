@@ -54,7 +54,10 @@ public final class Folder extends Serialized implements Owned {
     @Nullable
     private final String parentFolderId;
 
+    /** When this folder was first created, as epoch milliseconds. */
     private final long createdAtEpochMillis;
+
+    /** When this folder was last renamed or moved, as epoch milliseconds - refreshed by {@link #renamedTo(String)}/{@link #movedTo(String)}. */
     private final long modifiedAtEpochMillis;
 
     /**

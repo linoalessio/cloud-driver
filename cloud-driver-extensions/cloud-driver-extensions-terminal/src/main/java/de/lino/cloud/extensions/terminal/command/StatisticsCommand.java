@@ -12,16 +12,20 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
-/** Displays uptime, uploaded file count, and total storage used. */
+/**
+ * Displays cloud driver-wide statistics: uptime and version, configured server storage
+ * capacity, registered extension count, registered cloud-user count, and total uploaded file
+ * count/storage used.
+ */
 public class StatisticsCommand implements Command {
 
-    /** @return {@code "about"} */
+    /** @return {@code "statistics"} */
     @Override
     public @NotNull String name() {
         return "statistics";
     }
 
-    /** @return {@code "ab"} */
+    /** @return {@code "stats"} */
     @Override
     public @NotNull List<String> aliases() {
         return List.of("stats");
@@ -34,7 +38,11 @@ public class StatisticsCommand implements Command {
     }
 
     /**
-     * Prints uptime, uploaded file count, and used storage.
+     * Prints the host {@link CloudDriver}'s uptime and version, configured maximum server
+     * storage, registered extension count, registered cloud-user count (falling back to
+     * {@code "N/A"} if {@link de.lino.cloud.api.factory.service.IServiceContainer
+     * #getCloudUserService()} is not yet available - i.e. {@code cloud-driver-rest} has not
+     * started), and total uploaded file count/storage used.
      *
      * @param arguments unused
      */

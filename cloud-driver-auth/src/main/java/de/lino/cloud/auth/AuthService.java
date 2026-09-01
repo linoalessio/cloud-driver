@@ -203,7 +203,12 @@ public final class AuthService implements IAuthService {
 
     }
 
-    /** @return a fresh, zero-padded 6-digit numeric code, e.g. {@code "042917"} */
+    /**
+     * Generates a fresh verification code for use by {@link #register}, {@link
+     * #requestPasswordReset}, or {@link #requestEmailChange}.
+     *
+     * @return a fresh, zero-padded 6-digit numeric code, e.g. {@code "042917"}
+     */
     private static String generateVerificationCode() {
         return String.format("%06d", SECURE_RANDOM.nextInt(1_000_000));
     }

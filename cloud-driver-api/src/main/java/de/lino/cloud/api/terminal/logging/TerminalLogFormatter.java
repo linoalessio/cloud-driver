@@ -39,7 +39,12 @@ public final class TerminalLogFormatter extends Formatter {
         return message.toString();
     }
 
-    /** Appends {@code throwable}'s type, message, and stack trace, recursing into its cause. */
+    /**
+     * Appends {@code throwable}'s type, message, and stack trace, recursing into its cause.
+     *
+     * @param throwable the throwable to append
+     * @param message   the buffer to append the formatted throwable to
+     */
     private void appendThrowable(final Throwable throwable, final StringBuilder message) {
         message.append(AnsiColors.translate("&c" + throwable.getClass().getName() + "&8: &7" + throwable.getMessage() + "\n"));
 
