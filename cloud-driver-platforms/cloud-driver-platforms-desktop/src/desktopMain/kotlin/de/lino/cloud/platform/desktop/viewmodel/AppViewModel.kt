@@ -435,6 +435,39 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.refreshCurrentFolder()
     }
 
+    /** One item of a mixed file/folder drop-upload batch - see [uploadDroppedPaths]. */
+    private data class DroppedUploadItem(val uploadName: String, val sourcePath: Path, val sizeBytes: Long)
+
+    /**
+     * Uploads whatever was just dropped onto the file browser from the OS (Finder/Explorer) into
+     * [currentFolderId] - the drag-*into*-the-app counterpart to [moveEntriesToFolder]'s
+     * drag-*within*-the-app move (`FileBrowserScreen`'s `Modifier.dragAndDropTarget` calls this on
+     * a drop). Each plain file in [paths] uploads as-is; each directory is zipped client-side first
+     * via [zipDirectory] - the same "folder upload = zip" convention [uploadFolderAsZip] already
+     * uses, since the server has no folder-tree upload endpoint - and uploaded as `<name>.zip`.
+     * Every item, files and zipped folders alike, runs through one shared [runTransfer] batch, the
+     * same aggregate-progress treatment [uploadFiles] gives a multi-file picker selection - so this
+     * reports through the exact same [transferProgress] bar (rendered by `AuthenticatedShell`
+     * regardless of what triggered it) as every other upload in this app, with no extra wiring.
+     */
+    fun uploadDroppedPaths(paths: List<Path>) = run {
+        if (paths.isEmpty()) return@run
+        val (directories, files) = withContext(Dispatchers.IO) { paths.partition { Files.isDirectory(it) } }
+        val zippedDirectories = directories.map { directory -> directory to zipDirectory(directory) }
+        try {
+            val items = withContext(Dispatchers.IO) {
+                files.map { DroppedUploadItem(it.fileName.toString(), it, Files.size(it)) } +
+                    zippedDirectories.map { (directory, zipPath) -> DroppedUploadItem("${directory.fileName}.zip", zipPath, Files.size(zipPath)) }
+            }
+            this.runTransfer(TransferKind.UPLOAD, items, DroppedUploadItem::sizeBytes) { item, onBytesTransferred ->
+                this.client.uploadFile(item.uploadName, item.sourcePath, this.currentFolderId, onBytesTransferred)
+            }
+        } finally {
+            withContext(Dispatchers.IO) { zippedDirectories.forEach { (_, zipPath) -> Files.deleteIfExists(zipPath) } }
+        }
+        this.refreshCurrentFolder()
+    }
+
     /** Deletes every currently-selected entry - see [deleteEntries]. */
     fun deleteSelected() = this.deleteEntries(this.selected.toList())
 

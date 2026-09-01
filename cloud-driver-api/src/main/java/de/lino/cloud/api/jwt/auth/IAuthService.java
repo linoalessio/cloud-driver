@@ -4,6 +4,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
+import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -55,7 +56,10 @@ public interface IAuthService {
      * AuthService}.
      *
      * @param emailAddress the new account's identifying e-mail address
-     * @param rawPassword the new account's plaintext password, hashed before persistence and never itself retained
+     * @param rawPassword the new account's plaintext password, hashed before persistence and never itself retained -
+     *     must be at least 8 characters and contain a digit, a lowercase letter, an uppercase letter, and a symbol,
+     *     and must not contain {@code ;}, {@code ,}, {@code :}, or {@code `}
+     * @throws InvalidPasswordFormatException if {@code rawPassword} doesn't meet that format requirement
      * @throws EmailAlreadyRegisteredException if an account already exists under {@code emailAddress}
      * @throws DatabaseClientException if persisting the pending registration fails
      * @throws KeyWrapException if the pending registration's data-encryption key cannot be wrapped by the KMS/HSM
@@ -149,8 +153,10 @@ public interface IAuthService {
      *
      * @param emailAddress the e-mail address {@link #requestPasswordReset} was called with
      * @param code the verification code e-mailed to {@code emailAddress}
-     * @param newPassword the caller's chosen new password, hashed before persistence and never itself retained
+     * @param newPassword the caller's chosen new password, hashed before persistence and never itself retained -
+     *     must meet the same format requirement documented on {@link #register}'s own {@code rawPassword} parameter
      * @return a freshly signed JWT asserting the account's id
+     * @throws InvalidPasswordFormatException if {@code newPassword} doesn't meet that format requirement
      * @throws InvalidVerificationCodeException if there is no pending reset under {@code
      *     emailAddress}, it has expired, or {@code code} doesn't match - also thrown (with the
      *     same message) if the pending reset somehow outlives its account, so this method never

@@ -13,6 +13,7 @@ import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
+import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -1402,7 +1403,10 @@ public final class DefaultRestFactory extends RestFactory {
      * expected signup-form feedback, not an enumeration risk), {@link
      * InvalidCredentialsException} - reused by {@link AuthService#register} for a syntactically
      * invalid email/undeliverable domain, not a wrong password here - into {@link
-     * BadRequestResponse} (400), and {@link InvalidVerificationCodeException} - thrown by both
+     * BadRequestResponse} (400), {@link InvalidPasswordFormatException} - thrown by {@link
+     * AuthService#register}/{@link AuthService#confirmPasswordReset} when a caller-chosen
+     * password doesn't meet the format requirement - into {@link BadRequestResponse} (400) as
+     * well, and {@link InvalidVerificationCodeException} - thrown by both
      * {@link AuthService#confirmRegistration} and {@link AuthService#confirmPasswordReset} for a
      * missing/expired/mismatched code - into {@link BadRequestResponse} (400) as well; any other
      * cause is printed directly to {@link System#err} (bypassing this module's own
@@ -1423,6 +1427,9 @@ public final class DefaultRestFactory extends RestFactory {
         }
         if (cause instanceof InvalidCredentialsException invalidCredentials) {
             return new BadRequestResponse(invalidCredentials.getMessage());
+        }
+        if (cause instanceof InvalidPasswordFormatException invalidPasswordFormat) {
+            return new BadRequestResponse(invalidPasswordFormat.getMessage());
         }
         if (cause instanceof InvalidVerificationCodeException invalidVerificationCode) {
             return new BadRequestResponse(invalidVerificationCode.getMessage());

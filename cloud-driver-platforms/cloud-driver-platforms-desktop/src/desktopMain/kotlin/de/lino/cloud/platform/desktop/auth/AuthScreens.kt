@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import de.lino.cloud.platform.desktop.utils.PASSWORD_REQUIREMENT_HINT
+import de.lino.cloud.platform.desktop.utils.isValidPasswordFormat
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import de.lino.cloud.platforms.desktop.cloud_driver_platforms_desktop.generated.resources.Res
 import de.lino.cloud.platforms.desktop.cloud_driver_platforms_desktop.generated.resources.app_icon
@@ -83,6 +85,7 @@ private fun AuthTextField(
     label: String,
     isPassword: Boolean = false,
     isError: Boolean = false,
+    supportingText: String? = null,
 ) {
     OutlinedTextField(
         value = value,
@@ -96,6 +99,7 @@ private fun AuthTextField(
             focusedLabelColor = MaterialTheme.colorScheme.primary,
         ),
         visualTransformation = if (isPassword) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        supportingText = supportingText?.let { text -> { Text(text) } },
         modifier = Modifier.fillMaxWidth(),
     )
 }
@@ -149,10 +153,16 @@ fun RegisterScreen(viewModel: AppViewModel) {
     var confirmPassword by remember { mutableStateOf("") }
 
     val mismatch = confirmPassword.isNotEmpty() && password != confirmPassword
+    val passwordFormatValid = isValidPasswordFormat(password)
+    val showPasswordFormatError = password.isNotEmpty() && !passwordFormatValid
 
     AuthCard("Create account") {
         AuthTextField(email, { email = it }, "Email")
-        AuthTextField(password, { password = it }, "Password", isPassword = true)
+        AuthTextField(
+            password, { password = it }, "Password", isPassword = true,
+            isError = showPasswordFormatError,
+            supportingText = PASSWORD_REQUIREMENT_HINT,
+        )
         AuthTextField(confirmPassword, { confirmPassword = it }, "Confirm password", isPassword = true, isError = mismatch)
 
         if (mismatch) Text("Passwords do not match", color = MaterialTheme.colorScheme.error)
@@ -160,7 +170,7 @@ fun RegisterScreen(viewModel: AppViewModel) {
 
         PrimaryButton(
             text = "Send verification code", busyText = "Sending code...", busy = viewModel.busy,
-            enabled = !viewModel.busy && email.isNotBlank() && password.isNotBlank() && !mismatch,
+            enabled = !viewModel.busy && email.isNotBlank() && passwordFormatValid && !mismatch,
             onClick = { viewModel.register(email, password) },
         )
 
@@ -215,10 +225,16 @@ fun ResetPasswordConfirmScreen(viewModel: AppViewModel, email: String) {
     var confirmPassword by remember { mutableStateOf("") }
 
     val mismatch = confirmPassword.isNotEmpty() && newPassword != confirmPassword
+    val passwordFormatValid = isValidPasswordFormat(newPassword)
+    val showPasswordFormatError = newPassword.isNotEmpty() && !passwordFormatValid
 
     AuthCard("Reset password for $email") {
         AuthTextField(code, { code = it }, "Verification code")
-        AuthTextField(newPassword, { newPassword = it }, "New password", isPassword = true)
+        AuthTextField(
+            newPassword, { newPassword = it }, "New password", isPassword = true,
+            isError = showPasswordFormatError,
+            supportingText = PASSWORD_REQUIREMENT_HINT,
+        )
         AuthTextField(confirmPassword, { confirmPassword = it }, "Confirm new password", isPassword = true, isError = mismatch)
 
         if (mismatch) Text("Passwords do not match", color = MaterialTheme.colorScheme.error)
@@ -226,7 +242,7 @@ fun ResetPasswordConfirmScreen(viewModel: AppViewModel, email: String) {
 
         PrimaryButton(
             text = "Reset password and sign in", busyText = "Resetting...", busy = viewModel.busy,
-            enabled = !viewModel.busy && code.isNotBlank() && newPassword.isNotBlank() && !mismatch,
+            enabled = !viewModel.busy && code.isNotBlank() && passwordFormatValid && !mismatch,
             onClick = { viewModel.confirmPasswordReset(email, code, newPassword) },
         )
 

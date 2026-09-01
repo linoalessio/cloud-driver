@@ -1,8 +1,11 @@
 package de.lino.cloud.platform.desktop.panel
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,26 +62,35 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragData
+import androidx.compose.ui.draganddrop.dragData
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.Entry
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
+import de.lino.cloud.platform.desktop.utils.rememberThumbnail
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import java.awt.FileDialog
 import java.awt.Frame
+import java.net.URI
 import java.nio.file.Path
 import java.time.Instant
 import java.time.ZoneId
@@ -89,6 +102,9 @@ import javax.swing.JOptionPane
 private val ENTRY_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
 
 private fun formatEpochMilli(epochMilli: Long): String = ENTRY_DATE_FORMAT.format(Instant.ofEpochMilli(epochMilli))
+
+/** Two clicks land within this window (system default double-click speed, roughly) to count as a double-click - see `EntryRow`'s own click handling. */
+private const val DOUBLE_CLICK_THRESHOLD_MILLIS = 400L
 
 /**
  * The header's current-location display: a clickable "Home / Folder1 / Folder2" trail mirroring
@@ -155,6 +171,10 @@ private fun chooseDirectory(title: String, initialDirectory: Path? = null): Path
 private fun promptForName(title: String, message: String): String? =
     JOptionPane.showInputDialog(null, message, title, JOptionPane.PLAIN_MESSAGE)?.takeIf { it.isNotBlank() }
 
+// ExperimentalFoundationApi guards Modifier.dragAndDropTarget (external-file-drop support, below);
+// ExperimentalComposeUiApi guards DragAndDropEvent#dragData() - both are the current, non-deprecated
+// Compose Multiplatform drag-and-drop API as of Compose 1.7.1, just not yet stable.
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun FileBrowserScreen(viewModel: AppViewModel) {
     LaunchedEffect(Unit) { viewModel.loadCurrentFolder() }
@@ -166,8 +186,56 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     // still in scope down there.
     var moveDialogEntry by remember { mutableStateOf<Entry?>(null) }
 
+    // The file a double-click was requested for, if any - see EntryRow's own click handling and
+    // FilePreviewDialog. Same "declared at this composable's own top level, rendered outside
+    // AuthenticatedShell's content" shape as moveDialogEntry above, for the same reason.
+    var previewEntry by remember { mutableStateOf<Entry.FileEntry?>(null) }
+
+    // Whether an OS-level drag (from Finder/Explorer) is currently hovering this screen - drives
+    // the highlighted drop-zone overlay below. Purely local, transient UI-gesture state, same
+    // reasoning FileBrowserScreen's own in-app drag state (draggedEntries/hoveredFolderId) is kept
+    // local rather than on AppViewModel.
+    var isExternalDragActive by remember { mutableStateOf(false) }
+
+    // The Modifier.dragAndDropTarget callback object - remembered once (its methods close over
+    // viewModel/isExternalDragActive, both stable across this composable's lifetime) rather than
+    // rebuilt every recomposition. A drop yields a list of `file:` URI strings (readFiles()) -
+    // parsed back into Paths and handed to AppViewModel.uploadDroppedPaths, which uploads a plain
+    // file as-is and zips a dropped directory first, matching this screen's "folder upload = zip"
+    // convention used everywhere else (UploadMenuButton's own "Upload folder" picker).
+    val externalDropTarget = remember {
+        object : DragAndDropTarget {
+            override fun onStarted(event: DragAndDropEvent) { isExternalDragActive = true }
+            override fun onEntered(event: DragAndDropEvent) { isExternalDragActive = true }
+            override fun onExited(event: DragAndDropEvent) { isExternalDragActive = false }
+            override fun onEnded(event: DragAndDropEvent) { isExternalDragActive = false }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                isExternalDragActive = false
+                val droppedPaths = (event.dragData() as? DragData.FilesList)
+                    ?.readFiles()
+                    ?.mapNotNull { uri -> runCatching { Path.of(URI(uri)) }.getOrNull() }
+                    .orEmpty()
+                if (droppedPaths.isEmpty()) return false
+                viewModel.uploadDroppedPaths(droppedPaths)
+                return true
+            }
+        }
+    }
+
     AuthenticatedShell(viewModel) {
-        Column(Modifier.fillMaxSize().padding(24.dp)) {
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(24.dp)
+                    // Drag a file/folder in from the OS anywhere onto this screen to upload it
+                    // straight into the currently open folder - the drag-into-the-app counterpart
+                    // to this screen's existing drag-within-the-app row moving.
+                    .dragAndDropTarget(
+                        shouldStartDragAndDrop = { event -> !viewModel.busy && event.dragData() is DragData.FilesList },
+                        target = externalDropTarget,
+                    ),
+            ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BreadcrumbTrail(viewModel, modifier = Modifier.weight(1f))
                 if (viewModel.busy) {
@@ -270,12 +338,14 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 items(entries, key = { it.id }) { entry ->
                     EntryRow(
                         entry = entry,
+                        client = viewModel.client,
                         selected = viewModel.selected.contains(entry),
                         enabled = !viewModel.busy,
                         isBeingDragged = draggedEntries.any { it.id == entry.id },
                         isDropTarget = entry.id == hoveredFolderId,
                         onToggleSelect = { viewModel.toggleSelected(entry) },
                         onOpen = { if (entry is Entry.FolderEntry) viewModel.openFolder(entry.folder) },
+                        onPreviewRequest = { if (entry is Entry.FileEntry) previewEntry = entry },
                         onRegisterBounds = { bounds -> if (entry is Entry.FolderEntry) rowBounds[entry.id] = bounds },
                         onUnregisterBounds = { if (entry is Entry.FolderEntry) rowBounds.remove(entry.id) },
                         // Dragging an entry that's part of the current multi-selection moves the
@@ -312,11 +382,46 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                     )
                 }
             }
+            }
+
+            if (isExternalDragActive) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                        .border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp))
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        tonalElevation = 6.dp,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 18.dp),
+                        ) {
+                            Icon(Icons.Filled.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "Drop to upload here",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
     moveDialogEntry?.let { entry ->
         MoveToFolderDialog(viewModel = viewModel, entry = entry, onDismiss = { moveDialogEntry = null })
+    }
+
+    previewEntry?.let { entry ->
+        FilePreviewDialog(entry = entry, client = viewModel.client, onDismiss = { previewEntry = null })
     }
 }
 
@@ -515,17 +620,34 @@ private fun SelectionOptionsMenuButton(viewModel: AppViewModel) {
  * rather than [androidx.compose.foundation.ContextMenuArea] (which replaces the platform's own
  * text-selection context menu, not a good fit for a whole row) - it only *observes* the press
  * (never calls `change.consume()`), so left-click/drag handling above is untouched.
+ *
+ * A single click still only opens a folder (via [onOpen], unchanged - a file's single click is a
+ * no-op, same as before this row could preview anything). A **double**-click (two clicks within
+ * [DOUBLE_CLICK_THRESHOLD_MILLIS]) on a file row calls [onPreviewRequest] instead, opening
+ * `FilePreviewDialog` - detected with a plain click-timestamp check inside the same
+ * `.clickable(...)` this row already had, rather than a second `detectTapGestures` `pointerInput`
+ * block, to avoid two independent tap-gesture recognizers racing over the same pointer stream
+ * (this row already layers a long-press-drag detector and a raw-event right-click detector
+ * alongside `.clickable` - both of those coexist safely with it specifically because neither
+ * consumes a plain, quick tap).
+ *
+ * The row's own icon is [iconFor]'s generic per-content-type glyph, except for an image file under
+ * [de.lino.cloud.platform.desktop.utils.isThumbnailable]'s size ceiling - there,
+ * [rememberThumbnail] resolves (downloading+decoding in the background, on first use) a real
+ * thumbnail of the image itself instead.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun EntryRow(
     entry: Entry,
+    client: CloudDriverClient,
     selected: Boolean,
     enabled: Boolean,
     isBeingDragged: Boolean,
     isDropTarget: Boolean,
     onToggleSelect: () -> Unit,
     onOpen: () -> Unit,
+    onPreviewRequest: () -> Unit,
     onRegisterBounds: (Rect) -> Unit,
     onUnregisterBounds: () -> Unit,
     onDragStart: () -> Unit,
@@ -540,6 +662,7 @@ private fun EntryRow(
     var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
     var contextMenuExpanded by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
+    var lastClickTimeMillis by remember { mutableStateOf(0L) }
 
     DisposableEffect(entry.id) {
         onDispose { onUnregisterBounds() }
@@ -585,17 +708,36 @@ private fun EntryRow(
                         }
                     }
                 }
-                .clickable(enabled = enabled, onClick = onOpen)
+                .clickable(enabled = enabled) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastClickTimeMillis <= DOUBLE_CLICK_THRESHOLD_MILLIS) {
+                        lastClickTimeMillis = 0L
+                        onPreviewRequest()
+                    } else {
+                        lastClickTimeMillis = now
+                        onOpen()
+                    }
+                }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Checkbox(checked = selected, onCheckedChange = { onToggleSelect() }, enabled = enabled, modifier = Modifier.width(40.dp))
-            Icon(
-                iconFor(entry),
-                contentDescription = null,
-                tint = if (entry is Entry.FolderEntry) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
+            val thumbnail = rememberThumbnail(entry, client)
+            if (thumbnail != null) {
+                Image(
+                    thumbnail,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(20.dp).clip(RoundedCornerShape(4.dp)),
+                )
+            } else {
+                Icon(
+                    iconFor(entry),
+                    contentDescription = null,
+                    tint = if (entry is Entry.FolderEntry) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
             Spacer(Modifier.width(10.dp))
             Text(entry.name, modifier = Modifier.weight(1f))
             Text(formatEpochMilli(entry.createdAtEpochMilli), modifier = Modifier.width(160.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

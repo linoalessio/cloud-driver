@@ -55,6 +55,13 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+
+            // FilePreviewDialog's in-app PDF/DOCX preview - PDFBox rasterizes a PDF page to a
+            // BufferedImage (converted to a Compose ImageBitmap), POI's XWPFWordExtractor pulls
+            // plain text out of a .docx (formatting is not reproduced - this is a content preview,
+            // not a document renderer). Neither library was previously a dependency of this module.
+            implementation("org.apache.pdfbox:pdfbox:2.0.29")
+            implementation("org.apache.poi:poi-ooxml:5.2.5")
         }
     }
 }

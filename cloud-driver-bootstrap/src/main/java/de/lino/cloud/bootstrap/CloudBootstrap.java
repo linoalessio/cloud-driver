@@ -81,7 +81,7 @@ public final class CloudBootstrap {
 
             Constraints.CLOUD_START_TIME_STAMP.set(System.currentTimeMillis());
             System.out.println(Constraints.CLOUD_DRIVER_BANNER);
-            loadSecurityRequirements();
+            initDefaultFile();
 
             final Runnable[] runnable = new Runnable[] {
 
@@ -117,9 +117,8 @@ public final class CloudBootstrap {
      * in the rest of {@link #main}'s subsystem startup), not as a general-purpose public API.
      *
      * @return the installed {@link CloudDriver}, wrapped in an {@link Optional}
-     * @throws IOException if {@code postgres-database.json} cannot be read
      */
-    static Optional<CloudDriver> initiateCloudDriver() throws IOException {
+    static Optional<CloudDriver> initiateCloudDriver() {
 
         new DefaultFileProvider();
         new DatabaseRepositoryRegistry(false);
@@ -233,12 +232,12 @@ public final class CloudBootstrap {
     }
 
     /**
-     * Uploads {@code architecture/SECURITY_REQUIREMENTS.md} as a {@link StoredFile} under a
+     * Uploads a {@link StoredFile} default file under a
      * fixed id, if not already present.
      *
      * @throws RuntimeException wrapping any I/O, database, or encryption failure
      */
-    private static void loadSecurityRequirements() {
+    private static void initDefaultFile() {
 
         try {
 

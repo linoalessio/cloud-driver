@@ -4,6 +4,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
+import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.jwt.auth.IAuthService;
@@ -47,6 +48,25 @@ public final class AuthService implements IAuthService {
 
     /** RFC-5322-ish email syntax check - deliberately not exhaustive, just enough to reject an obvious typo. */
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+
+    /** The minimum length {@link #requirePasswordFormat} accepts for a caller-chosen password. */
+    private static final int MIN_PASSWORD_LENGTH = 8;
+
+    /**
+     * Characters a caller-chosen password may never contain, checked by {@link
+     * #requirePasswordFormat} - not delimiters this class itself uses internally, but excluded
+     * defensively since a password containing one could collide with a delimiter/quoting
+     * convention elsewhere in the system (CSV/log exports, the terminal package's
+     * whitespace-split command parsing, etc.).
+     */
+    private static final String FORBIDDEN_PASSWORD_CHARACTERS = ";,:`";
+
+    /**
+     * The symbol characters {@link #requirePasswordFormat} accepts as satisfying its "at least
+     * one symbol" requirement - ordinary printable ASCII punctuation, deliberately excluding
+     * every character in {@link #FORBIDDEN_PASSWORD_CHARACTERS}.
+     */
+    private static final String ALLOWED_PASSWORD_SYMBOLS = "!\"#$%&'()*+-./<=>?@[\\]^_{|}~";
 
     /** How long a JWT issued by {@link #login}/{@link #confirmRegistration} remains valid: 12 hours. */
     private static final long ACCESS_TOKEN_TTL_SECONDS = Duration.ofHours(12).getSeconds(); // 12h
@@ -124,6 +144,9 @@ public final class AuthService implements IAuthService {
      * @param emailAddress the new account's email address, also its login identifier
      * @param rawPassword the chosen password; hashed via {@link PasswordHasher#hash} before
      *     persistence, never stored or retained in plain form
+     * @throws InvalidPasswordFormatException if {@code rawPassword} doesn't meet {@link
+     *     #requirePasswordFormat}'s requirement - checked first, before any DNS/database access,
+     *     since it's the cheapest of this method's checks and needs neither
      * @throws InvalidCredentialsException if {@code emailAddress} fails the syntax check or its
      *     domain has no MX record
      * @throws EmailAlreadyRegisteredException if an {@link AuthUser} already exists under {@code emailAddress}
@@ -132,6 +155,8 @@ public final class AuthService implements IAuthService {
      */
     @Override
     public void register(@NonNull final String emailAddress, final char @NonNull [] rawPassword) throws DatabaseClientException, KeyWrapException {
+
+        requirePasswordFormat(rawPassword);
 
         if (!EMAIL_PATTERN.matcher(emailAddress).matches())
             throw new InvalidCredentialsException("Invalid email address: " + emailAddress);
@@ -181,6 +206,54 @@ public final class AuthService implements IAuthService {
     /** @return a fresh, zero-padded 6-digit numeric code, e.g. {@code "042917"} */
     private static String generateVerificationCode() {
         return String.format("%06d", SECURE_RANDOM.nextInt(1_000_000));
+    }
+
+    /**
+     * Enforces the password format rule shared by {@link #register} and {@link
+     * #confirmPasswordReset}: at least {@link #MIN_PASSWORD_LENGTH} characters, containing at
+     * least one digit, one lowercase letter, one uppercase letter, and one symbol (from {@link
+     * #ALLOWED_PASSWORD_SYMBOLS}), and containing none of {@link #FORBIDDEN_PASSWORD_CHARACTERS}
+     * anywhere.
+     *
+     * <p>Scans {@code rawPassword} directly, character by character, rather than first copying it
+     * into a {@link String} (as a regex-based check would need to) - an immutable {@code String}
+     * can never be cleared from memory the way a {@code char[]} can, so this avoids creating a
+     * second, longer-lived copy of the caller's chosen password purely to validate its shape.
+     *
+     * @param rawPassword the candidate password to validate
+     * @throws InvalidPasswordFormatException if {@code rawPassword} is too short, contains a
+     *     forbidden character, or is missing one of the required character categories - the
+     *     message never echoes {@code rawPassword} itself
+     */
+    private static void requirePasswordFormat(final char[] rawPassword) {
+        if (rawPassword.length < MIN_PASSWORD_LENGTH) {
+            throw new InvalidPasswordFormatException("Password must be at least " + MIN_PASSWORD_LENGTH + " characters long");
+        }
+
+        boolean hasDigit = false;
+        boolean hasLowercase = false;
+        boolean hasUppercase = false;
+        boolean hasSymbol = false;
+
+        for (final char character : rawPassword) {
+            if (FORBIDDEN_PASSWORD_CHARACTERS.indexOf(character) >= 0) {
+                throw new InvalidPasswordFormatException("Password must not contain ';', ',', ':', or '`'");
+            }
+            if (Character.isDigit(character)) {
+                hasDigit = true;
+            } else if (Character.isLowerCase(character)) {
+                hasLowercase = true;
+            } else if (Character.isUpperCase(character)) {
+                hasUppercase = true;
+            } else if (ALLOWED_PASSWORD_SYMBOLS.indexOf(character) >= 0) {
+                hasSymbol = true;
+            }
+        }
+
+        if (!hasDigit || !hasLowercase || !hasUppercase || !hasSymbol) {
+            throw new InvalidPasswordFormatException(
+                    "Password must contain at least one number, one lowercase letter, one uppercase letter, and one symbol");
+        }
     }
 
     /**
@@ -419,6 +492,8 @@ public final class AuthService implements IAuthService {
      * @param newPassword the caller's chosen new password, hashed via {@link PasswordHasher#hash}
      *     before persistence, never stored or retained in plain form
      * @return a freshly signed JWT asserting the matched {@link AuthUser#getId()}
+     * @throws InvalidPasswordFormatException if {@code newPassword} doesn't meet {@link
+     *     #requirePasswordFormat}'s requirement - checked first, before any database access
      * @throws InvalidVerificationCodeException if there is no pending reset under {@code
      *     emailAddress}, it has expired, {@code code} doesn't match, or (defense-in-depth) the
      *     account itself no longer exists
@@ -429,6 +504,8 @@ public final class AuthService implements IAuthService {
     @Override
     public String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
             throws DatabaseClientException, KeyWrapException {
+
+        requirePasswordFormat(newPassword);
 
         final Optional<PendingPasswordReset> pendingOpt;
         try {
