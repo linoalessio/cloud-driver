@@ -5,13 +5,25 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 
 /**
  * Extracts [zipPath]'s entries into [destinationDirectory] (created if missing), recreating the
  * archive's own internal folder structure on disk - the read-side counterpart to [zipDirectory],
  * backing `AppViewModel.extractArchive`'s "double-click a zip to unarchive it into the current
  * folder" behavior.
+ *
+ * Reads via [ZipFile] (random-access, resolves entries off the archive's central directory) -
+ * **not** `java.util.zip.ZipInputStream`, which was tried first and rejected a real downloaded
+ * archive with `ZipException: only DEFLATED entries can have EXT descriptor`: several real-world
+ * zip tools set the streaming "data descriptor follows" flag bit on a non-`DEFLATED` (e.g. a
+ * `STORED` directory) entry, which `ZipInputStream`'s stricter, sequential reader rejects outright
+ * even though the archive is otherwise perfectly valid. [ZipFile] never has to trust that flag -
+ * it reads each entry's real size/offset from the central directory at the end of the file - so
+ * it isn't affected by this class of malformed-but-common archive. This only works because
+ * [zipPath] is always a real local file by the time this is called ([AppViewModel.extractArchive]
+ * downloads the archive to a temp file first) - [ZipFile] needs random access, unlike
+ * `ZipInputStream`, which could read directly off a network stream.
  *
  * Rejects ("zip slip" protection) any entry whose resolved path would land outside
  * [destinationDirectory] rather than writing it - an entry name inside a zip is untrusted input
@@ -28,9 +40,8 @@ import java.util.zip.ZipInputStream
  */
 suspend fun extractZip(zipPath: Path, destinationDirectory: Path): Unit = withContext(Dispatchers.IO) {
     Files.createDirectories(destinationDirectory)
-    ZipInputStream(Files.newInputStream(zipPath)).use { zis ->
-        var entry = zis.nextEntry
-        while (entry != null) {
+    ZipFile(zipPath.toFile()).use { zipFile ->
+        for (entry in zipFile.entries()) {
             val entryName = entry.name.replace('\\', '/')
             val resolved = destinationDirectory.resolve(entryName).normalize()
             if (!resolved.startsWith(destinationDirectory)) {
@@ -40,10 +51,10 @@ suspend fun extractZip(zipPath: Path, destinationDirectory: Path): Unit = withCo
                 Files.createDirectories(resolved)
             } else {
                 Files.createDirectories(resolved.parent)
-                Files.newOutputStream(resolved).use { out -> zis.copyTo(out) }
+                zipFile.getInputStream(entry).use { input ->
+                    Files.newOutputStream(resolved).use { out -> input.copyTo(out) }
+                }
             }
-            zis.closeEntry()
-            entry = zis.nextEntry
         }
     }
 }

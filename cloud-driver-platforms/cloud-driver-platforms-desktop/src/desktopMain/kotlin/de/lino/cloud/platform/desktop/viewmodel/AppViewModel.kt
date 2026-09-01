@@ -29,8 +29,14 @@ import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Which kind of batch transfer [AppViewModel.transferProgress] is currently reporting on. */
-enum class TransferKind { UPLOAD, DOWNLOAD }
+/**
+ * Which kind of batch transfer [AppViewModel.transferProgress] is currently reporting on.
+ * [EXTRACT] covers both halves of [AppViewModel.extractArchive] (downloading the archive, then
+ * re-uploading its extracted contents) under one label - from the user's perspective "unarchiving"
+ * is a single action, even though it's two sequential [AppViewModel.runTransfer] batches under
+ * the hood (see that function's own Javadoc for why a genuinely single batch isn't possible here).
+ */
+enum class TransferKind { UPLOAD, DOWNLOAD, EXTRACT }
 
 /**
  * A snapshot of an in-flight upload/download batch - [AppViewModel.transferProgress] is `null`
@@ -472,43 +478,75 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     /**
      * The desktop app's "double-click a ZIP archive to unarchive it" behavior (see
      * `FileBrowserScreen`'s `EntryRow` double-click wiring, gated on
-     * [de.lino.cloud.platform.desktop.utils.isZipArchive]): downloads [entry] to a throwaway temp
-     * file, extracts it into a fresh temp directory via [extractZip], then recreates its entire
-     * contents - every folder and file, nested structure included - directly inside the current
-     * folder via [uploadDirectoryTreeInto]. The archive file itself is left in place; extraction
-     * only adds new entries alongside it, per this app's "never silently delete something the user
-     * didn't ask to delete" convention.
+     * [de.lino.cloud.platform.desktop.utils.isZipArchive]), reporting real byte-level progress via
+     * [transferProgress] the whole way through - as two sequential [runTransfer] batches, both
+     * under [TransferKind.EXTRACT]:
+     *
+     * 1. Downloads [entry] to a throwaway temp file - a one-item batch, the same "one logical item,
+     *    still real byte progress" shape [uploadFolderAsZip] already uses for its own single-file
+     *    upload.
+     * 2. Extracts it into a fresh temp directory via [extractZip] (fast, local, no network - no
+     *    progress reporting needed, same as [zipDirectory]'s own write-side equivalent), then
+     *    recreates its entire contents - every folder and file, nested structure included -
+     *    directly inside the current folder: [planAndCreateDirectoryTree] creates every needed
+     *    remote subfolder up front and returns one flat list of files-to-upload with sizes already
+     *    known, which a second batch then uploads with one aggregated percentage across the whole
+     *    tree - the same "plan first, so `runTransfer` never has to guess a total up front" shape
+     *    [planDownload]/[downloadEntries] already use.
+     *
+     * A genuinely single [runTransfer] batch spanning both phases isn't possible here: the
+     * upload phase's item list (and therefore its total byte count) only exists *after* phase 1's
+     * download has completed and been extracted - unlike every other batch in this app, where
+     * every item's size is already known before the batch starts.
+     *
+     * The archive file itself is left in place - extraction only adds new entries alongside it,
+     * per this app's "never silently delete something the user didn't ask to delete" convention.
      */
     fun extractArchive(entry: Entry.FileEntry) = run {
         val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-extract") }
         val archiveTempFile = tempDir.resolve(entry.name)
         val extractedDir = tempDir.resolve("extracted")
         try {
-            this.client.downloadFileToPath(entry.id, archiveTempFile)
+            this.runTransfer(TransferKind.EXTRACT, listOf(entry), Entry.FileEntry::sizeBytes) { _, onBytesTransferred ->
+                this.client.downloadFileToPath(entry.id, archiveTempFile, onBytesTransferred)
+            }
             extractZip(archiveTempFile, extractedDir)
-            this.uploadDirectoryTreeInto(extractedDir, this.currentFolderId)
+            val plannedUploads = this.planAndCreateDirectoryTree(extractedDir, this.currentFolderId)
+            this.runTransfer(TransferKind.EXTRACT, plannedUploads, PlannedUpload::sizeBytes) { item, onBytesTransferred ->
+                this.client.uploadFile(item.localPath.fileName.toString(), item.localPath, item.remoteFolderId, onBytesTransferred)
+            }
         } finally {
             withContext(Dispatchers.IO) { tempDir.toFile().deleteRecursively() }
         }
         this.refreshCurrentFolder()
     }
 
+    /** One file's worth of a planned archive-extraction upload batch - see [planAndCreateDirectoryTree]. */
+    private data class PlannedUpload(val localPath: Path, val remoteFolderId: String?, val sizeBytes: Long)
+
     /**
-     * Recursively uploads every file/subfolder directly inside [localDirectory] into
-     * [remoteParentFolderId] (`null` = root) - the local-filesystem-sourced counterpart to
-     * [duplicateFolderInto]'s "create the folder remotely first, then recurse into it" shape.
-     * Files at each level upload concurrently (capped - see [mapConcurrently]); each subdirectory
-     * is likewise processed concurrently with its siblings, but its own remote folder must exist
-     * before recursing into it (a child file/folder needs a real parent id to upload/create under).
+     * Recursively creates every subfolder directly/transitively inside [localDirectory] under
+     * [remoteParentFolderId] (`null` = root), and flattens every plain file into one
+     * [PlannedUpload] list with its size already known (a local [Files.size] read) - the "plan"
+     * half of [extractArchive]'s two-phase extraction, split out from the actual upload so
+     * [runTransfer] can report one accurate, aggregated percentage across the whole tree instead
+     * of restarting per subfolder. Mirrors [duplicateFolderInto]'s own "create the folder remotely
+     * first, then recurse into it" shape, just sourced from the local filesystem instead of
+     * another remote folder. Subdirectories are processed concurrently with their siblings (capped
+     * - see [mapConcurrently]), each after its own remote folder is created (a child file/folder
+     * needs a real parent id to upload/create under).
      */
-    private suspend fun uploadDirectoryTreeInto(localDirectory: Path, remoteParentFolderId: String?) {
+    private suspend fun planAndCreateDirectoryTree(localDirectory: Path, remoteParentFolderId: String?): List<PlannedUpload> {
         val children = withContext(Dispatchers.IO) { Files.list(localDirectory).use { it.toList() } }
         val (directories, files) = children.partition { Files.isDirectory(it) }
-        files.mapConcurrently { file -> this.client.uploadFile(file.fileName.toString(), file, remoteParentFolderId) }
-        directories.mapConcurrently { directory ->
-            val remoteFolder = this.client.createFolder(directory.fileName.toString(), remoteParentFolderId)
-            this.uploadDirectoryTreeInto(directory, remoteFolder.folderId())
+        val filePlans = withContext(Dispatchers.IO) {
+            files.map { file -> PlannedUpload(file, remoteParentFolderId, Files.size(file)) }
         }
+        val nestedPlans = directories.mapConcurrently { directory ->
+            val remoteFolder = this.client.createFolder(directory.fileName.toString(), remoteParentFolderId)
+            this.planAndCreateDirectoryTree(directory, remoteFolder.folderId())
+        }
+        return filePlans + nestedPlans.flatten()
     }
 
     /** Deletes every currently-selected entry - see [deleteEntries]. */

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -76,6 +77,9 @@ fun AuthenticatedShell(viewModel: AppViewModel, content: @Composable () -> Unit)
  * A status bar fixed to the bottom of the window while [progress] is non-`null` - a determinate
  * [LinearProgressIndicator] (real byte-level progress, not an indeterminate spinner; see
  * [TransferProgress.fraction]) plus a short label ("Uploading 2 of 5 files - 3.10 MB / 7.40 MB").
+ * [TransferKind.EXTRACT] (`AppViewModel.extractArchive`'s two-phase download-then-upload) shows
+ * as "Extracting" throughout both phases, rather than switching between "Downloading"/"Uploading"
+ * mid-operation - from the user's perspective it's one "unarchive" action, not two.
  */
 @Composable
 private fun TransferProgressBar(progress: TransferProgress) {
@@ -87,13 +91,21 @@ private fun TransferProgressBar(progress: TransferProgress) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                if (progress.kind == TransferKind.UPLOAD) Icons.Filled.CloudUpload else Icons.Filled.CloudDownload,
+                when (progress.kind) {
+                    TransferKind.UPLOAD -> Icons.Filled.CloudUpload
+                    TransferKind.DOWNLOAD -> Icons.Filled.CloudDownload
+                    TransferKind.EXTRACT -> Icons.Filled.FolderZip
+                },
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(16.dp),
             )
             Spacer(Modifier.width(8.dp))
-            val verb = if (progress.kind == TransferKind.UPLOAD) "Uploading" else "Downloading"
+            val verb = when (progress.kind) {
+                TransferKind.UPLOAD -> "Uploading"
+                TransferKind.DOWNLOAD -> "Downloading"
+                TransferKind.EXTRACT -> "Extracting"
+            }
             Text(
                 "$verb ${progress.completedFiles} of ${progress.totalFiles} file${if (progress.totalFiles == 1) "" else "s"} - " +
                     "${formatBytes(progress.transferredBytes)} / ${formatBytes(progress.totalBytes)}",
