@@ -4,6 +4,7 @@ import com.google.common.collect.Maps;
 import com.google.gson.Gson;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.file.Folder;
@@ -26,6 +27,7 @@ import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
+import de.lino.database.json.JsonDocument;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 import io.javalin.http.*;
@@ -102,6 +104,31 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String FOLDERS_PATH = "/folders";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
+    /**
+     * Path prefix every {@code /auth/*} route falls under - checked by {@link
+     * #requireWithinAuthRateLimit}, which applies to all seven {@code /auth/*} routes alike
+     * (the five exempted from {@link #requireValidBearerToken} <em>and</em> the two
+     * bearer-gated change-email ones), since a leaked/stolen bearer token could otherwise
+     * still be used to spam email-change requests with no limit at all.
+     */
+    private static final String AUTH_PATH_PREFIX = "/auth/";
+    /** {@code configuration.json} key {@link #resolveAuthRateLimitMaxRequests} reads the per-window request cap from. */
+    private static final String AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY = "auth-rate-limit-max-requests";
+    /** {@code configuration.json} key {@link #resolveAuthRateLimitWindowSeconds} reads the window length (seconds) from. */
+    private static final String AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY = "auth-rate-limit-window-seconds";
+    /**
+     * Default {@code /auth/*} per-IP request cap per {@link #DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS}-second
+     * window, used when {@link #AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY} isn't set. Reasoning: a
+     * genuine user fat-fingering a password or a verification code a handful of times should never
+     * be rate-limited (login/register/reset each only need a couple of attempts in normal use), but
+     * an automated credential-stuffing/enumeration attempt needs hundreds-to-thousands of attempts
+     * to be worth running at all - 10 requests per 5 minutes per IP sits comfortably above the
+     * former and far below the latter, without needing an account-level lockout (which is itself an
+     * abuse vector - locking a victim out by deliberately failing their login).
+     */
+    private static final int DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS = 10;
+    /** Default {@code /auth/*} rate-limit window, in seconds - see {@link #DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS}'s reasoning. */
+    private static final long DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS = 300L;
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
@@ -209,6 +236,30 @@ public final class DefaultRestFactory extends RestFactory {
 
     /** The running Javalin desktop, or {@code null} before {@link #start} / after {@link #stop}. */
     private volatile Javalin app;
+
+    /**
+     * Per-client-IP fixed-window request counters backing {@link #requireWithinAuthRateLimit} -
+     * a plain in-process {@link ConcurrentHashMap}, matching this codebase's existing "not for
+     * massive scale, sufficient for a single-process deployment" trade-off elsewhere ({@code
+     * InMemoryPendingUploadCache}, the desktop app's {@code ThumbnailCache}). No eviction: a long
+     * enough uptime accumulates one entry per distinct IP that has ever hit {@code /auth/*} - each
+     * entry is a handful of bytes, so this isn't a practical memory concern at this deployment's
+     * scale, but a future multi-tenant/high-traffic deployment would want to evict stale entries.
+     */
+    private final ConcurrentHashMap<String, AuthRateLimitBucket> authRateLimitBuckets = new ConcurrentHashMap<>();
+
+    /**
+     * One client IP's current fixed-window {@code /auth/*} request count. {@code windowStartEpochMillis}
+     * and {@code count} are only ever read/mutated while synchronized on the instance (see {@link
+     * #requireWithinAuthRateLimit}) - a fixed window (not a sliding one/token bucket) was chosen
+     * deliberately for simplicity, at the cost of allowing a burst of up to {@code 2x} the
+     * configured limit right at a window boundary; acceptable for this use case (slowing down
+     * brute-forcing/spam, not a hard security perimeter).
+     */
+    private static final class AuthRateLimitBucket {
+        private long windowStartEpochMillis = System.currentTimeMillis();
+        private int count;
+    }
 
     /**
      * Every route is left open - no API-key check at all. Only appropriate
@@ -389,6 +440,7 @@ public final class DefaultRestFactory extends RestFactory {
             }
 
             if (this.authService != null) {
+                config.routes.before(this::requireWithinAuthRateLimit);
                 config.routes.post(LOGIN_PATH, this::handleLogin);
                 config.routes.post(REGISTER_PATH, this::handleRegister);
                 config.routes.post(REGISTER_CONFIRM_PATH, this::handleConfirmRegistration);
@@ -545,6 +597,75 @@ public final class DefaultRestFactory extends RestFactory {
         if (!isAdmin) {
             throw new ForbiddenResponse("Admin privileges required");
         }
+    }
+
+    /**
+     * Javalin {@code before} filter capping {@code /auth/*} request volume per client IP, via a
+     * fixed-window counter ({@link AuthRateLimitBucket}) keyed by {@link Context#ip()}. Applies to
+     * all seven {@code /auth/*} routes ({@link #AUTH_PATH_PREFIX}) alike - both the five exempted
+     * from {@link #requireValidBearerToken} (an anonymous caller has nothing else to key a limit
+     * on) and the two bearer-gated change-email routes (a stolen/leaked token shouldn't get
+     * unlimited free e-mail-change attempts either). Registered as the very first {@code before}
+     * filter (ahead of {@link #requireValidBearerToken}/{@link #requireAdmin}) so an over-limit
+     * caller is rejected before this instance does any other work on the request.
+     *
+     * <p>This is deliberately a defense against brute-forcing/spam volume, not a hard security
+     * perimeter: {@link Context#ip()} is the immediate TCP peer address, which a caller behind a
+     * shared NAT/reverse proxy may share with many unrelated legitimate users (a false-positive
+     * risk, not a bypass), and a caller with access to many IPs can trivially spread requests
+     * across them (a real bypass, accepted the same way this codebase accepts {@link
+     * de.lino.cloud.plugin.connectivity.InternetConnectivityChecker}-style "good enough, not
+     * bulletproof" trade-offs elsewhere).
+     *
+     * @throws TooManyRequestsResponse if this IP has exceeded {@link
+     *     #resolveAuthRateLimitMaxRequests()} requests within the current {@link
+     *     #resolveAuthRateLimitWindowSeconds()}-second window
+     */
+    private void requireWithinAuthRateLimit(@NotNull final Context ctx) {
+        if (!ctx.path().startsWith(AUTH_PATH_PREFIX)) {
+            return;
+        }
+        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(ctx.ip(), ignored -> new AuthRateLimitBucket());
+        final long windowMillis = resolveAuthRateLimitWindowSeconds() * 1000L;
+        final int maxRequests = resolveAuthRateLimitMaxRequests();
+        synchronized (bucket) {
+            final long now = System.currentTimeMillis();
+            if (now - bucket.windowStartEpochMillis >= windowMillis) {
+                bucket.windowStartEpochMillis = now;
+                bucket.count = 0;
+            }
+            bucket.count++;
+            if (bucket.count > maxRequests) {
+                throw new TooManyRequestsResponse(
+                        "Too many authentication requests from this address - try again later");
+            }
+        }
+    }
+
+    /**
+     * Reads {@link #AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY} from {@link
+     * CloudDriver#getConfiguration()}, defaulting to {@link #DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS}
+     * if unset - same {@link JsonDocument#contains}-checked-first convention {@link
+     * de.lino.cloud.auth.entity.CloudUser#getMaxBytesToUpload()}'s own config resolution uses,
+     * since {@link JsonDocument#getInteger} throws on a missing key rather than defaulting.
+     */
+    private static int resolveAuthRateLimitMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS;
+    }
+
+    /**
+     * Reads {@link #AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY} from {@link
+     * CloudDriver#getConfiguration()}, defaulting to {@link #DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS}
+     * if unset - same convention as {@link #resolveAuthRateLimitMaxRequests()}.
+     */
+    private static long resolveAuthRateLimitWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS;
     }
 
     /**
