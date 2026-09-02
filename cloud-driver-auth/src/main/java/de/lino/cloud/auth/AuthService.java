@@ -536,7 +536,7 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.confirmPasswordReset: failed to look up account for " + emailAddress, e);
         }
 
-        final AuthUser updated = new AuthUser(existing.getId(), existing.getEmailAddress(), this.hasher.hash(newPassword));
+        final AuthUser updated = new AuthUser(existing.getId(), existing.getEmailAddress(), this.hasher.hash(newPassword), existing.isAdmin());
         this.dataFactory.update(updated);
         this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
 
@@ -659,9 +659,31 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.confirmEmailChange: failed to look up account " + authUserId, e);
         }
 
-        final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash());
+        final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash(), existing.isAdmin());
         this.dataFactory.update(updated);
         this.dataFactory.delete(authUserId, PendingEmailChange.class);
+    }
+
+    /**
+     * Grants or revokes the {@link AuthUser#isAdmin()} flag for {@code authUserId} - the only
+     * writer of that field anywhere in this codebase (see {@link AuthUser#isAdmin()}'s own
+     * Javadoc: never reachable via any REST route, only this method, called from a terminal
+     * {@code Command} by the operator console).
+     *
+     * @param authUserId the account to grant/revoke admin on
+     * @param isAdmin the new admin flag value
+     * @throws IllegalArgumentException if no account exists under {@code authUserId}
+     */
+    @Override
+    public void setAdmin(@NonNull final String authUserId, final boolean isAdmin) {
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new IllegalArgumentException("no AuthUser with id " + authUserId));
+            this.dataFactory.update(existing.withAdmin(isAdmin));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.setAdmin: failed to update admin flag for " + authUserId, e);
+        }
     }
 
 }

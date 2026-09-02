@@ -85,6 +85,31 @@ public interface ICloudUserService {
     void updateCloudUserBytesLimit(@NonNull String authUserId, final long delta);
 
     /**
+     * One-off, operator-triggered backfill/repair for {@code authUserId}'s {@link
+     * ICloudUser#getCurrentUploadedBytes()}: recomputes it from scratch as the sum of every
+     * currently-tracked {@link de.lino.cloud.api.file.StoredFile}'s recorded size (including
+     * files currently in the trash, which still occupy storage until a purge job removes them -
+     * see {@code CloudUserService#deleteFile}'s Javadoc for why trashing alone never decrements
+     * this total), then persists the result as a direct overwrite - unlike {@link
+     * #updateCloudUserBytesUsage(String, long)}, which only ever applies a relative delta. A
+     * row written before per-row size metadata was captured (see {@code
+     * StoredFileOwnership#hasMetadata()}) is skipped, the same limitation {@code
+     * updateCloudUserBytesUsage}'s own Javadoc already documents for such rows - so an account
+     * with any pre-metadata rows may still under-report after this runs, until those specific
+     * rows are individually backfilled (e.g. by being listed once via {@link
+     * #listFileSummaries(String)}, which backfills metadata as a side effect).
+     *
+     * <p>Never called automatically - reachable only via the {@code recomputeStorage} terminal
+     * {@code Command} (see {@code cloud-driver-extensions-terminal}), matching {@code
+     * HardResetCommand}'s "run it deliberately" precedent. A no-op, returning {@code 0}, if
+     * {@code authUserId} has no {@link ICloudUser} record yet.
+     *
+     * @param authUserId the account whose running total to recompute
+     * @return the newly-computed and persisted {@link ICloudUser#getCurrentUploadedBytes()} value
+     */
+    long recomputeUploadedBytes(@NonNull String authUserId);
+
+    /**
      * Uploads {@code fileName}/{@code content} as a new {@link StoredFile} and tracks
      * it on {@code authUserId}'s {@link ICloudUser} record.
      *

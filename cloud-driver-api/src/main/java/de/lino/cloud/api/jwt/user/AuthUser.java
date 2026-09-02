@@ -46,7 +46,24 @@ public final class AuthUser extends Serialized {
     private final String passwordHash;
 
     /**
-     * Constructs an account record for an already-hashed password.
+     * Whether this account carries the (single, boolean) admin flag - {@code false} for every
+     * account by default, including one deserialized from a database row written before this
+     * field existed (Gson leaves an absent JSON property at its type's default, and a freshly
+     * registered account only ever goes through the 3-arg {@link #AuthUser(String, String,
+     * String)} constructor below, which fixes it at {@code false} too). Deliberately a single
+     * boolean rather than a roles/permissions system - see {@code architecture/SERVICES.md}
+     * item 5's own reasoning for why a fuller RBAC model isn't warranted at this codebase's
+     * scale. Settable only via {@link #withAdmin(boolean)} (never a REST route - see {@code
+     * DefaultRestFactory}'s {@code /admin/authUsers} routes, which only ever read this field);
+     * the only writer is a new terminal {@code Command}, granting/revoking it from the operator
+     * console.
+     */
+    private final boolean isAdmin;
+
+    /**
+     * Constructs an account record for an already-hashed password, with {@link #isAdmin} fixed
+     * at {@code false} - every account created through registration starts as a non-admin; use
+     * {@link #withAdmin(boolean)} to change that afterward.
      *
      * @param id this account's unique id, its {@link #primaryKey()}
      * @param emailAddress this account's identifying email address
@@ -54,9 +71,40 @@ public final class AuthUser extends Serialized {
      * @throws NullPointerException if any argument is {@code null}
      */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash) {
+        this(id, emailAddress, passwordHash, false);
+    }
+
+    /**
+     * Constructs an account record for an already-hashed password with an explicit {@link
+     * #isAdmin} value - used by {@link #withAdmin(boolean)} and by any caller reconstructing an
+     * existing account (e.g. after a password/email change) that must carry the flag forward
+     * rather than silently resetting it to {@code false}.
+     *
+     * @param id this account's unique id, its {@link #primaryKey()}
+     * @param emailAddress this account's identifying email address
+     * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password
+     * @param isAdmin this account's admin flag
+     * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
+     */
+    public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash, final boolean isAdmin) {
         this.id = Objects.requireNonNull(id, "@AuthUser.init: id cannot be null");
         this.emailAddress = Objects.requireNonNull(emailAddress, "@AuthUser.init: username cannot be null");
         this.passwordHash = Objects.requireNonNull(passwordHash, "@AuthUser.init: passwordHash cannot be null");
+        this.isAdmin = isAdmin;
+    }
+
+    /**
+     * Returns a copy of this account with {@link #isAdmin} set to {@code isAdmin} - the
+     * immutable "return a new instance" convention this codebase's other entities ({@code
+     * Folder#renamedTo}/{@code #movedTo}) already use, rather than a mutable setter. The caller
+     * persists the returned copy via {@code DataFactory#update}.
+     *
+     * @param isAdmin the new admin flag value
+     * @return a copy of this account with {@link #isAdmin} changed to {@code isAdmin}
+     */
+    @NotNull
+    public AuthUser withAdmin(final boolean isAdmin) {
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin);
     }
 
     /** @return this entity's primary key, {@link #id} */

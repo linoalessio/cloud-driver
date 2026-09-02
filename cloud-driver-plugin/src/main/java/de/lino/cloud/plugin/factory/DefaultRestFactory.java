@@ -16,6 +16,7 @@ import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.rest.Owned;
+import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
@@ -101,6 +102,10 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String FOLDERS_PATH = "/folders";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
+    /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
+    private static final String ADMIN_PATH_PREFIX = "/admin/";
+    /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
+    private static final String ADMIN_AUTH_USERS_PATH = "/admin/authUsers";
     /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
     /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
@@ -392,6 +397,10 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(CHANGE_EMAIL_PATH, this::handleRequestEmailChange);
                 config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
                 config.routes.before(this::requireValidBearerToken);
+
+                config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
+                config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
+                config.routes.before(this::requireAdmin);
             }
 
             if (this.cloudUserService != null) {
@@ -503,6 +512,38 @@ public final class DefaultRestFactory extends RestFactory {
             ctx.attribute(USER_ID_ATTRIBUTE, userId);
         } catch (final InvalidJwtException e) {
             throw new UnauthorizedResponse("Invalid or expired token");
+        }
+    }
+
+    /**
+     * Gates every {@link #ADMIN_PATH_PREFIX}-prefixed route ({@link #ADMIN_AUTH_USERS_PATH} and
+     * its {@code /{id}} sibling) behind {@link de.lino.cloud.api.jwt.user.AuthUser#isAdmin()},
+     * in addition to (registered after, so it always runs after) {@link
+     * #requireValidBearerToken}'s own check - a non-admin caller with an otherwise perfectly
+     * valid bearer token is still rejected here. Runs as a global {@code before} filter (the
+     * same "global filter, branch on {@link Context#path()} internally" shape {@link
+     * #requireValidBearerToken} already uses) rather than a path-scoped one, since a global
+     * filter's ordering relative to {@link #requireValidBearerToken} is simpler to reason about
+     * than two independently-path-scoped filters racing to run first.
+     *
+     * <p>Resolves the caller's own {@link de.lino.cloud.api.jwt.user.AuthUser} via {@link
+     * AuthService#getAuthUser} off the user id {@link #requireValidBearerToken} already stashed -
+     * never from anything in the request itself, so a caller can't claim admin by any means other
+     * than actually having the flag set on their own account.
+     *
+     * @throws ForbiddenResponse if the caller's account doesn't exist (shouldn't happen behind an
+     *     already-validated token) or isn't flagged admin
+     */
+    private void requireAdmin(@NotNull final Context ctx) {
+        if (!ctx.path().startsWith(ADMIN_PATH_PREFIX)) {
+            return;
+        }
+        final String userId = requireUserId(ctx);
+        final boolean isAdmin = this.authService.getAuthUser(userId)
+                .map(AuthUser::isAdmin)
+                .orElse(false);
+        if (!isAdmin) {
+            throw new ForbiddenResponse("Admin privileges required");
         }
     }
 
@@ -832,6 +873,55 @@ public final class DefaultRestFactory extends RestFactory {
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * {@code GET /admin/authUsers}: lists every registered {@link AuthUser} via {@link
+     * AuthService#getAuthUsers()} - gated by {@link #requireAdmin} (in addition to {@link
+     * #requireValidBearerToken}), so only a caller whose own account is flagged {@link
+     * AuthUser#isAdmin()} ever reaches this handler. Returns the raw {@link AuthUser} JSON
+     * array as-is (Gson's own field-reflection serialization, the same shape every other
+     * {@code Serialized} entity is returned in over this API) - {@code passwordHash} is a
+     * one-way Argon2id hash, not a secret an admin caller needs redacted from an
+     * already-admin-gated route.
+     */
+    private void handleListAuthUsers(@NotNull final Context ctx) {
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(this.authService::getAuthUsers)
+                .handle((authUsers, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(authUsers));
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped admin authUsers listing failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
+                }));
+    }
+
+    /**
+     * {@code GET /admin/authUsers/{id}}: looks up a single {@link AuthUser} by id via {@link
+     * AuthService#getAuthUser(String)} - gated by {@link #requireAdmin} the same way {@link
+     * #handleListAuthUsers} is. {@code 404} (via {@link NotFoundResponse}) if no account exists
+     * under {@code id} - an admin caller is trusted with existence information here, unlike the
+     * deliberate "don't leak" idiom the rest of this class uses for a non-admin caller's own data.
+     */
+    private void handleGetAuthUser(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.authService.getAuthUser(id))
+                .handle((authUser, failure) -> {
+                    if (failure == null) {
+                        if (authUser.isEmpty()) {
+                            throw new NotFoundResponse("No AuthUser with id " + id);
+                        }
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(authUser.get()));
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped admin authUser lookup failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
                 }));
     }
 

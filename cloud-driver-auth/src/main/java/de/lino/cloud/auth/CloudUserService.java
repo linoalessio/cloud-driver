@@ -220,6 +220,35 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * See {@link ICloudUserService#recomputeUploadedBytes}'s Javadoc. Sums {@link
+     * StoredFileOwnership#getSizeBytes()} across every row this account still tracks - trashed
+     * rows included, via {@link #ownedFileOwnershipsIncludingDeleted(String)} rather than {@link
+     * #ownedFileOwnerships(String)}, since a trashed-but-not-yet-purged file still occupies
+     * storage (see {@link #deleteFile}'s own Javadoc: trashing alone never decrements the usage
+     * total, only {@link #hardDeleteFile} does) - so this recompute must agree with that same
+     * accounting rule rather than silently under-counting relative to it.
+     */
+    @Override
+    public long recomputeUploadedBytes(@NonNull final String authUserId) {
+        final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
+        if (cloudUser.isEmpty()) return 0L;
+
+        final long total = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
+                .filter(StoredFileOwnership::hasMetadata)
+                .mapToLong(StoredFileOwnership::getSizeBytes)
+                .sum();
+
+        final ICloudUser existing = cloudUser.get();
+        existing.setCurrentUploadedBytes(total);
+        try {
+            this.dataFactory.update((CloudUser) existing);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.recomputeUploadedBytes: failed to persist recomputed usage for " + authUserId, e);
+        }
+        return total;
+    }
+
+    /**
      * Deletes every {@link Folder} owned by {@code authUserId}, regardless of nesting depth,
      * by repeatedly deleting whichever folders are currently leaves (no other remaining folder
      * points at them via {@link Folder#getParentFolderId()}) until none are left - the same

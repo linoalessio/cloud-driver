@@ -127,6 +127,17 @@ public interface IAuthService {
     Optional<AuthUser> getAuthUser(@NonNull final String authUserId);
 
     /**
+     * Grants or revokes {@link AuthUser#isAdmin()} for {@code authUserId} - the only writer of
+     * that field anywhere in this codebase; never reachable via any REST route, only from a
+     * terminal {@code Command} run by the operator, to avoid a privilege-escalation hole.
+     *
+     * @param authUserId the account to grant/revoke admin on
+     * @param isAdmin the new admin flag value
+     * @throws IllegalArgumentException if no account exists under {@code authUserId}
+     */
+    void setAdmin(@NonNull final String authUserId, final boolean isAdmin);
+
+    /**
      * Starts a password reset for the account under {@code emailAddress}: if (and only if) an
      * {@link AuthUser} exists under it, persists a pending reset (a freshly generated
      * verification code, valid for a short window) and e-mails that code to {@code
