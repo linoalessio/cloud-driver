@@ -129,11 +129,12 @@ public final class CloudBootstrap {
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
 
-        final String encryptionKeyAlias = CLOUD_DRIVER.getConfiguration().getString("aws-kms-key-id");
-        final Region region = Region.of(CLOUD_DRIVER.getConfiguration().getString("aws-kms-region"));
+        final JsonDocument configuration = JsonDocument.load(Constraints.CONFIGURATION_PATH.resolve("configuration.json"));
+        final String encryptionKeyAlias = configuration.getString("aws-kms-key-id");
+        final Region region = Region.of(configuration.getString("aws-kms-region"));
         final KeyEncryptionService keyEncryptionService = new AwsKmsKeyEncryptionService(region, encryptionKeyAlias);
 
-        //final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
+        // TODO: remove --> final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
