@@ -20,7 +20,12 @@ Depends on `cloud-driver-plugin` (every concrete implementation this module wire
 `cloud-driver-auth` directly (not just transitively - declared explicitly on this module's own
 `pom.xml` since account creation/login now happens exclusively over HTTP, through
 `cloud-driver-extensions-rest`'s `CloudRestExtension`, which itself constructs an `AuthService`
-from `cloud-driver-auth` types).
+from `cloud-driver-auth` types). Also declares `io.micrometer:micrometer-registry-prometheus`
+directly, even though no class in this module imports it - every extension jar
+`ExtensionFolderScanner`/`ExtensionJarLoader` loads runs off its own `URLClassLoader`, parent-first
+against *this* shaded jar's own classpath, so a third-party library an extension needs (here,
+`cloud-driver-extensions-metrics`) must already be shaded in here for that extension's classes to
+resolve it at runtime.
 
 Dependency chain this module sits at the end of: `cloud-driver-api` ← `cloud-driver-auth` ←
 `cloud-driver-plugin` ← `cloud-driver-bootstrap`. Nothing in this repo depends on
@@ -39,7 +44,7 @@ public static void main(String[] args) throws IOException {
     CLOUD_DRIVER = initiateCloudDriver().orElseThrow();
 
     MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
-        loadSecurityRequirements();
+        initDefaultFile();
 
         Runnable[] runnable = {
             startTerminalBootstrap(),
@@ -56,9 +61,22 @@ public static void main(String[] args) throws IOException {
 
 - **`initiateCloudDriver()`** (package-private, not `public`, since nothing outside this package
   needs it) resolves `Credentials` from `Constraints.CONFIGURATION_PATH.resolve("postgres-database.json")`,
-  registers a Postgres `DatabaseProvider`, builds a `DatabaseKeyEncryptionService`/
-  `EnvelopeEncryptionService` backed by a `"kek"` database section, and installs the `CloudDriver`
-  singleton via `DefaultCloudDriver.setInstance`.
+  registers a Postgres `DatabaseProvider`, builds an `AwsKmsKeyEncryptionService` (reading
+  `"aws-kms-region"`/`"aws-kms-key-id"` from a sibling `configuration.json` - KEK material never
+  leaves AWS's own KMS/HSMs; the older `DatabaseKeyEncryptionService` line is left in as a
+  commented-out `// TODO: remove` in case of rollback, not actually used) wrapped in an
+  `EnvelopeEncryptionService`, and installs the `CloudDriver` singleton via
+  `DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService,
+  ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER)`. That third argument is this module's own
+  `ConnectivityChecker` - a fixed `() -> true`, deliberately replacing the default
+  `InternetConnectivityChecker` (which probes public DNS resolvers to answer "is there a network
+  connection at all"). This deployment's Postgres instance runs on the same machine as this
+  process, so that question is irrelevant here and, per a real incident, actively harmful: under a
+  burst of concurrent uploads, several of those probes could spuriously time out and report
+  "offline" even though the local database connection never wavered, silently deferring real
+  uploads into the pending-upload queue while the caller was told the upload succeeded. See
+  `CloudBootstrap`'s own field-level Javadoc on `ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER` for the
+  full writeup.
 - **Each `startX()` method** starts its subsystem's real work on its own thread (or hands it off
   to `MultiTaskingFactory`'s shared virtual-thread executor) and returns a `Runnable` shutdown
   action, rather than blocking the caller:
@@ -80,7 +98,7 @@ public static void main(String[] args) throws IOException {
 - **`prepareShutdownLatch(Runnable... tasks)`** collects every returned shutdown action into one
   list and wires a single `Runtime.addShutdownHook` that runs all of them (so an in-flight flush
   isn't cut off mid-upload by an abrupt kill) before counting down the shared latch `main` awaits.
-- **`loadSecurityRequirements()`** uploads a placeholder `StoredFile` (`"init.txt"`, empty
+- **`initDefaultFile()`** uploads a placeholder `StoredFile` (`"init.txt"`, empty
   content) under a fixed id (`Constraints.REQUIREMENTS_UUID`), if not already present -
   guarantees the `storedfile` table exists before `startExtensionsBootstrapScheduler` starts
   `cloud-driver-extensions-watcher`'s `CloudWatcherExtension`, which watches that table for
@@ -156,7 +174,7 @@ Consequences of this shape for anyone adding a new subsystem:
 
 ## Data handling
 
-The only entity this module itself creates is the placeholder `StoredFile` `loadSecurityRequirements()`
+The only entity this module itself creates is the placeholder `StoredFile` `initDefaultFile()`
 uploads at startup (see above) - everything else it persists (`AuthUser`, `PendingRegistration`,
 `CloudUser`, `StoredFileOwnership`, user-uploaded `StoredFile`s) flows through `cloud-driver-plugin`/
 `cloud-driver-auth` classes this module only wires together, not code it defines itself.
@@ -170,12 +188,17 @@ uploads at startup (see above) - everything else it persists (`AuthUser`, `Pendi
   in the same directory. Both files live under `Constraints.CONFIGURATION_PATH` (a `cloud-driver`
   subdirectory of the JVM's working directory), which is gitignored - never commit real
   credentials found there.
-- **The KEK (key-encryption key) is itself persisted through the same database**, via
-  `DatabaseKeyEncryptionService` backed by a `"kek"` `DatabaseSection` - shared across every
-  process talking to the same Postgres instance, rather than bound to one machine's filesystem
-  (contrast `cloud-driver-plugin`'s `FileKeyEncryptionService`/`InMemoryKeyEncryptionService`,
-  neither of which this module uses).
-- **`loadSecurityRequirements()` runs before any extension starts**, specifically so the
+- **The KEK (key-encryption key) never leaves AWS's own KMS/HSMs.** `initiateCloudDriver()` wires
+  an `AwsKmsKeyEncryptionService` (region/key id read from `configuration.json`'s
+  `"aws-kms-region"`/`"aws-kms-key-id"`, credentials resolved by the AWS SDK's own default
+  credential provider chain - deliberately not read from `configuration.json` itself, a third
+  place a secret could be committed by mistake); this process only ever holds an unwrapped DEK and
+  KMS's own opaque wrapped-key blob, never the KEK material itself. An earlier
+  `DatabaseKeyEncryptionService`-backed line (KEK persisted as a `"kek"` `DatabaseSection` in the
+  same Postgres instance - contrast `cloud-driver-plugin`'s `FileKeyEncryptionService`/
+  `InMemoryKeyEncryptionService`, neither of which this module uses either) is left commented out
+  in source (`// TODO: remove`) in case of rollback, but is not the active code path.
+- **`initDefaultFile()` runs before any extension starts**, specifically so the
   `storedfile` table is guaranteed to exist by the time an extension that watches it for change
   notifications (e.g. `cloud-driver-extensions-watcher`'s `CloudWatcherExtension`) installs its
   trigger - a `CREATE TRIGGER` against a table that doesn't exist yet would otherwise fail
@@ -186,11 +209,14 @@ uploads at startup (see above) - everything else it persists (`AuthUser`, `Pendi
 This module itself holds no state that grows with load - every subsystem it starts either
 delegates to `cloud-driver-plugin`'s own scalability characteristics (`EntityDatabaseClient`'s
 per-type sections/caches, `MultiTaskingFactory`'s virtual-thread executor) or is a fixed-cost,
-one-time startup step (`loadSecurityRequirements`, extension registration). The one thing that
-does scale with the *number of extensions* dropped into `Constraints.EXTENSIONS_PATH` is
-`startExtensionsBootstrapScheduler`'s per-extension `ExtensionRegisterEvent` dispatch loop - see
-this module's findings list (produced alongside this documentation pass) for a concrete note on
-that loop's current blocking-dispatch behavior.
+one-time startup step (`initDefaultFile`, extension registration). The one thing that scales with
+the *number of extensions* dropped into `Constraints.EXTENSIONS_PATH` is
+`startExtensionsBootstrapScheduler`'s per-extension `ExtensionRegisterEvent` dispatch loop
+(`extensionFactory.getExtensions().forEach(...)`) - a plain synchronous `forEach` on the calling
+thread (still inside `runTaskInMainSafety`'s call, before the shutdown latch is even constructed),
+so a very large number of registered extensions would delay reaching `shutdownLatch.await()`
+proportionally; not a concern at this deployment's current extension count (six, per
+`cloud-driver-extensions`), but worth knowing if that count grows substantially.
 
 ## API surface
 
@@ -202,6 +228,10 @@ public surface is effectively just the entry point:
 - **`CloudBootstrapExtension`** - a no-op `Extension` subclass other extensions declare an
   `extension.json` dependency on (`"cloud-driver-bootstrap"`) to require the host bootstrap be
   present before they start.
+
+With no library API to demonstrate a caller using, the "Coordinates" section's `mvn package`/
+`java -jar` snippet above stands in as this README's usage example - the actual way anyone
+"uses" this module.
 
 ## Javadoc conventions
 
