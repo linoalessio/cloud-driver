@@ -19,6 +19,7 @@ import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,6 +70,10 @@ data class TransferProgress(
  * caller's perspective: it launches a coroutine on [scope] and returns immediately, updating
  * [busy]/[errorMessage] as it goes - a screen composable never awaits an action's result itself.
  */
+
+/** Page size [AppViewModel.refreshCurrentFolder]/[AppViewModel.loadMoreEntries] request per [CloudDriverClient.listFilesPage]/[listFoldersPage] call. */
+private const val FOLDER_VIEW_PAGE_SIZE = 200
+
 class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, initialThemeMode: ThemeMode) {
 
     /** The active session's HTTP client, against the hardcoded server address(es) passed at construction (see `Main.kt`'s `DEFAULT_SERVER_URL`). */
@@ -124,10 +129,82 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     var dashboardStats: AccountStats? by mutableStateOf(null)
         private set
 
+    /**
+     * `true` once [client] reported [CloudDriverClient.usedKeychainFallback] after the first
+     * successful authentication (fresh login, registration/password-reset confirm, or a restored
+     * session at startup) - surfaced as a dismissible banner (`Sidebar.kt`'s `AuthenticatedShell`)
+     * rather than silently persisting the session token less securely than a real OS keychain
+     * would, with no signal to the user. Intentionally re-armed on every fresh sign-in within a
+     * single run of the app (not persisted as "already seen forever") - `usedKeychainFallback`
+     * itself never changes for a given process, so this only ever flips `false` via explicit
+     * [dismissKeychainFallbackNotice].
+     */
+    var showKeychainFallbackNotice: Boolean by mutableStateOf(false)
+        private set
+
+    fun dismissKeychainFallbackNotice() {
+        this.showKeychainFallbackNotice = false
+    }
+
     private suspend fun onAuthenticated(email: String, jwt: String) {
         this.currentUserEmail = email
         this.currentUserId = decodeJwtSubject(jwt)
+        if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
         this.refreshAccountInfo()
+        this.startLiveUpdates()
+    }
+
+    /**
+     * Called once at startup (see `Main.kt`) after [CloudDriverClient.tryRestoreSession] finds a
+     * still-valid persisted session. Unlike [onAuthenticated], there is no e-mail address on hand
+     * here - restoring a session is not itself a server call that returns one, and this app has no
+     * `GET /me`-style endpoint to fetch it back from - so [currentUserEmail] stays `null` (the
+     * Dashboard's "Email" row already renders `"-"` for that case) until the next explicit
+     * login/register/password-reset or e-mail change.
+     */
+    private suspend fun onSessionRestored(jwt: String) {
+        this.currentUserId = decodeJwtSubject(jwt)
+        if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
+        this.refreshAccountInfo()
+        this.startLiveUpdates()
+    }
+
+    /**
+     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - opens the connection via
+     * [CloudDriverClient.startLiveUpdates] and reacts to a pushed notification by refreshing
+     * whichever of the file browser/[Dashboard] is currently showing, instead of requiring the
+     * user to hit "Refresh" to see a change made from elsewhere (another device, or a file shared
+     * with this account - see item 9). The push callback fires on an internal HTTP-client thread
+     * (see [de.lino.cloud.platform.rest.api.push.LiveUpdateClient.Listener]'s own Javadoc), so it
+     * is immediately re-dispatched onto [scope] before touching any Compose state or calling
+     * [loadCurrentFolder]/[loadDashboardStats] - both already re-entrant-safe (each goes through
+     * [run]'s own `busy` guard), so an update arriving while another action is in flight is simply
+     * dropped rather than queued; the next push (or the user's own "Refresh") catches up.
+     */
+    private fun startLiveUpdates() {
+        this.client.startLiveUpdates {
+            this.scope.launch {
+                when (this@AppViewModel.screen) {
+                    Screen.Browser -> this@AppViewModel.loadCurrentFolder()
+                    Screen.Dashboard -> this@AppViewModel.loadDashboardStats()
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    /**
+     * Call once at app startup, before the first screen renders (see `Main.kt`) - if a valid
+     * session was persisted from a previous run, skips the login screen entirely and goes straight
+     * to [Screen.Browser], mirroring what [login]/[confirmRegister]/[confirmPasswordReset] already
+     * do on success. A no-op (silently falls through to the initial [Screen.Login]) if there was no
+     * persisted session or it's no longer valid - the same "either way, show the login screen"
+     * contract [de.lino.cloud.platform.rest.api.SessionManager.tryRestoreSession] itself documents.
+     */
+    fun tryRestoreSession() = run {
+        val jwt = this.client.tryRestoreSession() ?: return@run
+        this.onSessionRestored(jwt)
+        this.screen = Screen.Browser
     }
 
     /**
@@ -165,6 +242,21 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     val folders = mutableStateListOf<FolderResponse>()
     val files = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
     val selected = mutableStateListOf<Entry>()
+
+    /**
+     * [folders]/[files] are loaded a page ([FOLDER_VIEW_PAGE_SIZE] entries) at a time via
+     * [CloudDriverClient.listFoldersPage]/[listFilesPage] - these hold each list's own [Page]
+     * cursor, `null` once that list has no further page. [hasMoreEntries] drives whether
+     * `FileBrowserScreen`'s "Load more" button is shown; a deliberate explicit action rather than
+     * an auto-load-on-scroll, so fetching the next page (a real network round trip) only ever
+     * happens on a user's own click, not silently as they scroll. Every *other* caller in this
+     * class that needs a folder's *complete* contents (delete/duplicate/download planning,
+     * `deleteFolderRecursively` etc.) still calls the unpaginated `listFiles`/`listFolders` -
+     * this pagination only applies to what's actually rendered in the current folder view.
+     */
+    private var foldersNextCursor: String? by mutableStateOf(null)
+    private var filesNextCursor: String? by mutableStateOf(null)
+    val hasMoreEntries: Boolean get() = this.foldersNextCursor != null || this.filesNextCursor != null
 
     /** The currently in-flight upload/download batch, if any - `null` otherwise. Rendered as a bottom progress bar (see `App.kt`/`Sidebar.kt`). Set/cleared exclusively by [runTransfer]. */
     var transferProgress: TransferProgress? by mutableStateOf(null)
@@ -254,7 +346,20 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     // --- auth --------------------------------------------------------
 
     fun login(email: String, password: String) = run {
-        val jwt = this.client.login(email, password)
+        val outcome = this.client.login(email, password)
+        if (outcome.twoFactorRequired()) {
+            // Password verified, but the account has two-factor authentication enabled (item 12,
+            // see architecture/SERVICES.md) - no session yet, onAuthenticated is not called here.
+            this.screen = Screen.TwoFactorLogin(outcome.pendingToken(), email)
+        } else {
+            this.onAuthenticated(email, outcome.token())
+            this.screen = Screen.Browser
+        }
+    }
+
+    /** Completes a login left pending by [login] switching to [Screen.TwoFactorLogin] - submits [code] and, on success, signs in exactly like a non-2FA [login] would. */
+    fun completeTwoFactorLogin(pendingToken: String, email: String, code: String) = run {
+        val jwt = this.client.completeTwoFactorLogin(pendingToken, code)
         this.onAuthenticated(email, jwt)
         this.screen = Screen.Browser
     }
@@ -315,24 +420,36 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      */
     fun uninstall() {
         this.scope.launch(Dispatchers.IO) {
+            this@AppViewModel.client.clearPersistedSession()
             this@AppViewModel.client.close()
             uninstallApp()
             kotlin.system.exitProcess(0)
         }
     }
 
+    /**
+     * Ends the session both in memory (synchronously, via [CloudDriverClient.logout] - so the
+     * screen switch back to [Screen.Login] below can't race a still-authenticated [client]) and in
+     * persisted storage (asynchronously, via [CloudDriverClient.clearPersistedSession] - a real OS
+     * keychain call/file write with no reason to block this screen transition on).
+     */
     fun logout() {
+        this.client.stopLiveUpdates()
         this.client.logout()
+        this.scope.launch { this@AppViewModel.client.clearPersistedSession() }
         this.currentUserEmail = null
         this.currentUserId = null
         this.currentUserCreatedAtEpochMillis = null
         this.currentUserUploadedBytes = null
         this.currentUserMaxBytesToUpload = null
+        this.showKeychainFallbackNotice = false
         this.dashboardStats = null
         this.breadcrumbs.clear()
         this.currentFolderId = null
         this.folders.clear()
         this.files.clear()
+        this.foldersNextCursor = null
+        this.filesNextCursor = null
         this.selected.clear()
         this.screen = Screen.Login
     }
@@ -366,12 +483,34 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     private suspend fun refreshCurrentFolder() {
         val folderId = this.currentFolderId
         this.selected.clear()
-        val newFolders = this.client.listFolders(folderId)
-        val newFiles = this.client.listFiles(folderId)
+        val folderPage = this.client.listFoldersPage(folderId, null, FOLDER_VIEW_PAGE_SIZE)
+        val filePage = this.client.listFilesPage(folderId, null, FOLDER_VIEW_PAGE_SIZE)
         this.folders.clear()
-        this.folders.addAll(newFolders)
+        this.folders.addAll(folderPage.items())
+        this.foldersNextCursor = folderPage.nextCursor()
         this.files.clear()
-        this.files.addAll(newFiles)
+        this.files.addAll(filePage.items())
+        this.filesNextCursor = filePage.nextCursor()
+    }
+
+    /**
+     * Public, guarded entry point (see [loadCurrentFolder]) for `FileBrowserScreen`'s "Load more"
+     * button: appends the next page of whichever of [folders]/[files] still has a [foldersNextCursor]/
+     * [filesNextCursor], rather than restarting the listing from the top. A no-op if neither has
+     * a next page ([hasMoreEntries] `false`) - the button that calls this is only shown while it's `true`.
+     */
+    fun loadMoreEntries() = run {
+        val folderId = this.currentFolderId
+        this.foldersNextCursor?.let { cursor ->
+            val page = this.client.listFoldersPage(folderId, cursor, FOLDER_VIEW_PAGE_SIZE)
+            this.folders.addAll(page.items())
+            this.foldersNextCursor = page.nextCursor()
+        }
+        this.filesNextCursor?.let { cursor ->
+            val page = this.client.listFilesPage(folderId, cursor, FOLDER_VIEW_PAGE_SIZE)
+            this.files.addAll(page.items())
+            this.filesNextCursor = page.nextCursor()
+        }
     }
 
     /**
@@ -783,6 +922,39 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.confirmEmailChange(code)
         this.currentUserEmail = this.pendingEmailChangeAddress
         this.pendingEmailChangeAddress = null
+    }
+
+    // --- account: two-factor authentication (item 12, see architecture/SERVICES.md) --------
+
+    /**
+     * Set once [beginTwoFactorSetup] starts a setup flow - drives the Dashboard's settings-menu
+     * "Enable Two-Factor Authentication" dialog from step one (show the secret/QR code) to step
+     * two (enter a code from the authenticator app to confirm). `null` outside of that flow;
+     * [confirmTwoFactorSetup] resolves it back to `null` on success, [cancelTwoFactorSetup] does
+     * the same if the user backs out.
+     */
+    var pendingTwoFactorSetup: TwoFactorSetupResponse? by mutableStateOf(null)
+        private set
+
+    /** Step one of enabling two-factor authentication - generates a fresh secret, not yet live on the account. */
+    fun beginTwoFactorSetup() = run {
+        this.pendingTwoFactorSetup = this.client.beginTwoFactorSetup()
+    }
+
+    /** Abandons an in-progress [beginTwoFactorSetup] flow without changing anything server-side - the pending secret simply expires unused. */
+    fun cancelTwoFactorSetup() {
+        this.pendingTwoFactorSetup = null
+    }
+
+    /** Step two - submits [code], which (on success) actually enables two-factor authentication on the account server-side. From this point on, [login] returns [Screen.TwoFactorLogin] instead of signing straight in. */
+    fun confirmTwoFactorSetup(code: String) = run {
+        this.client.confirmTwoFactorSetup(code)
+        this.pendingTwoFactorSetup = null
+    }
+
+    /** Disables two-factor authentication for the signed-in account - the server re-verifies [password] before disabling, since a stolen-but-still-valid session token alone should not be enough to turn off the second factor. */
+    fun disableTwoFactor(password: String) = run {
+        this.client.disableTwoFactor(password)
     }
 
 }

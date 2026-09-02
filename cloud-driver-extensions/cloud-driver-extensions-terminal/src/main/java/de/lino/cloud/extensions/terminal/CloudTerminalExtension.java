@@ -3,6 +3,7 @@ package de.lino.cloud.extensions.terminal;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.extensions.terminal.command.*;
+import de.lino.cloud.extensions.terminal.command.system.*;
 
 import java.util.logging.Level;
 
@@ -35,6 +36,7 @@ public class CloudTerminalExtension extends Extension {
                 new ExitCommand(), new HelpCommand(), new ClearCommand()
                 , new ExtensionCommand(), new StatisticsCommand(), new LeaveCommand()
                 , new DispatchCommand(), new CloudUserCommand(), new HardResetCommand()
+                , new AdminCommand(), new RecomputeStorageCommand(), new AuditLogCommand()
         );
 
     }

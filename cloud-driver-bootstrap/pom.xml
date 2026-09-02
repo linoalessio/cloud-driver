@@ -30,6 +30,21 @@
             <version>1.0.1</version>
         </dependency>
 
+        <!-- Not used by any class in this module directly - needed at runtime by
+             cloud-driver-extensions-metrics. Every extension jar is unshaded and loaded via
+             its own URLClassLoader with a parent-first-delegating parent = this jar's own
+             classloader (see ExtensionJarLoader), so an extension's own third-party
+             dependencies must already be on this jar's shaded classpath; every other
+             extension's dependencies happen to already be satisfied that way (cloud-driver-api/
+             -plugin/-auth, Javalin, database-driver-*), but cloud-driver-extensions-metrics is
+             the first to need a library nothing else here already pulls in. Version pinned to
+             match that module's own pom.xml. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <version>1.13.6</version>
+        </dependency>
+
     </dependencies>
 
     <build>

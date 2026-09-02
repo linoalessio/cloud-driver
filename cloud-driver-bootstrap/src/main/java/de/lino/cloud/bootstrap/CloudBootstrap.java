@@ -25,16 +25,16 @@ import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
-import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
+import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
-import de.lino.database.database.DatabaseSection;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.file.DefaultFileProvider;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
+import software.amazon.awssdk.regions.Region;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -130,9 +130,13 @@ public final class CloudBootstrap {
         final DatabaseProvider databaseProvider = Asserts.requireNonNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
-        final DatabaseSection databaseSection = databaseProvider.createSectionAsync("kek").join();
 
-        final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
+        final JsonDocument configuration = JsonDocument.load(Constraints.CONFIGURATION_PATH.resolve("configuration.json"));
+        final String encryptionKeyAlias = configuration.getString("aws-kms-key-id");
+        final Region region = Region.of(configuration.getString("aws-kms-region"));
+        final KeyEncryptionService keyEncryptionService = new AwsKmsKeyEncryptionService(region, encryptionKeyAlias);
+
+        // TODO: remove --> final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
         DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER);

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.lino.cloud.extensions</groupId>
+        <artifactId>cloud-driver-extensions</artifactId>
+        <version>1.0.1</version>
+    </parent>
+
+    <groupId>de.lino.cloud.extensions.metrics</groupId>
+    <artifactId>cloud-driver-extensions-metrics</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+
+        <!-- Prometheus registry - pulls in micrometer-core transitively. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <version>1.13.6</version>
+        </dependency>
+
+        <!-- Only for the standalone /metrics HTTP endpoint (this module's own Javalin instance -
+             see CloudMetricsExtension's own Javadoc for why it doesn't reuse CloudRestExtension's).
+             Version pinned to match cloud-driver-plugin's own to avoid two Javalin versions on the
+             classpath at once. -->
+        <dependency>
+            <groupId>io.javalin</groupId>
+            <artifactId>javalin</artifactId>
+            <version>7.2.3</version>
+        </dependency>
+
+    </dependencies>
+
+</project>

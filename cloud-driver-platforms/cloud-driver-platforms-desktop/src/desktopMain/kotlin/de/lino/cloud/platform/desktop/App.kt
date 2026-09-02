@@ -10,6 +10,7 @@ import de.lino.cloud.platform.desktop.auth.RegisterConfirmScreen
 import de.lino.cloud.platform.desktop.auth.RegisterScreen
 import de.lino.cloud.platform.desktop.auth.ResetPasswordConfirmScreen
 import de.lino.cloud.platform.desktop.auth.ResetPasswordRequestScreen
+import de.lino.cloud.platform.desktop.auth.TwoFactorLoginScreen
 import de.lino.cloud.platform.desktop.model.Screen
 import de.lino.cloud.platform.desktop.panel.DashboardScreen
 import de.lino.cloud.platform.desktop.panel.FileBrowserScreen
@@ -36,6 +37,7 @@ fun App(viewModel: AppViewModel) {
             is Screen.RegisterConfirm -> RegisterConfirmScreen(viewModel, screen.email)
             Screen.ResetPasswordRequest -> ResetPasswordRequestScreen(viewModel)
             is Screen.ResetPasswordConfirm -> ResetPasswordConfirmScreen(viewModel, screen.email)
+            is Screen.TwoFactorLogin -> TwoFactorLoginScreen(viewModel, screen.pendingToken, screen.email)
             Screen.Browser -> FileBrowserScreen(viewModel)
             Screen.Dashboard -> DashboardScreen(viewModel)
         }

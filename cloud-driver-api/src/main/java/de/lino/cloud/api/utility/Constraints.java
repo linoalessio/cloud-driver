@@ -47,10 +47,10 @@ public final class Constraints {
     /** Timestamp the process started at, set once during bootstrap. */
     public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 
-    /** Unit labels {@link #resolveBytesToUnit(long)} scales through, smallest to largest. */
+    /** UnitParser labels {@link #resolveBytesToUnit(long)} scales through, smallest to largest. */
     private static final String[] BYTE_UNITS = {"B", "KB", "MB", "GB", "TB"};
 
-    /** Unit labels {@link #resolveMilliSecondsToUnit(long)} scales through, smallest to largest. */
+    /** UnitParser labels {@link #resolveMilliSecondsToUnit(long)} scales through, smallest to largest. */
     private static final String[] TIME_UNITS = {"ms", "s", "min", "h", "d"};
 
     /** Divisor applied to move from each {@link #TIME_UNITS} entry to the next larger one. */

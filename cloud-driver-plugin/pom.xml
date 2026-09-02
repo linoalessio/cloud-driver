@@ -95,6 +95,15 @@
             <version>42.7.7</version>
         </dependency>
 
+        <!-- AwsKmsKeyEncryptionService (security.keys) - the production KMS-backed
+             KeyEncryptionService. Not wired in as CloudBootstrap's default; an
+             operator opts in explicitly. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>kms</artifactId>
+            <version>2.46.7</version>
+        </dependency>
+
     </dependencies>
 
 </project>

@@ -1,11 +1,13 @@
 package de.lino.cloud.plugin.factory;
 
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
+import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
@@ -14,6 +16,8 @@ import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.function.Consumer;
 
 import java.util.List;
 import java.util.Optional;
@@ -77,16 +81,20 @@ public final class DefaultFileFactory extends FileFactory {
     public void upload(@NotNull final StoredFile file) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
             this.pendingUploadCache.enqueue(file);
+            recordMetric(MetricsRecorder::recordUploadQueued);
             return;
         }
 
         try {
             this.dataFactory.register(file);
+            recordMetric(MetricsRecorder::recordUploadSuccess);
         } catch (final DatabaseClientException uploadFailed) {
             if (this.connectivityChecker.isAvailable()) {
+                recordMetric(MetricsRecorder::recordUploadFailure);
                 throw uploadFailed;
             }
             this.pendingUploadCache.enqueue(file);
+            recordMetric(MetricsRecorder::recordUploadQueued);
         }
     }
 
@@ -95,19 +103,51 @@ public final class DefaultFileFactory extends FileFactory {
     public void upload(@NotNull final StoredFile... files) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
             this.pendingUploadCache.enqueue(files);
+            recordMetric(MetricsRecorder::recordUploadQueued, files.length);
             return;
         }
 
         try {
             this.dataFactory.register(files);
+            recordMetric(MetricsRecorder::recordUploadSuccess, files.length);
         } catch (final DatabaseClientException uploadFailed) {
             if (this.connectivityChecker.isAvailable()) {
+                recordMetric(MetricsRecorder::recordUploadFailure, files.length);
                 throw uploadFailed;
             }
             // some files in the batch may already have been stored successfully -
             // re-queueing all of them is harmless, since a retried upload is the
             // same insert-or-update StoredFile#fileId() operation either way.
             this.pendingUploadCache.enqueue(files);
+            recordMetric(MetricsRecorder::recordUploadQueued, files.length);
+        }
+    }
+
+    /** Same as {@link #recordMetric(Consumer, int)} with {@code times = 1}, for the single-file {@link #upload(StoredFile)}. */
+    private static void recordMetric(@NotNull final Consumer<MetricsRecorder> action) {
+        recordMetric(action, 1);
+    }
+
+    /**
+     * Forwards one metric event to {@link CloudDriver#getInstance()}'s {@link MetricsRecorder},
+     * {@code times} times, if {@code cloud-driver-extensions-metrics} has published one - a no-op
+     * otherwise (e.g. this deployment doesn't run that extension). Never throws: a
+     * missing/misbehaving metrics sink must never affect a real upload, matching {@link
+     * MetricsRecorder}'s own "must never throw" contract, enforced here defensively too in case an
+     * implementation ever violates it.
+     *
+     * @param action the {@link MetricsRecorder} method to invoke, e.g. {@code
+     *     MetricsRecorder::recordUploadSuccess}
+     * @param times how many times to invoke {@code action} - the batch {@link #upload(StoredFile...)}
+     *     counts every file in the batch as its own event, not the batch call itself as one event
+     */
+    private static void recordMetric(@NotNull final Consumer<MetricsRecorder> action, final int times) {
+        try {
+            final MetricsRecorder recorder = CloudDriver.getInstance().getServiceContainer().getMetricsRecorder();
+            if (recorder == null) return;
+            for (int i = 0; i < times; i++) action.accept(recorder);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
         }
     }
 

@@ -1,18 +1,18 @@
-package de.lino.cloud.plugin.security.keys;
+package de.lino.cloud.plugin.security.keys.develop;
 
 import de.lino.cloud.api.security.crypto.CryptoAlgorithm;
 import de.lino.cloud.api.security.keys.DataEncryptionKey;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.keys.WrappedKey;
+import de.lino.database.database.DatabaseSection;
+import de.lino.database.database.entity.DatabaseEntry;
 import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
@@ -22,13 +22,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * File-backed {@link KeyEncryptionService} for local development: same
- * wrap/unwrap mechanics as {@link InMemoryKeyEncryptionService}, but KEK
- * material is persisted as a {@link JsonDocument} at a given path so it
- * survives JVM restarts. <strong>Not for production use</strong> - KEK
- * material sits in a plaintext file rather than a KMS/HSM.
+ * Database-backed {@link KeyEncryptionService}: same wrap/unwrap mechanics
+ * as {@link FileKeyEncryptionService}, but key-encryption key (KEK)
+ * material is persisted as a single {@link DatabaseEntry} in a {@link
+ * DatabaseSection}, shared across every process reaching that database
+ * instead of bound to one file. <strong>Not for production use</strong> -
+ * KEK material still sits in plaintext, not behind a KMS/HSM.
  */
-public final class FileKeyEncryptionService implements KeyEncryptionService {
+public final class DatabaseKeyEncryptionService implements KeyEncryptionService {
 
     /** JCA cipher transformation used to wrap/unwrap data-encryption keys under a key-encryption key. */
     private static final String WRAP_TRANSFORMATION = "AESWrapPad";
@@ -36,14 +37,17 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
     /** Length, in bytes, of each freshly generated key-encryption key's material. */
     private static final int KEY_ENCRYPTION_KEY_LENGTH_BYTES = CryptoAlgorithm.AES_256_GCM.keyLengthBytes();
 
+    /** Primary key of the single {@link DatabaseEntry} the whole key-encryption-key registry is persisted under. */
+    private static final String REGISTRY_ENTRY_ID = "key-encryption-keys";
+
     /** {@link JsonDocument} field name holding the currently active key-encryption key's id. */
     private static final String ACTIVE_KEY_ID_FIELD = "activeKeyId";
 
     /** {@link JsonDocument} field name holding the map of every retained key-encryption key, keyed by id. */
     private static final String KEY_ENCRYPTION_KEYS_FIELD = "keyEncryptionKeys";
 
-    /** The file the whole key-encryption-key registry is persisted to/loaded from. */
-    private final Path path;
+    /** The section {@link #REGISTRY_ENTRY_ID} is persisted to/loaded from. */
+    private final DatabaseSection databaseSection;
 
     /** Source of the random key material {@link #rotate()} draws from. */
     private final SecureRandom secureRandom = new SecureRandom();
@@ -55,15 +59,16 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
     private volatile String activeKeyId;
 
     /**
-     * Loads existing KEK material from {@code path} if it already exists, otherwise {@link #rotate()}s a fresh one and persists it there.
+     * Loads existing KEK material from {@code databaseSection} if a {@value #REGISTRY_ENTRY_ID}
+     * entry already exists there, otherwise {@link #rotate()}s a fresh one and persists it there.
      *
-     * @param path the file KEK material is persisted to/loaded from
-     * @throws NullPointerException if {@code path} is {@code null}
+     * @param databaseSection the section KEK material is persisted to/loaded from
+     * @throws NullPointerException if {@code databaseSection} is {@code null}
      */
-    public FileKeyEncryptionService(@NotNull final Path path) {
-        this.path = Asserts.requireNonNull(path, "@FileKeyEncryptionService: path cannot be null");
+    public DatabaseKeyEncryptionService(@NotNull final DatabaseSection databaseSection) {
+        this.databaseSection = Asserts.requireNonNull(databaseSection, "@DatabaseKeyEncryptionService: databaseSection cannot be null");
 
-        if (Files.exists(path)) {
+        if (databaseSection.exists(REGISTRY_ENTRY_ID)) {
             load();
         } else {
             rotate();
@@ -80,7 +85,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
      */
     @Override
     public WrappedKey wrap(final DataEncryptionKey dataEncryptionKey) throws KeyWrapException {
-        Asserts.requireNonNull(dataEncryptionKey, "@FileKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
+        Asserts.requireNonNull(dataEncryptionKey, "@DatabaseKeyEncryptionService.wrap: dataEncryptionKey cannot be null");
 
         final String keyId = activeKeyId;
         final SecretKey kek = new SecretKeySpec(keyEncryptionKeys.get(keyId), "AES");
@@ -91,7 +96,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
             final byte[] wrapped = cipher.wrap(dataEncryptionKey.asSecretKey());
             return new WrappedKey(keyId, wrapped, WRAP_TRANSFORMATION, dataEncryptionKey.algorithm().id());
         } catch (final GeneralSecurityException e) {
-            throw new KeyWrapException("@FileKeyEncryptionService.wrap: failed to wrap data-encryption key", e);
+            throw new KeyWrapException("@DatabaseKeyEncryptionService.wrap: failed to wrap data-encryption key", e);
         }
     }
 
@@ -105,12 +110,12 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
      */
     @Override
     public DataEncryptionKey unwrap(final WrappedKey wrappedKey) throws KeyWrapException {
-        Asserts.requireNonNull(wrappedKey, "@FileKeyEncryptionService.unwrap: wrappedKey cannot be null");
+        Asserts.requireNonNull(wrappedKey, "@DatabaseKeyEncryptionService.unwrap: wrappedKey cannot be null");
 
         final byte[] kekMaterial = keyEncryptionKeys.get(wrappedKey.keyEncryptionKeyId());
         if (kekMaterial == null) {
             throw new KeyWrapException(
-                    "@FileKeyEncryptionService.unwrap: unknown key-encryption-key id '"
+                    "@DatabaseKeyEncryptionService.unwrap: unknown key-encryption-key id '"
                             + wrappedKey.keyEncryptionKeyId() + "'", null
             );
         }
@@ -122,7 +127,7 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
             final CryptoAlgorithm dekAlgorithm = CryptoAlgorithm.fromId(wrappedKey.dataEncryptionKeyAlgorithmId());
             return new DataEncryptionKey(dekAlgorithm, unwrapped.getEncoded());
         } catch (final GeneralSecurityException e) {
-            throw new KeyWrapException("@FileKeyEncryptionService.unwrap: failed to unwrap data-encryption key", e);
+            throw new KeyWrapException("@DatabaseKeyEncryptionService.unwrap: failed to unwrap data-encryption key", e);
         }
     }
 
@@ -151,11 +156,17 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
     }
 
     /**
-     * Loads the registry document from {@link #path} and populates {@link
-     * #activeKeyId}/{@link #keyEncryptionKeys} from it.
+     * Loads {@link #REGISTRY_ENTRY_ID}'s document from {@link #databaseSection}
+     * and populates {@link #activeKeyId}/{@link #keyEncryptionKeys} from it.
+     *
+     * @throws IllegalStateException if the registry entry vanishes between the constructor's {@code exists} check and this read
      */
     private void load() {
-        final JsonDocument document = JsonDocument.load(path);
+        final JsonDocument document = databaseSection.findEntryById(REGISTRY_ENTRY_ID)
+                .orElseThrow(() -> new IllegalStateException(
+                        "@DatabaseKeyEncryptionService: registry entry '" + REGISTRY_ENTRY_ID + "' disappeared between exists() and findEntryById()"
+                ))
+                .getDocument();
         activeKeyId = document.getString(ACTIVE_KEY_ID_FIELD);
 
         final JsonDocument keys = document.getMetaData(KEY_ENCRYPTION_KEYS_FIELD);
@@ -168,16 +179,22 @@ public final class FileKeyEncryptionService implements KeyEncryptionService {
 
     /**
      * Serializes {@link #activeKeyId}/{@link #keyEncryptionKeys} (each key's
-     * material base64-encoded) and writes it to {@link #path}, overwriting
-     * any previous content.
+     * material base64-encoded) and inserts or updates {@link
+     * #REGISTRY_ENTRY_ID}'s document in {@link #databaseSection} with it.
      */
     private synchronized void persist() {
         final JsonDocument keys = new JsonDocument();
         keyEncryptionKeys.forEach((keyId, material) -> keys.append(keyId, Base64.getEncoder().encodeToString(material)));
 
-        new JsonDocument()
+        final JsonDocument document = new JsonDocument()
                 .append(ACTIVE_KEY_ID_FIELD, activeKeyId)
-                .append(KEY_ENCRYPTION_KEYS_FIELD, keys)
-                .write(path);
+                .append(KEY_ENCRYPTION_KEYS_FIELD, keys);
+
+        final DatabaseEntry entry = new DatabaseEntry(REGISTRY_ENTRY_ID, document);
+        if (databaseSection.exists(REGISTRY_ENTRY_ID)) {
+            databaseSection.update(entry);
+        } else {
+            databaseSection.insert(entry);
+        }
     }
 }

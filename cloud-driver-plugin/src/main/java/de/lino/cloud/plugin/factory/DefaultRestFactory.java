@@ -15,20 +15,31 @@ import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
+import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
+import de.lino.cloud.api.jwt.auth.AuthTokens;
+import de.lino.cloud.api.jwt.auth.LoginResult;
+import de.lino.cloud.api.jwt.auth.TwoFactorSetupStart;
 import de.lino.cloud.api.jwt.rest.Owned;
+import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
+import de.lino.database.json.JsonDocument;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 import io.javalin.http.*;
 import io.javalin.util.JavalinLogger;
+import io.javalin.websocket.WsCloseStatus;
+import io.javalin.websocket.WsConfig;
+import io.javalin.websocket.WsContext;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -76,7 +87,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * else, and {@link #update}/{@link #delete} 404 the same way rather than
  * letting one user mutate another's record.
  */
-public final class DefaultRestFactory extends RestFactory {
+public final class DefaultRestFactory extends RestFactory implements LiveUpdatePublisher {
 
     /** HTTP request header {@link #requireValidApiKey} checks against {@link #apiKey}. */
     private static final String API_KEY_HEADER = "X-API-Key";
@@ -90,14 +101,76 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String RESET_PASSWORD_PATH = "/auth/reset-password";
     /** Path mounted by {@link #start} for {@link #handleConfirmPasswordReset}, exempted from {@link #requireValidBearerToken}. */
     private static final String RESET_PASSWORD_CONFIRM_PATH = "/auth/reset-password/confirm";
+    /** Path mounted by {@link #start} for {@link #handleRefresh}, exempted from {@link #requireValidBearerToken} - a refresh call has no valid access token yet by definition, that's the whole point. */
+    private static final String REFRESH_PATH = "/auth/refresh";
+    /** Path mounted by {@link #start} for {@link #handleLogout}, exempted from {@link #requireValidBearerToken} - possession of the refresh token itself is this route's own proof of authority, the same way it is for {@link #REFRESH_PATH}. */
+    private static final String LOGOUT_PATH = "/auth/logout";
     /** Path mounted by {@link #start} for {@link #handleRequestEmailChange} - bearer-gated, unlike the paths above: this changes an already-authenticated account's own address. */
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
+<<<<<<< HEAD
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
+=======
+    /** Path mounted by {@link #start} for {@link #handleBeginTwoFactorSetup} (item 12, see {@code architecture/SERVICES.md}) - bearer-gated, acts on the already-authenticated caller's own account. */
+    private static final String TWO_FACTOR_SETUP_PATH = "/auth/2fa/setup";
+    /** Path mounted by {@link #start} for {@link #handleConfirmTwoFactorSetup} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
+    private static final String TWO_FACTOR_CONFIRM_PATH = "/auth/2fa/confirm";
+    /** Path mounted by {@link #start} for {@link #handleDisableTwoFactor} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
+    private static final String TWO_FACTOR_DISABLE_PATH = "/auth/2fa/disable";
+    /** Path mounted by {@link #start} for {@link #handleTwoFactorLogin}, exempted from {@link #requireValidBearerToken} - the caller has no real access token yet, that's the whole point of this route. */
+    private static final String TWO_FACTOR_LOGIN_PATH = "/auth/2fa/login";
+    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
+>>>>>>> dev
     private static final String FILES_PATH = "/files";
+    /** Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} by Javalin's own routing regardless of registration order. */
+    private static final String FILES_TRASH_PATH = FILES_PATH + "/trash";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";
+    /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
+    private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
+    /** Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder sharing) - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} the same way {@link #FILES_TRASH_PATH} already is. */
+    private static final String FILES_SHARED_WITH_ME_PATH = FILES_PATH + "/shared-with-me";
+    /** Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe} - same static-segment-first routing note as {@link #FILES_SHARED_WITH_ME_PATH}. */
+    private static final String FOLDERS_SHARED_WITH_ME_PATH = FOLDERS_PATH + "/shared-with-me";
+    /**
+     * Path prefix every {@code /auth/*} route falls under - checked by {@link
+     * #requireWithinAuthRateLimit}, which applies to all nine {@code /auth/*} routes alike
+     * (the seven exempted from {@link #requireValidBearerToken} <em>and</em> the two
+     * bearer-gated change-email ones), since a leaked/stolen bearer token could otherwise
+     * still be used to spam email-change requests with no limit at all.
+     */
+    private static final String AUTH_PATH_PREFIX = "/auth/";
+    /** {@code configuration.json} key {@link #resolveAuthRateLimitMaxRequests} reads the per-window request cap from. */
+    private static final String AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY = "auth-rate-limit-max-requests";
+    /** {@code configuration.json} key {@link #resolveAuthRateLimitWindowSeconds} reads the window length (seconds) from. */
+    private static final String AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY = "auth-rate-limit-window-seconds";
+    /**
+     * Default {@code /auth/*} per-IP request cap per {@link #DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS}-second
+     * window, used when {@link #AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY} isn't set. Reasoning: a
+     * genuine user fat-fingering a password or a verification code a handful of times should never
+     * be rate-limited (login/register/reset each only need a couple of attempts in normal use), but
+     * an automated credential-stuffing/enumeration attempt needs hundreds-to-thousands of attempts
+     * to be worth running at all - 10 requests per 5 minutes per IP sits comfortably above the
+     * former and far below the latter, without needing an account-level lockout (which is itself an
+     * abuse vector - locking a victim out by deliberately failing their login).
+     */
+    private static final int DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS = 10;
+    /** Default {@code /auth/*} rate-limit window, in seconds - see {@link #DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS}'s reasoning. */
+    private static final long DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS = 300L;
+    /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
+    private static final String ADMIN_PATH_PREFIX = "/admin/";
+    /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
+    private static final String ADMIN_AUTH_USERS_PATH = "/admin/authUsers";
+    /**
+     * Path mounted by {@link #start} for the item-10 (live push via WebSocket, see {@code
+     * architecture/SERVICES.md}) WebSocket route, configured by {@link #configureLiveUpdatesWebSocket}.
+     * Only mounted when {@link #authService} is set - the same bearer-token identity the HTTP
+     * routes use also gates this connection (see that method's own Javadoc for how, since a
+     * WebSocket handshake can't carry a custom {@code Authorization} header the way a normal HTTP
+     * client request can).
+     */
+    private static final String LIVE_UPDATES_PATH = "/ws/updates";
     /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
     /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
@@ -113,7 +186,7 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Query parameter {@link #handleUploadFile}/{@link #handleListFiles} read a target/filter
      * folder id from, and the JSON field name each entry of {@link #handleListFiles}'s response
-     * array carries that folder id under (merged in via {@link #toJsonArray} - {@link StoredFile}
+     * array carries that folder id under (merged in via  - {@link StoredFile}
      * itself has no such field, since placement lives on {@code StoredFileOwnership} instead).
      */
     private static final String FOLDER_ID_FIELD = "folderId";
@@ -129,6 +202,21 @@ public final class DefaultRestFactory extends RestFactory {
      * Javadoc) and this sentinel is the only way to explicitly ask for just the root's files.
      */
     private static final String ROOT_FOLDER_SENTINEL = "root";
+    /**
+     * Query parameter {@link #handleListFiles}/{@link #handleListFolders} read a page size from -
+     * its mere <em>presence</em> is what opts a request into the paginated, envelope-wrapped
+     * response shape ({@link #PAGE_ITEMS_FIELD}/{@link #PAGE_NEXT_CURSOR_FIELD}) instead of the
+     * original bare-JSON-array response; omitted, both routes keep returning every matching entry
+     * as a bare array exactly as before this feature existed, so no existing caller of either
+     * route breaks.
+     */
+    private static final String LIMIT_QUERY_PARAM = "limit";
+    /** Query parameter {@link #handleListFiles}/{@link #handleListFolders} read the previous page's {@link CursorPage#nextCursor()} from - absent/blank means "first page". Ignored unless {@link #LIMIT_QUERY_PARAM} is also present. */
+    private static final String CURSOR_QUERY_PARAM = "cursor";
+    /** JSON field name the paginated response envelope carries its page of entries under. */
+    private static final String PAGE_ITEMS_FIELD = "items";
+    /** JSON field name the paginated response envelope carries {@link CursorPage#nextCursor()} under - a JSON {@code null} once there is no next page. */
+    private static final String PAGE_NEXT_CURSOR_FIELD = "nextCursor";
 
     /**
      * The upload size ceiling, enforced two ways: it overrides Javalin's own {@link
@@ -186,6 +274,41 @@ public final class DefaultRestFactory extends RestFactory {
 
     /** The running Javalin desktop, or {@code null} before {@link #start} / after {@link #stop}. */
     private volatile Javalin app;
+
+    /**
+     * Per-client-IP fixed-window request counters backing {@link #requireWithinAuthRateLimit} -
+     * a plain in-process {@link ConcurrentHashMap}, matching this codebase's existing "not for
+     * massive scale, sufficient for a single-process deployment" trade-off elsewhere ({@code
+     * InMemoryPendingUploadCache}, the desktop app's {@code ThumbnailCache}). No eviction: a long
+     * enough uptime accumulates one entry per distinct IP that has ever hit {@code /auth/*} - each
+     * entry is a handful of bytes, so this isn't a practical memory concern at this deployment's
+     * scale, but a future multi-tenant/high-traffic deployment would want to evict stale entries.
+     */
+    private final ConcurrentHashMap<String, AuthRateLimitBucket> authRateLimitBuckets = new ConcurrentHashMap<>();
+
+    /**
+     * Every currently-connected {@link #LIVE_UPDATES_PATH} session, grouped by the {@code
+     * authUserId} it authenticated as (see {@link #configureLiveUpdatesWebSocket}) - an account
+     * can have more than one connected client (e.g. the desktop app open on two machines), so
+     * this is a set per key, not a single session. Read by {@link #publish} to know which
+     * sessions, if any, to forward a {@link de.lino.cloud.api.event.database.DatabaseWatchEvent}
+     * notification to; an entry is removed entirely once its last session disconnects, so a
+     * long-running server never accumulates empty sets for accounts that have since gone offline.
+     */
+    private final ConcurrentHashMap<String, Set<WsContext>> liveUpdateSessions = new ConcurrentHashMap<>();
+
+    /**
+     * One client IP's current fixed-window {@code /auth/*} request count. {@code windowStartEpochMillis}
+     * and {@code count} are only ever read/mutated while synchronized on the instance (see {@link
+     * #requireWithinAuthRateLimit}) - a fixed window (not a sliding one/token bucket) was chosen
+     * deliberately for simplicity, at the cost of allowing a burst of up to {@code 2x} the
+     * configured limit right at a window boundary; acceptable for this use case (slowing down
+     * brute-forcing/spam, not a hard security perimeter).
+     */
+    private static final class AuthRateLimitBucket {
+        private long windowStartEpochMillis = System.currentTimeMillis();
+        private int count;
+    }
 
     /**
      * Every route is left open - no API-key check at all. Only appropriate
@@ -366,6 +489,7 @@ public final class DefaultRestFactory extends RestFactory {
             }
 
             if (this.authService != null) {
+                config.routes.before(this::requireWithinAuthRateLimit);
                 config.routes.post(LOGIN_PATH, this::handleLogin);
                 config.routes.post(REGISTER_PATH, this::handleRegister);
                 config.routes.post(REGISTER_CONFIRM_PATH, this::handleConfirmRegistration);
@@ -373,21 +497,43 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(RESET_PASSWORD_CONFIRM_PATH, this::handleConfirmPasswordReset);
                 config.routes.post(CHANGE_EMAIL_PATH, this::handleRequestEmailChange);
                 config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
+                config.routes.post(REFRESH_PATH, this::handleRefresh);
+                config.routes.post(LOGOUT_PATH, this::handleLogout);
+                config.routes.post(TWO_FACTOR_LOGIN_PATH, this::handleTwoFactorLogin);
+                config.routes.post(TWO_FACTOR_SETUP_PATH, this::handleBeginTwoFactorSetup);
+                config.routes.post(TWO_FACTOR_CONFIRM_PATH, this::handleConfirmTwoFactorSetup);
+                config.routes.post(TWO_FACTOR_DISABLE_PATH, this::handleDisableTwoFactor);
                 config.routes.before(this::requireValidBearerToken);
+
+                config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
+                config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
+                config.routes.before(this::requireAdmin);
+
+                config.routes.ws(LIVE_UPDATES_PATH, this::configureLiveUpdatesWebSocket);
             }
 
             if (this.cloudUserService != null) {
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
+                config.routes.get(FILES_TRASH_PATH, this::handleListDeletedFiles);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
+                config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
+                config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
+                config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
+                config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
 
                 config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
                 config.routes.get(FOLDERS_PATH, this::handleListFolders);
+                config.routes.get(FOLDERS_TRASH_PATH, this::handleListDeletedFolders);
                 config.routes.put(FOLDERS_PATH + "/{id}", this::handleUpdateFolder);
                 config.routes.delete(FOLDERS_PATH + "/{id}", this::handleDeleteFolder);
+                config.routes.post(FOLDERS_PATH + "/{id}/restore", this::handleRestoreFolder);
+                config.routes.get(FOLDERS_SHARED_WITH_ME_PATH, this::handleListFoldersSharedWithMe);
+                config.routes.post(FOLDERS_PATH + "/{id}/share", this::handleShareFolder);
+                config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -406,6 +552,7 @@ public final class DefaultRestFactory extends RestFactory {
             this.app.stop();
             this.app = null;
         }
+        this.liveUpdateSessions.clear();
     }
 
     /**
@@ -452,15 +599,19 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link
      * #REGISTER_PATH}/{@link #REGISTER_CONFIRM_PATH}/{@link #RESET_PASSWORD_PATH}/{@link
-     * #RESET_PASSWORD_CONFIRM_PATH} themselves - {@code LOGIN_PATH} is how a client obtains the
-     * JWT this filter checks for in the first place, {@code REGISTER_PATH}/{@code
-     * REGISTER_CONFIRM_PATH} together are how a client obtains an account before it has any JWT
-     * at all, and {@code RESET_PASSWORD_PATH}/{@code RESET_PASSWORD_CONFIRM_PATH} together are
-     * how a client recovers access to an account whose password it no longer has (so, by
-     * definition, no valid JWT either) - all five must stay reachable without one. The token
-     * itself is resolved by {@link #resolveBearerToken} (header, preferred,
-     * or a query parameter fallback). Stores the validated user id as a
-     * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
+     * #RESET_PASSWORD_CONFIRM_PATH}/{@link #REFRESH_PATH}/{@link #LOGOUT_PATH} themselves - {@code
+     * LOGIN_PATH} is how a client obtains the JWT this filter checks for in the first place,
+     * {@code REGISTER_PATH}/{@code REGISTER_CONFIRM_PATH} together are how a client obtains an
+     * account before it has any JWT at all, {@code RESET_PASSWORD_PATH}/{@code
+     * RESET_PASSWORD_CONFIRM_PATH} together are how a client recovers access to an account whose
+     * password it no longer has (so, by definition, no valid JWT either), and {@code
+     * REFRESH_PATH}/{@code LOGOUT_PATH} both carry their own authority in the request body (a
+     * refresh token) rather than a bearer access token - a refresh call's entire purpose is
+     * obtaining a fresh access token once the old one has already expired, and a logout call must
+     * still work with an already-expired access token, so neither can require one - all seven
+     * must stay reachable without one. The token itself is resolved by {@link
+     * #resolveBearerToken} (header, preferred, or a query parameter fallback). Stores the
+     * validated user id as a request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
      * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
      * {@link #bindUpdate}/{@link #bindDelete} to read.
      *
@@ -468,7 +619,9 @@ public final class DefaultRestFactory extends RestFactory {
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
-                || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())) {
+                || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())
+                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())
+                || TWO_FACTOR_LOGIN_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -482,6 +635,212 @@ public final class DefaultRestFactory extends RestFactory {
         } catch (final InvalidJwtException e) {
             throw new UnauthorizedResponse("Invalid or expired token");
         }
+    }
+
+    /**
+     * Gates every {@link #ADMIN_PATH_PREFIX}-prefixed route ({@link #ADMIN_AUTH_USERS_PATH} and
+     * its {@code /{id}} sibling) behind {@link de.lino.cloud.api.jwt.user.AuthUser#isAdmin()},
+     * in addition to (registered after, so it always runs after) {@link
+     * #requireValidBearerToken}'s own check - a non-admin caller with an otherwise perfectly
+     * valid bearer token is still rejected here. Runs as a global {@code before} filter (the
+     * same "global filter, branch on {@link Context#path()} internally" shape {@link
+     * #requireValidBearerToken} already uses) rather than a path-scoped one, since a global
+     * filter's ordering relative to {@link #requireValidBearerToken} is simpler to reason about
+     * than two independently-path-scoped filters racing to run first.
+     *
+     * <p>Resolves the caller's own {@link de.lino.cloud.api.jwt.user.AuthUser} via {@link
+     * AuthService#getAuthUser} off the user id {@link #requireValidBearerToken} already stashed -
+     * never from anything in the request itself, so a caller can't claim admin by any means other
+     * than actually having the flag set on their own account.
+     *
+     * @throws ForbiddenResponse if the caller's account doesn't exist (shouldn't happen behind an
+     *     already-validated token) or isn't flagged admin
+     */
+    private void requireAdmin(@NotNull final Context ctx) {
+        if (!ctx.path().startsWith(ADMIN_PATH_PREFIX)) {
+            return;
+        }
+        final String userId = requireUserId(ctx);
+        final boolean isAdmin = this.authService.getAuthUser(userId)
+                .map(AuthUser::isAdmin)
+                .orElse(false);
+        if (!isAdmin) {
+            throw new ForbiddenResponse("Admin privileges required");
+        }
+    }
+
+    /**
+     * Javalin {@code before} filter capping {@code /auth/*} request volume per client IP, via a
+     * fixed-window counter ({@link AuthRateLimitBucket}) keyed by {@link Context#ip()}. Applies to
+     * all seven {@code /auth/*} routes ({@link #AUTH_PATH_PREFIX}) alike - both the five exempted
+     * from {@link #requireValidBearerToken} (an anonymous caller has nothing else to key a limit
+     * on) and the two bearer-gated change-email routes (a stolen/leaked token shouldn't get
+     * unlimited free e-mail-change attempts either). Registered as the very first {@code before}
+     * filter (ahead of {@link #requireValidBearerToken}/{@link #requireAdmin}) so an over-limit
+     * caller is rejected before this instance does any other work on the request.
+     *
+     * <p>This is deliberately a defense against brute-forcing/spam volume, not a hard security
+     * perimeter: {@link Context#ip()} is the immediate TCP peer address, which a caller behind a
+     * shared NAT/reverse proxy may share with many unrelated legitimate users (a false-positive
+     * risk, not a bypass), and a caller with access to many IPs can trivially spread requests
+     * across them (a real bypass, accepted the same way this codebase accepts {@link
+     * de.lino.cloud.plugin.connectivity.InternetConnectivityChecker}-style "good enough, not
+     * bulletproof" trade-offs elsewhere).
+     *
+     * @throws TooManyRequestsResponse if this IP has exceeded {@link
+     *     #resolveAuthRateLimitMaxRequests()} requests within the current {@link
+     *     #resolveAuthRateLimitWindowSeconds()}-second window
+     */
+    private void requireWithinAuthRateLimit(@NotNull final Context ctx) {
+        if (!ctx.path().startsWith(AUTH_PATH_PREFIX)) {
+            return;
+        }
+        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(ctx.ip(), ignored -> new AuthRateLimitBucket());
+        final long windowMillis = resolveAuthRateLimitWindowSeconds() * 1000L;
+        final int maxRequests = resolveAuthRateLimitMaxRequests();
+        synchronized (bucket) {
+            final long now = System.currentTimeMillis();
+            if (now - bucket.windowStartEpochMillis >= windowMillis) {
+                bucket.windowStartEpochMillis = now;
+                bucket.count = 0;
+            }
+            bucket.count++;
+            if (bucket.count > maxRequests) {
+                throw new TooManyRequestsResponse(
+                        "Too many authentication requests from this address - try again later");
+            }
+        }
+    }
+
+    /**
+     * Reads {@link #AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY} from {@link
+     * CloudDriver#getConfiguration()}, defaulting to {@link #DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS}
+     * if unset - same {@link JsonDocument#contains}-checked-first convention {@link
+     * de.lino.cloud.auth.entity.CloudUser#getMaxBytesToUpload()}'s own config resolution uses,
+     * since {@link JsonDocument#getInteger} throws on a missing key rather than defaulting.
+     */
+    private static int resolveAuthRateLimitMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS;
+    }
+
+    /**
+     * Item 10 (live push via WebSocket, see {@code architecture/SERVICES.md}): configures the
+     * {@link #LIVE_UPDATES_PATH} WebSocket route. Unlike every HTTP route, authentication cannot
+     * go through {@link #requireValidBearerToken} - Javalin's {@code before} filters only run
+     * ahead of the HTTP upgrade request, and a browser {@code WebSocket} client cannot set a
+     * custom {@code Authorization} header on the handshake the way a normal HTTP client can -
+     * so the token is instead resolved (header, or the {@link #TOKEN_QUERY_PARAM} query-parameter
+     * fallback {@link #resolveBearerToken(Context)}'s own Javadoc already documents the trade-off
+     * of) directly inside {@code onConnect}, once the socket itself is already open, and an
+     * invalid/missing token immediately closes it with {@link WsCloseStatus#POLICY_VIOLATION}
+     * rather than ever registering the session.
+     *
+     * <p>A validated session is tracked in {@link #liveUpdateSessions}, keyed by the resolved
+     * {@code authUserId} (stashed on the {@link WsContext} itself under {@link
+     * #USER_ID_ATTRIBUTE}, mirroring {@link #requireValidBearerToken}'s own HTTP-side
+     * convention), and untracked again in {@code onClose} regardless of why the connection ended.
+     *
+     * @param ws the Javalin WebSocket handler registry for {@link #LIVE_UPDATES_PATH}
+     */
+    private void configureLiveUpdatesWebSocket(@NotNull final WsConfig ws) {
+        ws.onConnect(ctx -> {
+            final String token = resolveBearerToken(ctx);
+            if (token == null) {
+                ctx.closeSession(WsCloseStatus.POLICY_VIOLATION, "Missing " + AUTHORIZATION_HEADER + " header or '" + TOKEN_QUERY_PARAM + "' query parameter");
+                return;
+            }
+            final String userId;
+            try {
+                userId = this.authService.validate(token);
+            } catch (final InvalidJwtException e) {
+                ctx.closeSession(WsCloseStatus.POLICY_VIOLATION, "Invalid or expired token");
+                return;
+            }
+            ctx.attribute(USER_ID_ATTRIBUTE, userId);
+            this.liveUpdateSessions.computeIfAbsent(userId, ignored -> ConcurrentHashMap.newKeySet()).add(ctx);
+        });
+        ws.onClose(ctx -> {
+            final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
+            if (userId == null) {
+                return;
+            }
+            this.liveUpdateSessions.computeIfPresent(userId, (ignored, sessions) -> {
+                sessions.remove(ctx);
+                return sessions.isEmpty() ? null : sessions;
+            });
+        });
+    }
+
+    /**
+     * {@link #resolveBearerToken(Context)}'s exact logic, against a {@link WsContext} instead of
+     * a plain {@link Context} - the two share no common supertype exposing {@code header}/{@code
+     * queryParam}, so this is a small, deliberate duplication rather than a shared helper.
+     *
+     * @return the raw token, or {@code null} if neither source carries one
+     */
+    @Nullable
+    private static String resolveBearerToken(@NotNull final WsContext ctx) {
+        final String header = ctx.header(AUTHORIZATION_HEADER);
+        if (header != null && header.startsWith(BEARER_PREFIX)) {
+            return header.substring(BEARER_PREFIX.length());
+        }
+        return ctx.queryParam(TOKEN_QUERY_PARAM);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Forwards to every session tracked in {@link #liveUpdateSessions} under {@code
+     * authUserId}, if any - a no-op if nobody belonging to that account is currently connected to
+     * {@link #LIVE_UPDATES_PATH}. Never throws: a failure sending to one session (e.g. it just
+     * disconnected but hasn't been untracked yet) is caught and skipped so it can never prevent
+     * delivery to that account's other connected sessions, matching this interface's own
+     * "must never throw" contract.
+     */
+    @Override
+    public void publish(@NonNull final String authUserId, @NonNull final String table,
+                         @NonNull final String operation, @NonNull final String id) {
+        try {
+
+            final Set<WsContext> sessions = this.liveUpdateSessions.get(authUserId);
+            if (sessions == null || sessions.isEmpty()) {
+                return;
+            }
+
+            final JsonObject payload = new JsonObject();
+            payload.addProperty("table", table);
+            payload.addProperty("operation", operation);
+            payload.addProperty("id", id);
+            final String json = this.gson.toJson(payload);
+
+            for (final WsContext session : sessions) {
+                try {
+                    session.send(json);
+                } catch (final RuntimeException ignored) {
+                    // A single broken/already-closing session must never stop delivery to its
+                    // siblings - onClose (see configureLiveUpdatesWebSocket) is what untracks it.
+                }
+            }
+
+        } catch (final RuntimeException e) {
+            System.err.println("[DefaultRestFactory] failed to publish live update for account '" + authUserId + "':");
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Reads {@link #AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY} from {@link
+     * CloudDriver#getConfiguration()}, defaulting to {@link #DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS}
+     * if unset - same convention as {@link #resolveAuthRateLimitMaxRequests()}.
+     */
+    private static long resolveAuthRateLimitWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(AUTH_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS;
     }
 
     /**
@@ -544,19 +903,41 @@ public final class DefaultRestFactory extends RestFactory {
      * {@code POST /auth/login}: reads {@code {"username": ..., "password": ...}}
      * from the request body, dispatched off the Jetty worker thread since
      * {@link AuthService#login} runs Argon2id (deliberately slow) plus a
-     * {@code DataFactory} lookup.
+     * {@code DataFactory} lookup. Branches on {@link LoginResult#requiresTwoFactor()} (item 12,
+     * see {@code architecture/SERVICES.md}): a normal completed login responds with the usual
+     * {@link LoginResponse}, while an account with two-factor authentication enabled instead
+     * responds {@code 200 OK} with a {@link TwoFactorRequiredResponse} carrying a pending token the
+     * caller must present, together with a TOTP code, to {@link #handleTwoFactorLogin}.
      */
     private void handleLogin(@NotNull final Context ctx) {
         final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.authService.login(request.username(), request.password().toCharArray()))
-                .handle((token, failure) -> {
+                .handle((result, failure) -> {
                     if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        if (result.requiresTwoFactor()) {
+                            ctx.contentType("application/json")
+                                    .result(this.gson.toJson(new TwoFactorRequiredResponse(true, result.pendingTwoFactorToken())));
+                        } else {
+                            ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(result.tokens())));
+                        }
                         return null;
                     }
                     throw unauthorizedOrPropagate(failure);
                 }));
+    }
+
+    /**
+     * The {@code {"twoFactorRequired", "pendingToken"}} JSON response body {@link #handleLogin}
+     * returns instead of a {@link LoginResponse} when the matched account has two-factor
+     * authentication enabled - {@code twoFactorRequired} is always {@code true} on this shape
+     * (present so a client can branch on one field rather than on the absence of {@code token}),
+     * and {@code pendingToken} is what {@link #handleTwoFactorLogin} expects back.
+     *
+     * @param twoFactorRequired always {@code true}
+     * @param pendingToken the token to present, together with a TOTP code, to {@code POST /auth/2fa/login}
+     */
+    private record TwoFactorRequiredResponse(boolean twoFactorRequired, String pendingToken) {
     }
 
     /**
@@ -570,12 +951,19 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * The {@code {"token"}} JSON response body returned by a successful login or completed
-     * registration.
+     * The {@code {"token", "refreshToken"}} JSON response body returned by a successful login,
+     * completed registration, completed password reset, or a completed {@code POST /auth/refresh} -
+     * every one of {@link IAuthService}'s token-issuing methods returns an {@link AuthTokens} pair,
+     * and this record is the one place that shape is serialized onto the wire.
      *
-     * @param token the signed JWT
+     * @param token the signed access JWT
+     * @param refreshToken the opaque, longer-lived refresh token - see {@link AuthTokens#refreshToken()}
      */
-    private record LoginResponse(String token) {
+    private record LoginResponse(String token, String refreshToken) {
+        /** Builds a {@link LoginResponse} straight from an {@link AuthTokens} pair - the one place that mapping happens. */
+        private static LoginResponse of(final AuthTokens tokens) {
+            return new LoginResponse(tokens.accessToken(), tokens.refreshToken());
+        }
     }
 
     /**
@@ -645,9 +1033,9 @@ public final class DefaultRestFactory extends RestFactory {
                                 "@DefaultRestFactory.handleConfirmRegistration: failed to complete registration for " + request.username(), e);
                     }
                 })
-                .handle((token, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        ctx.status(201).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
@@ -723,12 +1111,76 @@ public final class DefaultRestFactory extends RestFactory {
                                 "@DefaultRestFactory.handleConfirmPasswordReset: failed to complete password reset for " + request.username(), e);
                     }
                 })
-                .handle((token, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        ctx.status(200).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"refreshToken"}} JSON body shape read by {@code POST /auth/refresh} and {@code
+     * POST /auth/logout}.
+     *
+     * @param refreshToken a refresh token previously returned by {@code POST /auth/login}/{@code
+     *     POST /auth/register/confirm}/{@code POST /auth/reset-password/confirm}/a prior {@code
+     *     POST /auth/refresh}
+     */
+    private record RefreshRequest(String refreshToken) {
+    }
+
+    /**
+     * {@code POST /auth/refresh}: exchanges a still-valid refresh token for a fresh {@link
+     * LoginResponse} pair via {@link AuthService#refresh}, without requiring the caller to log in
+     * again with a password - see that method's own Javadoc for the rotate-on-every-use contract.
+     * Not bearer-gated (see {@link #requireValidBearerToken}'s exemption list) - the whole point
+     * is to obtain a fresh access token once the old one has already expired. Dispatched off the
+     * Jetty worker thread since this runs database I/O. {@code 200 OK} on success.
+     */
+    private void handleRefresh(@NotNull final Context ctx) {
+        final RefreshRequest request = this.gson.fromJson(ctx.body(), RefreshRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.refresh(request.refreshToken());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException("@DefaultRestFactory.handleRefresh: failed to refresh tokens", e);
+                    }
+                })
+                .handle((tokens, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
+                        return null;
+                    }
+                    throw unauthorizedOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * {@code POST /auth/logout}: best-effort, idempotent revocation of the caller's refresh token
+     * via {@link AuthService#revokeRefreshToken} - possession of the token itself is this route's
+     * own proof of authority, the same way it is for {@code POST /auth/refresh}, so this is not
+     * bearer-gated either (see {@link #requireValidBearerToken}'s exemption list) and works even
+     * with an already-expired access token. Always {@code 204 No Content}, regardless of whether
+     * {@code refreshToken} still existed - logging out is never itself an error, the same
+     * "don't leak/don't fail on already-gone state" idiom {@link
+     * AuthService#revokeRefreshToken}'s own Javadoc documents. Dispatched off the Jetty worker
+     * thread since this runs database I/O.
+     */
+    private void handleLogout(@NotNull final Context ctx) {
+        final RefreshRequest request = this.gson.fromJson(ctx.body(), RefreshRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.authService.revokeRefreshToken(request.refreshToken()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped logout failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
                 }));
     }
 
@@ -810,6 +1262,192 @@ public final class DefaultRestFactory extends RestFactory {
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"secretBase32", "otpauthUri"}} JSON response body returned by {@code
+     * POST /auth/2fa/setup}.
+     */
+    private record TwoFactorSetupResponse(String secretBase32, String otpauthUri) {
+        /** Builds a {@link TwoFactorSetupResponse} straight from a {@link TwoFactorSetupStart}. */
+        private static TwoFactorSetupResponse of(final TwoFactorSetupStart start) {
+            return new TwoFactorSetupResponse(start.secretBase32(), start.otpauthUri());
+        }
+    }
+
+    /**
+     * {@code POST /auth/2fa/setup} (item 12, see {@code architecture/SERVICES.md}): bearer-gated,
+     * acts on the caller's own account (from {@link #requireUserId}). Starts enabling two-factor
+     * authentication via {@link AuthService#beginTwoFactorSetup} - generates a fresh TOTP secret,
+     * not yet live on the account, and returns it plus a ready-to-render {@code otpauth://} URI.
+     * The caller must follow up with {@link #handleConfirmTwoFactorSetup} once it has a code from
+     * its authenticator app. Dispatched off the Jetty worker thread since this runs database I/O.
+     */
+    private void handleBeginTwoFactorSetup(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.authService.beginTwoFactorSetup(userId))
+                .handle((start, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(TwoFactorSetupResponse.of(start)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"code"}} JSON body shape read by {@code POST /auth/2fa/confirm}.
+     *
+     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
+     */
+    private record ConfirmTwoFactorSetupRequest(String code) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/confirm}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
+     * {@code {"code": ...}} and completes setup via {@link AuthService#confirmTwoFactorSetup} -
+     * from this point on, {@code POST /auth/login} for this account returns a {@link
+     * TwoFactorRequiredResponse} instead of tokens directly. Dispatched off the Jetty worker
+     * thread since this runs database I/O. {@code 200 OK} on success.
+     */
+    private void handleConfirmTwoFactorSetup(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final ConfirmTwoFactorSetupRequest request = this.gson.fromJson(ctx.body(), ConfirmTwoFactorSetupRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> {
+                    try {
+                        this.authService.confirmTwoFactorSetup(userId, request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleConfirmTwoFactorSetup: failed to enable two-factor authentication for " + userId, e);
+                    }
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication enabled")));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"password"}} JSON body shape read by {@code POST /auth/2fa/disable}.
+     *
+     * @param password the account's current password, re-verified before disabling
+     */
+    private record DisableTwoFactorRequest(String password) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/disable}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
+     * {@code {"password": ...}} and disables two-factor authentication via {@link
+     * AuthService#disableTwoFactor} - which re-verifies {@code password} first, since a
+     * stolen-but-still-valid bearer token alone should not be enough to turn off an account's
+     * second factor. Dispatched off the Jetty worker thread since this runs Argon2id/database I/O.
+     * {@code 200 OK} on success.
+     */
+    private void handleDisableTwoFactor(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final DisableTwoFactorRequest request = this.gson.fromJson(ctx.body(), DisableTwoFactorRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.authService.disableTwoFactor(userId, request.password().toCharArray()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication disabled")));
+                        return null;
+                    }
+                    throw unauthorizedOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"pendingToken", "code"}} JSON body shape read by {@code POST /auth/2fa/login}.
+     *
+     * @param pendingToken the token returned by {@code POST /auth/login}'s {@link TwoFactorRequiredResponse}
+     * @param code the current TOTP code, produced by the caller's authenticator app
+     */
+    private record TwoFactorLoginRequest(String pendingToken, String code) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/login}: completes a login left pending by {@code POST /auth/login}
+     * returning a {@link TwoFactorRequiredResponse}, via {@link AuthService#completeTwoFactorLogin} -
+     * verifies the TOTP code and, on success, issues real tokens under the same {@link
+     * LoginResponse} shape {@code POST /auth/login} returns for a non-2FA account. Not bearer-gated
+     * (see {@link #requireValidBearerToken}'s exemption list) - the caller has no real access token
+     * yet by definition. Dispatched off the Jetty worker thread since this runs database I/O.
+     * {@code 200 OK} on success.
+     */
+    private void handleTwoFactorLogin(@NotNull final Context ctx) {
+        final TwoFactorLoginRequest request = this.gson.fromJson(ctx.body(), TwoFactorLoginRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.completeTwoFactorLogin(request.pendingToken(), request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException("@DefaultRestFactory.handleTwoFactorLogin: failed to complete two-factor login", e);
+                    }
+                })
+                .handle((tokens, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * {@code GET /admin/authUsers}: lists every registered {@link AuthUser} via {@link
+     * AuthService#getAuthUsers()} - gated by {@link #requireAdmin} (in addition to {@link
+     * #requireValidBearerToken}), so only a caller whose own account is flagged {@link
+     * AuthUser#isAdmin()} ever reaches this handler. Returns the raw {@link AuthUser} JSON
+     * array as-is (Gson's own field-reflection serialization, the same shape every other
+     * {@code Serialized} entity is returned in over this API) - {@code passwordHash} is a
+     * one-way Argon2id hash, not a secret an admin caller needs redacted from an
+     * already-admin-gated route.
+     */
+    private void handleListAuthUsers(@NotNull final Context ctx) {
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(this.authService::getAuthUsers)
+                .handle((authUsers, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(authUsers));
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped admin authUsers listing failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
+                }));
+    }
+
+    /**
+     * {@code GET /admin/authUsers/{id}}: looks up a single {@link AuthUser} by id via {@link
+     * AuthService#getAuthUser(String)} - gated by {@link #requireAdmin} the same way {@link
+     * #handleListAuthUsers} is. {@code 404} (via {@link NotFoundResponse}) if no account exists
+     * under {@code id} - an admin caller is trusted with existence information here, unlike the
+     * deliberate "don't leak" idiom the rest of this class uses for a non-admin caller's own data.
+     */
+    private void handleGetAuthUser(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.authService.getAuthUser(id))
+                .handle((authUser, failure) -> {
+                    if (failure == null) {
+                        if (authUser.isEmpty()) {
+                            throw new NotFoundResponse("No AuthUser with id " + id);
+                        }
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(authUser.get()));
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped admin authUser lookup failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
                 }));
     }
 
@@ -963,16 +1601,63 @@ public final class DefaultRestFactory extends RestFactory {
      * always had, kept as the default for any client that doesn't yet know about folders; present
      * (including {@link #ROOT_FOLDER_SENTINEL}) scopes the list to just that one folder (or the
      * root).
+     *
+     * <p>Optionally {@code ?limit=<n>} (and {@code ?cursor=<opaque>}): opts into cursor pagination
+     * (see {@link #LIMIT_QUERY_PARAM}'s own Javadoc for exactly what "opts into" means) - the
+     * response becomes {@code {"items": [...], "nextCursor": ...}} instead of a bare array, backed
+     * by {@link CloudUserService#listFileSummariesPage}.
      */
     private void handleListFiles(@NotNull final Context ctx) {
         final String folderIdParam = ctx.queryParam(FOLDER_ID_FIELD);
+        final String resolvedFolderId = folderIdParam == null ? null
+                : (ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam);
+        final Integer limit = parsePageLimit(ctx);
         final String userId = requireUserId(ctx);
+        if (limit == null) {
+            ctx.future(() -> MultiTaskingFactory.getInstance()
+                    .supplyAsync(() -> folderIdParam == null
+                            ? this.cloudUserService.listFileSummaries(userId)
+                            : this.cloudUserService.listFileSummaries(userId, resolvedFolderId))
+                    .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+            return;
+        }
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> folderIdParam == null
-                        ? this.cloudUserService.listFileSummaries(userId)
-                        : this.cloudUserService.listFileSummaries(
-                                userId, ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam))
-                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+                .supplyAsync(() -> this.cloudUserService.listFileSummariesPage(userId, resolvedFolderId, cursor, limit))
+                .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
+    }
+
+    /**
+     * Reads {@link #LIMIT_QUERY_PARAM} as a positive integer, or {@code null} if absent/blank -
+     * {@code null} means "this request did not opt into pagination", not "page size zero".
+     *
+     * @throws BadRequestResponse if {@link #LIMIT_QUERY_PARAM} is present but not a positive integer
+     */
+    private static Integer parsePageLimit(final Context ctx) {
+        final String raw = ctx.queryParam(LIMIT_QUERY_PARAM);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            final int limit = Integer.parseInt(raw.trim());
+            if (limit <= 0) {
+                throw new BadRequestResponse("'" + LIMIT_QUERY_PARAM + "' must be a positive integer");
+            }
+            return limit;
+        } catch (final NumberFormatException exception) {
+            throw new BadRequestResponse("'" + LIMIT_QUERY_PARAM + "' must be a positive integer");
+        }
+    }
+
+    /**
+     * Builds the {@code {"items": [...], "nextCursor": ...}} envelope {@link #handleListFiles}/
+     * {@link #handleListFolders} serialize once a caller opts into pagination.
+     */
+    private JsonObject toPageEnvelope(final CursorPage<?> page) {
+        final JsonObject envelope = new JsonObject();
+        envelope.add(PAGE_ITEMS_FIELD, this.gson.toJsonTree(page.items()));
+        envelope.addProperty(PAGE_NEXT_CURSOR_FIELD, page.nextCursor());
+        return envelope;
     }
 
     /**
@@ -1054,6 +1739,40 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
+     * {@code GET /files/trash}: lists every {@link StoredFile} currently in the caller's trash, as
+     * {@link StoredFileSummary}s - the same descriptive-fields-only shape/cost {@link
+     * #handleListFiles} returns for a live listing, via {@link
+     * CloudUserService#listDeletedFiles}.
+     */
+    private void handleListDeletedFiles(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listDeletedFiles(userId))
+                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /**
+     * {@code POST /files/{id}/restore}: restores a trashed {@link StoredFile} via {@link
+     * CloudUserService#restoreFile}, which checks the caller owns it. {@code 204} on success,
+     * {@code 404} if unowned/nonexistent (via {@link #folderFailureOrPropagate}'s {@link
+     * IllegalArgumentException} handling), {@code 409} if it isn't currently in the trash (via
+     * that same method's {@link IllegalStateException} handling).
+     */
+    private void handleRestoreFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.restoreFile(userId, id))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
      * The {@code {"folderId"}} JSON body shape read by {@code PUT /files/{id}/folder} -
      * {@code folderId} may be an explicit JSON {@code null} to move the file back to the root
      * (unlike a query parameter, a JSON body can carry a real {@code null}, so no {@link
@@ -1116,13 +1835,24 @@ public final class DefaultRestFactory extends RestFactory {
      * #ROOT_FOLDER_SENTINEL}>}: lists every {@link Folder} owned by the caller directly inside
      * that parent, via {@link CloudUserService#listFolders} - omitted (or {@link
      * #ROOT_FOLDER_SENTINEL}) lists the caller's top-level folders.
+     *
+     * <p>Optionally {@code ?limit=<n>} (and {@code ?cursor=<opaque>}): same pagination opt-in as
+     * {@link #handleListFiles}, backed by {@link CloudUserService#listFoldersPage} instead.
      */
     private void handleListFolders(@NotNull final Context ctx) {
         final String parentFolderId = resolveFolderIdOrRoot(ctx, PARENT_FOLDER_ID_QUERY_PARAM);
+        final Integer limit = parsePageLimit(ctx);
         final String userId = requireUserId(ctx);
+        if (limit == null) {
+            ctx.future(() -> MultiTaskingFactory.getInstance()
+                    .supplyAsync(() -> this.cloudUserService.listFolders(userId, parentFolderId))
+                    .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+            return;
+        }
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.listFolders(userId, parentFolderId))
-                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+                .supplyAsync(() -> this.cloudUserService.listFoldersPage(userId, parentFolderId, cursor, limit))
+                .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
     }
 
     /**
@@ -1174,6 +1904,152 @@ public final class DefaultRestFactory extends RestFactory {
                     }
                     throw folderFailureOrPropagate(failure, Folder.class, id);
                 }));
+    }
+
+    /**
+     * {@code GET /folders/trash}: lists every {@link Folder} currently in the caller's trash via
+     * {@link CloudUserService#listDeletedFolders}.
+     */
+    private void handleListDeletedFolders(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listDeletedFolders(userId))
+                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /**
+     * {@code POST /folders/{id}/restore}: restores a trashed {@link Folder} via {@link
+     * CloudUserService#restoreFolder}, which checks the caller owns it. Same status mapping as
+     * {@link #handleRestoreFile}.
+     */
+    private void handleRestoreFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.restoreFolder(userId, id))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"granteeEmail"}} JSON body shape read by {@code POST /files/{id}/share} and
+     * {@code POST /folders/{id}/share} (item 9, file/folder sharing).
+     *
+     * @param granteeEmail the email address of the account to grant read access to
+     */
+    private record ShareRequest(String granteeEmail) {
+    }
+
+    /**
+     * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code id} via {@link CloudUserService#shareFile}, which checks the caller owns it. {@code
+     * 204} on success, {@code 404} (via {@link #folderFailureOrPropagate}'s {@link
+     * IllegalArgumentException} handling) if {@code id} isn't owned by the caller, is currently
+     * trashed, or {@code granteeEmail} has no registered account.
+     */
+    private void handleShareFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.shareFile(userId, id, request.granteeEmail()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /files/{id}/share/{email}}: revokes a previously-granted share of {@code id}
+     * from {@code email} via {@link CloudUserService#revokeFileShare}. {@code 204} on success
+     * (idempotent - also {@code 204} if no such grant existed), {@code 404} if {@code id} isn't
+     * owned by the caller or {@code email} has no registered account.
+     */
+    private void handleRevokeFileShare(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String email = ctx.pathParam("email");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.revokeFileShare(userId, id, email))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/shared-with-me}: lists every file directly shared with the caller, as
+     * {@link StoredFileSummary}s, via {@link CloudUserService#listSharedWithMe}. Does not include a
+     * file only reachable through a folder-level share - see that method's own Javadoc.
+     */
+    private void handleListFilesSharedWithMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listSharedWithMe(userId))
+                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /**
+     * {@code POST /folders/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code id} and everything nested inside it via {@link CloudUserService#shareFolder}. Same
+     * status mapping as {@link #handleShareFile}.
+     */
+    private void handleShareFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.shareFolder(userId, id, request.granteeEmail()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /folders/{id}/share/{email}}: revokes a previously-granted share of {@code id}
+     * from {@code email} via {@link CloudUserService#revokeFolderShare}. Same status mapping as
+     * {@link #handleRevokeFileShare}. Does not affect a direct {@code /files/{id}/share} grant on a
+     * file nested inside {@code id} - those must be revoked separately.
+     */
+    private void handleRevokeFolderShare(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String email = ctx.pathParam("email");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.revokeFolderShare(userId, id, email))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /folders/shared-with-me}: lists every folder directly shared with the caller via
+     * {@link CloudUserService#listSharedFoldersWithMe}.
+     */
+    private void handleListFoldersSharedWithMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listSharedFoldersWithMe(userId))
+                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
     }
 
     /** {@code POST path}  ->  create (DataFactory#registerAsync), dispatched off the Jetty worker thread. */
@@ -1401,6 +2277,7 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
+<<<<<<< HEAD
      * Unwraps an {@link AuthService#login} failure's {@link CompletionException} and
      * translates {@link InvalidCredentialsException} into {@link UnauthorizedResponse}; any
      * other cause is printed directly to {@link System#err} (bypassing this module's own
@@ -1408,11 +2285,20 @@ public final class DefaultRestFactory extends RestFactory {
      * #silenceJavalinLogging}) before being rethrown as-is to reach Javalin's default (500)
      * handling - same reasoning as {@link #registrationFailureOrPropagate}/{@link
      * #folderFailureOrPropagate}.
+=======
+     * Unwraps an {@link AuthService#login}/{@link AuthService#refresh} failure's {@link
+     * CompletionException} and translates {@link InvalidCredentialsException}/{@link
+     * InvalidRefreshTokenException} into {@link UnauthorizedResponse}; any other cause is
+     * rethrown as-is to reach Javalin's default (500) handling.
+>>>>>>> dev
      */
     private static RuntimeException unauthorizedOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
-        if (cause instanceof InvalidCredentialsException) {
-            return new UnauthorizedResponse("invalid credentials");
+        if (cause instanceof InvalidCredentialsException invalidCredentials) {
+            return new UnauthorizedResponse(invalidCredentials.getMessage());
+        }
+        if (cause instanceof InvalidRefreshTokenException invalidRefreshToken) {
+            return new UnauthorizedResponse(invalidRefreshToken.getMessage());
         }
         CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.unauthorizedOrPropagate: unmapped login failure, returning 500:");
         cause.printStackTrace();

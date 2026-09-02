@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.rest.api;
 
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
@@ -9,14 +10,21 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmTwoFactorSetupRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.DisableTwoFactorRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
+import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorLoginRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 
 import java.io.Closeable;
@@ -26,6 +34,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -49,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CancellationException;
@@ -161,7 +171,16 @@ public final class ApiClient implements AutoCloseable {
      */
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
 
+<<<<<<< HEAD
     /** Shared Gson instance used for every request/response (de)serialization in this class. */
+=======
+    /** Path of {@link #refresh}'s route, checked by {@link #canRetryWithRefresh} to avoid ever attempting to auto-refresh the refresh call itself. */
+    private static final String REFRESH_PATH = "/auth/refresh";
+
+    /** Path of {@link #revokeRefreshToken}'s route. */
+    private static final String LOGOUT_PATH = "/auth/logout";
+
+>>>>>>> dev
     private static final Gson GSON = new Gson();
 
     /** Backs every async call and every {@link de.lino.cloud.platform.rest.api.session.TokenStore} call chained onto it; see {@link #executor()}. */
@@ -176,13 +195,26 @@ public final class ApiClient implements AutoCloseable {
     /** Base URL of the host serving the main REST API ({@code /files}, {@code /folders}, {@code /cloudUsers}, {@code /auth/change-email}). */
     private final URI apiBaseUrl;
 
-    /** The current session's JWT, once {@link #login} has succeeded; {@code null} until then. */
+    /** The current session's access JWT, once {@link #login} has succeeded; {@code null} until then. */
     private final AtomicReference<String> token = new AtomicReference<>();
 
     /**
+<<<<<<< HEAD
      * Builds a client backed by a fresh {@link HttpClient} and virtual-thread executor; call
      * {@link #close()} once done with it.
      *
+=======
+     * The current session's refresh token, once {@link #login} has succeeded; {@code null} until
+     * then. Rotated on every successful {@link #refresh}/{@link #refreshAsync} call - see {@link
+     * AuthResponse}'s own Javadoc. Used automatically by {@link #send(HttpRequest, Type)}/{@link
+     * #sendAsync(HttpRequest, Type)} to transparently retry an authenticated call once after a
+     * {@code 401} (see {@link #canRetryWithRefresh}), so a caller doesn't need to react to an
+     * expired access token itself as long as the refresh token is still valid.
+     */
+    private final AtomicReference<String> refreshToken = new AtomicReference<>();
+
+    /**
+>>>>>>> dev
      * @param authPanelBaseUrl base URL of the auth-panel server, e.g. {@code https://auth.example.com}
      * @param apiBaseUrl       base URL of the main REST API, e.g. {@code https://api.example.com}
      */
@@ -208,12 +240,35 @@ public final class ApiClient implements AutoCloseable {
         return this.executor;
     }
 
+    /**
+     * The main REST API's base URL - the same host {@code /files}/{@code /folders}/{@code
+     * /cloudUsers} calls go to. Exposed for {@link de.lino.cloud.platform.rest.api.push.LiveUpdateClient}
+     * (item 10, live push via WebSocket - see {@code architecture/SERVICES.md}), which derives
+     * its {@code wss://}/{@code ws://} URL from it rather than duplicating this client's own
+     * base-URL configuration.
+     */
+    public URI apiBaseUrl() {
+        return this.apiBaseUrl;
+    }
+
+    /**
+     * The underlying {@link HttpClient}, exposed so {@link
+     * de.lino.cloud.platform.rest.api.push.LiveUpdateClient} can open its WebSocket connection
+     * through the exact same client (connection pool, {@link HttpClient.Version#HTTP_2}
+     * negotiation, {@link #executor()}) this instance already uses for every HTTP call, rather
+     * than standing up a second, independently-configured one.
+     */
+    public HttpClient httpClient() {
+        return this.httpClient;
+    }
+
     /** @return {@code true} once {@link #login} has produced a token still held in memory. */
     public boolean isAuthenticated() {
         return this.token.get() != null;
     }
 
     /**
+<<<<<<< HEAD
      * Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login.
      *
      * @param previouslyIssuedToken a JWT previously returned by {@link #login}/{@link #confirmRegistration}/
@@ -221,11 +276,54 @@ public final class ApiClient implements AutoCloseable {
      */
     public void restoreSession(final String previouslyIssuedToken) {
         this.token.set(Objects.requireNonNull(previouslyIssuedToken, "previouslyIssuedToken cannot be null"));
+=======
+     * @return the raw access JWT currently held in memory (set by {@link #login}/{@link
+     * #register}'s confirm step/{@link #restoreSession(String, String)}/{@link #refresh}), or
+     * empty if not authenticated. Added for {@link SessionManager}-based session-restore callers
+     * that need the token itself after a successful {@link SessionManager#tryRestoreSession()}/
+     * {@code tryRestoreSessionAsync()} (e.g. to decode its {@code sub} claim client-side) rather
+     * than just the boolean "did it work" answer that method returns.
+     */
+    public Optional<String> currentToken() {
+        return Optional.ofNullable(this.token.get());
+>>>>>>> dev
     }
 
-    /** Discards the in-memory token; the caller is responsible for also clearing any persisted copy. */
+    /**
+     * @return the raw refresh token currently held in memory, or empty if none has ever been
+     * issued to this client. Added so a caller persisting the session (e.g. {@link
+     * SessionManager}) can save both tokens together - see {@link #restoreSession(String, String)}
+     * for the counterpart that restores both.
+     */
+    public Optional<String> currentRefreshToken() {
+        return Optional.ofNullable(this.refreshToken.get());
+    }
+
+    /**
+     * Restores a previously persisted access/refresh token pair (e.g. loaded from the OS
+     * keychain) without a fresh login - the counterpart to {@link #currentToken()}/{@link
+     * #currentRefreshToken()}.
+     *
+     * @param previouslyIssuedAccessToken the access JWT to restore
+     * @param previouslyIssuedRefreshToken the refresh token to restore alongside it - required
+     *     (not {@code null}) so every restored session can transparently auto-refresh the same
+     *     way a freshly logged-in one does; a caller with only a bare access token on hand (no
+     *     refresh token ever persisted, e.g. from a session predating this feature) has no
+     *     session worth restoring and should fall back to a fresh login instead
+     */
+    public void restoreSession(final String previouslyIssuedAccessToken, final String previouslyIssuedRefreshToken) {
+        this.token.set(Objects.requireNonNull(previouslyIssuedAccessToken, "previouslyIssuedAccessToken cannot be null"));
+        this.refreshToken.set(Objects.requireNonNull(previouslyIssuedRefreshToken, "previouslyIssuedRefreshToken cannot be null"));
+    }
+
+    /**
+     * Discards the in-memory access and refresh tokens; the caller is responsible for also
+     * clearing any persisted copy (see {@link #revokeRefreshToken()} to additionally invalidate
+     * the refresh token server-side first).
+     */
     public void logout() {
         this.token.set(null);
+        this.refreshToken.set(null);
     }
 
     // --- auth ---------------------------------------------------------
@@ -235,29 +333,135 @@ public final class ApiClient implements AutoCloseable {
      * The request body's field is literally named {@code username} (see {@link AuthRequest}),
      * even though {@code emailAddress} is what's actually passed for it.
      *
+<<<<<<< HEAD
      * @param emailAddress the account's e-mail address, sent as the request's {@code username} field
      * @param password     the account's plaintext password
      * @return the freshly issued JWT, already stored for subsequent calls
+=======
+     * @return a {@link LoginOutcome} - real tokens (already stored for subsequent calls) if the
+     *         matched account has two-factor authentication disabled, or a pending token (see
+     *         {@link LoginOutcome#twoFactorRequired()}) to present, together with a TOTP code, to
+     *         {@link #completeTwoFactorLogin} otherwise
+>>>>>>> dev
      * @throws ApiException {@code 401} on wrong credentials, or any other transport/HTTP failure
      */
-    public String login(final String emailAddress, final String password) throws ApiException {
-        final AuthResponse response = this.send(this.loginRequest(emailAddress, password), AuthResponse.class);
-        this.token.set(response.token());
-        return response.token();
+    public LoginOutcome login(final String emailAddress, final String password) throws ApiException {
+        final LoginOutcome outcome = this.send(this.loginRequest(emailAddress, password), LoginOutcome.class);
+        this.applyTokensIfPresent(outcome);
+        return outcome;
     }
 
     /** Async form of {@link #login} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<String> loginAsync(final String emailAddress, final String password) {
-        return this.sendAsync(this.loginRequest(emailAddress, password), AuthResponse.class)
-                .thenApply(response -> {
-                    this.token.set(response.token());
-                    return response.token();
+    public CompletableFuture<LoginOutcome> loginAsync(final String emailAddress, final String password) {
+        return this.sendAsync(this.loginRequest(emailAddress, password), LoginOutcome.class)
+                .thenApply(outcome -> {
+                    this.applyTokensIfPresent(outcome);
+                    return outcome;
                 });
     }
 
     /** Builds the {@code POST /auth/login} request against {@link #authPanelBaseUrl}, unauthenticated. */
     private HttpRequest loginRequest(final String emailAddress, final String password) {
         return this.postRequest(this.authPanelBaseUrl.resolve("/auth/login"), new AuthRequest(emailAddress, password), false);
+    }
+
+    /** Applies {@code outcome}'s tokens if it's a completed (non-2FA) login - a no-op if {@link LoginOutcome#twoFactorRequired()}. */
+    private void applyTokensIfPresent(final LoginOutcome outcome) {
+        if (!outcome.twoFactorRequired()) {
+            this.token.set(outcome.token());
+            this.refreshToken.set(outcome.refreshToken());
+        }
+    }
+
+    /**
+     * {@code POST /auth/2fa/login} on the auth-panel host - completes a login left pending by
+     * {@link #login} returning {@link LoginOutcome#twoFactorRequired()}. Not bearer-gated - the
+     * caller has no real access token yet by definition.
+     *
+     * @param pendingToken the token from {@link LoginOutcome#pendingToken()}
+     * @param code the current TOTP code, produced by the caller's authenticator app
+     * @return the freshly issued JWT, already stored for subsequent calls
+     * @throws ApiException {@code 400} if {@code pendingToken}/{@code code} is invalid or expired,
+     *                       or any other transport/HTTP failure
+     */
+    public String completeTwoFactorLogin(final String pendingToken, final String code) throws ApiException {
+        final AuthResponse response = this.send(this.twoFactorLoginRequest(pendingToken, code), AuthResponse.class);
+        this.applyTokens(response);
+        return response.token();
+    }
+
+    /** Async form of {@link #completeTwoFactorLogin} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> completeTwoFactorLoginAsync(final String pendingToken, final String code) {
+        return this.sendAsync(this.twoFactorLoginRequest(pendingToken, code), AuthResponse.class)
+                .thenApply(response -> {
+                    this.applyTokens(response);
+                    return response.token();
+                });
+    }
+
+    private HttpRequest twoFactorLoginRequest(final String pendingToken, final String code) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/2fa/login"), new TwoFactorLoginRequest(pendingToken, code), false);
+    }
+
+    /**
+     * {@code POST /auth/2fa/setup} on the API host - bearer-gated, starts enabling two-factor
+     * authentication for the currently signed-in account. Returns a freshly generated secret, not
+     * yet live - call {@link #confirmTwoFactorSetup} with a code produced from it to actually
+     * enable two-factor authentication.
+     *
+     * @return the freshly generated secret plus a ready-to-render {@code otpauth://} URI
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other transport/HTTP failure
+     */
+    public TwoFactorSetupResponse beginTwoFactorSetup() throws ApiException {
+        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/setup"), null, true), TwoFactorSetupResponse.class);
+    }
+
+    /** Async form of {@link #beginTwoFactorSetup} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<TwoFactorSetupResponse> beginTwoFactorSetupAsync() {
+        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/setup"), null, true), TwoFactorSetupResponse.class);
+    }
+
+    /**
+     * {@code POST /auth/2fa/confirm} on the API host - bearer-gated, completes a setup previously
+     * started by {@link #beginTwoFactorSetup}. From this point on, {@link #login} for this account
+     * returns {@link LoginOutcome#twoFactorRequired()} instead of tokens directly.
+     *
+     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
+     * @return the server's acknowledgement message
+     * @throws ApiException {@code 400} if the code is missing, expired, or does not match, {@code
+     *                       401} if not logged in / token expired, or any other transport/HTTP failure
+     */
+    public MessageResponse confirmTwoFactorSetup(final String code) throws ApiException {
+        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/confirm"), new ConfirmTwoFactorSetupRequest(code), true),
+                MessageResponse.class);
+    }
+
+    /** Async form of {@link #confirmTwoFactorSetup} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> confirmTwoFactorSetupAsync(final String code) {
+        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/confirm"), new ConfirmTwoFactorSetupRequest(code), true),
+                MessageResponse.class);
+    }
+
+    /**
+     * {@code POST /auth/2fa/disable} on the API host - bearer-gated, disables two-factor
+     * authentication for the currently signed-in account. Re-verifies {@code password}
+     * server-side before disabling, since a stolen-but-still-valid bearer token alone should not
+     * be enough to turn off an account's second factor.
+     *
+     * @param password the account's current password, re-verified server-side
+     * @return the server's acknowledgement message
+     * @throws ApiException {@code 401} if not logged in / token expired, or if {@code password}
+     *                       does not match, or any other transport/HTTP failure
+     */
+    public MessageResponse disableTwoFactor(final String password) throws ApiException {
+        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/disable"), new DisableTwoFactorRequest(password), true),
+                MessageResponse.class);
+    }
+
+    /** Async form of {@link #disableTwoFactor} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MessageResponse> disableTwoFactorAsync(final String password) {
+        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/disable"), new DisableTwoFactorRequest(password), true),
+                MessageResponse.class);
     }
 
     /**
@@ -302,7 +506,7 @@ public final class ApiClient implements AutoCloseable {
      */
     public String confirmRegistration(final String emailAddress, final String code) throws ApiException {
         final AuthResponse response = this.send(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class);
-        this.token.set(response.token());
+        this.applyTokens(response);
         return response.token();
     }
 
@@ -310,7 +514,7 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<String> confirmRegistrationAsync(final String emailAddress, final String code) {
         return this.sendAsync(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class)
                 .thenApply(response -> {
-                    this.token.set(response.token());
+                    this.applyTokens(response);
                     return response.token();
                 });
     }
@@ -363,7 +567,7 @@ public final class ApiClient implements AutoCloseable {
      */
     public String confirmPasswordReset(final String emailAddress, final String code, final String newPassword) throws ApiException {
         final AuthResponse response = this.send(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class);
-        this.token.set(response.token());
+        this.applyTokens(response);
         return response.token();
     }
 
@@ -371,7 +575,7 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<String> confirmPasswordResetAsync(final String emailAddress, final String code, final String newPassword) {
         return this.sendAsync(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class)
                 .thenApply(response -> {
-                    this.token.set(response.token());
+                    this.applyTokens(response);
                     return response.token();
                 });
     }
@@ -437,6 +641,93 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the bearer-gated {@code POST /auth/change-email/confirm} request against {@link #apiBaseUrl}. */
     private HttpRequest confirmEmailChangeRequest(final String code) {
         return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email/confirm"), new ConfirmChangeEmailRequest(code), true);
+    }
+
+    /**
+     * {@code POST /auth/refresh} on the auth-panel host - exchanges the currently held refresh
+     * token for a fresh access/refresh pair, without requiring a fresh password login. Called
+     * automatically by every other authenticated method here on a {@code 401} (see {@link
+     * #canRetryWithRefresh}) - a caller does not normally need to invoke this directly, though
+     * it's exposed for a caller (e.g. {@link SessionManager}) that wants to proactively refresh
+     * ahead of an access token's known expiry.
+     *
+     * <p>Rotates the held refresh token: the value returned here always differs from the one this
+     * call was made with, and the old one is invalidated as part of the same server-side call - see
+     * {@code IAuthService#refresh}'s own Javadoc server-side.
+     *
+     * @return the freshly issued access token, already stored (alongside the rotated refresh
+     *         token) for subsequent calls
+     * @throws ApiException {@code 401} if the held refresh token is missing, expired, or already
+     *                       used/revoked, or any other transport/HTTP failure
+     * @throws IllegalStateException if no refresh token is currently held (never logged in, or
+     *                                only {@link #restoreSession(String)} - not the two-argument
+     *                                overload - was used to restore a session)
+     */
+    public String refresh() throws ApiException {
+        final AuthResponse response = this.send(this.refreshRequest(this.requireCurrentRefreshToken()), AuthResponse.class);
+        this.applyTokens(response);
+        return response.token();
+    }
+
+    /** Async form of {@link #refresh} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> refreshAsync() {
+        return this.sendAsync(this.refreshRequest(this.requireCurrentRefreshToken()), AuthResponse.class)
+                .thenApply(response -> {
+                    this.applyTokens(response);
+                    return response.token();
+                });
+    }
+
+    private HttpRequest refreshRequest(final String currentRefreshToken) {
+        return this.postRequest(this.authPanelBaseUrl.resolve(REFRESH_PATH), new RefreshRequest(currentRefreshToken), false);
+    }
+
+    private String requireCurrentRefreshToken() {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            throw new IllegalStateException("@ApiClient: no refresh token held - call login()/restoreSession(access, refresh) first");
+        }
+        return currentRefreshToken;
+    }
+
+    private void applyTokens(final AuthResponse response) {
+        this.token.set(response.token());
+        this.refreshToken.set(response.refreshToken());
+    }
+
+    /**
+     * {@code POST /auth/logout} on the auth-panel host - best-effort, idempotent server-side
+     * revocation of the currently held refresh token (see {@code IAuthService#revokeRefreshToken}
+     * server-side), so a stolen refresh token can't be used after this client has explicitly
+     * logged out. A no-op if no refresh token is currently held (nothing to revoke) - unlike
+     * {@link #refresh}, this deliberately does <b>not</b> throw {@link IllegalStateException} in
+     * that case, since a caller logging out an already-logged-out (or restore-failed) session is a
+     * normal occurrence, not a bug. Does <b>not</b> clear the in-memory session itself - call
+     * {@link #logout()} (or let {@link SessionManager#logout}/{@code logoutAsync} do both) for that.
+     *
+     * @throws ApiException any transport/HTTP failure - a caller that wants a best-effort logout
+     *                       (e.g. {@link SessionManager}) should catch and ignore this rather than
+     *                       let a network error block clearing the local session
+     */
+    public void revokeRefreshToken() throws ApiException {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            return;
+        }
+        this.send(this.logoutRequest(currentRefreshToken), Void.class);
+    }
+
+    /** Async form of {@link #revokeRefreshToken} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokeRefreshTokenAsync() {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return this.sendAsync(this.logoutRequest(currentRefreshToken), Void.class);
+    }
+
+    private HttpRequest logoutRequest(final String currentRefreshToken) {
+        return this.postRequest(this.authPanelBaseUrl.resolve(LOGOUT_PATH), new RefreshRequest(currentRefreshToken), false);
     }
 
     // --- files: upload --------------------------------------------------
@@ -796,6 +1087,42 @@ public final class ApiClient implements AutoCloseable {
     private HttpRequest listFilesRequest(final String folderId) {
         final String encodedFolderId = URLEncoder.encode(folderId == null ? "root" : folderId, StandardCharsets.UTF_8);
         return this.requestBuilder(this.apiBaseUrl.resolve("/files?folderId=" + encodedFolderId), true).GET().build();
+    }
+
+    /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<StoredFileSummaryResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
+    private static final Type STORED_FILE_SUMMARY_PAGE_TYPE = new TypeToken<Page<StoredFileSummaryResponse>>() {
+    }.getType();
+
+    /**
+     * Cursor-paginated counterpart to {@link #listFiles(String)} - opts the server into the
+     * {@code {"items", "nextCursor"}} envelope response by sending {@code ?limit=}, instead of
+     * every owned/scoped file in one unpaginated array. Pass the previous call's {@link
+     * Page#nextCursor()} back as {@code cursor} to fetch the next page, or {@code null} for the
+     * first page.
+     *
+     * @param folderId the folder to scope the listing to, or {@code null} for the root
+     * @param cursor   the previous page's {@link Page#nextCursor()}, or {@code null} for the first page
+     * @param limit    the maximum number of entries to return; must be positive
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 400} if {@code limit} isn't positive, or any other failure
+     */
+    public Page<StoredFileSummaryResponse> listFilesPage(final String folderId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFilesPageRequest(folderId, cursor, limit), STORED_FILE_SUMMARY_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFilesPage(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<StoredFileSummaryResponse>> listFilesPageAsync(final String folderId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFilesPageRequest(folderId, cursor, limit), STORED_FILE_SUMMARY_PAGE_TYPE);
+    }
+
+    private HttpRequest listFilesPageRequest(final String folderId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/files?limit=").append(limit);
+        if (folderId != null) {
+            query.append("&folderId=").append(URLEncoder.encode(folderId, StandardCharsets.UTF_8));
+        }
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
     }
 
     /**
@@ -1276,6 +1603,39 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders?parentFolderId=" + encodedParentFolderId), true).GET().build();
     }
 
+    /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<FolderResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
+    private static final Type FOLDER_PAGE_TYPE = new TypeToken<Page<FolderResponse>>() {
+    }.getType();
+
+    /**
+     * Cursor-paginated counterpart to {@link #listFolders(String)} - same opt-in-via-{@code
+     * ?limit=} contract as {@link #listFilesPage}.
+     *
+     * @param parentFolderId the parent folder to list children of, or {@code null} for the top level
+     * @param cursor         the previous page's {@link Page#nextCursor()}, or {@code null} for the first page
+     * @param limit          the maximum number of entries to return; must be positive
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 400} if {@code limit} isn't positive, or any other failure
+     */
+    public Page<FolderResponse> listFoldersPage(final String parentFolderId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFoldersPageRequest(parentFolderId, cursor, limit), FOLDER_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFoldersPage(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<FolderResponse>> listFoldersPageAsync(final String parentFolderId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFoldersPageRequest(parentFolderId, cursor, limit), FOLDER_PAGE_TYPE);
+    }
+
+    private HttpRequest listFoldersPageRequest(final String parentFolderId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/folders?limit=").append(limit);
+        if (parentFolderId != null) {
+            query.append("&parentFolderId=").append(URLEncoder.encode(parentFolderId, StandardCharsets.UTF_8));
+        }
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
     /**
      * {@code PUT /folders/{id}}: renames and/or moves a folder in one step - a full replace of
      * both fields, not a partial patch; {@code newParentFolderId} {@code null} moves it to the
@@ -1401,19 +1761,51 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException on any non-{@code 2xx} response or transport/I/O failure
      */
     private <T> T send(final HttpRequest request, final Class<T> responseType) throws ApiException {
-        final HttpResponse<InputStream> response;
+        return this.send(request, (Type) responseType);
+    }
+
+    /** True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread. */
+    private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Class<T> responseType) {
+        return this.sendAsync(request, (Type) responseType);
+    }
+
+    /**
+     * {@link Type}-based counterpart to {@link #send(HttpRequest, Class)}, for a generic response
+     * shape - see {@link #parseResponse(HttpResponse, Type)}. Also the single place a {@code 401}
+     * on an authenticated request is transparently retried once, after a token refresh - see
+     * {@link #canRetryWithRefresh}. The retry failing (refresh token also invalid, or the retried
+     * request itself failing) surfaces as the <em>original</em> {@code 401}, chaining the retry
+     * failure as its cause - a caller's existing {@code isUnauthorized()}-based handling (e.g.
+     * {@link SessionManager#handleFailure}) keeps working unchanged either way.
+     */
+    private <T> T send(final HttpRequest request, final Type responseType) throws ApiException {
+        final HttpResponse<InputStream> response = this.sendRaw(request);
+        if (this.canRetryWithRefresh(request, response)) {
+            final String fallbackMessage = extractErrorMessage(response.body());
+            try {
+                this.refresh();
+                return parseResponse(this.sendRaw(this.rebuildWithCurrentToken(request)), responseType);
+            } catch (final ApiException refreshOrRetryFailure) {
+                throw new ApiException(401, fallbackMessage, refreshOrRetryFailure);
+            }
+        }
+        return parseResponse(response, responseType);
+    }
+
+    /** {@link HttpClient#send}, translating its checked failure modes into {@link ApiException} - shared by every {@code send} overload. */
+    private HttpResponse<InputStream> sendRaw(final HttpRequest request) throws ApiException {
         try {
-            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
+            return this.httpClient.send(request, BodyHandlers.ofInputStream());
         } catch (final IOException e) {
             throw new ApiException(0, "network error calling " + request.uri(), e);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ApiException(0, "interrupted calling " + request.uri(), e);
         }
-        return parseResponse(response, responseType);
     }
 
     /**
+<<<<<<< HEAD
      * True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread.
      *
      * @param request      the request to send
@@ -1421,20 +1813,46 @@ public final class ApiClient implements AutoCloseable {
      * @return a future completing with the deserialized response body, or exceptionally with a {@link CompletionException} wrapping an {@link ApiException}
      */
     private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Class<T> responseType) {
+=======
+     * {@link Type}-based counterpart to {@link #sendAsync(HttpRequest, Class)}, for a generic
+     * response shape - see {@link #parseResponse(HttpResponse, Type)}. Mirrors {@link
+     * #send(HttpRequest, Type)}'s own transparent-retry-once-on-401 behavior - see that method's
+     * Javadoc and {@link #canRetryWithRefresh} for the full contract.
+     */
+    private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Type responseType) {
+>>>>>>> dev
         return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
-                .thenApply(response -> {
+                .thenCompose(response -> {
+                    if (this.canRetryWithRefresh(request, response)) {
+                        final String fallbackMessage = extractErrorMessage(response.body());
+                        return this.refreshAsync()
+                                .thenCompose(ignored -> this.httpClient.sendAsync(this.rebuildWithCurrentToken(request), BodyHandlers.ofInputStream()))
+                                .handle((retried, refreshOrRetryFailure) -> {
+                                    if (refreshOrRetryFailure != null) {
+                                        final Throwable cause = refreshOrRetryFailure instanceof CompletionException completionException
+                                                ? completionException.getCause() : refreshOrRetryFailure;
+                                        throw new CompletionException(new ApiException(401, fallbackMessage, cause));
+                                    }
+                                    try {
+                                        return ApiClient.<T>parseResponse(retried, responseType);
+                                    } catch (final ApiException e) {
+                                        throw new CompletionException(e);
+                                    }
+                                });
+                    }
                     try {
-                        return parseResponse(response, responseType);
+                        return CompletableFuture.completedFuture(ApiClient.<T>parseResponse(response, responseType));
                     } catch (final ApiException e) {
                         // Matches this codebase's own *Async convention (see DataFactory/EventFactory/etc.
                         // in cloud-driver-plugin): a checked failure from the sync primitive is surfaced
                         // from the async form wrapped in a CompletionException.
-                        throw new CompletionException(e);
+                        return CompletableFuture.<T>failedFuture(new CompletionException(e));
                     }
                 });
     }
 
     /**
+<<<<<<< HEAD
      * Shared response-handling logic for both {@link #send} and {@link #sendAsync}: on a {@code
      * 2xx} status, deserializes the body as JSON into {@code responseType} (or discards it and
      * returns {@code null} if {@code responseType} is {@link Void}); otherwise closes the body and
@@ -1445,7 +1863,72 @@ public final class ApiClient implements AutoCloseable {
      * @return the deserialized response body, or {@code null} for {@link Void}
      * @throws ApiException on any non-{@code 2xx} status or I/O failure reading the body
      */
+=======
+     * Whether {@code request}/{@code response} qualifies for the transparent refresh-and-retry
+     * behavior {@link #send(HttpRequest, Type)}/{@link #sendAsync(HttpRequest, Type)} implement:
+     * the response is a {@code 401}, this client currently holds a refresh token to retry with,
+     * the failed request actually carried an {@code Authorization} header (an unauthenticated
+     * call - {@link #login}, {@link #register}, {@link #refresh} itself, etc. - was never going
+     * to succeed after a refresh, and refreshing in response to one would risk looping), and the
+     * request wasn't {@link #refresh}'s own call (the same guard, made explicit rather than relied
+     * on implicitly, since a bug elsewhere accidentally attaching a bearer header to the refresh
+     * request would otherwise recurse).
+     */
+    private boolean canRetryWithRefresh(final HttpRequest request, final HttpResponse<InputStream> response) {
+        return response.statusCode() == 401
+                && this.refreshToken.get() != null
+                && request.headers().firstValue("Authorization").isPresent()
+                && !REFRESH_PATH.equals(request.uri().getPath());
+    }
+
+    /**
+     * Rebuilds {@code original} with a fresh {@code Authorization} header (the current, just-
+     * refreshed {@link #token}), preserving every other header, the timeout, the method, and the
+     * body publisher unchanged - {@link HttpRequest} has no public "copy with one header changed"
+     * builder, so this reconstructs one from {@code original}'s own getters instead.
+     *
+     * <p>Reusing {@code original}'s {@link HttpRequest#bodyPublisher()} is safe for the small
+     * JSON/no-body requests every authenticated call in this class makes today (every {@code
+     * Flow.Publisher} the JDK hands out for those is re-subscribable) - a large file transfer
+     * ({@link #uploadFile(Path)}'s {@link BodyPublishers#ofFile}-backed publisher, or the
+     * progress-tracking wrappers around it/{@link #downloadFileToPath}) could in principle also be
+     * retried this way, but a 12h-access-token expiry landing mid-transfer is vanishingly rare in
+     * practice, and a retried transfer's progress callback would restart from zero rather than
+     * continue - an acceptable, deliberately undocumented-to-callers cosmetic quirk, not a
+     * correctness concern, so no special-casing was added to exclude those calls from this path.
+     */
+    private HttpRequest rebuildWithCurrentToken(final HttpRequest original) {
+        final HttpRequest.Builder builder = HttpRequest.newBuilder(original.uri());
+        original.timeout().ifPresent(builder::timeout);
+        original.headers().map().forEach((name, values) -> {
+            if (!name.equalsIgnoreCase("Authorization")) {
+                for (final String value : values) {
+                    builder.header(name, value);
+                }
+            }
+        });
+        final String freshToken = this.token.get();
+        if (freshToken != null) {
+            builder.header("Authorization", "Bearer " + freshToken);
+        }
+        builder.method(original.method(), original.bodyPublisher().orElse(BodyPublishers.noBody()));
+        return builder.build();
+    }
+
+>>>>>>> dev
     private static <T> T parseResponse(final HttpResponse<InputStream> response, final Class<T> responseType) throws ApiException {
+        return parseResponse(response, (Type) responseType);
+    }
+
+    /**
+     * {@link Type}-based counterpart to {@link #parseResponse(HttpResponse, Class)}, needed
+     * whenever the response shape itself is generic - e.g. {@code Page<StoredFileSummaryResponse>}
+     * - since a plain {@link Class} literal cannot carry a type argument and Gson would otherwise
+     * deserialize {@code items} as raw {@link java.util.LinkedHashMap}s instead of the real
+     * response record. Build the {@link Type} via {@link TypeToken} at the call site (see {@link
+     * #listFilesPage}/{@link #listFoldersPage}).
+     */
+    private static <T> T parseResponse(final HttpResponse<InputStream> response, final Type responseType) throws ApiException {
         final int status = response.statusCode();
         try (InputStream body = response.body()) {
             if (status >= 200 && status < 300) {

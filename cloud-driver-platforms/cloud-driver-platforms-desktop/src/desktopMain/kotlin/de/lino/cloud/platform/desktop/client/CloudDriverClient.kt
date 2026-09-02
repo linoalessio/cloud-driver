@@ -1,11 +1,16 @@
 package de.lino.cloud.platform.desktop.client
 
 import de.lino.cloud.platform.rest.api.ApiClient
+import de.lino.cloud.platform.rest.api.SessionManager
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
+import de.lino.cloud.platform.rest.api.push.LiveUpdateClient
+import de.lino.cloud.platform.rest.api.session.TokenStoreFactory
 import kotlinx.coroutines.future.await
 import java.nio.file.Path
 
@@ -19,6 +24,12 @@ import java.nio.file.Path
  * A [ApiClient.ApiException] thrown by the wrapped async call surfaces here unwrapped - `await()`
  * rethrows the `CompletionException`'s cause rather than the wrapper itself.
  *
+ * Also owns the session-persistence side of things: a [SessionManager] wraps this same [apiClient]
+ * together with whichever [de.lino.cloud.platform.rest.api.session.TokenStore] [TokenStoreFactory]
+ * picks for the current OS (real keychain where available, a permission-restricted plain file
+ * otherwise - see [usedKeychainFallback]), so a successful login/registration/password-reset
+ * survives an app restart (see [AppViewModel.tryRestoreSession]/[logout]/[clearPersistedSession]).
+ *
  * Not thread-safe, for the same reason [ApiClient] itself isn't: one instance models one logged-in
  * session. Call [close] (or use it in a `use { }` block) once done, to shut down the underlying
  * [ApiClient]'s executor.
@@ -31,26 +42,98 @@ class CloudDriverClient(
     /** The wrapped client, exposed for blocking/[java.util.concurrent.CompletableFuture] callers that don't want coroutines. */
     val apiClient: ApiClient = ApiClient(authPanelBaseUrl, apiBaseUrl)
 
+    private val tokenStoreResult = TokenStoreFactory.create()
+
+    /**
+     * `true` if no real OS keychain/secret service was available and the session token is instead
+     * persisted to a permission-restricted plain file ([de.lino.cloud.platform.rest.api.session.file.FileTokenStore])
+     * - see [TokenStoreFactory.Result.usedFallback]. Surfaced to the user via a dismissible notice
+     * (see [AppViewModel.showKeychainFallbackNotice]) rather than silently degrading security with
+     * no signal.
+     */
+    val usedKeychainFallback: Boolean = this.tokenStoreResult.usedFallback()
+
+    /** Ties [apiClient] to the OS-appropriate [de.lino.cloud.platform.rest.api.session.TokenStore] so a session survives a restart. */
+    private val sessionManager: SessionManager = SessionManager(this.apiClient, this.tokenStoreResult.store())
+
+    /**
+     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - the currently-open
+     * connection, or `null` before [startLiveUpdates]/after [stopLiveUpdates]/[close].
+     */
+    private var liveUpdateClient: LiveUpdateClient? = null
+
     val isAuthenticated: Boolean
         get() = this.apiClient.isAuthenticated
 
-    /** Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login. */
-    fun restoreSession(previouslyIssuedToken: String) = this.apiClient.restoreSession(previouslyIssuedToken)
-
-    /** Discards the in-memory token; the caller is responsible for also clearing any persisted copy. */
+    /** Discards the in-memory token only; the caller is responsible for also clearing the persisted copy via [clearPersistedSession]. */
     fun logout() = this.apiClient.logout()
 
-    /** @return the freshly issued JWT, already stored on [apiClient] for subsequent calls */
-    suspend fun login(emailAddress: String, password: String): String =
-        this.apiClient.loginAsync(emailAddress, password).await()
+    /**
+     * Clears whatever session [sessionManager]'s [de.lino.cloud.platform.rest.api.session.TokenStore]
+     * currently holds (OS keychain entry or fallback file) - called from [AppViewModel.logout]/
+     * [AppViewModel.uninstall] alongside the synchronous, in-memory-only [logout] above. Also
+     * clears the in-memory token a second time via [SessionManager.logoutAsync]'s own call to
+     * [ApiClient.logout] - harmless (already `null` by the time this runs from [AppViewModel.logout]).
+     */
+    suspend fun clearPersistedSession() {
+        this.sessionManager.logoutAsync().await()
+    }
+
+    /**
+     * Called once at app startup, before the first screen renders (see `Main.kt`). Loads a
+     * previously persisted token (if any) and verifies it's still accepted by the server with one
+     * lightweight authenticated call (see [SessionManager.tryRestoreSessionAsync]'s own Javadoc).
+     *
+     * @return the restored JWT (already active on [apiClient] for subsequent calls) if a valid
+     * session was found, or `null` if there was none or it's no longer valid - either way, the
+     * caller should fall back to showing the login screen.
+     */
+    suspend fun tryRestoreSession(): String? {
+        val restored = this.sessionManager.tryRestoreSessionAsync().await()
+        return if (restored) this.apiClient.currentToken().orElse(null) else null
+    }
+
+    /**
+     * @return the [LoginOutcome] - real tokens (already stored on [apiClient] and persisted via
+     * [sessionManager], so the session survives a restart) if the matched account has two-factor
+     * authentication disabled, or a pending token (see [LoginOutcome.twoFactorRequired]) the
+     * caller must present, together with a TOTP code, to [completeTwoFactorLogin] otherwise -
+     * nothing is persisted yet in that case.
+     */
+    suspend fun login(emailAddress: String, password: String): LoginOutcome =
+        this.sessionManager.loginAsync(emailAddress, password).await()
+
+    /**
+     * Completes a login left pending by [login] returning [LoginOutcome.twoFactorRequired] -
+     * verifies [code] against the account's TOTP secret and, on success, returns a fresh JWT,
+     * persisted via [sessionManager] so it survives a restart exactly like a non-2FA [login].
+     */
+    suspend fun completeTwoFactorLogin(pendingToken: String, code: String): String {
+        this.sessionManager.completeTwoFactorLoginAsync(pendingToken, code).await()
+        return this.apiClient.currentToken().orElseThrow()
+    }
+
+    /** Starts enabling two-factor authentication for the signed-in account - returns a freshly generated secret, not yet live. */
+    suspend fun beginTwoFactorSetup(): TwoFactorSetupResponse =
+        this.apiClient.beginTwoFactorSetupAsync().await()
+
+    /** Completes a setup started by [beginTwoFactorSetup] - from this point on, [login] returns a pending token instead of tokens directly. */
+    suspend fun confirmTwoFactorSetup(code: String): MessageResponse =
+        this.apiClient.confirmTwoFactorSetupAsync(code).await()
+
+    /** Disables two-factor authentication for the signed-in account - the server re-verifies [password] before disabling. */
+    suspend fun disableTwoFactor(password: String): MessageResponse =
+        this.apiClient.disableTwoFactorAsync(password).await()
 
     /** Step one of registration - e-mails a verification code, does not yet create the account. */
     suspend fun register(emailAddress: String, password: String): MessageResponse =
         this.apiClient.registerAsync(emailAddress, password).await()
 
-    /** Step two of registration - submits the e-mailed code, creates the account, returns a fresh JWT. */
-    suspend fun confirmRegistration(emailAddress: String, code: String): String =
-        this.apiClient.confirmRegistrationAsync(emailAddress, code).await()
+    /** Step two of registration - submits the e-mailed code, creates the account, returns a fresh JWT, persisted via [sessionManager] so it survives a restart. */
+    suspend fun confirmRegistration(emailAddress: String, code: String): String {
+        this.sessionManager.confirmRegistrationAsync(emailAddress, code).await()
+        return this.apiClient.currentToken().orElseThrow()
+    }
 
     /**
      * Step one of a password reset - if (and only if) an account exists under [emailAddress],
@@ -60,9 +143,11 @@ class CloudDriverClient(
     suspend fun requestPasswordReset(emailAddress: String): MessageResponse =
         this.apiClient.requestPasswordResetAsync(emailAddress).await()
 
-    /** Step two of a password reset - submits the e-mailed code and [newPassword], returns a fresh JWT. */
-    suspend fun confirmPasswordReset(emailAddress: String, code: String, newPassword: String): String =
-        this.apiClient.confirmPasswordResetAsync(emailAddress, code, newPassword).await()
+    /** Step two of a password reset - submits the e-mailed code and [newPassword], returns a fresh JWT, persisted via [sessionManager] so it survives a restart. */
+    suspend fun confirmPasswordReset(emailAddress: String, code: String, newPassword: String): String {
+        this.sessionManager.confirmPasswordResetAsync(emailAddress, code, newPassword).await()
+        return this.apiClient.currentToken().orElseThrow()
+    }
 
     /**
      * Step one of changing the signed-in account's e-mail address - e-mails a verification code
@@ -113,6 +198,19 @@ class CloudDriverClient(
     suspend fun listFiles(folderId: String? = null): List<StoredFileSummaryResponse> =
         this.apiClient.listFilesAsync(folderId).await()
 
+    /**
+     * Cursor-paginated counterpart to [listFiles] - one page of at most [limit] entries plus a
+     * `nextCursor` to request the next one, instead of every file in [folderId] at once. Used by
+     * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel]'s folder view (`refreshCurrentFolder`)
+     * so opening a very large folder doesn't wait for/hold its entire contents at once; every
+     * other caller here (delete/duplicate/download planning) still needs the *complete* set and
+     * keeps calling [listFiles].
+     */
+    suspend fun listFilesPage(
+        folderId: String?, cursor: String?, limit: Int
+    ): de.lino.cloud.platform.rest.api.dto.Dtos.Page<StoredFileSummaryResponse> =
+        this.apiClient.listFilesPageAsync(folderId, cursor, limit).await()
+
     /** Fetches one file's full content. */
     suspend fun downloadFile(fileId: String): StoredFileResponse =
         this.apiClient.downloadFileAsync(fileId).await()
@@ -144,6 +242,12 @@ class CloudDriverClient(
     suspend fun listFolders(parentFolderId: String? = null): List<FolderResponse> =
         this.apiClient.listFoldersAsync(parentFolderId).await()
 
+    /** Cursor-paginated counterpart to [listFolders] - same "used by the folder view only" reasoning as [listFilesPage]. */
+    suspend fun listFoldersPage(
+        parentFolderId: String?, cursor: String?, limit: Int
+    ): de.lino.cloud.platform.rest.api.dto.Dtos.Page<FolderResponse> =
+        this.apiClient.listFoldersPageAsync(parentFolderId, cursor, limit).await()
+
     /** Renames and/or moves a folder in one step (`newParentFolderId` `null` = top level). */
     suspend fun updateFolder(folderId: String, newName: String, newParentFolderId: String?): FolderResponse =
         this.apiClient.updateFolderAsync(folderId, newName, newParentFolderId).await()
@@ -156,7 +260,34 @@ class CloudDriverClient(
     suspend fun getCloudUser(authUserId: String): CloudUserResponse =
         this.apiClient.getCloudUserAsync(authUserId).await()
 
-    /** Shuts down the wrapped [ApiClient]'s executor. Idempotent. */
-    override fun close() = this.apiClient.close()
+    /**
+     * Opens the item-10 live-push WebSocket connection (see `architecture/SERVICES.md`) - call
+     * once authenticated (see [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.onAuthenticated]/
+     * `onSessionRestored`). [onUpdate] fires for every pushed change notification, on whatever
+     * internal HTTP-client thread delivered it - the caller must dispatch back onto its own
+     * coroutine scope before touching any Compose state from it, the same way [LiveUpdateClient.Listener]'s
+     * own Javadoc documents. Replaces any already-open connection (idempotent, matching this
+     * class's other "call this again to reset" methods).
+     */
+    fun startLiveUpdates(onUpdate: () -> Unit) {
+        this.stopLiveUpdates()
+        val liveUpdateClient = LiveUpdateClient(this.apiClient, object : LiveUpdateClient.Listener {
+            override fun onUpdate(update: LiveUpdateClient.Update) = onUpdate()
+        })
+        this.liveUpdateClient = liveUpdateClient
+        liveUpdateClient.connect()
+    }
+
+    /** Stops the live-push connection and its reconnect loop, if one is running - call from [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.logout]/`quit`. Idempotent. */
+    fun stopLiveUpdates() {
+        this.liveUpdateClient?.close()
+        this.liveUpdateClient = null
+    }
+
+    /** Stops any open live-push connection and shuts down the wrapped [ApiClient]'s executor. Idempotent. */
+    override fun close() {
+        this.stopLiveUpdates()
+        this.apiClient.close()
+    }
 
 }

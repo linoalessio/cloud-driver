@@ -1,5 +1,9 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.audit.AuditAction;
+import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.FileWithFolder;
@@ -9,18 +13,23 @@ import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.auth.entity.CloudUser;
+import de.lino.cloud.auth.entity.SharedFileGrant;
+import de.lino.cloud.auth.entity.SharedFolderGrant;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -44,14 +53,25 @@ public final class CloudUserService implements ICloudUserService {
     private final FileFactory fileFactory;
 
     /**
+     * Records security-relevant actions ({@link #deleteFile}/{@link #deleteCloudUser}) to the
+     * persisted audit trail - see {@code architecture/SERVICES.md} item 11 and {@code
+     * AuditLogService}'s own Javadoc. Never throws, so both call sites below invoke it directly
+     * with no defensive try/catch of their own.
+     */
+    private final AuditLogService auditLogService;
+
+    /**
      * Creates a {@code CloudUserService} backed by the given collaborators.
      *
      * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
      * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
      */
-    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory) {
+    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
+                             @NonNull final AuditLogService auditLogService) {
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -116,6 +136,31 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Scans every {@link StoredFileOwnership} row (same full-section-scan trade-off {@link
+     * #getCloudUserByEmail(String)}/{@link #listFiles} already accept) for the one tracking
+     * {@code storedFileId}, and returns its {@code authUserId}. Deliberately does not filter out
+     * a trashed row (item 3, soft delete) - the owner of a file that was just moved to trash (or
+     * restored, or hard-deleted) is exactly who a live-push notification about that change should
+     * still reach.
+     *
+     * @param storedFileId the {@link StoredFile#fileId()} to resolve an owner for
+     * @return the owning {@code authUserId}, or {@link Optional#empty()} if no ownership row tracks this file
+     */
+    @Override
+    public @NonNull Optional<String> resolveOwnerAuthUserId(@NotNull final String storedFileId) {
+        try {
+
+            return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
+                    .filter(ownership -> ownership.getStoredFileId().equals(storedFileId))
+                    .map(StoredFileOwnership::getAuthUserId)
+                    .findFirst();
+
+        } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.resolveOwnerAuthUserId: failed to look up owner for " + storedFileId, e);
+        }
+    }
+
+    /**
      * Deletes every {@link StoredFile}/{@link Folder} owned by {@code authUserId} (via {@link
      * #resetCloudUser(String)}) and additionally removes the {@link CloudUser} record itself -
      * unlike {@link #resetCloudUser(String)}, the account is no longer tracked at all afterwards.
@@ -130,6 +175,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException e) {
             throw new RuntimeException("@CloudUserService.deleteCloudUser: failed to delete CloudUser record for " + authUserId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.ACCOUNT_DELETE, authUserId, null));
     }
 
     /**
@@ -143,10 +189,42 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void resetCloudUser(@NonNull final String authUserId) {
-        for (final StoredFileOwnership ownership : this.ownedFileOwnerships(authUserId)) {
-            this.deleteFile(authUserId, ownership.getStoredFileId());
+        // Bypasses the trash entirely (hardDeleteFile), regardless of each file's current
+        // deleteFile/restoreFile trash state - this operation's whole point is to actually empty
+        // the account, not move everything into (or leave it sitting in) the trash.
+        for (final StoredFileOwnership ownership : this.ownedFileOwnershipsIncludingDeleted(authUserId)) {
+            this.hardDeleteFile(authUserId, ownership);
         }
         this.deleteAllOwnedFolders(authUserId);
+    }
+
+    /**
+     * Permanently removes {@code storedFileId}'s content and ownership tracking, bypassing the
+     * trash {@link #deleteFile}/{@link #restoreFile} normally goes through entirely - the same
+     * delete/decrement sequence {@link #deleteFile} performed before soft delete existed. Used by
+     * {@link #resetCloudUser(String)} (which must actually empty the account, not fill its trash)
+     * and by a future purge job for records past their retention window.
+     *
+     * @param authUserId the owning user, whose usage total is decremented if {@code ownership} carries metadata
+     * @param ownership the ownership row to permanently remove
+     */
+    private void hardDeleteFile(final String authUserId, final StoredFileOwnership ownership) {
+        final String storedFileId = ownership.getStoredFileId();
+        try {
+            this.fileFactory.delete(storedFileId);
+        } catch (final DatabaseClientException e) {
+            throw new RuntimeException("@CloudUserService.hardDeleteFile: failed to delete " + storedFileId, e);
+        }
+        try {
+            this.dataFactory.delete(StoredFileOwnership.compositeKey(authUserId, storedFileId), StoredFileOwnership.class);
+        } catch (final DatabaseClientException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.hardDeleteFile: failed to untrack ownership of " + storedFileId + " for " + authUserId, e
+            );
+        }
+        if (ownership.hasMetadata()) {
+            this.updateCloudUserBytesUsage(authUserId, -ownership.getSizeBytes());
+        }
     }
 
     /**
@@ -199,6 +277,35 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.updateCloudUserBytesLimit: failed to persist usage update for " + authUserId, e);
         }
 
+    }
+
+    /**
+     * See {@link ICloudUserService#recomputeUploadedBytes}'s Javadoc. Sums {@link
+     * StoredFileOwnership#getSizeBytes()} across every row this account still tracks - trashed
+     * rows included, via {@link #ownedFileOwnershipsIncludingDeleted(String)} rather than {@link
+     * #ownedFileOwnerships(String)}, since a trashed-but-not-yet-purged file still occupies
+     * storage (see {@link #deleteFile}'s own Javadoc: trashing alone never decrements the usage
+     * total, only {@link #hardDeleteFile} does) - so this recompute must agree with that same
+     * accounting rule rather than silently under-counting relative to it.
+     */
+    @Override
+    public long recomputeUploadedBytes(@NonNull final String authUserId) {
+        final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
+        if (cloudUser.isEmpty()) return 0L;
+
+        final long total = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
+                .filter(StoredFileOwnership::hasMetadata)
+                .mapToLong(StoredFileOwnership::getSizeBytes)
+                .sum();
+
+        final ICloudUser existing = cloudUser.get();
+        existing.setCurrentUploadedBytes(total);
+        try {
+            this.dataFactory.update((CloudUser) existing);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.recomputeUploadedBytes: failed to persist recomputed usage for " + authUserId, e);
+        }
+        return total;
     }
 
     /**
@@ -285,9 +392,11 @@ public final class CloudUserService implements ICloudUserService {
         // Checked before requireOwnedFolder/constructing the StoredFile (which DEFLATE-compresses
         // and base64-encodes content up front) - no reason to pay for either on a rejected upload.
         if (cloudUser.isUploadLimitReached(content.length)) {
+            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
             throw new UploadQuotaExceededException(
                     authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
         }
+        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final StoredFile storedFile = new StoredFile(UUID.randomUUID().toString(), fileName, content);
@@ -406,6 +515,9 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public List<StoredFileSummary> listFileSummaries(@NonNull final String authUserId) {
+        // Item 9 (sharing): deliberately does NOT include files shared with authUserId - a caller
+        // listing "my files" should never be silently surprised by someone else's file appearing
+        // here. Use listSharedWithMe(authUserId) for the separate, explicit "shared with me" list.
         return this.resolveFileSummaries(this.ownedFileOwnerships(authUserId));
     }
 
@@ -433,6 +545,50 @@ public final class CloudUserService implements ICloudUserService {
      */
     private List<StoredFileSummary> resolveFileSummaries(final List<StoredFileOwnership> ownerships) {
         return ownerships.stream().map(this::resolveFileSummary).toList();
+    }
+
+    /**
+     * See {@link ICloudUserService#listFileSummariesPage}'s Javadoc. Resolves the same
+     * full-scan/filter list {@link #listFileSummaries(String, String)} does, sorts it by {@link
+     * StoredFileSummary#fileId()}, then slices out one page via {@link #paginate}.
+     */
+    @NonNull
+    @Override
+    public CursorPage<StoredFileSummary> listFileSummariesPage(@NonNull final String authUserId, @Nullable final String folderId,
+                                                                @Nullable final String cursor, final int limit) {
+        final List<StoredFileOwnership> filtered = this.ownedFileOwnerships(authUserId).stream()
+                .filter(ownership -> Objects.equals(ownership.getFolderId(), folderId))
+                .toList();
+        final List<StoredFileSummary> sorted = this.resolveFileSummaries(filtered).stream()
+                .sorted(Comparator.comparing(StoredFileSummary::fileId))
+                .toList();
+        return paginate(sorted, cursor, limit, StoredFileSummary::fileId);
+    }
+
+    /**
+     * Generic keyset-pagination slice over an already-fully-materialized, ascending-{@code
+     * keyExtractor}-sorted list - the same "{@code WHERE key > cursor ORDER BY key LIMIT limit}"
+     * shape {@code DatabaseBackupScheduler#fetchBatch} applies at the SQL level, applied here at
+     * the application level instead (see {@link CursorPage}'s Javadoc for why a real SQL-level
+     * cursor isn't available for these owner-scoped, encrypted rows).
+     *
+     * @param sorted       the full result set, already sorted ascending by {@code keyExtractor}
+     * @param cursor       the previous page's {@link CursorPage#nextCursor()}, or {@code null} for the first page
+     * @param limit        the maximum number of entries to return; must be positive
+     * @param keyExtractor extracts the stable sort/cursor key from one element
+     */
+    private static <T> CursorPage<T> paginate(final List<T> sorted, @Nullable final String cursor,
+                                               final int limit, final java.util.function.Function<T, String> keyExtractor) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("@CloudUserService.paginate: limit must be positive, was " + limit);
+        }
+        final List<T> afterCursor = cursor == null
+                ? sorted
+                : sorted.stream().filter(item -> keyExtractor.apply(item).compareTo(cursor) > 0).toList();
+        final boolean hasMore = afterCursor.size() > limit;
+        final List<T> page = afterCursor.subList(0, Math.min(limit, afterCursor.size()));
+        final String nextCursor = hasMore ? keyExtractor.apply(page.getLast()) : null;
+        return new CursorPage<>(page, nextCursor);
     }
 
     /**
@@ -477,15 +633,37 @@ public final class CloudUserService implements ICloudUserService {
      * every entry it returns; only reach for this once a specific file's actual content is needed
      * (e.g. the user opened/downloaded it).
      *
-     * @param authUserId the requesting user's id, checked against the ownership record
+     * <p><b>Share-aware, deliberately - the one read path in this class that is.</b> If {@code
+     * authUserId} doesn't own {@code storedFileId} outright, this falls back to {@link
+     * #requireSharedFileAccess}, which honors both a direct {@link SharedFileGrant} on this file
+     * and an inherited {@link SharedFolderGrant} on any of its ancestor folders (see item 9's
+     * design in {@code architecture/SERVICES.md} and this project's {@code CLAUDE.md} for the full
+     * "which operations honor a share" table). This is the <em>only</em> place sharing is honored -
+     * every mutating method below ({@link #moveFile}, {@link #deleteFile}, folder methods, etc.)
+     * deliberately keeps calling {@link #requireOwnedFile}/{@link #requireOwnedFolder} directly,
+     * never this shared-access fallback, since a read-only grant must never permit mutation. Both
+     * {@code DefaultRestFactory}'s {@code GET /files/{id}} and {@code GET /files/{id}/content}
+     * routes call this same method, so a grantee reaches a shared file's content through the exact
+     * same routes an owner does - no separate "shared file" route exists.
+     *
+     * @param authUserId the requesting user's id - checked against the ownership record first, then against any share
      * @param storedFileId the file to fetch
      * @return the file's full content, paired with its current folder
-     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by {@code authUserId}
+     *                                   and isn't shared with {@code authUserId} either (directly,
+     *                                   or via an ancestor folder)
      */
     @NonNull
     @Override
     public FileWithFolder getFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
-        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+        final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
+                .orElseGet(() -> this.requireSharedFileAccess(authUserId, storedFileId));
+        if (ownership.isDeleted()) {
+            // Hidden from a normal fetch the same "don't confirm existence" way an unowned/unshared
+            // file already is - a trashed file is only reachable via listDeletedFiles/restoreFile,
+            // both owner-only, so a grantee never sees a trashed shared file at all.
+            throw new IllegalArgumentException("@CloudUserService.getFile: " + authUserId + " does not own or have shared access to " + storedFileId);
+        }
         try {
             final StoredFile file = this.fileFactory.findById(storedFileId)
                     .orElseThrow(() -> new IllegalStateException(
@@ -494,6 +672,234 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.getFile: failed to download " + storedFileId, e);
         }
+    }
+
+    /**
+     * Grants {@code granteeEmail}'s account read-only access to {@code fileId} - see {@link
+     * ICloudUserService#shareFile}'s Javadoc. Owner-only: sharing is itself treated as a mutation
+     * of the file's grant state, so this calls {@link #requireOwnedFile} directly, never {@link
+     * #requireSharedFileAccess} - a grantee can never re-share what was shared with them.
+     */
+    @Override
+    public void shareFile(@NonNull final String ownerAuthUserId, @NonNull final String fileId, @NonNull final String granteeEmail) {
+        final StoredFileOwnership ownership = this.requireOwnedFile(ownerAuthUserId, fileId);
+        if (ownership.isDeleted()) {
+            throw new IllegalArgumentException("@CloudUserService.shareFile: cannot share trashed file " + fileId);
+        }
+        final String granteeAuthUserId = this.resolveGranteeAuthUserId(granteeEmail);
+        if (granteeAuthUserId.equals(ownerAuthUserId)) {
+            throw new IllegalArgumentException("@CloudUserService.shareFile: cannot share a file with its own owner");
+        }
+        try {
+            this.dataFactory.register(new SharedFileGrant(granteeAuthUserId, fileId, ownerAuthUserId));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.shareFile: failed to persist grant for " + fileId + " to " + granteeEmail, e);
+        }
+    }
+
+    /**
+     * Revokes a previously-granted share of {@code fileId} from {@code granteeEmail} - see {@link
+     * ICloudUserService#revokeFileShare}'s Javadoc. Owner-only, same reasoning as {@link
+     * #shareFile}.
+     */
+    @Override
+    public void revokeFileShare(@NonNull final String ownerAuthUserId, @NonNull final String fileId, @NonNull final String granteeEmail) {
+        this.requireOwnedFile(ownerAuthUserId, fileId);
+        final String granteeAuthUserId = this.resolveGranteeAuthUserId(granteeEmail);
+        final String key = SharedFileGrant.compositeKey(granteeAuthUserId, fileId);
+        try {
+            if (this.dataFactory.findById(key, SharedFileGrant.class).isEmpty()) {
+                return;
+            }
+            this.dataFactory.delete(key, SharedFileGrant.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokeFileShare: failed to revoke grant for " + fileId + " from " + granteeEmail, e);
+        }
+    }
+
+    /**
+     * Lists every file directly shared with {@code authUserId} - see {@link
+     * ICloudUserService#listSharedWithMe}'s Javadoc. Resolves each grant's underlying {@link
+     * StoredFileOwnership} row (owned by the granter, keyed via {@link
+     * StoredFileOwnership#compositeKey}) and reuses {@link #resolveFileSummary} for the same
+     * lazy-metadata-backfill behavior {@link #listFileSummaries(String)} already has.
+     */
+    @NonNull
+    @Override
+    public List<StoredFileSummary> listSharedWithMe(@NonNull final String authUserId) {
+        final List<SharedFileGrant> grants;
+        try {
+            grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
+                    .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listSharedWithMe: failed to list file grants for " + authUserId, e);
+        }
+        return grants.stream()
+                .map(grant -> {
+                    try {
+                        return this.dataFactory.findById(
+                                StoredFileOwnership.compositeKey(grant.getOwnerAuthUserId(), grant.getStoredFileId()), StoredFileOwnership.class);
+                    } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+                        throw new RuntimeException("@CloudUserService.listSharedWithMe: failed to resolve ownership for grant " + grant, e);
+                    }
+                })
+                .flatMap(Optional::stream)
+                // A share whose file the owner has since trashed is hidden the same way a trashed
+                // owned file is hidden from listFileSummaries - not surfaced as a broken/error entry.
+                .filter(ownership -> !ownership.isDeleted())
+                .map(this::resolveFileSummary)
+                .toList();
+    }
+
+    /**
+     * Grants {@code granteeEmail}'s account read-only access to {@code folderId} - see {@link
+     * ICloudUserService#shareFolder}'s Javadoc. Owner-only, same reasoning as {@link #shareFile}.
+     */
+    @Override
+    public void shareFolder(@NonNull final String ownerAuthUserId, @NonNull final String folderId, @NonNull final String granteeEmail) {
+        final Folder folder = this.requireOwnedFolder(ownerAuthUserId, folderId);
+        if (folder.isDeleted()) {
+            throw new IllegalArgumentException("@CloudUserService.shareFolder: cannot share trashed folder " + folderId);
+        }
+        final String granteeAuthUserId = this.resolveGranteeAuthUserId(granteeEmail);
+        if (granteeAuthUserId.equals(ownerAuthUserId)) {
+            throw new IllegalArgumentException("@CloudUserService.shareFolder: cannot share a folder with its own owner");
+        }
+        try {
+            this.dataFactory.register(new SharedFolderGrant(granteeAuthUserId, folderId, ownerAuthUserId));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.shareFolder: failed to persist grant for " + folderId + " to " + granteeEmail, e);
+        }
+    }
+
+    /**
+     * Revokes a previously-granted share of {@code folderId} from {@code granteeEmail} - see
+     * {@link ICloudUserService#revokeFolderShare}'s Javadoc. Owner-only, same reasoning as {@link
+     * #shareFile}.
+     */
+    @Override
+    public void revokeFolderShare(@NonNull final String ownerAuthUserId, @NonNull final String folderId, @NonNull final String granteeEmail) {
+        this.requireOwnedFolder(ownerAuthUserId, folderId);
+        final String granteeAuthUserId = this.resolveGranteeAuthUserId(granteeEmail);
+        final String key = SharedFolderGrant.compositeKey(granteeAuthUserId, folderId);
+        try {
+            if (this.dataFactory.findById(key, SharedFolderGrant.class).isEmpty()) {
+                return;
+            }
+            this.dataFactory.delete(key, SharedFolderGrant.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokeFolderShare: failed to revoke grant for " + folderId + " from " + granteeEmail, e);
+        }
+    }
+
+    /**
+     * Lists every folder directly shared with {@code authUserId} - see {@link
+     * ICloudUserService#listSharedFoldersWithMe}'s Javadoc.
+     */
+    @NonNull
+    @Override
+    public List<Folder> listSharedFoldersWithMe(@NonNull final String authUserId) {
+        final List<SharedFolderGrant> grants;
+        try {
+            grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
+                    .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listSharedFoldersWithMe: failed to list folder grants for " + authUserId, e);
+        }
+        return grants.stream()
+                .map(grant -> {
+                    try {
+                        return this.dataFactory.findById(grant.getFolderId(), Folder.class);
+                    } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+                        throw new RuntimeException("@CloudUserService.listSharedFoldersWithMe: failed to resolve folder for grant " + grant, e);
+                    }
+                })
+                .flatMap(Optional::stream)
+                .filter(folder -> !folder.isDeleted())
+                .toList();
+    }
+
+    /**
+     * Resolves {@code email} to a registered account's {@code authUserId}, via the existing {@link
+     * #getCloudUserByEmail(String)} lookup - reused rather than re-implemented, since an {@link
+     * ICloudUser}'s {@link ICloudUser#getAuthUserId()} already equals the {@link
+     * de.lino.cloud.api.jwt.user.AuthUser#getId()} sharing needs.
+     *
+     * @throws IllegalArgumentException if no account is registered under {@code email}
+     */
+    private String resolveGranteeAuthUserId(final String email) {
+        return this.getCloudUserByEmail(email)
+                .map(ICloudUser::getAuthUserId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "@CloudUserService.resolveGranteeAuthUserId: no account registered under " + email));
+    }
+
+    /**
+     * Non-throwing counterpart to {@link #requireOwnedFile}, used by {@link #getFile} to first
+     * check plain ownership before falling back to {@link #requireSharedFileAccess}.
+     */
+    private Optional<StoredFileOwnership> tryOwnedFile(final String authUserId, final String storedFileId) {
+        final String ownershipKey = StoredFileOwnership.compositeKey(authUserId, storedFileId);
+        try {
+            return this.dataFactory.findById(ownershipKey, StoredFileOwnership.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.tryOwnedFile: failed to look up ownership record " + ownershipKey, e);
+        }
+    }
+
+    /**
+     * Resolves read access to {@code storedFileId} for a non-owning {@code authUserId}, honoring
+     * either a direct {@link SharedFileGrant} on this exact file or an inherited {@link
+     * SharedFolderGrant} on any ancestor folder the file currently sits in (see {@link
+     * SharedFolderGrant}'s own Javadoc for why a folder share implies access to everything nested
+     * inside it). Called only from {@link #getFile} - every mutating method must keep calling
+     * {@link #requireOwnedFile} directly instead.
+     *
+     * <p><b>Cost, documented:</b> since {@code authUserId} isn't the owner, this first has to
+     * discover who <em>is</em> - there is no O(1) "find the ownership row for this file id,
+     * regardless of owner" lookup (a {@link StoredFileOwnership} row is keyed on grantee, not
+     * file, the same "no lookup by non-primary-key field" limitation {@link #listFiles}'s own
+     * Javadoc already documents and accepts). This is only paid on the shared-access path -
+     * {@link #getFile} skips it entirely for an owner - and only once per call, not once per
+     * folder-ancestry step.
+     *
+     * @throws IllegalArgumentException if {@code storedFileId} has no owner on record, or isn't
+     *                                   shared with {@code authUserId} either directly or via an
+     *                                   ancestor folder
+     */
+    private StoredFileOwnership requireSharedFileAccess(final String authUserId, final String storedFileId) {
+        final StoredFileOwnership ownerOwnership;
+        try {
+            ownerOwnership = this.dataFactory.getEntities(StoredFileOwnership.class).stream()
+                    .filter(ownership -> ownership.getStoredFileId().equals(storedFileId))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "@CloudUserService.requireSharedFileAccess: no such file " + storedFileId));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.requireSharedFileAccess: failed to resolve owner of " + storedFileId, e);
+        }
+
+        try {
+            if (this.dataFactory.findById(SharedFileGrant.compositeKey(authUserId, storedFileId), SharedFileGrant.class).isPresent()) {
+                return ownerOwnership;
+            }
+            String currentFolderId = ownerOwnership.getFolderId();
+            while (currentFolderId != null) {
+                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class).isPresent()) {
+                    return ownerOwnership;
+                }
+                currentFolderId = this.dataFactory.findById(currentFolderId, Folder.class)
+                        .map(Folder::getParentFolderId)
+                        .orElse(null);
+            }
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.requireSharedFileAccess: failed checking share grants for " + storedFileId, e);
+        }
+
+        throw new IllegalArgumentException(
+                "@CloudUserService.requireSharedFileAccess: " + storedFileId + " is not owned by or shared with " + authUserId);
     }
 
     /**
@@ -510,6 +916,8 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public void moveFile(@NonNull final String authUserId, @NonNull final String storedFileId, @Nullable final String folderId) {
 
+        // Item 9 (sharing): deliberately owner-only - requireOwnedFile, never requireSharedFileAccess.
+        // A read-only grant must never let a grantee move a file it doesn't own.
         final StoredFileOwnership existing = this.requireOwnedFile(authUserId, storedFileId);
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
@@ -538,38 +946,73 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Deletes {@code storedFileId} and stops tracking its ownership, but only if {@code
-     * authUserId} actually owns it.
+     * Soft-deletes (moves to the trash) {@code storedFileId}, but only if {@code authUserId}
+     * actually owns it - content and ownership tracking are left untouched, only {@link
+     * StoredFileOwnership#isDeleted()} flips, via a single-row {@link DataFactory#update} (see
+     * {@link StoredFileOwnership#deletedAtEpochMillis}'s own Javadoc for why this row, not the
+     * underlying {@link StoredFile}, carries the flag {@link CloudUserService} actually checks).
+     * Idempotent - a no-op if {@code storedFileId} is already in the trash. Does <b>not</b>
+     * decrement the owner's usage total - the file's bytes still occupy storage until a purge job
+     * (or {@link #resetCloudUser(String)}, via {@link #hardDeleteFile}) actually removes it; see
+     * {@link #restoreFile(String, String)} for the reverse.
      *
      * @param authUserId the caller's own id, checked against the ownership record
-     * @param storedFileId the file to delete
+     * @param storedFileId the file to trash
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
      */
     @Override
     public void deleteFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
-
-        // Fetches the ownership row itself (not just a boolean) - its own recorded sizeBytes
-        // (when known, see StoredFileOwnership#hasMetadata()) is what lets the usage decrement
-        // below avoid a full FileFactory#download just to find out how large the deleted file was.
+        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never trash it.
         final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
-
+        if (ownership.isDeleted()) {
+            return;
+        }
         try {
-            this.fileFactory.delete(storedFileId);
-        } catch (final DatabaseClientException e) {
-            throw new RuntimeException("@CloudUserService.deleteFile: failed to delete " + storedFileId, e);
+            this.dataFactory.update(ownership.markedDeleted());
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.deleteFile: failed to trash " + storedFileId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
+    }
 
+    /**
+     * Restores a previously soft-deleted {@code storedFileId} out of the trash, but only if
+     * {@code authUserId} actually owns it - the reverse of {@link #deleteFile(String, String)}.
+     *
+     * @param authUserId the caller's own id, checked against the ownership record
+     * @param storedFileId the file to restore
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws IllegalStateException if {@code storedFileId} is not currently in the trash
+     */
+    @Override
+    public void restoreFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        // Item 9 (sharing): deliberately owner-only.
+        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+        if (!ownership.isDeleted()) {
+            throw new IllegalStateException("@CloudUserService.restoreFile: " + storedFileId + " is not in the trash");
+        }
         try {
-            this.dataFactory.delete(StoredFileOwnership.compositeKey(authUserId, storedFileId), StoredFileOwnership.class);
-        } catch (final DatabaseClientException e) {
-            throw new RuntimeException(
-                    "@CloudUserService.deleteFile: failed to untrack ownership of " + storedFileId + " for " + authUserId, e
-            );
+            this.dataFactory.update(ownership.restored());
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.restoreFile: failed to restore " + storedFileId, e);
         }
+    }
 
-        if (ownership.hasMetadata()) {
-            this.updateCloudUserBytesUsage(authUserId, -ownership.getSizeBytes());
-        }
+    /**
+     * Lists every file currently in {@code authUserId}'s trash, as {@link StoredFileSummary}s -
+     * same descriptive-fields-only shape/cost as {@link #listFileSummaries(String)}, just filtered
+     * to trashed rows instead of live ones.
+     *
+     * @param authUserId the user whose trash to list
+     * @return a {@link StoredFileSummary} for every file currently in {@code authUserId}'s trash
+     */
+    @NonNull
+    @Override
+    public List<StoredFileSummary> listDeletedFiles(@NonNull final String authUserId) {
+        final List<StoredFileOwnership> deleted = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
+                .filter(StoredFileOwnership::isDeleted)
+                .toList();
+        return this.resolveFileSummaries(deleted);
     }
 
     /**
@@ -587,6 +1030,8 @@ public final class CloudUserService implements ICloudUserService {
     public Folder createFolder(@NonNull final String authUserId, @NonNull final String name, @Nullable final String parentFolderId) {
 
         this.getOrCreate(authUserId);
+        // Item 9 (sharing): deliberately owner-only - a grantee with folder-level read access
+        // can never create content inside a folder shared with them.
         if (parentFolderId != null) this.requireOwnedFolder(authUserId, parentFolderId);
 
         final Folder folder = new Folder(UUID.randomUUID().toString(), authUserId, name, parentFolderId);
@@ -610,14 +1055,40 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public List<Folder> listFolders(@NonNull final String authUserId, @Nullable final String parentFolderId) {
+        // Item 9 (sharing): deliberately owner-only, does NOT include folders shared with
+        // authUserId - see listFileSummaries's own comment for the same reasoning; use
+        // listSharedFoldersWithMe(authUserId) instead.
         try {
             return this.dataFactory.getEntities(Folder.class).stream()
                     .filter(folder -> folder.getOwnerId().equals(authUserId))
                     .filter(folder -> Objects.equals(folder.getParentFolderId(), parentFolderId))
+                    .filter(folder -> !folder.isDeleted())
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.listFolders: failed to list folders for " + authUserId, e);
         }
+    }
+
+    /**
+     * See {@link ICloudUserService#listFoldersPage}'s Javadoc. Same full-scan-then-sort-then-slice
+     * shape as {@link #listFileSummariesPage}, keyed on {@link Folder#getFolderId()}.
+     */
+    @NonNull
+    @Override
+    public CursorPage<Folder> listFoldersPage(@NonNull final String authUserId, @Nullable final String parentFolderId,
+                                               @Nullable final String cursor, final int limit) {
+        final List<Folder> sorted;
+        try {
+            sorted = this.dataFactory.getEntities(Folder.class).stream()
+                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+                    .filter(folder -> Objects.equals(folder.getParentFolderId(), parentFolderId))
+                    .filter(folder -> !folder.isDeleted())
+                    .sorted(Comparator.comparing(Folder::getFolderId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listFoldersPage: failed to list folders for " + authUserId, e);
+        }
+        return paginate(sorted, cursor, limit, Folder::getFolderId);
     }
 
     /**
@@ -641,6 +1112,7 @@ public final class CloudUserService implements ICloudUserService {
     public Folder updateFolder(@NonNull final String authUserId, @NonNull final String folderId,
                                 @NonNull final String newName, @Nullable final String newParentFolderId) {
 
+        // Item 9 (sharing): deliberately owner-only - a grantee can browse a shared folder but never rename/move it.
         final Folder existing = this.requireOwnedFolder(authUserId, folderId);
 
         if (newParentFolderId != null) {
@@ -685,24 +1157,30 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Deletes {@code folderId}, but only if {@code authUserId} owns it and it is currently empty.
-     * A folder is never deleted recursively - a non-empty folder must be emptied (its children
-     * moved out or deleted individually) first.
+     * Soft-deletes (moves to the trash) {@code folderId}, but only if {@code authUserId} owns it
+     * and it is currently empty of non-trashed content. A folder is never deleted recursively - a
+     * non-empty folder must be emptied (its children moved out or deleted individually) first.
+     * Idempotent - a no-op if {@code folderId} is already in the trash.
      *
      * @param authUserId the requesting user's id, checked against the folder record
      * @param folderId the folder to delete
      * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code authUserId}
-     * @throws IllegalStateException if {@code folderId} still has child folders or files inside it
+     * @throws IllegalStateException if {@code folderId} still has non-trashed child folders or files inside it
      */
     @Override
     public void deleteFolder(@NonNull final String authUserId, @NonNull final String folderId) {
 
-        this.requireOwnedFolder(authUserId, folderId);
+        // Item 9 (sharing): deliberately owner-only.
+        final Folder existing = this.requireOwnedFolder(authUserId, folderId);
+        if (existing.isDeleted()) {
+            return;
+        }
 
         final boolean hasChildFolders = !this.listFolders(authUserId, folderId).isEmpty();
         // A plain ownership-row check, not listFilesWithFolder(...).isEmpty() - this only needs a
         // yes/no answer, so there's no reason to download and decrypt every file's content just to
-        // count them.
+        // count them. Both listFolders and ownedFileOwnerships already exclude trashed entries, so
+        // a folder containing only already-trashed children is treated as empty here.
         final boolean hasChildFiles = this.ownedFileOwnerships(authUserId).stream()
                 .anyMatch(ownership -> Objects.equals(ownership.getFolderId(), folderId));
         if (hasChildFolders || hasChildFiles) {
@@ -710,9 +1188,53 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         try {
-            this.dataFactory.delete(folderId, Folder.class);
-        } catch (final DatabaseClientException e) {
-            throw new RuntimeException("@CloudUserService.deleteFolder: failed to delete " + folderId, e);
+            this.dataFactory.update(existing.markedDeleted());
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.deleteFolder: failed to trash " + folderId, e);
+        }
+    }
+
+    /**
+     * Restores a previously soft-deleted {@code folderId} out of the trash, but only if {@code
+     * authUserId} owns it - the reverse of {@link #deleteFolder(String, String)}. Does not
+     * validate {@code folderId}'s own parent - see this method's own {@link
+     * ICloudUserService#restoreFolder} Javadoc for why that's an accepted trade-off.
+     *
+     * @param authUserId the requesting user's id, checked against the folder record
+     * @param folderId the folder to restore
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code authUserId}
+     * @throws IllegalStateException if {@code folderId} is not currently in the trash
+     */
+    @Override
+    public void restoreFolder(@NonNull final String authUserId, @NonNull final String folderId) {
+        // Item 9 (sharing): deliberately owner-only.
+        final Folder existing = this.requireOwnedFolder(authUserId, folderId);
+        if (!existing.isDeleted()) {
+            throw new IllegalStateException("@CloudUserService.restoreFolder: " + folderId + " is not in the trash");
+        }
+        try {
+            this.dataFactory.update(existing.restored());
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.restoreFolder: failed to restore " + folderId, e);
+        }
+    }
+
+    /**
+     * Lists every {@link Folder} currently in {@code authUserId}'s trash, regardless of nesting.
+     *
+     * @param authUserId the user whose trash to list
+     * @return every {@link Folder} currently in {@code authUserId}'s trash
+     */
+    @NonNull
+    @Override
+    public List<Folder> listDeletedFolders(@NonNull final String authUserId) {
+        try {
+            return this.dataFactory.getEntities(Folder.class).stream()
+                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+                    .filter(Folder::isDeleted)
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listDeletedFolders: failed to list trashed folders for " + authUserId, e);
         }
     }
 
@@ -740,6 +1262,7 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+<<<<<<< HEAD
      * An O(1) point lookup on {@code folderId}, failing if it doesn't exist or belongs to someone
      * other than {@code authUserId}.
      *
@@ -748,6 +1271,28 @@ public final class CloudUserService implements ICloudUserService {
      * @return the matching {@link Folder}
      * @throws IllegalArgumentException if {@code folderId} doesn't exist or isn't owned by {@code authUserId}
      */
+=======
+     * Forwards one metric event to {@link CloudDriver#getInstance()}'s {@link MetricsRecorder}, if
+     * {@code cloud-driver-extensions-metrics} has published one - a no-op otherwise. Never throws:
+     * a missing/misbehaving metrics sink must never affect a real upload, matching {@link
+     * MetricsRecorder}'s own "must never throw" contract, enforced here defensively too. Mirrors
+     * {@code DefaultFileFactory}'s own private helper of the same name/shape in {@code
+     * cloud-driver-plugin} - not shared code, since neither module may depend on the other.
+     *
+     * @param action the {@link MetricsRecorder} method to invoke, e.g. {@code
+     *     MetricsRecorder::recordUploadQuotaRejected}
+     */
+    private static void recordMetric(final Consumer<MetricsRecorder> action) {
+        try {
+            final MetricsRecorder recorder = CloudDriver.getInstance().getServiceContainer().getMetricsRecorder();
+            if (recorder != null) action.accept(recorder);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /** O(1) point lookup, failing if {@code folderId} doesn't exist or belongs to someone other than {@code authUserId}. */
+>>>>>>> dev
     private Folder requireOwnedFolder(final String authUserId, final String folderId) {
         final Optional<Folder> folder;
         try {
@@ -762,19 +1307,37 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+<<<<<<< HEAD
      * Backs {@link #listFiles}/{@link #listFilesWithFolder} - see {@link #listFiles}'s Javadoc for
      * the full-scan trade-off this implies.
      *
      * @param authUserId the user whose ownership rows should be listed
      * @return every {@link StoredFileOwnership} row belonging to {@code authUserId}
+=======
+     * Backs {@link #listFiles}/{@link #listFilesWithFolder}/{@link #listFileSummaries}/{@link
+     * #deleteFolder}'s emptiness check - see {@link #listFiles}'s Javadoc for the full-scan
+     * trade-off this implies. Excludes trashed rows by default; see {@link
+     * #ownedFileOwnershipsIncludingDeleted(String)} for the raw, unfiltered scan.
+>>>>>>> dev
      */
     private List<StoredFileOwnership> ownedFileOwnerships(final String authUserId) {
+        return this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
+                .filter(ownership -> !ownership.isDeleted())
+                .toList();
+    }
+
+    /**
+     * Same full scan as {@link #ownedFileOwnerships(String)}, without the trash filter - backs
+     * {@link #listDeletedFiles(String)} and {@link #resetCloudUser(String)} (which must reach
+     * already-trashed rows too, to actually purge them via {@link #hardDeleteFile}).
+     */
+    private List<StoredFileOwnership> ownedFileOwnershipsIncludingDeleted(final String authUserId) {
         try {
             return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
                     .filter(ownership -> ownership.getAuthUserId().equals(authUserId))
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
-            throw new RuntimeException("@CloudUserService.ownedFileOwnerships: failed to list ownership records for " + authUserId, e);
+            throw new RuntimeException("@CloudUserService.ownedFileOwnershipsIncludingDeleted: failed to list ownership records for " + authUserId, e);
         }
     }
 

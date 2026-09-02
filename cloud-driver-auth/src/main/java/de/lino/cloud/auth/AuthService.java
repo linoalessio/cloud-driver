@@ -1,13 +1,20 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.audit.AuditAction;
+import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
+import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.JwtSigner;
+import de.lino.cloud.api.jwt.auth.AuthTokens;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.jwt.auth.LoginResult;
+import de.lino.cloud.api.jwt.auth.TwoFactorSetupStart;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.mail.EmailDeliveryException;
 import de.lino.cloud.api.mail.EmailSender;
@@ -16,10 +23,22 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.user.ICloudUserService;
+<<<<<<< HEAD
 import de.lino.cloud.auth.mail.EmailTemplates;
+=======
+import de.lino.cloud.auth.entity.RefreshToken;
+>>>>>>> dev
 import de.lino.cloud.auth.pending.PendingEmailChange;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;
+import de.lino.cloud.auth.pending.PendingTwoFactorLogin;
+import de.lino.cloud.auth.pending.PendingTwoFactorSetup;
+import dev.samstevens.totp.code.CodeVerifier;
+import dev.samstevens.totp.code.DefaultCodeGenerator;
+import dev.samstevens.totp.code.DefaultCodeVerifier;
+import dev.samstevens.totp.qr.QrData;
+import dev.samstevens.totp.secret.DefaultSecretGenerator;
+import dev.samstevens.totp.time.SystemTimeProvider;
 import lombok.NonNull;
 
 import javax.naming.NamingException;
@@ -72,6 +91,16 @@ public final class AuthService implements IAuthService {
     /** How long a JWT issued by {@link #login}/{@link #confirmRegistration} remains valid: 12 hours. */
     private static final long ACCESS_TOKEN_TTL_SECONDS = Duration.ofHours(12).getSeconds(); // 12h
 
+    /**
+     * How long a {@link RefreshToken} issued by {@link #issueTokens} remains valid before {@link
+     * #refresh} rejects it outright: 30 days. Deliberately much longer than {@link
+     * #ACCESS_TOKEN_TTL_SECONDS} - the whole point of a refresh token is to let a long-running
+     * client (e.g. a desktop app) stay signed in across many access-token expiries without a
+     * fresh password login; 30 days comfortably covers a client used at least monthly while still
+     * bounding how long a stolen-but-unused refresh token remains exploitable.
+     */
+    private static final long REFRESH_TOKEN_TTL_MILLIS = Duration.ofDays(30).toMillis();
+
     /** How long a verification code issued by {@link #register} remains valid: 10 minutes. */
     private static final long VERIFICATION_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
 
@@ -81,8 +110,32 @@ public final class AuthService implements IAuthService {
     /** How long a verification code issued by {@link #requestEmailChange} remains valid: 10 minutes. */
     private static final long EMAIL_CHANGE_CODE_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
 
+    /** How long a {@link PendingTwoFactorSetup} row issued by {@link #beginTwoFactorSetup} remains valid: 10 minutes. */
+    private static final long TWO_FACTOR_SETUP_TTL_MILLIS = Duration.ofMinutes(10).toMillis();
+
+    /**
+     * How long a {@link PendingTwoFactorLogin} row issued by {@link #login} remains valid: 5
+     * minutes. Deliberately shorter than every other pending-code TTL in this class - unlike an
+     * e-mailed code (which has to survive mail-server/network delivery delay before the caller can
+     * even see it), the caller here already has their authenticator app open the moment {@link
+     * #login} returns, so there is no equivalent delivery delay to accommodate.
+     */
+    private static final long TWO_FACTOR_LOGIN_TTL_MILLIS = Duration.ofMinutes(5).toMillis();
+
+    /** The issuer name embedded in every {@code otpauth://} URI {@link #beginTwoFactorSetup} builds - shown by an authenticator app next to the account entry. */
+    private static final String TWO_FACTOR_ISSUER = "Cloud Driver";
+
     /** Source of randomness for {@link #generateVerificationCode()}. */
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    /**
+     * Verifies a caller-supplied TOTP code against a secret - {@link
+     * DefaultCodeVerifier}'s default construction already tolerates the small clock-drift window
+     * (one step before/after the current one) a real authenticator-app/server clock pair needs in
+     * practice. Stateless and thread-safe, so one shared instance serves every {@link
+     * #confirmTwoFactorSetup}/{@link #completeTwoFactorLogin} call.
+     */
+    private static final CodeVerifier TOTP_CODE_VERIFIER = new DefaultCodeVerifier(new DefaultCodeGenerator(), new SystemTimeProvider());
 
     /** Persists/looks up {@link AuthUser}/{@link PendingRegistration} rows. */
     private final DataFactory dataFactory;
@@ -103,6 +156,14 @@ public final class AuthService implements IAuthService {
     private final ICloudUserService cloudUserService;
 
     /**
+     * Records security-relevant actions (login success/failure, registration, password reset,
+     * e-mail change) to the persisted audit trail - see {@code architecture/SERVICES.md} item 11
+     * and {@code AuditLogService}'s own Javadoc. Never throws, so every call site below invokes it
+     * directly with no defensive try/catch of its own.
+     */
+    private final AuditLogService auditLogService;
+
+    /**
      * Creates an {@code AuthService} backed by the given collaborators.
      *
      * @param dataFactory persists/looks up {@link AuthUser}/{@link PendingRegistration} rows
@@ -110,15 +171,17 @@ public final class AuthService implements IAuthService {
      * @param signer issues and verifies the JWTs returned by {@link #login}/{@link #confirmRegistration}/{@link #validate}
      * @param emailSender delivers the verification code {@link #register} generates
      * @param cloudUserService creates/looks up the {@link de.lino.cloud.auth.entity.CloudUser} row {@link #confirmRegistration} eagerly creates for a newly-confirmed account
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
      */
     public AuthService(@NonNull final DataFactory dataFactory, @NonNull final PasswordHasher hasher,
                         @NonNull final JwtSigner signer, @NonNull final EmailSender emailSender,
-                        @NonNull final ICloudUserService cloudUserService) {
+                        @NonNull final ICloudUserService cloudUserService, @NonNull final AuditLogService auditLogService) {
         this.dataFactory = dataFactory;
         this.hasher = hasher;
         this.signer = signer;
         this.emailSender = emailSender;
         this.cloudUserService = cloudUserService;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -195,6 +258,7 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.register: failed to send verification email to " + emailAddress, e);
         }
 
+        this.auditLogService.record(new AuditEvent(null, AuditAction.REGISTER, emailAddress, null));
     }
 
     /**
@@ -295,7 +359,7 @@ public final class AuthService implements IAuthService {
      *
      * @param emailAddress the e-mail address {@link #register} was called with
      * @param code the verification code e-mailed to {@code emailAddress}
-     * @return a freshly signed JWT asserting the newly created {@link AuthUser#getId()}
+     * @return a freshly issued {@link AuthTokens} pair asserting the newly created {@link AuthUser#getId()}
      * @throws InvalidVerificationCodeException if there is no pending registration under {@code
      *     emailAddress}, it has expired, or {@code code} doesn't match
      * @throws DatabaseClientException if creating the account fails
@@ -303,7 +367,7 @@ public final class AuthService implements IAuthService {
      */
     @NonNull
     @Override
-    public String confirmRegistration(@NonNull final String emailAddress, @NonNull final String code)
+    public AuthTokens confirmRegistration(@NonNull final String emailAddress, @NonNull final String code)
             throws DatabaseClientException, KeyWrapException {
 
         final Optional<PendingRegistration> pendingOpt;
@@ -330,7 +394,27 @@ public final class AuthService implements IAuthService {
         this.dataFactory.delete(emailAddress, PendingRegistration.class);
         this.cloudUserService.getOrCreate(user.getId());
 
-        return this.signer.sign(user.getId(), ACCESS_TOKEN_TTL_SECONDS);
+        return this.issueTokens(user.getId());
+    }
+
+    /**
+     * Signs a fresh access JWT and mints/persists a fresh {@link RefreshToken} for {@code
+     * authUserId}, bundling both into the {@link AuthTokens} pair {@link #login}/{@link
+     * #confirmRegistration}/{@link #confirmPasswordReset}/{@link #refresh} all return. The one
+     * place any of those four methods actually issues tokens, so the pairing is never built
+     * inconsistently between them.
+     *
+     * @param authUserId the account id to issue tokens for
+     * @return a freshly issued {@link AuthTokens} pair
+     * @throws DatabaseClientException if persisting the new {@link RefreshToken} fails
+     * @throws KeyWrapException if the new {@link RefreshToken}'s data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    private AuthTokens issueTokens(@NonNull final String authUserId) throws DatabaseClientException, KeyWrapException {
+        final String accessToken = this.signer.sign(authUserId, ACCESS_TOKEN_TTL_SECONDS);
+        final RefreshToken refreshToken = new RefreshToken(authUserId, System.currentTimeMillis() + REFRESH_TOKEN_TTL_MILLIS);
+        this.dataFactory.register(refreshToken);
+        return new AuthTokens(accessToken, refreshToken.getToken());
     }
 
     /**
@@ -371,29 +455,216 @@ public final class AuthService implements IAuthService {
      *
      * @param emailAddress the login identifier to look up
      * @param rawPassword the candidate password, verified via {@link PasswordHasher#verify}
-     * @return a signed JWT asserting the matched {@link AuthUser#getId()}
+     * @return a {@link LoginResult} carrying a freshly issued {@link AuthTokens} pair, or (if the
+     *     matched account has two-factor authentication enabled) a pending second-factor token
      * @throws InvalidCredentialsException if no account matches {@code emailAddress}, or the
      *     password doesn't match
      */
     @NonNull
     @Override
-    public String login(@NonNull final String emailAddress, final char @NonNull [] rawPassword) {
+    public LoginResult login(@NonNull final String emailAddress, final char @NonNull [] rawPassword) {
 
-        final AuthUser user;
+        final Optional<AuthUser> userOpt;
         try {
-            user = this.dataFactory.getEntities(AuthUser.class).stream()
+            userOpt = this.dataFactory.getEntities(AuthUser.class).stream()
                     .filter(candidate -> candidate.getEmailAddress().equals(emailAddress))
-                    .findFirst()
-                    .orElseThrow(() -> new InvalidCredentialsException("invalid credentials"));
+                    .findFirst();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.login: failed to look up user '" + emailAddress + "'", e);
         }
 
+        if (userOpt.isEmpty()) {
+            this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, null));
+            throw new InvalidCredentialsException("invalid credentials");
+        }
+        final AuthUser user = userOpt.get();
+
         if (!this.hasher.verify(rawPassword, user.getPasswordHash())) {
+            // actorAuthUserId deliberately null here too - a wrong password doesn't prove the
+            // caller actually controls this account, so this entry shouldn't read as "this account
+            // acted", only "this account was targeted" (targetId).
+            this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, null));
             throw new InvalidCredentialsException("invalid credentials");
         }
 
-        return this.signer.sign(user.getId(), ACCESS_TOKEN_TTL_SECONDS);
+        if (user.isTwoFactorEnabled()) {
+            // Password verified, but a second factor is still required - deliberately no
+            // LOGIN_SUCCESS audit event yet (see #completeTwoFactorLogin, which fires it once the
+            // TOTP code also verifies) and no tokens issued yet either.
+            try {
+                final PendingTwoFactorLogin pending = new PendingTwoFactorLogin(
+                        user.getId(), System.currentTimeMillis() + TWO_FACTOR_LOGIN_TTL_MILLIS);
+                this.dataFactory.register(pending);
+                return LoginResult.requiresTwoFactor(pending.getToken());
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException("@AuthService.login: failed to persist pending two-factor login for '" + emailAddress + "'", e);
+            }
+        }
+
+        try {
+            final AuthTokens tokens = this.issueTokens(user.getId());
+            this.auditLogService.record(new AuditEvent(user.getId(), AuditAction.LOGIN_SUCCESS, emailAddress, null));
+            return LoginResult.success(tokens);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@AuthService.login: failed to issue tokens for '" + emailAddress + "'", e);
+        }
+    }
+
+    /**
+     * See {@link IAuthService#beginTwoFactorSetup}'s own Javadoc.
+     */
+    @NonNull
+    @Override
+    public TwoFactorSetupStart beginTwoFactorSetup(@NonNull final String authUserId) {
+
+        final AuthUser user;
+        try {
+            user = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new IllegalArgumentException("no AuthUser with id " + authUserId));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.beginTwoFactorSetup: failed to look up account " + authUserId, e);
+        }
+
+        final String secretBase32 = new DefaultSecretGenerator().generate();
+        final PendingTwoFactorSetup pending = new PendingTwoFactorSetup(
+                authUserId, secretBase32, System.currentTimeMillis() + TWO_FACTOR_SETUP_TTL_MILLIS);
+        try {
+            this.dataFactory.register(pending);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@AuthService.beginTwoFactorSetup: failed to persist pending setup for " + authUserId, e);
+        }
+
+        final String otpauthUri = new QrData.Builder()
+                .label(user.getEmailAddress())
+                .secret(secretBase32)
+                .issuer(TWO_FACTOR_ISSUER)
+                .build()
+                .getUri();
+
+        return new TwoFactorSetupStart(secretBase32, otpauthUri);
+    }
+
+    /**
+     * See {@link IAuthService#confirmTwoFactorSetup}'s own Javadoc.
+     */
+    @Override
+    public void confirmTwoFactorSetup(@NonNull final String authUserId, @NonNull final String code)
+            throws DatabaseClientException, KeyWrapException {
+
+        final Optional<PendingTwoFactorSetup> pendingOpt;
+        try {
+            pendingOpt = this.dataFactory.findById(authUserId, PendingTwoFactorSetup.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmTwoFactorSetup: failed to look up pending setup for " + authUserId, e);
+        }
+
+        final PendingTwoFactorSetup pending = pendingOpt.orElseThrow(
+                () -> new InvalidVerificationCodeException("invalid or expired verification code"));
+
+        if (pending.isExpired()) {
+            this.dataFactory.delete(authUserId, PendingTwoFactorSetup.class);
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        if (!TOTP_CODE_VERIFIER.isValidCode(pending.getSecretBase32(), code)) {
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new InvalidVerificationCodeException("invalid or expired verification code"));
+            this.dataFactory.update(existing.withTotpSecret(pending.getSecretBase32()));
+            this.dataFactory.delete(authUserId, PendingTwoFactorSetup.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.confirmTwoFactorSetup: failed to enable two-factor authentication for " + authUserId, e);
+        }
+
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.TWO_FACTOR_ENABLED, authUserId, null));
+    }
+
+    /**
+     * See {@link IAuthService#disableTwoFactor}'s own Javadoc.
+     */
+    @Override
+    public void disableTwoFactor(@NonNull final String authUserId, final char @NonNull [] password) {
+
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class).orElse(null);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.disableTwoFactor: failed to look up account " + authUserId, e);
+        }
+
+        // Same message whether the account doesn't exist (shouldn't happen behind an
+        // already-validated bearer token) or the password doesn't match - matching #login's own
+        // "don't leak which" idiom.
+        if (existing == null || !this.hasher.verify(password, existing.getPasswordHash())) {
+            throw new InvalidCredentialsException("invalid credentials");
+        }
+
+        try {
+            this.dataFactory.update(existing.withTotpSecret(null));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@AuthService.disableTwoFactor: failed to disable two-factor authentication for " + authUserId, e);
+        }
+
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.TWO_FACTOR_DISABLED, authUserId, null));
+    }
+
+    /**
+     * See {@link IAuthService#completeTwoFactorLogin}'s own Javadoc.
+     */
+    @NonNull
+    @Override
+    public AuthTokens completeTwoFactorLogin(@NonNull final String pendingTwoFactorToken, @NonNull final String code)
+            throws DatabaseClientException, KeyWrapException {
+
+        final Optional<PendingTwoFactorLogin> pendingOpt;
+        try {
+            pendingOpt = this.dataFactory.findById(pendingTwoFactorToken, PendingTwoFactorLogin.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.completeTwoFactorLogin: failed to look up pending login", e);
+        }
+
+        final PendingTwoFactorLogin pending = pendingOpt.orElseThrow(
+                () -> new InvalidVerificationCodeException("invalid or expired verification code"));
+
+        if (pending.isExpired()) {
+            this.dataFactory.delete(pendingTwoFactorToken, PendingTwoFactorLogin.class);
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        final AuthUser user;
+        try {
+            user = this.dataFactory.findById(pending.getAuthUserId(), AuthUser.class)
+                    .orElseThrow(() -> new InvalidVerificationCodeException("invalid or expired verification code"));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.completeTwoFactorLogin: failed to look up account " + pending.getAuthUserId(), e);
+        }
+
+        // Defense-in-depth: the account may have disabled two-factor authentication after this
+        // pending login was issued (e.g. via a different, already-authenticated session) - treat
+        // that the same as an invalid code rather than falling back to issuing tokens anyway.
+        if (!user.isTwoFactorEnabled() || !TOTP_CODE_VERIFIER.isValidCode(user.getTotpSecretBase32(), code)) {
+            // Deliberately not deleted here - see PendingTwoFactorLogin's own Javadoc on why a
+            // mistyped code may be retried within the pending token's validity window.
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        try {
+            this.dataFactory.delete(pendingTwoFactorToken, PendingTwoFactorLogin.class);
+        } catch (final DatabaseClientException alreadyConsumed) {
+            throw new InvalidVerificationCodeException("invalid or expired verification code");
+        }
+
+        try {
+            final AuthTokens tokens = this.issueTokens(user.getId());
+            this.auditLogService.record(new AuditEvent(user.getId(), AuditAction.LOGIN_SUCCESS, user.getEmailAddress(), null));
+            return tokens;
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@AuthService.completeTwoFactorLogin: failed to issue tokens for " + user.getId(), e);
+        }
     }
 
     /**
@@ -506,7 +777,7 @@ public final class AuthService implements IAuthService {
      * @param code the verification code e-mailed to {@code emailAddress}
      * @param newPassword the caller's chosen new password, hashed via {@link PasswordHasher#hash}
      *     before persistence, never stored or retained in plain form
-     * @return a freshly signed JWT asserting the matched {@link AuthUser#getId()}
+     * @return a freshly issued {@link AuthTokens} pair asserting the matched {@link AuthUser#getId()}
      * @throws InvalidPasswordFormatException if {@code newPassword} doesn't meet {@link
      *     #requirePasswordFormat}'s requirement - checked first, before any database access
      * @throws InvalidVerificationCodeException if there is no pending reset under {@code
@@ -517,7 +788,7 @@ public final class AuthService implements IAuthService {
      */
     @NonNull
     @Override
-    public String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
+    public AuthTokens confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
             throws DatabaseClientException, KeyWrapException {
 
         requirePasswordFormat(newPassword);
@@ -551,11 +822,14 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.confirmPasswordReset: failed to look up account for " + emailAddress, e);
         }
 
-        final AuthUser updated = new AuthUser(existing.getId(), existing.getEmailAddress(), this.hasher.hash(newPassword));
+        final AuthUser updated = new AuthUser(existing.getId(), existing.getEmailAddress(), this.hasher.hash(newPassword),
+                existing.isAdmin(), existing.getTotpSecretBase32());
         this.dataFactory.update(updated);
         this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
 
-        return this.signer.sign(updated.getId(), ACCESS_TOKEN_TTL_SECONDS);
+        final AuthTokens tokens = this.issueTokens(updated.getId());
+        this.auditLogService.record(new AuditEvent(updated.getId(), AuditAction.PASSWORD_RESET, emailAddress, null));
+        return tokens;
     }
 
     /**
@@ -668,9 +942,133 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.confirmEmailChange: failed to look up account " + authUserId, e);
         }
 
-        final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash());
+        final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash(),
+                existing.isAdmin(), existing.getTotpSecretBase32());
         this.dataFactory.update(updated);
         this.dataFactory.delete(authUserId, PendingEmailChange.class);
+
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.EMAIL_CHANGE, pending.getNewEmailAddress(), null));
+    }
+
+    /**
+     * Grants or revokes the {@link AuthUser#isAdmin()} flag for {@code authUserId} - the only
+     * writer of that field anywhere in this codebase (see {@link AuthUser#isAdmin()}'s own
+     * Javadoc: never reachable via any REST route, only this method, called from a terminal
+     * {@code Command} by the operator console).
+     *
+     * @param authUserId the account to grant/revoke admin on
+     * @param isAdmin the new admin flag value
+     * @throws IllegalArgumentException if no account exists under {@code authUserId}
+     */
+    @Override
+    public void setAdmin(@NonNull final String authUserId, final boolean isAdmin) {
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new IllegalArgumentException("no AuthUser with id " + authUserId));
+            this.dataFactory.update(existing.withAdmin(isAdmin));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.setAdmin: failed to update admin flag for " + authUserId, e);
+        }
+    }
+
+    /**
+     * Exchanges {@code refreshToken} for a fresh {@link AuthTokens} pair - see {@link
+     * IAuthService#refresh}'s own Javadoc for the rotate-on-every-use contract this implements.
+     * Rejects (via {@link InvalidRefreshTokenException}, the same message for every case, matching
+     * this class's other "don't leak which" methods) a token that doesn't exist, has expired, has
+     * already been revoked/rotated away, or whose account no longer exists - the last check exists
+     * so a {@link RefreshToken} row surviving an account's deletion (nothing in this codebase
+     * cascades that delete onto outstanding refresh tokens today) can never mint a fresh access
+     * token for an id nothing backs anymore.
+     *
+     * <p>The actual atomicity guard against two near-simultaneous calls presenting the same token
+     * is {@link DataFactory#delete}'s own "no such id" failure: this method deletes {@code
+     * refreshToken}'s row <em>before</em> issuing new tokens, so only the first of two racing
+     * calls can ever succeed at that delete - the second observes the row already gone and is
+     * rejected the same way a genuinely unknown token would be. {@code DataFactory} offers no
+     * compare-and-swap/conditional-update primitive this could instead be built on, and this
+     * single-process deployment (see {@code CLAUDE.md}) has no cross-process transaction to lean
+     * on either - this is the strongest guarantee actually available on this stack.
+     *
+     * @param refreshToken a refresh token previously returned by {@link #login}/{@link
+     *     #confirmRegistration}/{@link #confirmPasswordReset}/a prior call to this method
+     * @return a freshly issued {@link AuthTokens} pair
+     * @throws InvalidRefreshTokenException if {@code refreshToken} doesn't exist, has expired, has
+     *     already been used/revoked, or its account no longer exists
+     * @throws DatabaseClientException if persisting the rotation fails
+     * @throws KeyWrapException if the new refresh token's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    @Override
+    public AuthTokens refresh(@NonNull final String refreshToken) throws DatabaseClientException, KeyWrapException {
+
+        final RefreshToken pending;
+        try {
+            pending = this.dataFactory.findById(refreshToken, RefreshToken.class)
+                    .orElseThrow(() -> new InvalidRefreshTokenException("invalid or expired refresh token"));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.refresh: failed to look up refresh token", e);
+        }
+
+        if (pending.isExpired() || pending.isRevoked()) {
+            this.deleteRefreshTokenQuietly(refreshToken);
+            throw new InvalidRefreshTokenException("invalid or expired refresh token");
+        }
+
+        final boolean accountStillExists;
+        try {
+            accountStillExists = this.dataFactory.findById(pending.getAuthUserId(), AuthUser.class).isPresent();
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.refresh: failed to look up account " + pending.getAuthUserId(), e);
+        }
+        if (!accountStillExists) {
+            this.deleteRefreshTokenQuietly(refreshToken);
+            throw new InvalidRefreshTokenException("invalid or expired refresh token");
+        }
+
+        try {
+            this.dataFactory.delete(refreshToken, RefreshToken.class);
+        } catch (final DatabaseClientException alreadyRotatedAway) {
+            throw new InvalidRefreshTokenException("invalid or expired refresh token");
+        }
+
+        return this.issueTokens(pending.getAuthUserId());
+    }
+
+    /** Best-effort delete of an already-invalid {@link RefreshToken} row - {@link #refresh} throws regardless of whether this succeeds. */
+    private void deleteRefreshTokenQuietly(final String refreshToken) {
+        try {
+            this.dataFactory.delete(refreshToken, RefreshToken.class);
+        } catch (final DatabaseClientException ignored) {
+            // Best-effort cleanup only - the caller is about to throw InvalidRefreshTokenException
+            // regardless of whether this delete succeeds.
+        }
+    }
+
+    /**
+     * Marks {@code refreshToken} revoked, if it still exists and isn't already - see {@link
+     * IAuthService#revokeRefreshToken}'s own Javadoc for why this is deliberately a no-op rather
+     * than throwing when there's nothing left to revoke.
+     *
+     * @param refreshToken the token to revoke
+     */
+    @Override
+    public void revokeRefreshToken(@NonNull final String refreshToken) {
+        final Optional<RefreshToken> existing;
+        try {
+            existing = this.dataFactory.findById(refreshToken, RefreshToken.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.revokeRefreshToken: failed to look up refresh token", e);
+        }
+        if (existing.isEmpty() || existing.get().isRevoked()) {
+            return;
+        }
+        try {
+            this.dataFactory.update(existing.get().revoked());
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@AuthService.revokeRefreshToken: failed to revoke refresh token", e);
+        }
     }
 
 }

@@ -397,6 +397,20 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
                     )
                 }
+                // Explicit "Load more" rather than auto-loading on scroll - a large folder's next
+                // page is a real network round trip (see CloudDriverClient.listFilesPage/
+                // listFoldersPage's own Javadoc for why this bounds response size, not per-request
+                // scan cost), so triggering it only on a deliberate click keeps that cost visible
+                // and predictable rather than firing silently as the user scrolls past the fold.
+                if (viewModel.hasMoreEntries) {
+                    item(key = "__load_more__") {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                            OutlinedButton(onClick = { viewModel.loadMoreEntries() }, enabled = !viewModel.busy) {
+                                Text("Load more")
+                            }
+                        }
+                    }
+                }
             }
             }
 
