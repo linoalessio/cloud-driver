@@ -210,14 +210,35 @@ public interface ICloudUserService {
     List<ICloudUser> getCloudUsers();
 
     /**
-     * Deletes {@code storedFileId} and stops tracking it, but only if {@code authUserId}
-     * actually owns it.
+     * Soft-deletes (moves to the trash) {@code storedFileId}, but only if {@code authUserId}
+     * actually owns it - the file's content is untouched and its ownership row remains, just
+     * hidden from every normal listing until {@link #restoreFile(String, String)} is called or a
+     * purge job permanently removes it. Idempotent: a no-op if {@code storedFileId} is already in
+     * the trash.
      *
      * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the {@link StoredFile#fileId()} to delete
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
      */
     void deleteFile(@NotNull String authUserId, @NotNull String storedFileId);
+
+    /**
+     * Restores a previously soft-deleted {@code storedFileId} out of the trash, but only if
+     * {@code authUserId} actually owns it.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to restore
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws IllegalStateException if {@code storedFileId} is not currently in the trash
+     */
+    void restoreFile(@NotNull String authUserId, @NotNull String storedFileId);
+
+    /**
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose trash to list
+     * @return a {@link StoredFileSummary} for every file currently in {@code authUserId}'s trash
+     */
+    @NotNull
+    List<StoredFileSummary> listDeletedFiles(@NotNull String authUserId);
 
     /**
      * Creates a new, empty {@link Folder} owned by {@code authUserId}.
@@ -274,15 +295,37 @@ public interface ICloudUserService {
                          @NotNull String newName, @Nullable String newParentFolderId);
 
     /**
-     * Deletes {@code folderId}, but only if {@code authUserId} owns it and it is currently empty
-     * (no child folders, no files placed directly inside it) - a folder is never deleted
-     * recursively.
+     * Soft-deletes (moves to the trash) {@code folderId}, but only if {@code authUserId} owns it
+     * and it is currently empty (no non-trashed child folders, no non-trashed files placed
+     * directly inside it) - a folder is never deleted recursively. The folder itself remains
+     * restorable via {@link #restoreFolder(String, String)} until a purge job permanently
+     * removes it.
      *
      * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param folderId the folder to delete
      * @throws IllegalArgumentException if {@code folderId} isn't tracked as belonging to {@code authUserId}
-     * @throws IllegalStateException if {@code folderId} still has child folders or files inside it
+     * @throws IllegalStateException if {@code folderId} still has non-trashed child folders or files inside it
      */
     void deleteFolder(@NotNull String authUserId, @NotNull String folderId);
+
+    /**
+     * Restores a previously soft-deleted {@code folderId} out of the trash, but only if {@code
+     * authUserId} owns it. Does not validate that {@code folderId}'s own parent is still present/
+     * non-trashed - a folder restored under a since-deleted parent simply stays unreachable from a
+     * normal listing until that parent is restored too, or this folder is moved elsewhere.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param folderId the folder to restore
+     * @throws IllegalArgumentException if {@code folderId} isn't tracked as belonging to {@code authUserId}
+     * @throws IllegalStateException if {@code folderId} is not currently in the trash
+     */
+    void restoreFolder(@NotNull String authUserId, @NotNull String folderId);
+
+    /**
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose trash to list
+     * @return every {@link Folder} currently in {@code authUserId}'s trash
+     */
+    @NotNull
+    List<Folder> listDeletedFolders(@NotNull String authUserId);
 
 }

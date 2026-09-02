@@ -95,8 +95,12 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
+    /** Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} by Javalin's own routing regardless of registration order. */
+    private static final String FILES_TRASH_PATH = FILES_PATH + "/trash";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";
+    /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
+    private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
     /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
     /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
@@ -393,15 +397,19 @@ public final class DefaultRestFactory extends RestFactory {
             if (this.cloudUserService != null) {
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
+                config.routes.get(FILES_TRASH_PATH, this::handleListDeletedFiles);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
+                config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
 
                 config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
                 config.routes.get(FOLDERS_PATH, this::handleListFolders);
+                config.routes.get(FOLDERS_TRASH_PATH, this::handleListDeletedFolders);
                 config.routes.put(FOLDERS_PATH + "/{id}", this::handleUpdateFolder);
                 config.routes.delete(FOLDERS_PATH + "/{id}", this::handleDeleteFolder);
+                config.routes.post(FOLDERS_PATH + "/{id}/restore", this::handleRestoreFolder);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -1115,6 +1123,40 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
+     * {@code GET /files/trash}: lists every {@link StoredFile} currently in the caller's trash, as
+     * {@link StoredFileSummary}s - the same descriptive-fields-only shape/cost {@link
+     * #handleListFiles} returns for a live listing, via {@link
+     * CloudUserService#listDeletedFiles}.
+     */
+    private void handleListDeletedFiles(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listDeletedFiles(userId))
+                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /**
+     * {@code POST /files/{id}/restore}: restores a trashed {@link StoredFile} via {@link
+     * CloudUserService#restoreFile}, which checks the caller owns it. {@code 204} on success,
+     * {@code 404} if unowned/nonexistent (via {@link #folderFailureOrPropagate}'s {@link
+     * IllegalArgumentException} handling), {@code 409} if it isn't currently in the trash (via
+     * that same method's {@link IllegalStateException} handling).
+     */
+    private void handleRestoreFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.restoreFile(userId, id))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
      * The {@code {"folderId"}} JSON body shape read by {@code PUT /files/{id}/folder} -
      * {@code folderId} may be an explicit JSON {@code null} to move the file back to the root
      * (unlike a query parameter, a JSON body can carry a real {@code null}, so no {@link
@@ -1239,6 +1281,36 @@ public final class DefaultRestFactory extends RestFactory {
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .runAsync(() -> this.cloudUserService.deleteFolder(userId, id))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /folders/trash}: lists every {@link Folder} currently in the caller's trash via
+     * {@link CloudUserService#listDeletedFolders}.
+     */
+    private void handleListDeletedFolders(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listDeletedFolders(userId))
+                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /**
+     * {@code POST /folders/{id}/restore}: restores a trashed {@link Folder} via {@link
+     * CloudUserService#restoreFolder}, which checks the caller owns it. Same status mapping as
+     * {@link #handleRestoreFile}.
+     */
+    private void handleRestoreFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.restoreFolder(userId, id))
                 .handle((ignored, failure) -> {
                     if (failure == null) {
                         ctx.status(204);

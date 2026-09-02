@@ -76,6 +76,23 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     private final long updatedAtEpochMilli;
 
     /**
+     * When this file was soft-deleted (trashed) from {@link #authUserId}'s point of view, or
+     * {@code null} if it is not currently in the trash.
+     *
+     * <p><b>Mirrors, rather than reads, {@code StoredFile}'s own {@code deletedAtEpochMillis}.</b>
+     * {@code CloudUserService#deleteFile}/{@code #restoreFile} flip this field - not {@code
+     * StoredFile}'s own - because this row is what every listing ({@code
+     * CloudUserService#listFileSummaries}) already reads without touching the underlying {@code
+     * StoredFile} at all; deriving trash status from {@code StoredFile} itself there would force a
+     * full {@code FileFactory#findById} decrypt/decompress per file, defeating the entire reason
+     * this class's metadata fields exist in the first place. See this class's own top-level
+     * Javadoc, and {@code StoredFile#deletedAtEpochMillis}'s own Javadoc for the same trade-off
+     * from the other side.
+     */
+    @Nullable
+    private final Long deletedAtEpochMillis;
+
+    /**
      * Same as {@link #StoredFileOwnership(String, String, String)}, placing the file at the root
      * ({@code folderId} {@code null}).
      *
@@ -105,8 +122,10 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     /**
      * Full constructor, additionally capturing {@code fileName}/{@code contentType}/{@code
      * sizeBytes}/timestamps from the {@link StoredFile} being tracked - see {@link #fileName}'s
-     * own Javadoc for why. Prefer {@link #StoredFileOwnership(String, String, String, StoredFile)}
-     * when a {@link StoredFile} instance is directly in hand.
+     * own Javadoc for why. Leaves {@link #deletedAtEpochMillis} unset ({@code null}) - the shape
+     * every pre-existing caller (and every row written before soft delete existed) already uses.
+     * Prefer {@link #StoredFileOwnership(String, StoredFile, String)} ({@code of}) when a {@link
+     * StoredFile} instance is directly in hand.
      *
      * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
@@ -121,6 +140,28 @@ public final class StoredFileOwnership extends Serialized implements Owned {
                                 @Nullable final String folderId, @Nullable final String fileName,
                                 @Nullable final String contentType, final long sizeBytes,
                                 final long createdAtEpochMilli, final long updatedAtEpochMilli) {
+        this(authUserId, storedFileId, folderId, fileName, contentType, sizeBytes, createdAtEpochMilli, updatedAtEpochMilli, null);
+    }
+
+    /**
+     * Full constructor, additionally carrying {@link #deletedAtEpochMillis} - backs {@link
+     * #markedDeleted()}/{@link #restored()}.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     * @param fileName {@code storedFileId}'s {@link StoredFile#fileName()}, or {@code null} if unknown
+     * @param contentType {@code storedFileId}'s {@link StoredFile#contentType()}, or {@code null} if unknown
+     * @param sizeBytes {@code storedFileId}'s {@link StoredFile#sizeBytes()}
+     * @param createdAtEpochMilli {@code storedFileId}'s {@link StoredFile#createdAt()}, as epoch millis
+     * @param updatedAtEpochMilli {@code storedFileId}'s {@link StoredFile#updatedAt()}, as epoch millis
+     * @param deletedAtEpochMillis when this row was soft-deleted, or {@code null} if not currently in the trash
+     */
+    public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
+                                @Nullable final String folderId, @Nullable final String fileName,
+                                @Nullable final String contentType, final long sizeBytes,
+                                final long createdAtEpochMilli, final long updatedAtEpochMilli,
+                                @Nullable final Long deletedAtEpochMillis) {
         this.authUserId = Objects.requireNonNull(authUserId, "@StoredFileOwnership.init: authUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@StoredFileOwnership.init: storedFileId cannot be null");
         this.folderId = folderId;
@@ -129,6 +170,7 @@ public final class StoredFileOwnership extends Serialized implements Owned {
         this.sizeBytes = sizeBytes;
         this.createdAtEpochMilli = createdAtEpochMilli;
         this.updatedAtEpochMilli = updatedAtEpochMilli;
+        this.deletedAtEpochMillis = deletedAtEpochMillis;
     }
 
     /**
@@ -152,8 +194,27 @@ public final class StoredFileOwnership extends Serialized implements Owned {
      */
     @NotNull
     public StoredFileOwnership movedTo(@Nullable final String newFolderId) {
-        return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId,
-                this.fileName, this.contentType, this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli);
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId, this.fileName, this.contentType,
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, this.deletedAtEpochMillis);
+    }
+
+    /** @return {@code true} if this file is currently soft-deleted (in the trash) from {@link #authUserId}'s point of view */
+    public boolean isDeleted() {
+        return this.deletedAtEpochMillis != null;
+    }
+
+    /** @return a copy of this row, soft-deleted as of now - every other field carried over unchanged */
+    @NotNull
+    public StoredFileOwnership markedDeleted() {
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, System.currentTimeMillis());
+    }
+
+    /** @return a copy of this row, restored out of the trash - every other field carried over unchanged */
+    @NotNull
+    public StoredFileOwnership restored() {
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, null);
     }
 
     /**
@@ -175,7 +236,7 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     public StoredFileOwnership withMetadata(@NotNull final StoredFile file) {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId,
                 file.fileName(), file.contentType(), file.sizeBytes(),
-                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli());
+                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), this.deletedAtEpochMillis);
     }
 
     /**

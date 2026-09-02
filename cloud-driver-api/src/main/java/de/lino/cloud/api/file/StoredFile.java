@@ -274,6 +274,26 @@ public final class StoredFile extends Serialized {
         return Instant.ofEpochMilli(updatedAtEpochMilli);
     }
 
+    /** @return {@code true} if this file is currently soft-deleted (in the trash) */
+    public boolean isDeleted() {
+        return deletedAtEpochMillis != null;
+    }
+
+    /** When this file was soft-deleted, or {@code null} if it is not currently in the trash. */
+    public Instant deletedAt() {
+        return deletedAtEpochMillis == null ? null : Instant.ofEpochMilli(deletedAtEpochMillis);
+    }
+
+    /** @return a copy of this file, soft-deleted as of now - see {@link #deletedAtEpochMillis}'s own Javadoc for who actually calls this */
+    public StoredFile markedDeleted() {
+        return new StoredFile(this, System.currentTimeMillis());
+    }
+
+    /** @return a copy of this file, restored out of the trash */
+    public StoredFile restored() {
+        return new StoredFile(this, null);
+    }
+
     /** This file's descriptive attributes without its content - see {@link FileMetadata}. */
     public FileMetadata metadata() {
         return new FileMetadata(fileId, fileName, contentType, sizeBytes(), checksum, createdAt(), updatedAt());
