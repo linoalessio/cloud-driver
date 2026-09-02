@@ -1,5 +1,6 @@
 package de.lino.cloud.api.factory.service;
 
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
@@ -77,5 +78,24 @@ public interface IServiceContainer {
      * @param liveUpdatePublisher the instance backing the JWT-authenticated REST API's WebSocket push route
      */
     void setLiveUpdatePublisher(@NonNull LiveUpdatePublisher liveUpdatePublisher);
+
+    /**
+     * Returns the audit-log service (item 11, audit log - see {@code architecture/SERVICES.md}),
+     * or {@code null} if {@code CloudRestExtension} hasn't published one yet (not started, the
+     * REST API is disabled for this deployment, or this deployment's {@code cloud-driver-plugin}
+     * version predates this feature). A caller reached before/without that extension (e.g. a
+     * terminal {@code Command}) must null-check this the same way it already does for {@link
+     * #getCloudUserService()}.
+     *
+     * @return the {@link AuditLogService}, or {@code null}
+     */
+    AuditLogService getAuditLogService();
+
+    /**
+     * Publishes the real {@link AuditLogService}, once built.
+     *
+     * @param auditLogService the instance backing {@code AuthService}/{@code CloudUserService}'s audit trail
+     */
+    void setAuditLogService(@NonNull AuditLogService auditLogService);
 
 }

@@ -1,5 +1,6 @@
 package de.lino.cloud.plugin.factory.container;
 
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
@@ -23,6 +24,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile IAuthService authService;
     /** The live-update push transport, {@code null} until {@link #setLiveUpdatePublisher} publishes one. */
     private volatile LiveUpdatePublisher liveUpdatePublisher;
+    /** The audit-log service, {@code null} until {@link #setAuditLogService} publishes one. */
+    private volatile AuditLogService auditLogService;
 
     /** {@inheritDoc} */
     @Override
@@ -58,6 +61,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setLiveUpdatePublisher(@NonNull final LiveUpdatePublisher liveUpdatePublisher) {
         this.liveUpdatePublisher = liveUpdatePublisher;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public AuditLogService getAuditLogService() {
+        return this.auditLogService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setAuditLogService(@NonNull final AuditLogService auditLogService) {
+        this.auditLogService = auditLogService;
     }
 
 }

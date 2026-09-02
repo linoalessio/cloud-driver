@@ -1,5 +1,6 @@
 package de.lino.cloud.extensions.rest;
 
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
@@ -8,6 +9,7 @@ import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.auth.AuthService;
+import de.lino.cloud.auth.audit.AuditLogServiceImpl;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.jwt.JjwtSigner;
@@ -15,6 +17,7 @@ import de.lino.cloud.auth.mail.LoggingEmailSender;
 import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
+import de.lino.cloud.plugin.security.secrets.SecretRedactor;
 import de.lino.database.json.JsonDocument;
 
 import java.util.logging.Level;
@@ -119,8 +122,14 @@ public class CloudRestExtension extends Extension {
         final JwtSigner jwtSigner = new JjwtSigner(signingKey);
 
         final EmailSender emailSender = this.buildEmailSender();
-        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory);
-        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService);
+        // Item 11 (audit log, see architecture/SERVICES.md): built here, not in cloud-driver-auth
+        // itself, since redacting AuditEvent#getMetadata() needs SecretRedactor
+        // (cloud-driver-plugin) - a dependency cloud-driver-auth must never take on directly (see
+        // CLAUDE.md's "Module layout and dependency direction"). This extension already depends on
+        // both modules, so it's the natural place to close that gap via constructor injection.
+        final AuditLogService auditLogService = new AuditLogServiceImpl(dataFactory, SecretRedactor::redact);
+        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService);
+        final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService, auditLogService);
 
         // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal
         // Command, or CloudUser#getStoredFiles()) reaches these exact instances via
@@ -130,6 +139,7 @@ public class CloudRestExtension extends Extension {
         // CloudUserService instances of its own.
         this.cloudDriver().getServiceContainer().setAuthService(authService);
         this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
+        this.cloudDriver().getServiceContainer().setAuditLogService(auditLogService);
 
         final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService);
         REST_FACTORY = restFactory;

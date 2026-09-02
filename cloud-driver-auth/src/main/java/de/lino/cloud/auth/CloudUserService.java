@@ -1,5 +1,8 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.audit.AuditAction;
+import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.FileWithFolder;
@@ -47,14 +50,25 @@ public final class CloudUserService implements ICloudUserService {
     private final FileFactory fileFactory;
 
     /**
+     * Records security-relevant actions ({@link #deleteFile}/{@link #deleteCloudUser}) to the
+     * persisted audit trail - see {@code architecture/SERVICES.md} item 11 and {@code
+     * AuditLogService}'s own Javadoc. Never throws, so both call sites below invoke it directly
+     * with no defensive try/catch of their own.
+     */
+    private final AuditLogService auditLogService;
+
+    /**
      * Creates a {@code CloudUserService} backed by the given collaborators.
      *
      * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
      * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
      */
-    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory) {
+    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
+                             @NonNull final AuditLogService auditLogService) {
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -151,6 +165,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException e) {
             throw new RuntimeException("@CloudUserService.deleteCloudUser: failed to delete CloudUser record for " + authUserId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.ACCOUNT_DELETE, authUserId, null));
     }
 
     /**
@@ -921,6 +936,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.deleteFile: failed to trash " + storedFileId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
     }
 
     /**

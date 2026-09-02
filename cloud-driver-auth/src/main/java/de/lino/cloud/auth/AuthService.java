@@ -1,5 +1,8 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.audit.AuditAction;
+import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
@@ -115,6 +118,14 @@ public final class AuthService implements IAuthService {
     private final ICloudUserService cloudUserService;
 
     /**
+     * Records security-relevant actions (login success/failure, registration, password reset,
+     * e-mail change) to the persisted audit trail - see {@code architecture/SERVICES.md} item 11
+     * and {@code AuditLogService}'s own Javadoc. Never throws, so every call site below invokes it
+     * directly with no defensive try/catch of its own.
+     */
+    private final AuditLogService auditLogService;
+
+    /**
      * Creates an {@code AuthService} backed by the given collaborators.
      *
      * @param dataFactory persists/looks up {@link AuthUser}/{@link PendingRegistration} rows
@@ -122,15 +133,17 @@ public final class AuthService implements IAuthService {
      * @param signer issues and verifies the JWTs returned by {@link #login}/{@link #confirmRegistration}/{@link #validate}
      * @param emailSender delivers the verification code {@link #register} generates
      * @param cloudUserService creates/looks up the {@link de.lino.cloud.auth.entity.CloudUser} row {@link #confirmRegistration} eagerly creates for a newly-confirmed account
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
      */
     public AuthService(@NonNull final DataFactory dataFactory, @NonNull final PasswordHasher hasher,
                         @NonNull final JwtSigner signer, @NonNull final EmailSender emailSender,
-                        @NonNull final ICloudUserService cloudUserService) {
+                        @NonNull final ICloudUserService cloudUserService, @NonNull final AuditLogService auditLogService) {
         this.dataFactory = dataFactory;
         this.hasher = hasher;
         this.signer = signer;
         this.emailSender = emailSender;
         this.cloudUserService = cloudUserService;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -214,6 +227,7 @@ public final class AuthService implements IAuthService {
             throw new RuntimeException("@AuthService.register: failed to send verification email to " + emailAddress, e);
         }
 
+        this.auditLogService.record(new AuditEvent(null, AuditAction.REGISTER, emailAddress, null));
     }
 
     /** @return a fresh, zero-padded 6-digit numeric code, e.g. {@code "042917"} */
@@ -391,22 +405,33 @@ public final class AuthService implements IAuthService {
     @Override
     public AuthTokens login(@NonNull final String emailAddress, final char @NonNull [] rawPassword) {
 
-        final AuthUser user;
+        final Optional<AuthUser> userOpt;
         try {
-            user = this.dataFactory.getEntities(AuthUser.class).stream()
+            userOpt = this.dataFactory.getEntities(AuthUser.class).stream()
                     .filter(candidate -> candidate.getEmailAddress().equals(emailAddress))
-                    .findFirst()
-                    .orElseThrow(() -> new InvalidCredentialsException("invalid credentials"));
+                    .findFirst();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.login: failed to look up user '" + emailAddress + "'", e);
         }
 
+        if (userOpt.isEmpty()) {
+            this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, null));
+            throw new InvalidCredentialsException("invalid credentials");
+        }
+        final AuthUser user = userOpt.get();
+
         if (!this.hasher.verify(rawPassword, user.getPasswordHash())) {
+            // actorAuthUserId deliberately null here too - a wrong password doesn't prove the
+            // caller actually controls this account, so this entry shouldn't read as "this account
+            // acted", only "this account was targeted" (targetId).
+            this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, null));
             throw new InvalidCredentialsException("invalid credentials");
         }
 
         try {
-            return this.issueTokens(user.getId());
+            final AuthTokens tokens = this.issueTokens(user.getId());
+            this.auditLogService.record(new AuditEvent(user.getId(), AuditAction.LOGIN_SUCCESS, emailAddress, null));
+            return tokens;
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@AuthService.login: failed to issue tokens for '" + emailAddress + "'", e);
         }
@@ -577,7 +602,9 @@ public final class AuthService implements IAuthService {
         this.dataFactory.update(updated);
         this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
 
-        return this.issueTokens(updated.getId());
+        final AuthTokens tokens = this.issueTokens(updated.getId());
+        this.auditLogService.record(new AuditEvent(updated.getId(), AuditAction.PASSWORD_RESET, emailAddress, null));
+        return tokens;
     }
 
     /**
@@ -699,6 +726,8 @@ public final class AuthService implements IAuthService {
         final AuthUser updated = new AuthUser(existing.getId(), pending.getNewEmailAddress(), existing.getPasswordHash(), existing.isAdmin());
         this.dataFactory.update(updated);
         this.dataFactory.delete(authUserId, PendingEmailChange.class);
+
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.EMAIL_CHANGE, pending.getNewEmailAddress(), null));
     }
 
     /**
