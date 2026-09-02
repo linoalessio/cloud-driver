@@ -28,8 +28,22 @@ public final class Dtos {
     public record ConfirmRegistrationRequest(String username, String code) {
     }
 
-    /** Response of {@code POST /auth/login} and {@code POST /auth/register/confirm} - both return a fresh JWT. */
-    public record AuthResponse(String token) {
+    /**
+     * Response of {@code POST /auth/login}, {@code POST /auth/register/confirm}, {@code
+     * POST /auth/reset-password/confirm}, and {@code POST /auth/refresh} - every one of the
+     * server's token-issuing routes returns this same shape. {@code refreshToken} is a longer-lived,
+     * opaque, single-use token (rotated on every {@code POST /auth/refresh} call) a client can
+     * exchange for a fresh pair once {@code token} expires, without asking the user to log in again -
+     * see {@link ApiClient#refresh}.
+     */
+    public record AuthResponse(String token, String refreshToken) {
+    }
+
+    /**
+     * Body for {@code POST /auth/refresh} and {@code POST /auth/logout} - both take a bare refresh
+     * token, previously returned in an {@link AuthResponse}.
+     */
+    public record RefreshRequest(String refreshToken) {
     }
 
     /** Body for {@code POST /auth/reset-password} - starts a password reset for the account under {@code username}. */

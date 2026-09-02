@@ -15,7 +15,9 @@ import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
+import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
+import de.lino.cloud.api.jwt.auth.AuthTokens;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -92,6 +94,10 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String RESET_PASSWORD_PATH = "/auth/reset-password";
     /** Path mounted by {@link #start} for {@link #handleConfirmPasswordReset}, exempted from {@link #requireValidBearerToken}. */
     private static final String RESET_PASSWORD_CONFIRM_PATH = "/auth/reset-password/confirm";
+    /** Path mounted by {@link #start} for {@link #handleRefresh}, exempted from {@link #requireValidBearerToken} - a refresh call has no valid access token yet by definition, that's the whole point. */
+    private static final String REFRESH_PATH = "/auth/refresh";
+    /** Path mounted by {@link #start} for {@link #handleLogout}, exempted from {@link #requireValidBearerToken} - possession of the refresh token itself is this route's own proof of authority, the same way it is for {@link #REFRESH_PATH}. */
+    private static final String LOGOUT_PATH = "/auth/logout";
     /** Path mounted by {@link #start} for {@link #handleRequestEmailChange} - bearer-gated, unlike the paths above: this changes an already-authenticated account's own address. */
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
@@ -106,8 +112,8 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
     /**
      * Path prefix every {@code /auth/*} route falls under - checked by {@link
-     * #requireWithinAuthRateLimit}, which applies to all seven {@code /auth/*} routes alike
-     * (the five exempted from {@link #requireValidBearerToken} <em>and</em> the two
+     * #requireWithinAuthRateLimit}, which applies to all nine {@code /auth/*} routes alike
+     * (the seven exempted from {@link #requireValidBearerToken} <em>and</em> the two
      * bearer-gated change-email ones), since a leaked/stolen bearer token could otherwise
      * still be used to spam email-change requests with no limit at all.
      */
@@ -148,7 +154,7 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Query parameter {@link #handleUploadFile}/{@link #handleListFiles} read a target/filter
      * folder id from, and the JSON field name each entry of {@link #handleListFiles}'s response
-     * array carries that folder id under (merged in via {@link #toJsonArray} - {@link StoredFile}
+     * array carries that folder id under (merged in via  - {@link StoredFile}
      * itself has no such field, since placement lives on {@code StoredFileOwnership} instead).
      */
     private static final String FOLDER_ID_FIELD = "folderId";
@@ -448,6 +454,8 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.post(RESET_PASSWORD_CONFIRM_PATH, this::handleConfirmPasswordReset);
                 config.routes.post(CHANGE_EMAIL_PATH, this::handleRequestEmailChange);
                 config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
+                config.routes.post(REFRESH_PATH, this::handleRefresh);
+                config.routes.post(LOGOUT_PATH, this::handleLogout);
                 config.routes.before(this::requireValidBearerToken);
 
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
@@ -535,15 +543,19 @@ public final class DefaultRestFactory extends RestFactory {
     /**
      * Gates every route behind a valid JWT, except {@link #LOGIN_PATH}/{@link
      * #REGISTER_PATH}/{@link #REGISTER_CONFIRM_PATH}/{@link #RESET_PASSWORD_PATH}/{@link
-     * #RESET_PASSWORD_CONFIRM_PATH} themselves - {@code LOGIN_PATH} is how a client obtains the
-     * JWT this filter checks for in the first place, {@code REGISTER_PATH}/{@code
-     * REGISTER_CONFIRM_PATH} together are how a client obtains an account before it has any JWT
-     * at all, and {@code RESET_PASSWORD_PATH}/{@code RESET_PASSWORD_CONFIRM_PATH} together are
-     * how a client recovers access to an account whose password it no longer has (so, by
-     * definition, no valid JWT either) - all five must stay reachable without one. The token
-     * itself is resolved by {@link #resolveBearerToken} (header, preferred,
-     * or a query parameter fallback). Stores the validated user id as a
-     * request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
+     * #RESET_PASSWORD_CONFIRM_PATH}/{@link #REFRESH_PATH}/{@link #LOGOUT_PATH} themselves - {@code
+     * LOGIN_PATH} is how a client obtains the JWT this filter checks for in the first place,
+     * {@code REGISTER_PATH}/{@code REGISTER_CONFIRM_PATH} together are how a client obtains an
+     * account before it has any JWT at all, {@code RESET_PASSWORD_PATH}/{@code
+     * RESET_PASSWORD_CONFIRM_PATH} together are how a client recovers access to an account whose
+     * password it no longer has (so, by definition, no valid JWT either), and {@code
+     * REFRESH_PATH}/{@code LOGOUT_PATH} both carry their own authority in the request body (a
+     * refresh token) rather than a bearer access token - a refresh call's entire purpose is
+     * obtaining a fresh access token once the old one has already expired, and a logout call must
+     * still work with an already-expired access token, so neither can require one - all seven
+     * must stay reachable without one. The token itself is resolved by {@link
+     * #resolveBearerToken} (header, preferred, or a query parameter fallback). Stores the
+     * validated user id as a request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
      * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
      * {@link #bindUpdate}/{@link #bindDelete} to read.
      *
@@ -551,7 +563,8 @@ public final class DefaultRestFactory extends RestFactory {
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
-                || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())) {
+                || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())
+                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -734,9 +747,9 @@ public final class DefaultRestFactory extends RestFactory {
         final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.authService.login(request.username(), request.password().toCharArray()))
-                .handle((token, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw unauthorizedOrPropagate(failure);
@@ -754,12 +767,19 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * The {@code {"token"}} JSON response body returned by a successful login or completed
-     * registration.
+     * The {@code {"token", "refreshToken"}} JSON response body returned by a successful login,
+     * completed registration, completed password reset, or a completed {@code POST /auth/refresh} -
+     * every one of {@link IAuthService}'s token-issuing methods returns an {@link AuthTokens} pair,
+     * and this record is the one place that shape is serialized onto the wire.
      *
-     * @param token the signed JWT
+     * @param token the signed access JWT
+     * @param refreshToken the opaque, longer-lived refresh token - see {@link AuthTokens#refreshToken()}
      */
-    private record LoginResponse(String token) {
+    private record LoginResponse(String token, String refreshToken) {
+        /** Builds a {@link LoginResponse} straight from an {@link AuthTokens} pair - the one place that mapping happens. */
+        private static LoginResponse of(final AuthTokens tokens) {
+            return new LoginResponse(tokens.accessToken(), tokens.refreshToken());
+        }
     }
 
     /**
@@ -829,9 +849,9 @@ public final class DefaultRestFactory extends RestFactory {
                                 "@DefaultRestFactory.handleConfirmRegistration: failed to complete registration for " + request.username(), e);
                     }
                 })
-                .handle((token, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        ctx.status(201).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
@@ -907,12 +927,76 @@ public final class DefaultRestFactory extends RestFactory {
                                 "@DefaultRestFactory.handleConfirmPasswordReset: failed to complete password reset for " + request.username(), e);
                     }
                 })
-                .handle((token, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        ctx.status(200).contentType("application/json").result(this.gson.toJson(new LoginResponse(token)));
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"refreshToken"}} JSON body shape read by {@code POST /auth/refresh} and {@code
+     * POST /auth/logout}.
+     *
+     * @param refreshToken a refresh token previously returned by {@code POST /auth/login}/{@code
+     *     POST /auth/register/confirm}/{@code POST /auth/reset-password/confirm}/a prior {@code
+     *     POST /auth/refresh}
+     */
+    private record RefreshRequest(String refreshToken) {
+    }
+
+    /**
+     * {@code POST /auth/refresh}: exchanges a still-valid refresh token for a fresh {@link
+     * LoginResponse} pair via {@link AuthService#refresh}, without requiring the caller to log in
+     * again with a password - see that method's own Javadoc for the rotate-on-every-use contract.
+     * Not bearer-gated (see {@link #requireValidBearerToken}'s exemption list) - the whole point
+     * is to obtain a fresh access token once the old one has already expired. Dispatched off the
+     * Jetty worker thread since this runs database I/O. {@code 200 OK} on success.
+     */
+    private void handleRefresh(@NotNull final Context ctx) {
+        final RefreshRequest request = this.gson.fromJson(ctx.body(), RefreshRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.refresh(request.refreshToken());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException("@DefaultRestFactory.handleRefresh: failed to refresh tokens", e);
+                    }
+                })
+                .handle((tokens, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
+                        return null;
+                    }
+                    throw unauthorizedOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * {@code POST /auth/logout}: best-effort, idempotent revocation of the caller's refresh token
+     * via {@link AuthService#revokeRefreshToken} - possession of the token itself is this route's
+     * own proof of authority, the same way it is for {@code POST /auth/refresh}, so this is not
+     * bearer-gated either (see {@link #requireValidBearerToken}'s exemption list) and works even
+     * with an already-expired access token. Always {@code 204 No Content}, regardless of whether
+     * {@code refreshToken} still existed - logging out is never itself an error, the same
+     * "don't leak/don't fail on already-gone state" idiom {@link
+     * AuthService#revokeRefreshToken}'s own Javadoc documents. Dispatched off the Jetty worker
+     * thread since this runs database I/O.
+     */
+    private void handleLogout(@NotNull final Context ctx) {
+        final RefreshRequest request = this.gson.fromJson(ctx.body(), RefreshRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.authService.revokeRefreshToken(request.refreshToken()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped logout failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
                 }));
     }
 
@@ -1740,14 +1824,18 @@ public final class DefaultRestFactory extends RestFactory {
     }
 
     /**
-     * Unwraps an {@link AuthService#login} failure's {@link CompletionException} and
-     * translates {@link InvalidCredentialsException} into {@link UnauthorizedResponse}; any
-     * other cause is rethrown as-is to reach Javalin's default (500) handling.
+     * Unwraps an {@link AuthService#login}/{@link AuthService#refresh} failure's {@link
+     * CompletionException} and translates {@link InvalidCredentialsException}/{@link
+     * InvalidRefreshTokenException} into {@link UnauthorizedResponse}; any other cause is
+     * rethrown as-is to reach Javalin's default (500) handling.
      */
     private static RuntimeException unauthorizedOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
-        if (cause instanceof InvalidCredentialsException) {
-            return new UnauthorizedResponse("invalid credentials");
+        if (cause instanceof InvalidCredentialsException invalidCredentials) {
+            return new UnauthorizedResponse(invalidCredentials.getMessage());
+        }
+        if (cause instanceof InvalidRefreshTokenException invalidRefreshToken) {
+            return new UnauthorizedResponse(invalidRefreshToken.getMessage());
         }
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }

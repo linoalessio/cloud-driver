@@ -56,9 +56,6 @@ class CloudDriverClient(
     val isAuthenticated: Boolean
         get() = this.apiClient.isAuthenticated
 
-    /** Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login. */
-    fun restoreSession(previouslyIssuedToken: String) = this.apiClient.restoreSession(previouslyIssuedToken)
-
     /** Discards the in-memory token only; the caller is responsible for also clearing the persisted copy via [clearPersistedSession]. */
     fun logout() = this.apiClient.logout()
 

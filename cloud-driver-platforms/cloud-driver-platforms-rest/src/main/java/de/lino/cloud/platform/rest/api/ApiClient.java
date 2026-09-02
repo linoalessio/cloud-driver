@@ -16,6 +16,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
+import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
@@ -161,6 +162,12 @@ public final class ApiClient implements AutoCloseable {
      */
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
 
+    /** Path of {@link #refresh}'s route, checked by {@link #canRetryWithRefresh} to avoid ever attempting to auto-refresh the refresh call itself. */
+    private static final String REFRESH_PATH = "/auth/refresh";
+
+    /** Path of {@link #revokeRefreshToken}'s route. */
+    private static final String LOGOUT_PATH = "/auth/logout";
+
     private static final Gson GSON = new Gson();
 
     private final ExecutorService executor;
@@ -168,8 +175,18 @@ public final class ApiClient implements AutoCloseable {
     private final URI authPanelBaseUrl;
     private final URI apiBaseUrl;
 
-    /** The current session's JWT, once {@link #login} has succeeded; {@code null} until then. */
+    /** The current session's access JWT, once {@link #login} has succeeded; {@code null} until then. */
     private final AtomicReference<String> token = new AtomicReference<>();
+
+    /**
+     * The current session's refresh token, once {@link #login} has succeeded; {@code null} until
+     * then. Rotated on every successful {@link #refresh}/{@link #refreshAsync} call - see {@link
+     * AuthResponse}'s own Javadoc. Used automatically by {@link #send(HttpRequest, Type)}/{@link
+     * #sendAsync(HttpRequest, Type)} to transparently retry an authenticated call once after a
+     * {@code 401} (see {@link #canRetryWithRefresh}), so a caller doesn't need to react to an
+     * expired access token itself as long as the refresh token is still valid.
+     */
+    private final AtomicReference<String> refreshToken = new AtomicReference<>();
 
     /**
      * @param authPanelBaseUrl base URL of the auth-panel server, e.g. {@code https://auth.example.com}
@@ -203,25 +220,52 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-     * @return the raw JWT currently held in memory (set by {@link #login}/{@link #register}'s
-     * confirm step/{@link #restoreSession}), or empty if not authenticated. Added for {@link
-     * SessionManager}-based session-restore callers that need the token itself after a successful
-     * {@link SessionManager#tryRestoreSession()}/{@code tryRestoreSessionAsync()} (e.g. to decode
-     * its {@code sub} claim client-side) rather than just the boolean "did it work" answer that
-     * method returns.
+     * @return the raw access JWT currently held in memory (set by {@link #login}/{@link
+     * #register}'s confirm step/{@link #restoreSession(String, String)}/{@link #refresh}), or
+     * empty if not authenticated. Added for {@link SessionManager}-based session-restore callers
+     * that need the token itself after a successful {@link SessionManager#tryRestoreSession()}/
+     * {@code tryRestoreSessionAsync()} (e.g. to decode its {@code sub} claim client-side) rather
+     * than just the boolean "did it work" answer that method returns.
      */
     public Optional<String> currentToken() {
         return Optional.ofNullable(this.token.get());
     }
 
-    /** Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login. */
-    public void restoreSession(final String previouslyIssuedToken) {
-        this.token.set(Objects.requireNonNull(previouslyIssuedToken, "previouslyIssuedToken cannot be null"));
+    /**
+     * @return the raw refresh token currently held in memory, or empty if none has ever been
+     * issued to this client. Added so a caller persisting the session (e.g. {@link
+     * SessionManager}) can save both tokens together - see {@link #restoreSession(String, String)}
+     * for the counterpart that restores both.
+     */
+    public Optional<String> currentRefreshToken() {
+        return Optional.ofNullable(this.refreshToken.get());
     }
 
-    /** Discards the in-memory token; the caller is responsible for also clearing any persisted copy. */
+    /**
+     * Restores a previously persisted access/refresh token pair (e.g. loaded from the OS
+     * keychain) without a fresh login - the counterpart to {@link #currentToken()}/{@link
+     * #currentRefreshToken()}.
+     *
+     * @param previouslyIssuedAccessToken the access JWT to restore
+     * @param previouslyIssuedRefreshToken the refresh token to restore alongside it - required
+     *     (not {@code null}) so every restored session can transparently auto-refresh the same
+     *     way a freshly logged-in one does; a caller with only a bare access token on hand (no
+     *     refresh token ever persisted, e.g. from a session predating this feature) has no
+     *     session worth restoring and should fall back to a fresh login instead
+     */
+    public void restoreSession(final String previouslyIssuedAccessToken, final String previouslyIssuedRefreshToken) {
+        this.token.set(Objects.requireNonNull(previouslyIssuedAccessToken, "previouslyIssuedAccessToken cannot be null"));
+        this.refreshToken.set(Objects.requireNonNull(previouslyIssuedRefreshToken, "previouslyIssuedRefreshToken cannot be null"));
+    }
+
+    /**
+     * Discards the in-memory access and refresh tokens; the caller is responsible for also
+     * clearing any persisted copy (see {@link #revokeRefreshToken()} to additionally invalidate
+     * the refresh token server-side first).
+     */
     public void logout() {
         this.token.set(null);
+        this.refreshToken.set(null);
     }
 
     // --- auth ---------------------------------------------------------
@@ -236,7 +280,7 @@ public final class ApiClient implements AutoCloseable {
      */
     public String login(final String emailAddress, final String password) throws ApiException {
         final AuthResponse response = this.send(this.loginRequest(emailAddress, password), AuthResponse.class);
-        this.token.set(response.token());
+        this.applyTokens(response);
         return response.token();
     }
 
@@ -244,7 +288,7 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<String> loginAsync(final String emailAddress, final String password) {
         return this.sendAsync(this.loginRequest(emailAddress, password), AuthResponse.class)
                 .thenApply(response -> {
-                    this.token.set(response.token());
+                    this.applyTokens(response);
                     return response.token();
                 });
     }
@@ -290,7 +334,7 @@ public final class ApiClient implements AutoCloseable {
      */
     public String confirmRegistration(final String emailAddress, final String code) throws ApiException {
         final AuthResponse response = this.send(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class);
-        this.token.set(response.token());
+        this.applyTokens(response);
         return response.token();
     }
 
@@ -298,7 +342,7 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<String> confirmRegistrationAsync(final String emailAddress, final String code) {
         return this.sendAsync(this.confirmRegistrationRequest(emailAddress, code), AuthResponse.class)
                 .thenApply(response -> {
-                    this.token.set(response.token());
+                    this.applyTokens(response);
                     return response.token();
                 });
     }
@@ -345,7 +389,7 @@ public final class ApiClient implements AutoCloseable {
      */
     public String confirmPasswordReset(final String emailAddress, final String code, final String newPassword) throws ApiException {
         final AuthResponse response = this.send(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class);
-        this.token.set(response.token());
+        this.applyTokens(response);
         return response.token();
     }
 
@@ -353,7 +397,7 @@ public final class ApiClient implements AutoCloseable {
     public CompletableFuture<String> confirmPasswordResetAsync(final String emailAddress, final String code, final String newPassword) {
         return this.sendAsync(this.confirmPasswordResetRequest(emailAddress, code, newPassword), AuthResponse.class)
                 .thenApply(response -> {
-                    this.token.set(response.token());
+                    this.applyTokens(response);
                     return response.token();
                 });
     }
@@ -414,6 +458,93 @@ public final class ApiClient implements AutoCloseable {
 
     private HttpRequest confirmEmailChangeRequest(final String code) {
         return this.postRequest(this.apiBaseUrl.resolve("/auth/change-email/confirm"), new ConfirmChangeEmailRequest(code), true);
+    }
+
+    /**
+     * {@code POST /auth/refresh} on the auth-panel host - exchanges the currently held refresh
+     * token for a fresh access/refresh pair, without requiring a fresh password login. Called
+     * automatically by every other authenticated method here on a {@code 401} (see {@link
+     * #canRetryWithRefresh}) - a caller does not normally need to invoke this directly, though
+     * it's exposed for a caller (e.g. {@link SessionManager}) that wants to proactively refresh
+     * ahead of an access token's known expiry.
+     *
+     * <p>Rotates the held refresh token: the value returned here always differs from the one this
+     * call was made with, and the old one is invalidated as part of the same server-side call - see
+     * {@code IAuthService#refresh}'s own Javadoc server-side.
+     *
+     * @return the freshly issued access token, already stored (alongside the rotated refresh
+     *         token) for subsequent calls
+     * @throws ApiException {@code 401} if the held refresh token is missing, expired, or already
+     *                       used/revoked, or any other transport/HTTP failure
+     * @throws IllegalStateException if no refresh token is currently held (never logged in, or
+     *                                only {@link #restoreSession(String)} - not the two-argument
+     *                                overload - was used to restore a session)
+     */
+    public String refresh() throws ApiException {
+        final AuthResponse response = this.send(this.refreshRequest(this.requireCurrentRefreshToken()), AuthResponse.class);
+        this.applyTokens(response);
+        return response.token();
+    }
+
+    /** Async form of {@link #refresh} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> refreshAsync() {
+        return this.sendAsync(this.refreshRequest(this.requireCurrentRefreshToken()), AuthResponse.class)
+                .thenApply(response -> {
+                    this.applyTokens(response);
+                    return response.token();
+                });
+    }
+
+    private HttpRequest refreshRequest(final String currentRefreshToken) {
+        return this.postRequest(this.authPanelBaseUrl.resolve(REFRESH_PATH), new RefreshRequest(currentRefreshToken), false);
+    }
+
+    private String requireCurrentRefreshToken() {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            throw new IllegalStateException("@ApiClient: no refresh token held - call login()/restoreSession(access, refresh) first");
+        }
+        return currentRefreshToken;
+    }
+
+    private void applyTokens(final AuthResponse response) {
+        this.token.set(response.token());
+        this.refreshToken.set(response.refreshToken());
+    }
+
+    /**
+     * {@code POST /auth/logout} on the auth-panel host - best-effort, idempotent server-side
+     * revocation of the currently held refresh token (see {@code IAuthService#revokeRefreshToken}
+     * server-side), so a stolen refresh token can't be used after this client has explicitly
+     * logged out. A no-op if no refresh token is currently held (nothing to revoke) - unlike
+     * {@link #refresh}, this deliberately does <b>not</b> throw {@link IllegalStateException} in
+     * that case, since a caller logging out an already-logged-out (or restore-failed) session is a
+     * normal occurrence, not a bug. Does <b>not</b> clear the in-memory session itself - call
+     * {@link #logout()} (or let {@link SessionManager#logout}/{@code logoutAsync} do both) for that.
+     *
+     * @throws ApiException any transport/HTTP failure - a caller that wants a best-effort logout
+     *                       (e.g. {@link SessionManager}) should catch and ignore this rather than
+     *                       let a network error block clearing the local session
+     */
+    public void revokeRefreshToken() throws ApiException {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            return;
+        }
+        this.send(this.logoutRequest(currentRefreshToken), Void.class);
+    }
+
+    /** Async form of {@link #revokeRefreshToken} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokeRefreshTokenAsync() {
+        final String currentRefreshToken = this.refreshToken.get();
+        if (currentRefreshToken == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return this.sendAsync(this.logoutRequest(currentRefreshToken), Void.class);
+    }
+
+    private HttpRequest logoutRequest(final String currentRefreshToken) {
+        return this.postRequest(this.authPanelBaseUrl.resolve(LOGOUT_PATH), new RefreshRequest(currentRefreshToken), false);
     }
 
     // --- files: upload --------------------------------------------------
@@ -1281,16 +1412,7 @@ public final class ApiClient implements AutoCloseable {
 
     /** Blocking send, via {@link HttpClient#send} directly - see the class Javadoc for why this isn't {@code sendAsync(...).join()}. */
     private <T> T send(final HttpRequest request, final Class<T> responseType) throws ApiException {
-        final HttpResponse<InputStream> response;
-        try {
-            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
-        } catch (final IOException e) {
-            throw new ApiException(0, "network error calling " + request.uri(), e);
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ApiException(0, "interrupted calling " + request.uri(), e);
-        }
-        return parseResponse(response, responseType);
+        return this.send(request, (Type) responseType);
     }
 
     /** True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread. */
@@ -1298,33 +1420,128 @@ public final class ApiClient implements AutoCloseable {
         return this.sendAsync(request, (Type) responseType);
     }
 
-    /** {@link Type}-based counterpart to {@link #send(HttpRequest, Class)}, for a generic response shape - see {@link #parseResponse(HttpResponse, Type)}. */
+    /**
+     * {@link Type}-based counterpart to {@link #send(HttpRequest, Class)}, for a generic response
+     * shape - see {@link #parseResponse(HttpResponse, Type)}. Also the single place a {@code 401}
+     * on an authenticated request is transparently retried once, after a token refresh - see
+     * {@link #canRetryWithRefresh}. The retry failing (refresh token also invalid, or the retried
+     * request itself failing) surfaces as the <em>original</em> {@code 401}, chaining the retry
+     * failure as its cause - a caller's existing {@code isUnauthorized()}-based handling (e.g.
+     * {@link SessionManager#handleFailure}) keeps working unchanged either way.
+     */
     private <T> T send(final HttpRequest request, final Type responseType) throws ApiException {
-        final HttpResponse<InputStream> response;
+        final HttpResponse<InputStream> response = this.sendRaw(request);
+        if (this.canRetryWithRefresh(request, response)) {
+            final String fallbackMessage = extractErrorMessage(response.body());
+            try {
+                this.refresh();
+                return parseResponse(this.sendRaw(this.rebuildWithCurrentToken(request)), responseType);
+            } catch (final ApiException refreshOrRetryFailure) {
+                throw new ApiException(401, fallbackMessage, refreshOrRetryFailure);
+            }
+        }
+        return parseResponse(response, responseType);
+    }
+
+    /** {@link HttpClient#send}, translating its checked failure modes into {@link ApiException} - shared by every {@code send} overload. */
+    private HttpResponse<InputStream> sendRaw(final HttpRequest request) throws ApiException {
         try {
-            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
+            return this.httpClient.send(request, BodyHandlers.ofInputStream());
         } catch (final IOException e) {
             throw new ApiException(0, "network error calling " + request.uri(), e);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ApiException(0, "interrupted calling " + request.uri(), e);
         }
-        return parseResponse(response, responseType);
     }
 
-    /** {@link Type}-based counterpart to {@link #sendAsync(HttpRequest, Class)}, for a generic response shape - see {@link #parseResponse(HttpResponse, Type)}. */
+    /**
+     * {@link Type}-based counterpart to {@link #sendAsync(HttpRequest, Class)}, for a generic
+     * response shape - see {@link #parseResponse(HttpResponse, Type)}. Mirrors {@link
+     * #send(HttpRequest, Type)}'s own transparent-retry-once-on-401 behavior - see that method's
+     * Javadoc and {@link #canRetryWithRefresh} for the full contract.
+     */
     private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Type responseType) {
         return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
-                .thenApply(response -> {
+                .thenCompose(response -> {
+                    if (this.canRetryWithRefresh(request, response)) {
+                        final String fallbackMessage = extractErrorMessage(response.body());
+                        return this.refreshAsync()
+                                .thenCompose(ignored -> this.httpClient.sendAsync(this.rebuildWithCurrentToken(request), BodyHandlers.ofInputStream()))
+                                .handle((retried, refreshOrRetryFailure) -> {
+                                    if (refreshOrRetryFailure != null) {
+                                        final Throwable cause = refreshOrRetryFailure instanceof CompletionException completionException
+                                                ? completionException.getCause() : refreshOrRetryFailure;
+                                        throw new CompletionException(new ApiException(401, fallbackMessage, cause));
+                                    }
+                                    try {
+                                        return ApiClient.<T>parseResponse(retried, responseType);
+                                    } catch (final ApiException e) {
+                                        throw new CompletionException(e);
+                                    }
+                                });
+                    }
                     try {
-                        return ApiClient.<T>parseResponse(response, responseType);
+                        return CompletableFuture.completedFuture(ApiClient.<T>parseResponse(response, responseType));
                     } catch (final ApiException e) {
                         // Matches this codebase's own *Async convention (see DataFactory/EventFactory/etc.
                         // in cloud-driver-plugin): a checked failure from the sync primitive is surfaced
                         // from the async form wrapped in a CompletionException.
-                        throw new CompletionException(e);
+                        return CompletableFuture.<T>failedFuture(new CompletionException(e));
                     }
                 });
+    }
+
+    /**
+     * Whether {@code request}/{@code response} qualifies for the transparent refresh-and-retry
+     * behavior {@link #send(HttpRequest, Type)}/{@link #sendAsync(HttpRequest, Type)} implement:
+     * the response is a {@code 401}, this client currently holds a refresh token to retry with,
+     * the failed request actually carried an {@code Authorization} header (an unauthenticated
+     * call - {@link #login}, {@link #register}, {@link #refresh} itself, etc. - was never going
+     * to succeed after a refresh, and refreshing in response to one would risk looping), and the
+     * request wasn't {@link #refresh}'s own call (the same guard, made explicit rather than relied
+     * on implicitly, since a bug elsewhere accidentally attaching a bearer header to the refresh
+     * request would otherwise recurse).
+     */
+    private boolean canRetryWithRefresh(final HttpRequest request, final HttpResponse<InputStream> response) {
+        return response.statusCode() == 401
+                && this.refreshToken.get() != null
+                && request.headers().firstValue("Authorization").isPresent()
+                && !REFRESH_PATH.equals(request.uri().getPath());
+    }
+
+    /**
+     * Rebuilds {@code original} with a fresh {@code Authorization} header (the current, just-
+     * refreshed {@link #token}), preserving every other header, the timeout, the method, and the
+     * body publisher unchanged - {@link HttpRequest} has no public "copy with one header changed"
+     * builder, so this reconstructs one from {@code original}'s own getters instead.
+     *
+     * <p>Reusing {@code original}'s {@link HttpRequest#bodyPublisher()} is safe for the small
+     * JSON/no-body requests every authenticated call in this class makes today (every {@code
+     * Flow.Publisher} the JDK hands out for those is re-subscribable) - a large file transfer
+     * ({@link #uploadFile(Path)}'s {@link BodyPublishers#ofFile}-backed publisher, or the
+     * progress-tracking wrappers around it/{@link #downloadFileToPath}) could in principle also be
+     * retried this way, but a 12h-access-token expiry landing mid-transfer is vanishingly rare in
+     * practice, and a retried transfer's progress callback would restart from zero rather than
+     * continue - an acceptable, deliberately undocumented-to-callers cosmetic quirk, not a
+     * correctness concern, so no special-casing was added to exclude those calls from this path.
+     */
+    private HttpRequest rebuildWithCurrentToken(final HttpRequest original) {
+        final HttpRequest.Builder builder = HttpRequest.newBuilder(original.uri());
+        original.timeout().ifPresent(builder::timeout);
+        original.headers().map().forEach((name, values) -> {
+            if (!name.equalsIgnoreCase("Authorization")) {
+                for (final String value : values) {
+                    builder.header(name, value);
+                }
+            }
+        });
+        final String freshToken = this.token.get();
+        if (freshToken != null) {
+            builder.header("Authorization", "Bearer " + freshToken);
+        }
+        builder.method(original.method(), original.bodyPublisher().orElse(BodyPublishers.noBody()));
+        return builder.build();
     }
 
     private static <T> T parseResponse(final HttpResponse<InputStream> response, final Class<T> responseType) throws ApiException {

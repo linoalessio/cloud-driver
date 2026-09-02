@@ -5,6 +5,7 @@ import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
+import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -41,8 +42,17 @@ import java.util.Optional;
  * create the account - it validates the address, stashes the hashed password and a freshly
  * generated, time-limited verification code, and e-mails that code to the caller. Only {@link
  * #confirmRegistration}, given that same code back within its validity window, actually creates
- * the account and returns a JWT - the same shape {@link #login} does. This guards against
+ * the account and returns a token pair - the same shape {@link #login} does. This guards against
  * accounts being created under an e-mail address the registrant doesn't actually control.
+ *
+ * <p>{@link #login}/{@link #confirmRegistration}/{@link #confirmPasswordReset} all return an
+ * {@link AuthTokens} pair rather than a bare access-token {@link String}: alongside the
+ * short-lived (12h) access JWT, each also issues a longer-lived, opaque, single-use refresh
+ * token (see {@code RefreshToken} in {@code cloud-driver-auth}) a client can later exchange, via
+ * {@link #refresh}, for a fresh pair without asking the user to log in again with a password -
+ * useful for a long-running client (e.g. a desktop app) that would otherwise be forced back to
+ * the login screen every 12 hours. A refresh token is rotated on every use - see {@link
+ * #refresh}'s own Javadoc.
  */
 public interface IAuthService {
 
@@ -75,26 +85,27 @@ public interface IAuthService {
      *
      * @param emailAddress the e-mail address {@link #register} was called with
      * @param code the verification code e-mailed to {@code emailAddress}
-     * @return a freshly signed JWT asserting the newly created account's id
+     * @return a freshly issued {@link AuthTokens} pair asserting the newly created account's id
      * @throws InvalidVerificationCodeException if there is no pending registration under {@code
      *     emailAddress}, it has expired, or {@code code} doesn't match
      * @throws DatabaseClientException if creating the account fails
      * @throws KeyWrapException if the new account's data-encryption key cannot be wrapped by the KMS/HSM
      */
     @NonNull
-    String confirmRegistration(@NonNull final String emailAddress, @NonNull final String code)
+    AuthTokens confirmRegistration(@NonNull final String emailAddress, @NonNull final String code)
             throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Verifies {@code username}/{@code rawPassword}, returning a signed JWT on success.
+     * Verifies {@code username}/{@code rawPassword}, returning a freshly issued {@link AuthTokens}
+     * pair on success.
      *
      * @param username the account's identifying username (an email address, in the current implementation) to verify
      * @param rawPassword the plaintext password to verify against the stored hash
-     * @return a freshly signed JWT asserting the matched account's id
+     * @return a freshly issued {@link AuthTokens} pair asserting the matched account's id
      * @throws InvalidCredentialsException if the username doesn't exist or the password doesn't match
      */
     @NonNull
-    String login(@NonNull final String username, final char @NonNull [] rawPassword);
+    AuthTokens login(@NonNull final String username, final char @NonNull [] rawPassword);
 
     /**
      * Validates a JWT from the {@code Authorization} header, returning the embedded user id.
@@ -166,7 +177,7 @@ public interface IAuthService {
      * @param code the verification code e-mailed to {@code emailAddress}
      * @param newPassword the caller's chosen new password, hashed before persistence and never itself retained -
      *     must meet the same format requirement documented on {@link #register}'s own {@code rawPassword} parameter
-     * @return a freshly signed JWT asserting the account's id
+     * @return a freshly issued {@link AuthTokens} pair asserting the account's id
      * @throws InvalidPasswordFormatException if {@code newPassword} doesn't meet that format requirement
      * @throws InvalidVerificationCodeException if there is no pending reset under {@code
      *     emailAddress}, it has expired, or {@code code} doesn't match - also thrown (with the
@@ -176,8 +187,46 @@ public interface IAuthService {
      * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
      */
     @NonNull
-    String confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
+    AuthTokens confirmPasswordReset(@NonNull final String emailAddress, @NonNull final String code, final char @NonNull [] newPassword)
             throws DatabaseClientException, KeyWrapException;
+
+    /**
+     * Exchanges a still-valid, not-yet-used refresh token for a fresh {@link AuthTokens} pair,
+     * without requiring the caller to log in again with a password - the mechanism a long-running
+     * client uses to stay signed in past its access token's 12h lifetime.
+     *
+     * <p><b>Rotated on every use:</b> {@code refreshToken} is invalidated as part of this call
+     * (never usable again, successful or not) and the returned {@link AuthTokens#refreshToken()}
+     * is a freshly generated value the caller must persist in its place - limiting how long a
+     * stolen-but-unused refresh token remains useful, and (as a side effect) detecting reuse: if
+     * two callers ever present the same refresh token, at most one call can win the race to
+     * invalidate it first, and the other is rejected.
+     *
+     * @param refreshToken a refresh token previously returned by {@link #login}/{@link
+     *     #confirmRegistration}/{@link #confirmPasswordReset}/a prior call to this method
+     * @return a freshly issued {@link AuthTokens} pair asserting the same account id the supplied
+     *     refresh token was issued for
+     * @throws InvalidRefreshTokenException if {@code refreshToken} doesn't exist, has expired, has
+     *     already been used/revoked, or its account no longer exists
+     * @throws DatabaseClientException if persisting the rotation fails
+     * @throws KeyWrapException if the new refresh token's data-encryption key cannot be wrapped by the KMS/HSM
+     */
+    @NonNull
+    AuthTokens refresh(@NonNull final String refreshToken) throws DatabaseClientException, KeyWrapException;
+
+    /**
+     * Best-effort, idempotent invalidation of a single refresh token - the counterpart to {@link
+     * #refresh}'s rotation, called on logout so a signed-out client's refresh token can't later be
+     * presented to mint a fresh access token without the user having actually logged in again. A
+     * no-op (not an error) if {@code refreshToken} doesn't exist or is already revoked/rotated
+     * away - logging out with an already-consumed token (e.g. right after a successful {@link
+     * #refresh} rotated it) is a completely normal case, not a failure. Exposed over HTTP as
+     * {@code POST /auth/logout} by {@code cloud-driver-plugin}'s {@code DefaultRestFactory}
+     * whenever it's constructed with an {@code AuthService}.
+     *
+     * @param refreshToken the token to revoke
+     */
+    void revokeRefreshToken(@NonNull final String refreshToken);
 
     /**
      * Starts an e-mail address change for the already-authenticated account {@code authUserId}:
