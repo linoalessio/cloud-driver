@@ -3,6 +3,7 @@ package de.lino.cloud.plugin.factory.container;
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
@@ -26,6 +27,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile LiveUpdatePublisher liveUpdatePublisher;
     /** The audit-log service, {@code null} until {@link #setAuditLogService} publishes one. */
     private volatile AuditLogService auditLogService;
+    /** The metrics sink, {@code null} until {@link #setMetricsRecorder} publishes one. */
+    private volatile MetricsRecorder metricsRecorder;
 
     /** {@inheritDoc} */
     @Override
@@ -73,6 +76,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setAuditLogService(@NonNull final AuditLogService auditLogService) {
         this.auditLogService = auditLogService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public MetricsRecorder getMetricsRecorder() {
+        return this.metricsRecorder;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setMetricsRecorder(@NonNull final MetricsRecorder metricsRecorder) {
+        this.metricsRecorder = metricsRecorder;
     }
 
 }

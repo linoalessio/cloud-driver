@@ -2,6 +2,7 @@ package de.lino.cloud.api.factory.service;
 
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
@@ -97,5 +98,24 @@ public interface IServiceContainer {
      * @param auditLogService the instance backing {@code AuthService}/{@code CloudUserService}'s audit trail
      */
     void setAuditLogService(@NonNull AuditLogService auditLogService);
+
+    /**
+     * Returns the metrics sink (item 13, metrics/observability exporter - see {@code
+     * architecture/SERVICES.md}), or {@code null} if {@code cloud-driver-extensions-metrics}'s
+     * {@code CloudMetricsExtension} hasn't published one yet (not started, or this deployment
+     * doesn't run that extension at all). A caller reached before/without that extension (e.g.
+     * {@code DefaultFileFactory#upload}, {@code CloudUserService#uploadFile}) must null-check
+     * this the same way it already does for {@link #getCloudUserService()}.
+     *
+     * @return the {@link MetricsRecorder}, or {@code null}
+     */
+    MetricsRecorder getMetricsRecorder();
+
+    /**
+     * Publishes the real {@link MetricsRecorder}, once built.
+     *
+     * @param metricsRecorder the instance backing this deployment's Prometheus-scrapeable {@code /metrics} endpoint
+     */
+    void setMetricsRecorder(@NonNull MetricsRecorder metricsRecorder);
 
 }

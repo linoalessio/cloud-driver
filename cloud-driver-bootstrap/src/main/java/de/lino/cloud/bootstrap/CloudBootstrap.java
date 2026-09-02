@@ -25,11 +25,9 @@ import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
-import de.lino.cloud.plugin.security.keys.develop.DatabaseKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
-import de.lino.database.database.DatabaseSection;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.file.DefaultFileProvider;
@@ -130,7 +128,6 @@ public final class CloudBootstrap {
         final DatabaseProvider databaseProvider = Asserts.requireNonNull(
                 DatabaseRepository.getInstance(), "@CloudBootstrap.main: Database repository must not be null"
         ).registerDatabaseProviderAsync(0, DatabaseType.POSTGRES_SQL, credentials).join();
-        final DatabaseSection databaseSection = databaseProvider.createSectionAsync("kek").join();
 
         final String encryptionKeyAlias = CLOUD_DRIVER.getConfiguration().getString("aws-kms-key-id");
         final Region region = Region.of(CLOUD_DRIVER.getConfiguration().getString("aws-kms-region"));

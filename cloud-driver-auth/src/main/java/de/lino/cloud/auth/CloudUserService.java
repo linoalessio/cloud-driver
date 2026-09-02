@@ -1,5 +1,6 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.audit.AuditAction;
 import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.audit.AuditLogService;
@@ -12,6 +13,7 @@ import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
@@ -27,6 +29,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -370,6 +373,7 @@ public final class CloudUserService implements ICloudUserService {
         // Checked before requireOwnedFolder/constructing the StoredFile (which DEFLATE-compresses
         // and base64-encodes content up front) - no reason to pay for either on a rejected upload.
         if (cloudUser.isUploadLimitReached(content.length)) {
+            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
             throw new UploadQuotaExceededException(
                     authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
         }
@@ -1210,6 +1214,26 @@ public final class CloudUserService implements ICloudUserService {
             throw new IllegalArgumentException("@CloudUserService.requireOwnedFile: " + authUserId + " does not own " + storedFileId);
         }
         return ownership.get();
+    }
+
+    /**
+     * Forwards one metric event to {@link CloudDriver#getInstance()}'s {@link MetricsRecorder}, if
+     * {@code cloud-driver-extensions-metrics} has published one - a no-op otherwise. Never throws:
+     * a missing/misbehaving metrics sink must never affect a real upload, matching {@link
+     * MetricsRecorder}'s own "must never throw" contract, enforced here defensively too. Mirrors
+     * {@code DefaultFileFactory}'s own private helper of the same name/shape in {@code
+     * cloud-driver-plugin} - not shared code, since neither module may depend on the other.
+     *
+     * @param action the {@link MetricsRecorder} method to invoke, e.g. {@code
+     *     MetricsRecorder::recordUploadQuotaRejected}
+     */
+    private static void recordMetric(final Consumer<MetricsRecorder> action) {
+        try {
+            final MetricsRecorder recorder = CloudDriver.getInstance().getServiceContainer().getMetricsRecorder();
+            if (recorder != null) action.accept(recorder);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        }
     }
 
     /** O(1) point lookup, failing if {@code folderId} doesn't exist or belongs to someone other than {@code authUserId}. */

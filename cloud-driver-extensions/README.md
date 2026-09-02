@@ -10,8 +10,9 @@ Parent aggregator (`packaging=pom`, no Java source of its own) for `cloud-driver
 | [`cloud-driver-extensions-terminal`](cloud-driver-extensions-terminal/README.md) | `cloud-driver-terminal` | real source | interactive `jline` console + built-in commands |
 | [`cloud-driver-extensions-backup`](cloud-driver-extensions-backup/README.md) | `cloud-driver-backup` | real source | keyset-paginated, streaming Postgres backup job |
 | [`cloud-driver-extensions-rest`](cloud-driver-extensions-rest/README.md) | `cloud-driver-rest-server` | real source | JWT-authenticated REST API over `RestFactory` |
+| [`cloud-driver-extensions-metrics`](cloud-driver-extensions-metrics/README.md) | `cloud-driver-metrics` | real source | Prometheus-scrapeable `/metrics` endpoint |
 
-All four are declared as `<module>`s in this aggregator's `pom.xml` and depend, directly or transitively, on `cloud-driver-plugin` and/or `cloud-driver-api`.
+All five are declared as `<module>`s in this aggregator's `pom.xml` and depend, directly or transitively, on `cloud-driver-plugin` and/or `cloud-driver-api`.
 
 ### `cloud-driver-extensions-web` - not a module
 
