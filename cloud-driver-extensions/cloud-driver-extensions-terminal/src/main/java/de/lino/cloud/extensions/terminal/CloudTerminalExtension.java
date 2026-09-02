@@ -35,7 +35,7 @@ public class CloudTerminalExtension extends Extension {
                 new ExitCommand(), new HelpCommand(), new ClearCommand()
                 , new ExtensionCommand(), new StatisticsCommand(), new LeaveCommand()
                 , new DispatchCommand(), new CloudUserCommand(), new HardResetCommand()
-                , new AdminCommand()
+                , new AdminCommand(), new RecomputeStorageCommand()
         );
 
     }
