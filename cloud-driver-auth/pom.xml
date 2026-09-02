@@ -89,6 +89,16 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- AuthService#beginTwoFactorSetup/#confirmTwoFactorSetup/#completeTwoFactorLogin: a
+             small, well-established RFC 6238 (TOTP) implementation - secret generation, otpauth://
+             URI building, and time-window-tolerant code verification. Deliberately not hand-rolled
+             (see architecture/SERVICES.md item 12's own instruction not to). -->
+        <dependency>
+            <groupId>dev.samstevens.totp</groupId>
+            <artifactId>totp</artifactId>
+            <version>1.7.1</version>
+        </dependency>
+
     </dependencies>
 
 </project>

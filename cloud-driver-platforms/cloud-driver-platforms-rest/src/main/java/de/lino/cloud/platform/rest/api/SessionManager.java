@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.rest.api;
 
 import de.lino.cloud.platform.rest.api.ApiClient.ApiException;
+import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.session.TokenStore;
 import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 
@@ -141,15 +142,40 @@ public final class SessionManager {
         }, this.apiClient.executor());
     }
 
-    /** {@code POST /auth/login}, then persists the resulting access/refresh token pair. */
-    public void login(final String emailAddress, final String password) throws ApiException, TokenStoreException {
-        this.apiClient.login(emailAddress, password);
-        this.tokenStore.save(this.encodeCurrentSessionOrThrow());
+    /**
+     * {@code POST /auth/login} - persists the resulting access/refresh token pair only if the
+     * matched account has two-factor authentication disabled (see {@link
+     * LoginOutcome#twoFactorRequired()}); otherwise there is no session yet to persist - the
+     * caller must follow up with {@link #completeTwoFactorLogin} once it has a TOTP code.
+     */
+    public LoginOutcome login(final String emailAddress, final String password) throws ApiException, TokenStoreException {
+        final LoginOutcome outcome = this.apiClient.login(emailAddress, password);
+        if (!outcome.twoFactorRequired()) {
+            this.tokenStore.save(this.encodeCurrentSessionOrThrow());
+        }
+        return outcome;
     }
 
     /** Async form of {@link #login} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<Void> loginAsync(final String emailAddress, final String password) {
+    public CompletableFuture<LoginOutcome> loginAsync(final String emailAddress, final String password) {
         return this.apiClient.loginAsync(emailAddress, password)
+                .thenApplyAsync(outcome -> {
+                    if (!outcome.twoFactorRequired()) {
+                        this.persistCurrentSessionOrThrow(outcome);
+                    }
+                    return outcome;
+                }, this.apiClient.executor());
+    }
+
+    /** {@code POST /auth/2fa/login} - completes a login left pending by {@link #login}, then persists the resulting access/refresh token pair. */
+    public void completeTwoFactorLogin(final String pendingToken, final String code) throws ApiException, TokenStoreException {
+        this.apiClient.completeTwoFactorLogin(pendingToken, code);
+        this.tokenStore.save(this.encodeCurrentSessionOrThrow());
+    }
+
+    /** Async form of {@link #completeTwoFactorLogin} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> completeTwoFactorLoginAsync(final String pendingToken, final String code) {
+        return this.apiClient.completeTwoFactorLoginAsync(pendingToken, code)
                 .thenApplyAsync(this::persistCurrentSessionOrThrow, this.apiClient.executor());
     }
 

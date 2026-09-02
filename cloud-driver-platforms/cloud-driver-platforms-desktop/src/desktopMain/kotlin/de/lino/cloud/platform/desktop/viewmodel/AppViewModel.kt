@@ -18,6 +18,7 @@ import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -338,7 +339,20 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     // --- auth --------------------------------------------------------
 
     fun login(email: String, password: String) = run {
-        val jwt = this.client.login(email, password)
+        val outcome = this.client.login(email, password)
+        if (outcome.twoFactorRequired()) {
+            // Password verified, but the account has two-factor authentication enabled (item 12,
+            // see architecture/SERVICES.md) - no session yet, onAuthenticated is not called here.
+            this.screen = Screen.TwoFactorLogin(outcome.pendingToken(), email)
+        } else {
+            this.onAuthenticated(email, outcome.token())
+            this.screen = Screen.Browser
+        }
+    }
+
+    /** Completes a login left pending by [login] switching to [Screen.TwoFactorLogin] - submits [code] and, on success, signs in exactly like a non-2FA [login] would. */
+    fun completeTwoFactorLogin(pendingToken: String, email: String, code: String) = run {
+        val jwt = this.client.completeTwoFactorLogin(pendingToken, code)
         this.onAuthenticated(email, jwt)
         this.screen = Screen.Browser
     }
@@ -771,6 +785,39 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.confirmEmailChange(code)
         this.currentUserEmail = this.pendingEmailChangeAddress
         this.pendingEmailChangeAddress = null
+    }
+
+    // --- account: two-factor authentication (item 12, see architecture/SERVICES.md) --------
+
+    /**
+     * Set once [beginTwoFactorSetup] starts a setup flow - drives the Dashboard's settings-menu
+     * "Enable Two-Factor Authentication" dialog from step one (show the secret/QR code) to step
+     * two (enter a code from the authenticator app to confirm). `null` outside of that flow;
+     * [confirmTwoFactorSetup] resolves it back to `null` on success, [cancelTwoFactorSetup] does
+     * the same if the user backs out.
+     */
+    var pendingTwoFactorSetup: TwoFactorSetupResponse? by mutableStateOf(null)
+        private set
+
+    /** Step one of enabling two-factor authentication - generates a fresh secret, not yet live on the account. */
+    fun beginTwoFactorSetup() = run {
+        this.pendingTwoFactorSetup = this.client.beginTwoFactorSetup()
+    }
+
+    /** Abandons an in-progress [beginTwoFactorSetup] flow without changing anything server-side - the pending secret simply expires unused. */
+    fun cancelTwoFactorSetup() {
+        this.pendingTwoFactorSetup = null
+    }
+
+    /** Step two - submits [code], which (on success) actually enables two-factor authentication on the account server-side. From this point on, [login] returns [Screen.TwoFactorLogin] instead of signing straight in. */
+    fun confirmTwoFactorSetup(code: String) = run {
+        this.client.confirmTwoFactorSetup(code)
+        this.pendingTwoFactorSetup = null
+    }
+
+    /** Disables two-factor authentication for the signed-in account - the server re-verifies [password] before disabling, since a stolen-but-still-valid session token alone should not be enough to turn off the second factor. */
+    fun disableTwoFactor(password: String) = run {
+        this.client.disableTwoFactor(password)
     }
 
 }

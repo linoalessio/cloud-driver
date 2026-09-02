@@ -5,6 +5,7 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
@@ -61,9 +62,28 @@ public final class AuthUser extends Serialized {
     private final boolean isAdmin;
 
     /**
+     * This account's TOTP (RFC 6238) shared secret, base32-encoded - {@code null} means two-factor
+     * authentication is disabled for this account, matching this codebase's existing "nullable
+     * field = feature not opted into" convention (e.g. {@code Folder#parentFolderId}). Never
+     * written directly to this field via {@link #login} - a fresh secret is first held in a
+     * short-lived {@code de.lino.cloud.auth.pending.PendingTwoFactorSetup} row (see {@code
+     * AuthService#beginTwoFactorSetup}) and only promoted here once {@code
+     * AuthService#confirmTwoFactorSetup} has verified the caller can actually produce a valid code
+     * from it - the same "don't commit a not-yet-proven secret" shape {@link
+     * de.lino.cloud.auth.pending.PendingRegistration} already uses for a not-yet-verified password.
+     * Settable only via {@link #withTotpSecret(String)}, from {@code AuthService#confirmTwoFactorSetup}
+     * (sets it) and {@code AuthService#disableTwoFactor} (clears it back to {@code null}) - never
+     * reachable from any REST route body, the same "server decides, client only triggers" shape
+     * {@link #isAdmin} uses for its own writer.
+     */
+    @Nullable
+    private final String totpSecretBase32;
+
+    /**
      * Constructs an account record for an already-hashed password, with {@link #isAdmin} fixed
-     * at {@code false} - every account created through registration starts as a non-admin; use
-     * {@link #withAdmin(boolean)} to change that afterward.
+     * at {@code false} and two-factor authentication disabled - every account created through
+     * registration starts this way; use {@link #withAdmin(boolean)}/{@link
+     * #withTotpSecret(String)} to change either afterward.
      *
      * @param id this account's unique id, its {@link #primaryKey()}
      * @param emailAddress this account's identifying email address
@@ -71,14 +91,17 @@ public final class AuthUser extends Serialized {
      * @throws NullPointerException if any argument is {@code null}
      */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash) {
-        this(id, emailAddress, passwordHash, false);
+        this(id, emailAddress, passwordHash, false, null);
     }
 
     /**
      * Constructs an account record for an already-hashed password with an explicit {@link
-     * #isAdmin} value - used by {@link #withAdmin(boolean)} and by any caller reconstructing an
-     * existing account (e.g. after a password/email change) that must carry the flag forward
-     * rather than silently resetting it to {@code false}.
+     * #isAdmin} value and two-factor authentication disabled - used by {@link
+     * #withAdmin(boolean)} and by any caller reconstructing an existing account that must carry
+     * the admin flag forward but has no TOTP secret to carry (or is deliberately not changing it -
+     * see {@link #withTotpSecret(String)}'s own Javadoc for why every caller reconstructing an
+     * existing account must instead go through the 5-argument constructor once that account may
+     * already have two-factor authentication enabled).
      *
      * @param id this account's unique id, its {@link #primaryKey()}
      * @param emailAddress this account's identifying email address
@@ -87,10 +110,28 @@ public final class AuthUser extends Serialized {
      * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
      */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash, final boolean isAdmin) {
+        this(id, emailAddress, passwordHash, isAdmin, null);
+    }
+
+    /**
+     * Full constructor, used by {@link #withAdmin(boolean)}/{@link #withTotpSecret(String)} and by
+     * any caller reconstructing an existing account (e.g. after a password/email change) that must
+     * carry both flags/fields forward rather than silently resetting either.
+     *
+     * @param id this account's unique id, its {@link #primaryKey()}
+     * @param emailAddress this account's identifying email address
+     * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password
+     * @param isAdmin this account's admin flag
+     * @param totpSecretBase32 this account's TOTP shared secret, or {@code null} if two-factor authentication is disabled
+     * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
+     */
+    public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash,
+                     final boolean isAdmin, @Nullable final String totpSecretBase32) {
         this.id = Objects.requireNonNull(id, "@AuthUser.init: id cannot be null");
         this.emailAddress = Objects.requireNonNull(emailAddress, "@AuthUser.init: username cannot be null");
         this.passwordHash = Objects.requireNonNull(passwordHash, "@AuthUser.init: passwordHash cannot be null");
         this.isAdmin = isAdmin;
+        this.totpSecretBase32 = totpSecretBase32;
     }
 
     /**
@@ -104,7 +145,27 @@ public final class AuthUser extends Serialized {
      */
     @NotNull
     public AuthUser withAdmin(final boolean isAdmin) {
-        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin);
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin, this.totpSecretBase32);
+    }
+
+    /**
+     * Returns a copy of this account with {@link #totpSecretBase32} set to {@code totpSecretBase32} -
+     * the same immutable "return a new instance" convention {@link #withAdmin(boolean)} uses. Pass a
+     * real secret to enable two-factor authentication ({@code AuthService#confirmTwoFactorSetup}) or
+     * {@code null} to disable it ({@code AuthService#disableTwoFactor}). The caller persists the
+     * returned copy via {@code DataFactory#update}.
+     *
+     * @param totpSecretBase32 the new TOTP secret, or {@code null} to disable two-factor authentication
+     * @return a copy of this account with {@link #totpSecretBase32} changed
+     */
+    @NotNull
+    public AuthUser withTotpSecret(@Nullable final String totpSecretBase32) {
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, this.isAdmin, totpSecretBase32);
+    }
+
+    /** @return {@code true} if this account has two-factor authentication enabled (i.e. {@link #totpSecretBase32} is non-{@code null}) */
+    public boolean isTwoFactorEnabled() {
+        return this.totpSecretBase32 != null;
     }
 
     /** @return this entity's primary key, {@link #id} */

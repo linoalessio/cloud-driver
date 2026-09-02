@@ -218,6 +218,36 @@ fun ResetPasswordRequestScreen(viewModel: AppViewModel) {
     }
 }
 
+/**
+ * Item 12 (two-factor authentication, see `architecture/SERVICES.md`) - the step [AppViewModel.login]
+ * switches to instead of signing straight in, once the password has verified but the account still
+ * needs a current TOTP code from an authenticator app. Modeled after [ResetPasswordConfirmScreen]'s
+ * own single-code-field shape, minus the password fields this step has no use for.
+ */
+@Composable
+fun TwoFactorLoginScreen(viewModel: AppViewModel, pendingToken: String, email: String) {
+    var code by remember { mutableStateOf("") }
+
+    AuthCard("Two-factor code for $email") {
+        Text(
+            "Enter the current code from your authenticator app.",
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        AuthTextField(code, { code = it }, "Authentication code")
+
+        ErrorText(viewModel.errorMessage)
+
+        PrimaryButton(
+            text = "Verify and sign in", busyText = "Verifying...", busy = viewModel.busy,
+            enabled = !viewModel.busy && code.isNotBlank(),
+            onClick = { viewModel.completeTwoFactorLogin(pendingToken, email, code) },
+        )
+
+        TextButton(onClick = { viewModel.backToLogin() }) { Text("Back to sign in") }
+    }
+}
+
 @Composable
 fun ResetPasswordConfirmScreen(viewModel: AppViewModel, email: String) {
     var code by remember { mutableStateOf("") }

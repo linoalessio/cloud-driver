@@ -18,6 +18,8 @@ import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.auth.AuthTokens;
+import de.lino.cloud.api.jwt.auth.LoginResult;
+import de.lino.cloud.api.jwt.auth.TwoFactorSetupStart;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
@@ -106,6 +108,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
+    /** Path mounted by {@link #start} for {@link #handleBeginTwoFactorSetup} (item 12, see {@code architecture/SERVICES.md}) - bearer-gated, acts on the already-authenticated caller's own account. */
+    private static final String TWO_FACTOR_SETUP_PATH = "/auth/2fa/setup";
+    /** Path mounted by {@link #start} for {@link #handleConfirmTwoFactorSetup} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
+    private static final String TWO_FACTOR_CONFIRM_PATH = "/auth/2fa/confirm";
+    /** Path mounted by {@link #start} for {@link #handleDisableTwoFactor} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
+    private static final String TWO_FACTOR_DISABLE_PATH = "/auth/2fa/disable";
+    /** Path mounted by {@link #start} for {@link #handleTwoFactorLogin}, exempted from {@link #requireValidBearerToken} - the caller has no real access token yet, that's the whole point of this route. */
+    private static final String TWO_FACTOR_LOGIN_PATH = "/auth/2fa/login";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} by Javalin's own routing regardless of registration order. */
@@ -484,6 +494,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
                 config.routes.post(REFRESH_PATH, this::handleRefresh);
                 config.routes.post(LOGOUT_PATH, this::handleLogout);
+                config.routes.post(TWO_FACTOR_LOGIN_PATH, this::handleTwoFactorLogin);
+                config.routes.post(TWO_FACTOR_SETUP_PATH, this::handleBeginTwoFactorSetup);
+                config.routes.post(TWO_FACTOR_CONFIRM_PATH, this::handleConfirmTwoFactorSetup);
+                config.routes.post(TWO_FACTOR_DISABLE_PATH, this::handleDisableTwoFactor);
                 config.routes.before(this::requireValidBearerToken);
 
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
@@ -601,7 +615,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
                 || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())
-                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())) {
+                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())
+                || TWO_FACTOR_LOGIN_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -883,19 +898,41 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@code POST /auth/login}: reads {@code {"username": ..., "password": ...}}
      * from the request body, dispatched off the Jetty worker thread since
      * {@link AuthService#login} runs Argon2id (deliberately slow) plus a
-     * {@code DataFactory} lookup.
+     * {@code DataFactory} lookup. Branches on {@link LoginResult#requiresTwoFactor()} (item 12,
+     * see {@code architecture/SERVICES.md}): a normal completed login responds with the usual
+     * {@link LoginResponse}, while an account with two-factor authentication enabled instead
+     * responds {@code 200 OK} with a {@link TwoFactorRequiredResponse} carrying a pending token the
+     * caller must present, together with a TOTP code, to {@link #handleTwoFactorLogin}.
      */
     private void handleLogin(@NotNull final Context ctx) {
         final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.authService.login(request.username(), request.password().toCharArray()))
-                .handle((tokens, failure) -> {
+                .handle((result, failure) -> {
                     if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
+                        if (result.requiresTwoFactor()) {
+                            ctx.contentType("application/json")
+                                    .result(this.gson.toJson(new TwoFactorRequiredResponse(true, result.pendingTwoFactorToken())));
+                        } else {
+                            ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(result.tokens())));
+                        }
                         return null;
                     }
                     throw unauthorizedOrPropagate(failure);
                 }));
+    }
+
+    /**
+     * The {@code {"twoFactorRequired", "pendingToken"}} JSON response body {@link #handleLogin}
+     * returns instead of a {@link LoginResponse} when the matched account has two-factor
+     * authentication enabled - {@code twoFactorRequired} is always {@code true} on this shape
+     * (present so a client can branch on one field rather than on the absence of {@code token}),
+     * and {@code pendingToken} is what {@link #handleTwoFactorLogin} expects back.
+     *
+     * @param twoFactorRequired always {@code true}
+     * @param pendingToken the token to present, together with a TOTP code, to {@code POST /auth/2fa/login}
+     */
+    private record TwoFactorRequiredResponse(boolean twoFactorRequired, String pendingToken) {
     }
 
     /**
@@ -1217,6 +1254,143 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     if (failure == null) {
                         ctx.status(200).contentType("application/json")
                                 .result(this.gson.toJson(new MessageResponse("E-mail address updated")));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"secretBase32", "otpauthUri"}} JSON response body returned by {@code
+     * POST /auth/2fa/setup}.
+     */
+    private record TwoFactorSetupResponse(String secretBase32, String otpauthUri) {
+        /** Builds a {@link TwoFactorSetupResponse} straight from a {@link TwoFactorSetupStart}. */
+        private static TwoFactorSetupResponse of(final TwoFactorSetupStart start) {
+            return new TwoFactorSetupResponse(start.secretBase32(), start.otpauthUri());
+        }
+    }
+
+    /**
+     * {@code POST /auth/2fa/setup} (item 12, see {@code architecture/SERVICES.md}): bearer-gated,
+     * acts on the caller's own account (from {@link #requireUserId}). Starts enabling two-factor
+     * authentication via {@link AuthService#beginTwoFactorSetup} - generates a fresh TOTP secret,
+     * not yet live on the account, and returns it plus a ready-to-render {@code otpauth://} URI.
+     * The caller must follow up with {@link #handleConfirmTwoFactorSetup} once it has a code from
+     * its authenticator app. Dispatched off the Jetty worker thread since this runs database I/O.
+     */
+    private void handleBeginTwoFactorSetup(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.authService.beginTwoFactorSetup(userId))
+                .handle((start, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(TwoFactorSetupResponse.of(start)));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"code"}} JSON body shape read by {@code POST /auth/2fa/confirm}.
+     *
+     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
+     */
+    private record ConfirmTwoFactorSetupRequest(String code) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/confirm}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
+     * {@code {"code": ...}} and completes setup via {@link AuthService#confirmTwoFactorSetup} -
+     * from this point on, {@code POST /auth/login} for this account returns a {@link
+     * TwoFactorRequiredResponse} instead of tokens directly. Dispatched off the Jetty worker
+     * thread since this runs database I/O. {@code 200 OK} on success.
+     */
+    private void handleConfirmTwoFactorSetup(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final ConfirmTwoFactorSetupRequest request = this.gson.fromJson(ctx.body(), ConfirmTwoFactorSetupRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> {
+                    try {
+                        this.authService.confirmTwoFactorSetup(userId, request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException(
+                                "@DefaultRestFactory.handleConfirmTwoFactorSetup: failed to enable two-factor authentication for " + userId, e);
+                    }
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication enabled")));
+                        return null;
+                    }
+                    throw registrationFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"password"}} JSON body shape read by {@code POST /auth/2fa/disable}.
+     *
+     * @param password the account's current password, re-verified before disabling
+     */
+    private record DisableTwoFactorRequest(String password) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/disable}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
+     * {@code {"password": ...}} and disables two-factor authentication via {@link
+     * AuthService#disableTwoFactor} - which re-verifies {@code password} first, since a
+     * stolen-but-still-valid bearer token alone should not be enough to turn off an account's
+     * second factor. Dispatched off the Jetty worker thread since this runs Argon2id/database I/O.
+     * {@code 200 OK} on success.
+     */
+    private void handleDisableTwoFactor(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final DisableTwoFactorRequest request = this.gson.fromJson(ctx.body(), DisableTwoFactorRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.authService.disableTwoFactor(userId, request.password().toCharArray()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json")
+                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication disabled")));
+                        return null;
+                    }
+                    throw unauthorizedOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * The {@code {"pendingToken", "code"}} JSON body shape read by {@code POST /auth/2fa/login}.
+     *
+     * @param pendingToken the token returned by {@code POST /auth/login}'s {@link TwoFactorRequiredResponse}
+     * @param code the current TOTP code, produced by the caller's authenticator app
+     */
+    private record TwoFactorLoginRequest(String pendingToken, String code) {
+    }
+
+    /**
+     * {@code POST /auth/2fa/login}: completes a login left pending by {@code POST /auth/login}
+     * returning a {@link TwoFactorRequiredResponse}, via {@link AuthService#completeTwoFactorLogin} -
+     * verifies the TOTP code and, on success, issues real tokens under the same {@link
+     * LoginResponse} shape {@code POST /auth/login} returns for a non-2FA account. Not bearer-gated
+     * (see {@link #requireValidBearerToken}'s exemption list) - the caller has no real access token
+     * yet by definition. Dispatched off the Jetty worker thread since this runs database I/O.
+     * {@code 200 OK} on success.
+     */
+    private void handleTwoFactorLogin(@NotNull final Context ctx) {
+        final TwoFactorLoginRequest request = this.gson.fromJson(ctx.body(), TwoFactorLoginRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        return this.authService.completeTwoFactorLogin(request.pendingToken(), request.code());
+                    } catch (final DatabaseClientException | KeyWrapException e) {
+                        throw new RuntimeException("@DefaultRestFactory.handleTwoFactorLogin: failed to complete two-factor login", e);
+                    }
+                })
+                .handle((tokens, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
