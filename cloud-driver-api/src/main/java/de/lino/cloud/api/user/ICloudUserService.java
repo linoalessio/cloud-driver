@@ -2,8 +2,12 @@ package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
+import de.lino.cloud.api.file.SharedFileSummary;
+import de.lino.cloud.api.file.SharedFolderSummary;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
+import de.lino.cloud.api.file.TrashedFileSummary;
+import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.utility.CursorPage;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -289,11 +293,15 @@ public interface ICloudUserService {
     void restoreFile(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
+     * Lists every file currently in {@code authUserId}'s trash, each paired with when it becomes
+     * eligible for permanent removal (added 2026-09-02 - see {@link TrashedFileSummary}'s own
+     * Javadoc).
+     *
      * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose trash to list
-     * @return a {@link StoredFileSummary} for every file currently in {@code authUserId}'s trash
+     * @return a {@link TrashedFileSummary} for every file currently in {@code authUserId}'s trash
      */
     @NotNull
-    List<StoredFileSummary> listDeletedFiles(@NotNull String authUserId);
+    List<TrashedFileSummary> listDeletedFiles(@NotNull String authUserId);
 
     /**
      * Creates a new, empty {@link Folder} owned by {@code authUserId}.
@@ -377,11 +385,31 @@ public interface ICloudUserService {
     void restoreFolder(@NotNull String authUserId, @NotNull String folderId);
 
     /**
+     * Lists every folder currently in {@code authUserId}'s trash, each paired with when it becomes
+     * eligible for permanent removal - same addition as {@link #listDeletedFiles}, see {@link
+     * TrashedFolderSummary}'s own Javadoc.
+     *
      * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose trash to list
-     * @return every {@link Folder} currently in {@code authUserId}'s trash
+     * @return a {@link TrashedFolderSummary} for every folder currently in {@code authUserId}'s trash
      */
     @NotNull
-    List<Folder> listDeletedFolders(@NotNull String authUserId);
+    List<TrashedFolderSummary> listDeletedFolders(@NotNull String authUserId);
+
+    /**
+     * Permanently removes every file and folder currently in {@code authUserId}'s trash - the
+     * "Empty trash bin" action (added 2026-09-02), an on-demand, per-account counterpart to what
+     * {@code TrashPurgeScheduler} does automatically once a trashed item's retention window has
+     * elapsed. Unlike that scheduler, this bypasses the retention window entirely - every currently
+     * trashed item is removed regardless of how recently it was deleted, the moment this is called.
+     * Live (non-trashed) files/folders are completely untouched. Idempotent: a no-op if the trash is
+     * already empty. Irreversible, the same "no undo past this point" property {@link
+     * #resetCloudUser(String)} already has for a full account wipe - unlike a single {@link
+     * #deleteFile}/{@link #deleteFolder}, there is no {@link #restoreFile}/{@link #restoreFolder}
+     * once this has run.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose trash to empty
+     */
+    void emptyTrash(@NotNull String authUserId);
 
     /**
      * Grants {@code granteeEmail}'s account read-only access to {@code fileId} - owner-only, like
@@ -396,9 +424,9 @@ public interface ICloudUserService {
      * @param fileId the file to share
      * @param granteeEmail the email address of the account to grant read access to
      * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}, is
-     *                                   currently in the trash, {@code granteeEmail} has no
-     *                                   registered account, or {@code granteeEmail} resolves to
+     *                                   currently in the trash, or {@code granteeEmail} resolves to
      *                                   {@code ownerAuthUserId} itself
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
      */
     void shareFile(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail);
 
@@ -410,14 +438,16 @@ public interface ICloudUserService {
      * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
      * @param fileId the file to revoke a share of
      * @param granteeEmail the email address of the account whose access to revoke
-     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId},
-     *                                   or {@code granteeEmail} has no registered account
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
      */
     void revokeFileShare(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail);
 
     /**
      * Lists every file directly shared with {@code authUserId} via {@link #shareFile} - as {@link
-     * StoredFileSummary}s, the same descriptive-fields-only shape {@link
+     * SharedFileSummary}s (added 2026-09-02 - each paired with the sharing account's email address,
+     * so the caller can see who shared it; the plain {@link StoredFileSummary} this method used to
+     * return carried no owner information at all), the same descriptive-fields-only shape {@link
      * #listFileSummaries(String)} returns for the caller's own files. Does <b>not</b> include a
      * file only reachable through a folder-level share ({@link #shareFolder}) - browsing a shared
      * folder's own contents is a documented future extension, not implemented in this first
@@ -425,10 +455,10 @@ public interface ICloudUserService {
      * trashed by its owner is silently omitted, rather than surfaced as an error.
      *
      * @param authUserId the account whose incoming file shares to list
-     * @return a {@link StoredFileSummary} for every file directly shared with {@code authUserId}
+     * @return a {@link SharedFileSummary} for every file directly shared with {@code authUserId}
      */
     @NotNull
-    List<StoredFileSummary> listSharedWithMe(@NotNull String authUserId);
+    List<SharedFileSummary> listSharedWithMe(@NotNull String authUserId);
 
     /**
      * Grants {@code granteeEmail}'s account read-only access to {@code folderId} and everything
@@ -439,9 +469,9 @@ public interface ICloudUserService {
      * @param folderId the folder to share
      * @param granteeEmail the email address of the account to grant read access to
      * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId},
-     *                                   is currently in the trash, {@code granteeEmail} has no
-     *                                   registered account, or {@code granteeEmail} resolves to
-     *                                   {@code ownerAuthUserId} itself
+     *                                   is currently in the trash, or {@code granteeEmail} resolves
+     *                                   to {@code ownerAuthUserId} itself
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
      */
     void shareFolder(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail);
 
@@ -454,22 +484,52 @@ public interface ICloudUserService {
      * @param ownerAuthUserId the folder's actual owner, who must already own {@code folderId}
      * @param folderId the folder to revoke a share of
      * @param granteeEmail the email address of the account whose access to revoke
-     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId},
-     *                                   or {@code granteeEmail} has no registered account
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId}
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
      */
     void revokeFolderShare(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail);
 
     /**
-     * Lists every folder directly shared with {@code authUserId} via {@link #shareFolder} - just
-     * the shared folders themselves (not their contents; see {@link #listSharedWithMe}'s own
-     * Javadoc for the same "browsing a shared folder's contents is a future extension" caveat). A
-     * grant whose underlying folder has since been deleted or trashed by its owner is silently
-     * omitted.
+     * Lists every folder directly shared with {@code authUserId} via {@link #shareFolder} - as
+     * {@link SharedFolderSummary}s (added 2026-09-02, same "pair with the sharing account's email"
+     * reasoning as {@link #listSharedWithMe}) - just the shared folders themselves (not their
+     * contents; see {@link #listSharedWithMe}'s own Javadoc for the same "browsing a shared folder's
+     * contents is a future extension" caveat). A grant whose underlying folder has since been
+     * deleted or trashed by its owner is silently omitted.
      *
      * @param authUserId the account whose incoming folder shares to list
-     * @return every {@link Folder} directly shared with {@code authUserId}
+     * @return a {@link SharedFolderSummary} for every folder directly shared with {@code authUserId}
      */
     @NotNull
-    List<Folder> listSharedFoldersWithMe(@NotNull String authUserId);
+    List<SharedFolderSummary> listSharedFoldersWithMe(@NotNull String authUserId);
+
+    /**
+     * Lists the email addresses of every account {@code fileId} is currently shared with - the
+     * owner-side counterpart to {@link #listSharedWithMe}, backing a "who can see this file"/revoke
+     * UI. Owner-only, the same reasoning {@link #shareFile}/{@link #revokeFileShare} already use.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file whose current shares to list
+     * @return the email address of every account currently granted read access to {@code fileId},
+     *         in no particular order
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}
+     */
+    @NotNull
+    List<String> listFileShares(@NotNull String ownerAuthUserId, @NotNull String fileId);
+
+    /**
+     * Lists the email addresses of every account {@code folderId} is currently shared with - the
+     * owner-side counterpart to {@link #listSharedFoldersWithMe}, backing a "who can see this
+     * folder"/revoke UI. Owner-only, the same reasoning {@link #shareFolder}/{@link
+     * #revokeFolderShare} already use.
+     *
+     * @param ownerAuthUserId the folder's actual owner, who must already own {@code folderId}
+     * @param folderId the folder whose current shares to list
+     * @return the email address of every account currently granted read access to {@code
+     *         folderId}, in no particular order
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId}
+     */
+    @NotNull
+    List<String> listFolderShares(@NotNull String ownerAuthUserId, @NotNull String folderId);
 
 }

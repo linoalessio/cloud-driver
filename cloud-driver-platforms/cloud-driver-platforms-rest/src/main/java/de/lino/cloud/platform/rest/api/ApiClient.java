@@ -3,8 +3,10 @@ package de.lino.cloud.platform.rest.api;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
@@ -13,6 +15,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmTwoFactorSetupRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.DisableTwoFactorRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.EmailExistsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
@@ -21,10 +24,16 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ShareRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFolderSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorLoginRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 
 import java.io.Closeable;
@@ -1675,14 +1684,14 @@ public final class ApiClient implements AutoCloseable {
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
-    public List<StoredFileSummaryResponse> listDeletedFiles() throws ApiException {
-        final StoredFileSummaryResponse[] files = this.send(this.listDeletedFilesRequest(), StoredFileSummaryResponse[].class);
+    public List<TrashedFileSummaryResponse> listDeletedFiles() throws ApiException {
+        final TrashedFileSummaryResponse[] files = this.send(this.listDeletedFilesRequest(), TrashedFileSummaryResponse[].class);
         return List.of(files);
     }
 
     /** Async form of {@link #listDeletedFiles()} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<List<StoredFileSummaryResponse>> listDeletedFilesAsync() {
-        return this.sendAsync(this.listDeletedFilesRequest(), StoredFileSummaryResponse[].class).thenApply(List::of);
+    public CompletableFuture<List<TrashedFileSummaryResponse>> listDeletedFilesAsync() {
+        return this.sendAsync(this.listDeletedFilesRequest(), TrashedFileSummaryResponse[].class).thenApply(List::of);
     }
 
     /** Builds the {@code GET /files/trash} request against {@link #apiBaseUrl}. */
@@ -1720,19 +1729,40 @@ public final class ApiClient implements AutoCloseable {
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
-    public List<FolderResponse> listDeletedFolders() throws ApiException {
-        final FolderResponse[] folders = this.send(this.listDeletedFoldersRequest(), FolderResponse[].class);
+    public List<TrashedFolderSummaryResponse> listDeletedFolders() throws ApiException {
+        final TrashedFolderSummaryResponse[] folders = this.send(this.listDeletedFoldersRequest(), TrashedFolderSummaryResponse[].class);
         return List.of(folders);
     }
 
     /** Async form of {@link #listDeletedFolders()} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<List<FolderResponse>> listDeletedFoldersAsync() {
-        return this.sendAsync(this.listDeletedFoldersRequest(), FolderResponse[].class).thenApply(List::of);
+    public CompletableFuture<List<TrashedFolderSummaryResponse>> listDeletedFoldersAsync() {
+        return this.sendAsync(this.listDeletedFoldersRequest(), TrashedFolderSummaryResponse[].class).thenApply(List::of);
     }
 
     /** Builds the {@code GET /folders/trash} request against {@link #apiBaseUrl}. */
     private HttpRequest listDeletedFoldersRequest() {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/trash"), true).GET().build();
+    }
+
+    /**
+     * {@code POST /trash/empty}: permanently removes every file and folder currently in the
+     * caller's trash - the "Empty trash bin" action, bypassing the server's configured retention
+     * window entirely. Idempotent - also succeeds if the trash is already empty. Irreversible.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public void emptyTrash() throws ApiException {
+        this.send(this.emptyTrashRequest(), Void.class);
+    }
+
+    /** Async form of {@link #emptyTrash()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> emptyTrashAsync() {
+        return this.sendAsync(this.emptyTrashRequest(), Void.class);
+    }
+
+    /** Builds the {@code POST /trash/empty} request against {@link #apiBaseUrl}. */
+    private HttpRequest emptyTrashRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/trash/empty"), true).POST(BodyPublishers.noBody()).build();
     }
 
     /**
@@ -1784,6 +1814,272 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the {@code GET /cloudUsers/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest getCloudUserRequest(final String authUserId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/" + authUserId), true).GET().build();
+    }
+
+    // --- me / admin --------------------------------------------------------
+
+    /**
+     * {@code GET /auth/me} on the main REST API - the signed-in caller's own account id, email
+     * address, and admin flag. Used to decide whether to show admin-only UI, since there is no
+     * other way for a client to learn this without probing an admin-gated route.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public MeResponse getMe() throws ApiException {
+        return this.send(this.getMeRequest(), MeResponse.class);
+    }
+
+    /** Async form of {@link #getMe()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MeResponse> getMeAsync() {
+        return this.sendAsync(this.getMeRequest(), MeResponse.class);
+    }
+
+    /** Builds the {@code GET /auth/me} request against {@link #apiBaseUrl}. */
+    private HttpRequest getMeRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/auth/me"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /admin/authUsers} on the main REST API - admin-gated, lists every registered
+     * account.
+     *
+     * @throws ApiException {@code 403} if the caller's own account isn't flagged admin, {@code
+     *                       401} if not logged in / token expired
+     */
+    public List<AuthUserResponse> listAdminAuthUsers() throws ApiException {
+        final AuthUserResponse[] users = this.send(this.listAdminAuthUsersRequest(), AuthUserResponse[].class);
+        return List.of(users);
+    }
+
+    /** Async form of {@link #listAdminAuthUsers()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<AuthUserResponse>> listAdminAuthUsersAsync() {
+        return this.sendAsync(this.listAdminAuthUsersRequest(), AuthUserResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /admin/authUsers} request against {@link #apiBaseUrl}. */
+    private HttpRequest listAdminAuthUsersRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/admin/authUsers"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /admin/audit-log} on the main REST API - admin-gated. {@code all} {@code true}
+     * returns every entry instead of just the most recent 20; {@code emailFilter}, if non-null and
+     * non-blank, scopes the listing to just that account's own actions - both can be combined.
+     *
+     * @throws ApiException {@code 403} if the caller's own account isn't flagged admin, {@code
+     *                       401} if not logged in / token expired
+     */
+    public List<AuditLogEntryResponse> listAdminAuditLog(final boolean all, final String emailFilter) throws ApiException {
+        final AuditLogEntryResponse[] entries = this.send(this.listAdminAuditLogRequest(all, emailFilter), AuditLogEntryResponse[].class);
+        return List.of(entries);
+    }
+
+    /** Async form of {@link #listAdminAuditLog(boolean, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<AuditLogEntryResponse>> listAdminAuditLogAsync(final boolean all, final String emailFilter) {
+        return this.sendAsync(this.listAdminAuditLogRequest(all, emailFilter), AuditLogEntryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /admin/audit-log?all=...&email=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest listAdminAuditLogRequest(final boolean all, final String emailFilter) {
+        final StringBuilder query = new StringBuilder("/admin/audit-log?all=").append(all);
+        if (emailFilter != null && !emailFilter.isBlank()) {
+            query.append("&email=").append(URLEncoder.encode(emailFilter, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
+    // --- sharing (item 9) --------------------------------------------------
+
+    /**
+     * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code fileId}. Idempotent - sharing with the same grantee again just refreshes the grant.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, is currently
+     *                       trashed, or {@code granteeEmail} has no registered account, {@code
+     *                       401} if not logged in / token expired
+     */
+    public void shareFile(final String fileId, final String granteeEmail) throws ApiException {
+        this.send(this.shareFileRequest(fileId, granteeEmail), Void.class);
+    }
+
+    /** Async form of {@link #shareFile(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> shareFileAsync(final String fileId, final String granteeEmail) {
+        return this.sendAsync(this.shareFileRequest(fileId, granteeEmail), Void.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/share} request against {@link #apiBaseUrl}, with a JSON {@link ShareRequest} body. */
+    private HttpRequest shareFileRequest(final String fileId, final String granteeEmail) {
+        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/share"), new ShareRequest(granteeEmail), true);
+    }
+
+    /**
+     * {@code DELETE /files/{id}/share/{email}}: revokes a previously-granted share. Idempotent -
+     * also succeeds if no such grant existed.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller or {@code
+     *                       granteeEmail} has no registered account, {@code 401} if not logged in
+     *                       / token expired
+     */
+    public void revokeFileShare(final String fileId, final String granteeEmail) throws ApiException {
+        this.send(this.revokeFileShareRequest(fileId, granteeEmail), Void.class);
+    }
+
+    /** Async form of {@link #revokeFileShare(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokeFileShareAsync(final String fileId, final String granteeEmail) {
+        return this.sendAsync(this.revokeFileShareRequest(fileId, granteeEmail), Void.class);
+    }
+
+    /** Builds the {@code DELETE /files/{id}/share/{email}} request against {@link #apiBaseUrl}. */
+    private HttpRequest revokeFileShareRequest(final String fileId, final String granteeEmail) {
+        final String encodedEmail = URLEncoder.encode(granteeEmail, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/share/" + encodedEmail), true).DELETE().build();
+    }
+
+    /**
+     * {@code GET /files/{id}/share}: lists the email addresses of every account {@code fileId} is
+     * currently shared with - owner-only, backs a "who can see this file"/revoke UI.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, {@code 401} if
+     *                       not logged in / token expired
+     */
+    public List<String> listFileShares(final String fileId) throws ApiException {
+        final String[] emails = this.send(this.listFileSharesRequest(fileId), String[].class);
+        return List.of(emails);
+    }
+
+    /** Async form of {@link #listFileShares(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<String>> listFileSharesAsync(final String fileId) {
+        return this.sendAsync(this.listFileSharesRequest(fileId), String[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/{id}/share} request against {@link #apiBaseUrl}. */
+    private HttpRequest listFileSharesRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/share"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/shared-with-me}: lists every file directly shared with the caller, each
+     * paired with the sharing account's email address ({@link SharedFileSummaryResponse#ownerEmail()}
+     * - added 2026-09-02, so a recipient can see who shared a file, not just that it was shared).
+     * Does not include a file only reachable through a folder-level share.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public List<SharedFileSummaryResponse> listSharedWithMe() throws ApiException {
+        final SharedFileSummaryResponse[] files = this.send(this.listSharedWithMeRequest(), SharedFileSummaryResponse[].class);
+        return List.of(files);
+    }
+
+    /** Async form of {@link #listSharedWithMe()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<SharedFileSummaryResponse>> listSharedWithMeAsync() {
+        return this.sendAsync(this.listSharedWithMeRequest(), SharedFileSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/shared-with-me} request against {@link #apiBaseUrl}. */
+    private HttpRequest listSharedWithMeRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/shared-with-me"), true).GET().build();
+    }
+
+    /**
+     * {@code POST /folders/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code folderId} and everything nested inside it. Same status mapping as {@link
+     * #shareFile(String, String)}.
+     */
+    public void shareFolder(final String folderId, final String granteeEmail) throws ApiException {
+        this.send(this.shareFolderRequest(folderId, granteeEmail), Void.class);
+    }
+
+    /** Async form of {@link #shareFolder(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> shareFolderAsync(final String folderId, final String granteeEmail) {
+        return this.sendAsync(this.shareFolderRequest(folderId, granteeEmail), Void.class);
+    }
+
+    /** Builds the {@code POST /folders/{id}/share} request against {@link #apiBaseUrl}, with a JSON {@link ShareRequest} body. */
+    private HttpRequest shareFolderRequest(final String folderId, final String granteeEmail) {
+        return this.postRequest(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"), new ShareRequest(granteeEmail), true);
+    }
+
+    /**
+     * {@code DELETE /folders/{id}/share/{email}}: revokes a previously-granted share. Same status
+     * mapping as {@link #revokeFileShare(String, String)}. Does not affect a direct file-level
+     * share on a file nested inside {@code folderId}.
+     */
+    public void revokeFolderShare(final String folderId, final String granteeEmail) throws ApiException {
+        this.send(this.revokeFolderShareRequest(folderId, granteeEmail), Void.class);
+    }
+
+    /** Async form of {@link #revokeFolderShare(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokeFolderShareAsync(final String folderId, final String granteeEmail) {
+        return this.sendAsync(this.revokeFolderShareRequest(folderId, granteeEmail), Void.class);
+    }
+
+    /** Builds the {@code DELETE /folders/{id}/share/{email}} request against {@link #apiBaseUrl}. */
+    private HttpRequest revokeFolderShareRequest(final String folderId, final String granteeEmail) {
+        final String encodedEmail = URLEncoder.encode(granteeEmail, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/share/" + encodedEmail), true).DELETE().build();
+    }
+
+    /**
+     * {@code GET /folders/{id}/share}: lists the email addresses of every account {@code
+     * folderId} is currently shared with - same shape as {@link #listFileShares(String)}.
+     */
+    public List<String> listFolderShares(final String folderId) throws ApiException {
+        final String[] emails = this.send(this.listFolderSharesRequest(folderId), String[].class);
+        return List.of(emails);
+    }
+
+    /** Async form of {@link #listFolderShares(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<String>> listFolderSharesAsync(final String folderId) {
+        return this.sendAsync(this.listFolderSharesRequest(folderId), String[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /folders/{id}/share} request against {@link #apiBaseUrl}. */
+    private HttpRequest listFolderSharesRequest(final String folderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /folders/shared-with-me}: lists every folder directly shared with the caller, each
+     * paired with the sharing account's email address - same "who shared this" addition as {@link
+     * #listSharedWithMe()}.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public List<SharedFolderSummaryResponse> listSharedFoldersWithMe() throws ApiException {
+        final SharedFolderSummaryResponse[] folders = this.send(this.listSharedFoldersWithMeRequest(), SharedFolderSummaryResponse[].class);
+        return List.of(folders);
+    }
+
+    /** Async form of {@link #listSharedFoldersWithMe()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<SharedFolderSummaryResponse>> listSharedFoldersWithMeAsync() {
+        return this.sendAsync(this.listSharedFoldersWithMeRequest(), SharedFolderSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /folders/shared-with-me} request against {@link #apiBaseUrl}. */
+    private HttpRequest listSharedFoldersWithMeRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/shared-with-me"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /cloudUsers/exists?email=<address>}: whether any account is registered under
+     * {@code email} - not scoped to the caller's own account. Backs a live check of a typed
+     * grantee address before submitting a share.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public boolean checkCloudUserExists(final String email) throws ApiException {
+        return this.send(this.checkCloudUserExistsRequest(email), EmailExistsResponse.class).exists();
+    }
+
+    /** Async form of {@link #checkCloudUserExists(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Boolean> checkCloudUserExistsAsync(final String email) {
+        return this.sendAsync(this.checkCloudUserExistsRequest(email), EmailExistsResponse.class).thenApply(EmailExistsResponse::exists);
+    }
+
+    /** Builds the {@code GET /cloudUsers/exists?email=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest checkCloudUserExistsRequest(final String email) {
+        final String encodedEmail = URLEncoder.encode(email, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/exists?email=" + encodedEmail), true).GET().build();
     }
 
     // --- internals -------------------------------------------------------

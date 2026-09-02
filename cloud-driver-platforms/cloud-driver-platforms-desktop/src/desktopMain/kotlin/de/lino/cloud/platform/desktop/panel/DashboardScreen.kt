@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarToday
@@ -21,6 +20,7 @@ import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.utils.formatBytes
@@ -113,10 +114,10 @@ fun DashboardScreen(viewModel: AppViewModel) {
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    StatCard(Icons.AutoMirrored.Filled.InsertDriveFile, "Uploaded files", stats.fileCount.toString(), Modifier.weight(1f))
-                    StatCard(Icons.Filled.Folder, "Folders", stats.folderCount.toString(), Modifier.weight(1f))
+                    FilesAndFoldersStatCard(stats.folderCount, stats.fileCount, Modifier.weight(1f))
                     StatCard(Icons.Filled.Storage, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
                     StatCard(Icons.Filled.Delete, "Trash", formatBytes(stats.trashBytes), Modifier.weight(1f))
+                    StatCard(Icons.Filled.FolderShared, "Shared files", stats.sharedFileCount.toString(), Modifier.weight(1f))
                 }
             }
 
@@ -495,6 +496,40 @@ private fun InfoRow(icon: ImageVector, label: String, value: String) {
         Spacer(Modifier.width(10.dp))
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(140.dp))
         Text(value, fontWeight = FontWeight.Medium)
+    }
+}
+
+/**
+ * The combined "Folders"/"Files" stat card (merged into one card, per spec, 2026-09-02 - these two
+ * used to be separate [StatCard]s) - two monospaced lines, `"Folders: <n>"`/`"Files  : <n>"`, the
+ * padded label keeping both values' colons aligned regardless of digit count. [FontFamily.Monospace]
+ * is applied specifically for that alignment guarantee - the surrounding proportional-font labels
+ * elsewhere on this screen have no such requirement.
+ */
+@Composable
+private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: Modifier = Modifier) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Icon(Icons.Filled.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Folders: $folderCount",
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Files  : $fileCount",
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 

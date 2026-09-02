@@ -18,12 +18,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
@@ -200,11 +202,25 @@ fun Sidebar(viewModel: AppViewModel) {
             selected = viewModel.screen == Screen.Dashboard,
             onClick = { viewModel.showDashboard() },
         )
+        if (viewModel.currentUserIsAdmin) {
+            SidebarItem(
+                icon = Icons.Filled.AdminPanelSettings,
+                label = "Admin",
+                selected = viewModel.screen == Screen.Admin,
+                onClick = { viewModel.showAdmin() },
+            )
+        }
         SidebarItem(
             icon = Icons.Filled.Delete,
             label = "Trash",
             selected = viewModel.screen == Screen.Trash,
             onClick = { viewModel.showTrash() },
+        )
+        SidebarItem(
+            icon = Icons.Filled.FolderShared,
+            label = "Shared with me",
+            selected = viewModel.screen == Screen.SharedWithMe,
+            onClick = { viewModel.showSharedWithMe() },
         )
         SidebarItem(
             icon = Icons.Filled.Home,

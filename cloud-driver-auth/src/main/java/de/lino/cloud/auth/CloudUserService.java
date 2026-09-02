@@ -8,8 +8,12 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
+import de.lino.cloud.api.file.SharedFileSummary;
+import de.lino.cloud.api.file.SharedFolderSummary;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
+import de.lino.cloud.api.file.TrashedFileSummary;
+import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.user.AuthUser;
@@ -17,6 +21,7 @@ import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.CursorPage;
@@ -24,6 +29,7 @@ import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.SharedFileGrant;
 import de.lino.cloud.auth.entity.SharedFolderGrant;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
+import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -350,6 +356,78 @@ public final class CloudUserService implements ICloudUserService {
                 }
             }
             remaining.removeAll(leaves);
+        }
+    }
+
+    /**
+     * Permanently removes every file and folder currently in {@code authUserId}'s trash - see
+     * {@link ICloudUserService#emptyTrash}'s Javadoc. Files go through {@link #hardDeleteFile} (the
+     * same permanent-removal primitive {@link #resetCloudUser} uses), bypassing the retention
+     * window entirely; folders go through the private {@link #deleteAllTrashedFolders} below.
+     */
+    @Override
+    public void emptyTrash(@NonNull final String authUserId) {
+        final List<StoredFileOwnership> trashedFiles = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
+                .filter(StoredFileOwnership::isDeleted)
+                .toList();
+        for (final StoredFileOwnership ownership : trashedFiles) {
+            this.hardDeleteFile(authUserId, ownership);
+        }
+        this.deleteAllTrashedFolders(authUserId);
+    }
+
+    /**
+     * Permanently deletes every currently-trashed {@link Folder} owned by {@code authUserId},
+     * leaf-first, the same bottom-up convergence {@link #deleteAllOwnedFolders} uses for a full
+     * wipe - but scoped to only the trashed subset, used by {@link #emptyTrash}. <b>Deliberately
+     * computes "is this folder a leaf" against every owned folder (trashed and live alike), not
+     * just the trashed ones being removed</b> - a trashed folder that still has a <em>live</em>
+     * child (e.g. the child was individually restored while its parent wasn't) must never be
+     * deleted out from under that child, which would otherwise leave the live child's {@code
+     * parentFolderId} pointing at nothing. {@code stillExisting} is kept in sync as trashed leaves
+     * are removed each round, so a whole trashed chain (grandparent/parent/child, all trashed)
+     * still converges leaf-first exactly like {@link #deleteAllOwnedFolders} does - it is not a
+     * static snapshot recomputed from a fixed set, which would otherwise never let an ancestor
+     * become eligible once its already-deleted child stopped actually existing.
+     *
+     * @param authUserId the owning user whose trashed folders should be permanently removed
+     * @throws IllegalStateException if a cycle is detected among the remaining trashed folders
+     *     (defense-in-depth; writes elsewhere already prevent this from occurring)
+     */
+    private void deleteAllTrashedFolders(final String authUserId) {
+        final List<Folder> stillExisting;
+        try {
+            stillExisting = new ArrayList<>(this.dataFactory.getEntities(Folder.class).stream()
+                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+                    .toList());
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.deleteAllTrashedFolders: failed to list folders for " + authUserId, e);
+        }
+        final List<Folder> remainingTrashed = stillExisting.stream()
+                .filter(Folder::isDeleted)
+                .collect(Collectors.toCollection(ArrayList::new));
+
+        while (!remainingTrashed.isEmpty()) {
+            final Set<String> occupiedParentIds = stillExisting.stream()
+                    .map(Folder::getParentFolderId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            final List<Folder> leaves = remainingTrashed.stream()
+                    .filter(folder -> !occupiedParentIds.contains(folder.getFolderId()))
+                    .toList();
+            if (leaves.isEmpty()) {
+                throw new IllegalStateException(
+                        "@CloudUserService.deleteAllTrashedFolders: cycle detected among trashed folders owned by " + authUserId);
+            }
+            for (final Folder leaf : leaves) {
+                try {
+                    this.dataFactory.delete(leaf.getFolderId(), Folder.class);
+                } catch (final DatabaseClientException e) {
+                    throw new RuntimeException("@CloudUserService.deleteAllTrashedFolders: failed to delete folder " + leaf.getFolderId(), e);
+                }
+            }
+            remainingTrashed.removeAll(leaves);
+            stillExisting.removeAll(leaves);
         }
     }
 
@@ -726,7 +804,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @NonNull
     @Override
-    public List<StoredFileSummary> listSharedWithMe(@NonNull final String authUserId) {
+    public List<SharedFileSummary> listSharedWithMe(@NonNull final String authUserId) {
         final List<SharedFileGrant> grants;
         try {
             grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
@@ -737,18 +815,22 @@ public final class CloudUserService implements ICloudUserService {
         }
         return grants.stream()
                 .map(grant -> {
+                    final Optional<StoredFileOwnership> ownership;
                     try {
-                        return this.dataFactory.findById(
+                        ownership = this.dataFactory.findById(
                                 StoredFileOwnership.compositeKey(grant.getOwnerAuthUserId(), grant.getStoredFileId()), StoredFileOwnership.class);
                     } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
                         throw new RuntimeException("@CloudUserService.listSharedWithMe: failed to resolve ownership for grant " + grant, e);
                     }
+                    // A share whose file the owner has since trashed is hidden the same way a
+                    // trashed owned file is hidden from listFileSummaries - not surfaced as a
+                    // broken/error entry.
+                    return ownership.filter(candidate -> !candidate.isDeleted())
+                            .map(candidate -> new SharedFileSummary(
+                                    this.resolveFileSummary(candidate),
+                                    this.resolveEmailForAuthUserId(grant.getOwnerAuthUserId()).orElse(grant.getOwnerAuthUserId())));
                 })
                 .flatMap(Optional::stream)
-                // A share whose file the owner has since trashed is hidden the same way a trashed
-                // owned file is hidden from listFileSummaries - not surfaced as a broken/error entry.
-                .filter(ownership -> !ownership.isDeleted())
-                .map(this::resolveFileSummary)
                 .toList();
     }
 
@@ -799,7 +881,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @NonNull
     @Override
-    public List<Folder> listSharedFoldersWithMe(@NonNull final String authUserId) {
+    public List<SharedFolderSummary> listSharedFoldersWithMe(@NonNull final String authUserId) {
         final List<SharedFolderGrant> grants;
         try {
             grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
@@ -810,15 +892,79 @@ public final class CloudUserService implements ICloudUserService {
         }
         return grants.stream()
                 .map(grant -> {
+                    final Optional<Folder> folder;
                     try {
-                        return this.dataFactory.findById(grant.getFolderId(), Folder.class);
+                        folder = this.dataFactory.findById(grant.getFolderId(), Folder.class);
                     } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
                         throw new RuntimeException("@CloudUserService.listSharedFoldersWithMe: failed to resolve folder for grant " + grant, e);
                     }
+                    return folder.filter(candidate -> !candidate.isDeleted())
+                            .map(candidate -> new SharedFolderSummary(
+                                    candidate, this.resolveEmailForAuthUserId(grant.getOwnerAuthUserId()).orElse(grant.getOwnerAuthUserId())));
                 })
                 .flatMap(Optional::stream)
-                .filter(folder -> !folder.isDeleted())
                 .toList();
+    }
+
+    /**
+     * Lists the email addresses of every account {@code fileId} is currently shared with - see
+     * {@link ICloudUserService#listFileShares}'s Javadoc. Owner-only, checked via {@link
+     * #requireOwnedFile} the same way {@link #shareFile}/{@link #revokeFileShare} already are.
+     */
+    @NonNull
+    @Override
+    public List<String> listFileShares(@NonNull final String ownerAuthUserId, @NonNull final String fileId) {
+        this.requireOwnedFile(ownerAuthUserId, fileId);
+        try {
+            return this.dataFactory.getEntities(SharedFileGrant.class).stream()
+                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getStoredFileId().equals(fileId))
+                    .map(SharedFileGrant::getGranteeAuthUserId)
+                    .map(this::resolveEmailForAuthUserId)
+                    .flatMap(Optional::stream)
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listFileShares: failed to list shares for " + fileId, e);
+        }
+    }
+
+    /**
+     * Lists the email addresses of every account {@code folderId} is currently shared with - see
+     * {@link ICloudUserService#listFolderShares}'s Javadoc. Owner-only, checked via {@link
+     * #requireOwnedFolder} the same way {@link #shareFolder}/{@link #revokeFolderShare} already are.
+     */
+    @NonNull
+    @Override
+    public List<String> listFolderShares(@NonNull final String ownerAuthUserId, @NonNull final String folderId) {
+        this.requireOwnedFolder(ownerAuthUserId, folderId);
+        try {
+            return this.dataFactory.getEntities(SharedFolderGrant.class).stream()
+                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getFolderId().equals(folderId))
+                    .map(SharedFolderGrant::getGranteeAuthUserId)
+                    .map(this::resolveEmailForAuthUserId)
+                    .flatMap(Optional::stream)
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listFolderShares: failed to list shares for " + folderId, e);
+        }
+    }
+
+    /**
+     * Resolves {@code authUserId} back to its account's email address - the reverse of {@link
+     * #resolveGranteeAuthUserId}, used by {@link #listFileShares}/{@link #listFolderShares} to
+     * display a grant's grantee as an email rather than a raw id. Same full-{@code AuthUser}-scan
+     * trade-off {@link #getCloudUserByEmail(String)} already accepts. {@link Optional#empty()}
+     * (rather than a thrown exception) if the account no longer exists - a grant whose grantee
+     * account was since deleted is simply omitted from the caller's result, not surfaced as an error.
+     */
+    private Optional<String> resolveEmailForAuthUserId(final String authUserId) {
+        try {
+            return this.dataFactory.getEntities(AuthUser.class).stream()
+                    .filter(user -> user.getId().equals(authUserId))
+                    .map(AuthUser::getEmailAddress)
+                    .findFirst();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.resolveEmailForAuthUserId: failed to resolve email for " + authUserId, e);
+        }
     }
 
     /**
@@ -827,13 +973,18 @@ public final class CloudUserService implements ICloudUserService {
      * ICloudUser}'s {@link ICloudUser#getAuthUserId()} already equals the {@link
      * de.lino.cloud.api.jwt.user.AuthUser#getId()} sharing needs.
      *
-     * @throws IllegalArgumentException if no account is registered under {@code email}
+     * @throws GranteeAccountNotFoundException if no account is registered under {@code email} -
+     *     deliberately its own exception type, not a plain {@link IllegalArgumentException} (see
+     *     that class's own Javadoc for why: {@code DefaultRestFactory#folderFailureOrPropagate}
+     *     would otherwise collapse this into the same generic "No StoredFile/Folder with id ..."
+     *     message every other {@link IllegalArgumentException} on the share routes maps to, hiding
+     *     that the grantee address - not the file/folder - was the actual problem, a real bug
+     *     confirmed 2026-09-02)
      */
     private String resolveGranteeAuthUserId(final String email) {
         return this.getCloudUserByEmail(email)
                 .map(ICloudUser::getAuthUserId)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "@CloudUserService.resolveGranteeAuthUserId: no account registered under " + email));
+                .orElseThrow(() -> new GranteeAccountNotFoundException(email));
     }
 
     /**
@@ -999,20 +1150,28 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Lists every file currently in {@code authUserId}'s trash, as {@link StoredFileSummary}s -
-     * same descriptive-fields-only shape/cost as {@link #listFileSummaries(String)}, just filtered
-     * to trashed rows instead of live ones.
+     * Lists every file currently in {@code authUserId}'s trash, as {@link TrashedFileSummary}s
+     * (added 2026-09-02 - each paired with when it becomes eligible for permanent removal, see
+     * that record's own Javadoc) - same descriptive-fields-only shape/cost as {@link
+     * #listFileSummaries(String)} for the underlying {@link StoredFileSummary}, just filtered to
+     * trashed rows instead of live ones.
      *
      * @param authUserId the user whose trash to list
-     * @return a {@link StoredFileSummary} for every file currently in {@code authUserId}'s trash
+     * @return a {@link TrashedFileSummary} for every file currently in {@code authUserId}'s trash
      */
     @NonNull
     @Override
-    public List<StoredFileSummary> listDeletedFiles(@NonNull final String authUserId) {
+    public List<TrashedFileSummary> listDeletedFiles(@NonNull final String authUserId) {
         final List<StoredFileOwnership> deleted = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
                 .filter(StoredFileOwnership::isDeleted)
                 .toList();
-        return this.resolveFileSummaries(deleted);
+        final List<StoredFileSummary> summaries = this.resolveFileSummaries(deleted);
+        final long retentionMillis = this.resolveTrashRetentionDays() * MILLIS_PER_DAY;
+        final List<TrashedFileSummary> trashed = new ArrayList<>(deleted.size());
+        for (int i = 0; i < deleted.size(); i++) {
+            trashed.add(new TrashedFileSummary(summaries.get(i), deleted.get(i).getDeletedAtEpochMillis() + retentionMillis));
+        }
+        return trashed;
     }
 
     /**
@@ -1220,22 +1379,29 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Lists every {@link Folder} currently in {@code authUserId}'s trash, regardless of nesting.
+     * Lists every {@link Folder} currently in {@code authUserId}'s trash, regardless of nesting,
+     * each paired with when it becomes eligible for permanent removal (added 2026-09-02 - see
+     * {@link TrashedFolderSummary}'s own Javadoc).
      *
      * @param authUserId the user whose trash to list
-     * @return every {@link Folder} currently in {@code authUserId}'s trash
+     * @return a {@link TrashedFolderSummary} for every folder currently in {@code authUserId}'s trash
      */
     @NonNull
     @Override
-    public List<Folder> listDeletedFolders(@NonNull final String authUserId) {
+    public List<TrashedFolderSummary> listDeletedFolders(@NonNull final String authUserId) {
+        final List<Folder> deleted;
         try {
-            return this.dataFactory.getEntities(Folder.class).stream()
+            deleted = this.dataFactory.getEntities(Folder.class).stream()
                     .filter(folder -> folder.getOwnerId().equals(authUserId))
                     .filter(Folder::isDeleted)
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.listDeletedFolders: failed to list trashed folders for " + authUserId, e);
         }
+        final long retentionMillis = this.resolveTrashRetentionDays() * MILLIS_PER_DAY;
+        return deleted.stream()
+                .map(folder -> new TrashedFolderSummary(folder, folder.getDeletedAtEpochMillis() + retentionMillis))
+                .toList();
     }
 
     /**
@@ -1279,6 +1445,39 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final RuntimeException ignored) {
             // Best-effort only - see this method's own Javadoc.
         }
+    }
+
+    /** {@code configuration.json} key {@link #resolveTrashRetentionDays} reads the trash retention window from - the exact same key {@code TrashPurgeScheduler} (cloud-driver-plugin) reads for its own retention resolution. */
+    private static final String TRASH_RETENTION_DAYS_CONFIG_KEY = "trash-retention-days";
+
+    /** Default retention window (days) if {@link #TRASH_RETENTION_DAYS_CONFIG_KEY} is unset - mirrors {@code TrashPurgeScheduler#DEFAULT_RETENTION_DAYS} exactly. */
+    private static final long DEFAULT_TRASH_RETENTION_DAYS = 30L;
+
+    /** Milliseconds in a day - used to convert {@link #resolveTrashRetentionDays}'s result into an epoch-millis offset. */
+    private static final long MILLIS_PER_DAY = 24L * 60L * 60L * 1000L;
+
+    /**
+     * Resolves the configured trash retention window (in days), the same {@code
+     * "trash-retention-days"} key/30-day-default {@code TrashPurgeScheduler#withConfiguredRetention}
+     * reads - used by {@link #listDeletedFiles}/{@link #listDeletedFolders} to compute each trashed
+     * item's {@code purgeAtEpochMillis}.
+     *
+     * <p><b>Necessarily duplicated, not shared, with {@code TrashPurgeScheduler}'s own resolution
+     * logic</b> - that class lives in {@code cloud-driver-plugin}, which this module ({@code
+     * cloud-driver-auth}) must never depend on (see {@code CLAUDE.md}'s "Module layout and
+     * dependency direction"). Reading {@code configuration.json} directly from this module is an
+     * already-established pattern here, though - see {@code CloudUser#resolveMaxBytesToUpload}'s
+     * own {@link JsonDocument#contains}-first read of a different optional key, the same shape
+     * this method uses. Keep the key name/default in sync with {@code TrashPurgeScheduler}'s own
+     * constants by hand if either ever changes - nothing enforces this automatically.
+     *
+     * @return the configured (or default) trash retention window, in days
+     */
+    private long resolveTrashRetentionDays() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(TRASH_RETENTION_DAYS_CONFIG_KEY)
+                ? configuration.getLong(TRASH_RETENTION_DAYS_CONFIG_KEY)
+                : DEFAULT_TRASH_RETENTION_DAYS;
     }
 
     /**

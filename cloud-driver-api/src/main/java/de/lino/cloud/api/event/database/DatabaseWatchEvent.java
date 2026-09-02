@@ -1,6 +1,8 @@
 package de.lino.cloud.api.event.database;
 
 import de.lino.cloud.api.event.Event;
+import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
@@ -20,11 +22,31 @@ public class DatabaseWatchEvent extends Event {
 
     /**
      * Re-fetches the {@link StoredFile} named by {@code properties}' {@code "id"} field, reloading
-     * {@link StoredFile}'s section first so a row written by another process becomes visible. A
-     * blank id is a no-op; a miss after reloading is logged and ignored rather than thrown, since an
+     * {@link StoredFile}'s section only if a first, no-reload lookup misses. A blank id is a no-op;
+     * a miss that persists after reloading is logged and ignored rather than thrown, since an
      * uncaught exception here would kill the underlying notification listener thread for good. Note
      * that a real failure from {@code findById} itself (as opposed to a plain miss) is not guarded
      * the same way - see the {@code @throws} list below.
+     *
+     * <p><b>Fixed a real OOM incident (2026-09-02):</b> this used to call {@code reload(StoredFile
+     * .class)} unconditionally, on every single notification, before ever attempting {@code
+     * findById} - {@code reload} re-reads {@code StoredFile}'s <i>entire</i> table (every row's
+     * encrypted content included) into this process's local section mirror, so on a table that has
+     * grown to hold real file content, that's a full-table, full-blob load into heap, every time.
+     * Extracting a ~700 MB zip archive in the desktop app uploads many files in quick succession,
+     * each insert firing its own {@code NOTIFY} - and since this deployment's Postgres instance runs
+     * co-located with this very process (see {@code CloudBootstrap}'s connectivity-checker
+     * incident), the process that receives almost every one of these notifications is the exact
+     * same process that just performed the write, whose local section mirror is already
+     * up to date from that write - {@code EntityDatabaseClient#store} updates it directly, with no
+     * need for a database round trip at all. Reloading anyway, for every notification in the burst,
+     * repeatedly re-read the whole (by-then large) table into memory - several such reloads racing
+     * against each other's not-yet-collected garbage exhausted the heap, surfaced as {@code
+     * PSQLException: Ran out of memory retrieving query results} deep in the JDBC driver's own
+     * result-set buffering. A reload is only ever actually needed for a row some <i>other</i>
+     * process wrote (this process's own mirror would never see it otherwise) - a real but rare case
+     * in this single-process deployment - so this method now tries the cheap, reload-free lookup
+     * first and only pays for a reload on an actual miss, before retrying once.
      *
      * @param properties the notification payload ({@code "table"}/{@code "operation"}/{@code "id"})
      * @throws de.lino.cloud.api.security.database.DatabaseClientException if the file exists but its record is corrupted - sneaky-thrown by {@code @SneakyThrows}, not declared on this method's signature
@@ -39,8 +61,14 @@ public class DatabaseWatchEvent extends Event {
         final String id = properties.getString("id");
         if (id.isBlank()) return;
 
-        this.cloudDriver().getFactoryContainer().getDataFactory().reload(StoredFile.class);
-        final Optional<StoredFile> uploadedFile = this.cloudDriver().getFactoryContainer().getFileFactory().findById(id);
+        final DataFactory dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
+        final FileFactory fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();
+
+        Optional<StoredFile> uploadedFile = fileFactory.findById(id);
+        if (uploadedFile.isEmpty()) {
+            dataFactory.reload(StoredFile.class);
+            uploadedFile = fileFactory.findById(id);
+        }
 
         this.pushLiveUpdate(properties, id);
 

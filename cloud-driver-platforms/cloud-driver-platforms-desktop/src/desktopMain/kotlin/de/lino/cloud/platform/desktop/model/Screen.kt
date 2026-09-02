@@ -33,4 +33,10 @@ sealed interface Screen {
 
     /** After login: the trash - trashed files/folders, restorable back to where they were. */
     data object Trash : Screen
+
+    /** After login: files/folders other accounts have shared with the signed-in account. */
+    data object SharedWithMe : Screen
+
+    /** After login: read-only admin panel (registered accounts + audit trail) - only reachable while [AppViewModel.currentUserIsAdmin]. */
+    data object Admin : Screen
 }

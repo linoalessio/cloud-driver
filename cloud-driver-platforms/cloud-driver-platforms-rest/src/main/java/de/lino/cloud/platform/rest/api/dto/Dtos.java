@@ -223,4 +223,84 @@ public final class Dtos {
     public record CloudUserResponse(String authUserId, long timeStamp, long maxBytesToUpload, long currentUploadedBytes) {
     }
 
+    /**
+     * Response of {@code GET /auth/me} (bearer-gated) - the caller's own account id, email
+     * address, and admin flag. Used by the desktop client to decide whether to show its Admin
+     * sidebar entry at all, since there is otherwise no way for a client to learn this without
+     * probing an admin-gated route and interpreting a {@code 403}.
+     */
+    public record MeResponse(String authUserId, String emailAddress, boolean isAdmin) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /admin/authUsers} response array (admin-gated) -
+     * mirrors {@code AuthUser}'s Gson-serialized fields, keeping only what the desktop client's
+     * read-only Admin panel actually displays; extra fields present in the server's actual JSON
+     * (e.g. {@code passwordHash}) are simply ignored by Gson on deserialization into this smaller
+     * shape.
+     */
+    public record AuthUserResponse(String id, String emailAddress, boolean isAdmin) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /admin/audit-log} response array (admin-gated) -
+     * mirrors the server's {@code AuditLogEntryResponse}: {@code actorEmail} is already resolved
+     * server-side from the underlying actor id, {@code null} for an action with no identified
+     * actor (e.g. a failed login against an unknown address).
+     */
+    public record AuditLogEntryResponse(long timestampEpochMillis, String action, String actorEmail, String targetId) {
+    }
+
+    /**
+     * Body for {@code POST /files/{id}/share} and {@code POST /folders/{id}/share} - grants
+     * {@code granteeEmail}'s account read-only access.
+     */
+    public record ShareRequest(String granteeEmail) {
+    }
+
+    /**
+     * Response of {@code GET /cloudUsers/exists?email=<address>} - whether <em>any</em> account is
+     * registered under that address. Backs the desktop app's Share dialog live-checking a typed
+     * grantee address before submitting a share.
+     */
+    public record EmailExistsResponse(boolean exists) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/shared-with-me} response array (added 2026-09-02,
+     * replacing a bare {@link StoredFileSummaryResponse} array) - mirrors the server's {@code
+     * SharedFileSummary}: the file's own descriptive fields plus {@code ownerEmail}, the email
+     * address of the account that shared it.
+     */
+    public record SharedFileSummaryResponse(StoredFileSummaryResponse file, String ownerEmail) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /folders/shared-with-me} response array (added
+     * 2026-09-02, replacing a bare {@link FolderResponse} array) - mirrors the server's {@code
+     * SharedFolderSummary}, the same "pair with the sharing account's email" shape as {@link
+     * SharedFileSummaryResponse}.
+     */
+    public record SharedFolderSummaryResponse(FolderResponse folder, String ownerEmail) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/trash} response array (added 2026-09-02,
+     * replacing a bare {@link StoredFileSummaryResponse} array) - mirrors the server's {@code
+     * TrashedFileSummary}: the file's own descriptive fields plus {@code purgeAtEpochMillis}, when
+     * it becomes eligible for permanent removal under the server's configured trash retention
+     * window.
+     */
+    public record TrashedFileSummaryResponse(StoredFileSummaryResponse file, long purgeAtEpochMillis) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /folders/trash} response array (added 2026-09-02,
+     * replacing a bare {@link FolderResponse} array) - mirrors the server's {@code
+     * TrashedFolderSummary}, the same "pair with a purge-eligibility timestamp" shape as {@link
+     * TrashedFileSummaryResponse}.
+     */
+    public record TrashedFolderSummaryResponse(FolderResponse folder, long purgeAtEpochMillis) {
+    }
+
 }

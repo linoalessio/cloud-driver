@@ -15,7 +15,7 @@
   "smtp-from-address": "MAIL_ADDRESS",
 
   "aws-kms-region": "AWS_KMS_REGION",
-  "aws-kms-key-id": "AWS_KMS_ALIAS",
+  "aws-kms-key-id": "alias/AWS_KMS_ALIAS",
 
   "jwt-signing-key": "JWT_SIGNING_KEY"
 }

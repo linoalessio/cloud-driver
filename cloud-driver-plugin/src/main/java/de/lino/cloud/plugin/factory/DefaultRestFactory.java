@@ -117,18 +117,81 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String TWO_FACTOR_DISABLE_PATH = "/auth/2fa/disable";
     /** Path mounted by {@link #start} for {@link #handleTwoFactorLogin}, exempted from {@link #requireValidBearerToken} - the caller has no real access token yet, that's the whole point of this route. */
     private static final String TWO_FACTOR_LOGIN_PATH = "/auth/2fa/login";
+    /** Path mounted by {@link #start} for {@link #handleGetMe} - bearer-gated like every other {@code /auth/*} route not explicitly exempted, resolves the caller's own account from its own bearer token. */
+    private static final String ME_PATH = "/auth/me";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
     private static final String FILES_PATH = "/files";
-    /** Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} by Javalin's own routing regardless of registration order. */
+    /**
+     * Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment that
+     * happens to be registered <em>before</em> {@link #FILES_PATH}{@code /{id}} in {@link #start}.
+     * <b>Corrected (2026-09-02):</b> this used to claim Javalin's own routing matches a static
+     * segment ahead of a {@code {param}} one "regardless of registration order" - false. Javalin
+     * 7's {@code io.javalin.router.matcher.PathMatcher#findFirstEntry} does a plain linear scan
+     * over registered routes of a given HTTP method, in registration order, and returns the first
+     * whose path template matches - confirmed directly against its bytecode after this exact
+     * mistake broke {@link #FILES_SHARED_WITH_ME_PATH} (registered after {@code /files/{id}} let
+     * that param route silently swallow every request to it - see that constant's own Javadoc for
+     * the full incident). This route only ever worked because it happens to be registered before
+     * {@code /files/{id}} below - move it after that route's registration and it would break the
+     * exact same way.
+     */
     private static final String FILES_TRASH_PATH = FILES_PATH + "/trash";
     /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";
-    /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
+    /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - registered before {@code PUT}/{@code DELETE /folders/{id}} the same way {@link #FILES_TRASH_PATH} is registered before {@code GET /files/{id}} - though since neither of those two is a {@code GET} route, there is no same-method collision risk here the way {@link #FILES_TRASH_PATH}/{@link #FILES_SHARED_WITH_ME_PATH} have with {@code GET /files/{id}}. */
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
-    /** Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder sharing) - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} the same way {@link #FILES_TRASH_PATH} already is. */
+    /**
+     * Path mounted by {@link #start} for {@link #handleEmptyTrash} (added 2026-09-02, the "Empty
+     * trash bin" action) - a standalone top-level resource rather than nested under {@link
+     * #FILES_PATH}/{@link #FOLDERS_PATH}, deliberately: one call empties both files' and folders'
+     * trash together via a single {@link CloudUserService#emptyTrash} call, so there is no natural
+     * single owner between the two existing resources to nest it under, and a standalone path
+     * sidesteps the whole registration-order-vs-{@code {id}} pitfall {@link #FILES_TRASH_PATH}'s
+     * own Javadoc documents entirely, rather than needing to reason about it again here.
+     */
+    private static final String TRASH_EMPTY_PATH = "/trash/empty";
+    /**
+     * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
+     * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
+     * #FILES_TRASH_PATH}'s own Javadoc for why registration order (not any Javalin routing
+     * precedence) is what decides this. <b>Fixed a real, confirmed bug (2026-09-02):</b> this route
+     * used to be registered <em>after</em> {@code GET /files/{id}} (added alongside {@code POST
+     * /files/{id}/share} further down the route list, with no thought given to its own position
+     * relative to the earlier {@code /files/{id}} registration), so every {@code GET
+     * /files/shared-with-me} request was silently captured by {@link #handleDownloadFile} treating
+     * {@code "shared-with-me"} as a file id, 404ing with {@code "No StoredFile with id
+     * shared-with-me"} instead of ever reaching {@link #handleListFilesSharedWithMe}. This broke
+     * the read side of sharing for every recipient on every deployment since item 9 first shipped -
+     * the write side ({@code POST /files/{id}/share}, a differently-shaped 3-segment path with no
+     * collision) worked the whole time, which is what made this bug so easy to miss: a share looked
+     * successful (confirmable via {@code GET /files/{id}/share} listing the grant back), but the
+     * recipient could never actually see it. Confirmed against the live deployment (zero rows in
+     * neither table moved the needle - the grant itself persisted correctly; only the listing broke)
+     * before being traced to this exact registration-order mistake.
+     */
     private static final String FILES_SHARED_WITH_ME_PATH = FILES_PATH + "/shared-with-me";
-    /** Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe} - same static-segment-first routing note as {@link #FILES_SHARED_WITH_ME_PATH}. */
+    /**
+     * Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe}. Unlike {@link
+     * #FILES_SHARED_WITH_ME_PATH}, this one was never actually broken by the registration-order bug
+     * described there - there is no {@code GET /folders/{id}} route at all (folder-by-id is only
+     * reachable via {@code PUT}/{@code DELETE}), so no {@code GET} route exists that could ever
+     * shadow this one regardless of where it's registered. Left in its original position rather
+     * than moved for cosmetic consistency with the fix above.
+     */
     private static final String FOLDERS_SHARED_WITH_ME_PATH = FOLDERS_PATH + "/shared-with-me";
+    /**
+     * Path mounted by {@link #start} for {@link #handleCheckCloudUserExists} (added 2026-09-02,
+     * backing the desktop app's live grantee-email check in its Share dialog) - a static segment on
+     * the {@code /cloudUsers} resource. Registered explicitly inside {@link #start}'s {@code
+     * cloudUserService != null} block, which runs before the generic {@code GET /cloudUsers/{id}}
+     * route gets registered via the {@code fetchResources.forEach(...)} loop at the very end of
+     * {@link #start} - that ordering is load-bearing, not cosmetic; see {@link #FILES_TRASH_PATH}'s
+     * own Javadoc for why (Javalin has no built-in "prefer a static segment over a path param"
+     * precedence - it's a first-match-in-registration-order linear scan).
+     */
+    private static final String CLOUD_USER_EXISTS_PATH = "/cloudUsers/exists";
+    /** Query parameter {@link #handleCheckCloudUserExists} reads the email address to check from. */
+    private static final String EMAIL_QUERY_PARAM = "email";
     /**
      * Path prefix every {@code /auth/*} route falls under - checked by {@link
      * #requireWithinAuthRateLimit}, which applies to all nine {@code /auth/*} routes alike
@@ -158,6 +221,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
     private static final String ADMIN_AUTH_USERS_PATH = "/admin/authUsers";
+    /** Path mounted by {@link #start} for {@link #handleListAuditLog} - admin-gated, backs the desktop app's read-only Admin panel. */
+    private static final String ADMIN_AUDIT_LOG_PATH = "/admin/audit-log";
+    /** Query parameter {@link #handleListAuditLog} reads to switch from the default recent-20 listing to every entry - see that method's own Javadoc. */
+    private static final String AUDIT_LOG_ALL_QUERY_PARAM = "all";
+    /** Query parameter {@link #handleListAuditLog} reads to filter the listing to one account's actions, by email. */
+    private static final String AUDIT_LOG_EMAIL_QUERY_PARAM = "email";
+    /** How many entries {@link #handleListAuditLog} returns by default (no {@link #AUDIT_LOG_ALL_QUERY_PARAM}), newest first - mirrors {@code AuditLogCommand}'s own terminal default. */
+    private static final int DEFAULT_AUDIT_LOG_LIMIT = 20;
     /**
      * Path mounted by {@link #start} for the item-10 (live push via WebSocket, see {@code
      * architecture/SERVICES.md}) WebSocket route, configured by {@link #configureLiveUpdatesWebSocket}.
@@ -499,26 +570,45 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(TWO_FACTOR_SETUP_PATH, this::handleBeginTwoFactorSetup);
                 config.routes.post(TWO_FACTOR_CONFIRM_PATH, this::handleConfirmTwoFactorSetup);
                 config.routes.post(TWO_FACTOR_DISABLE_PATH, this::handleDisableTwoFactor);
+                config.routes.get(ME_PATH, this::handleGetMe);
                 config.routes.before(this::requireValidBearerToken);
 
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
                 config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
+                config.routes.get(ADMIN_AUDIT_LOG_PATH, this::handleListAuditLog);
                 config.routes.before(this::requireAdmin);
 
                 config.routes.ws(LIVE_UPDATES_PATH, this::configureLiveUpdatesWebSocket);
             }
 
             if (this.cloudUserService != null) {
+                config.routes.get(CLOUD_USER_EXISTS_PATH, this::handleCheckCloudUserExists);
+                config.routes.post(TRASH_EMPTY_PATH, this::handleEmptyTrash);
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
                 config.routes.get(FILES_TRASH_PATH, this::handleListDeletedFiles);
+                // FILES_SHARED_WITH_ME_PATH must be registered before "/files/{id}" below - see
+                // that constant's own Javadoc: Javalin's PathMatcher (io.javalin.router.matcher,
+                // confirmed via its findFirstEntry/match methods) does a plain linear scan over
+                // registered GET routes IN REGISTRATION ORDER and returns the first one whose
+                // path template matches, with NO "prefer a static segment over a path param"
+                // precedence of its own - unlike what an earlier revision of this file's own
+                // Javadoc (and CLAUDE.md) claimed. Registered after "/files/{id}" (a real,
+                // confirmed bug, fixed 2026-09-02), every GET /files/shared-with-me request was
+                // silently swallowed by handleDownloadFile treating "shared-with-me" as a file id -
+                // 404ing with "No StoredFile with id shared-with-me" - so a share's *write* side
+                // worked (confirmed via GET /files/{id}/share showing the grant) while its *read*
+                // side for the recipient never worked at all, on any deployment, since item 9 first
+                // shipped. FILES_TRASH_PATH above only ever worked by the same registration-order
+                // coincidence, not because of any framework guarantee.
+                config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
-                config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
+                config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
 
                 config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
@@ -529,6 +619,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FOLDERS_PATH + "/{id}/restore", this::handleRestoreFolder);
                 config.routes.get(FOLDERS_SHARED_WITH_ME_PATH, this::handleListFoldersSharedWithMe);
                 config.routes.post(FOLDERS_PATH + "/{id}/share", this::handleShareFolder);
+                config.routes.get(FOLDERS_PATH + "/{id}/share", this::handleListFolderShares);
                 config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
             }
 
@@ -668,12 +759,26 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /**
      * Javalin {@code before} filter capping {@code /auth/*} request volume per client IP, via a
      * fixed-window counter ({@link AuthRateLimitBucket}) keyed by {@link Context#ip()}. Applies to
-     * all seven {@code /auth/*} routes ({@link #AUTH_PATH_PREFIX}) alike - both the five exempted
-     * from {@link #requireValidBearerToken} (an anonymous caller has nothing else to key a limit
-     * on) and the two bearer-gated change-email routes (a stolen/leaked token shouldn't get
+     * all seven original {@code /auth/*} routes ({@link #AUTH_PATH_PREFIX}) alike - both the five
+     * exempted from {@link #requireValidBearerToken} (an anonymous caller has nothing else to key a
+     * limit on) and the two bearer-gated change-email routes (a stolen/leaked token shouldn't get
      * unlimited free e-mail-change attempts either). Registered as the very first {@code before}
      * filter (ahead of {@link #requireValidBearerToken}/{@link #requireAdmin}) so an over-limit
      * caller is rejected before this instance does any other work on the request.
+     *
+     * <p><b>{@link #ME_PATH} is deliberately excluded (added 2026-09-02)</b> - unlike the seven
+     * routes above, {@code GET /auth/me} is neither an anonymous credential-guessing target (it's
+     * already bearer-gated by {@link #requireValidBearerToken}, which runs after this filter) nor a
+     * sensitive mutating action like the change-email routes; it's a cheap, frequently-polled
+     * informational read (the desktop app calls it on every login <em>and</em> every Dashboard
+     * visit). Counting it against the same tight budget as login/register/password-reset meant a
+     * handful of logins or Dashboard reloads could exhaust the whole window and spuriously
+     * rate-limit a genuine login attempt with no abuse involved - confirmed the hard way once this
+     * route shipped. This filter runs unconditionally on every request whose path starts with
+     * {@link #AUTH_PATH_PREFIX}, before Javalin even resolves whether a route exists for it, so a
+     * client hitting {@link #ME_PATH} against a deployment that predates this route (a 404) still
+     * consumed a slot before this fix - worth knowing if this error resurfaces against a stale
+     * deployment.
      *
      * <p>This is deliberately a defense against brute-forcing/spam volume, not a hard security
      * perimeter: {@link Context#ip()} is the immediate TCP peer address, which a caller behind a
@@ -688,7 +793,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      *     #resolveAuthRateLimitWindowSeconds()}-second window
      */
     private void requireWithinAuthRateLimit(@NotNull final Context ctx) {
-        if (!ctx.path().startsWith(AUTH_PATH_PREFIX)) {
+        if (!ctx.path().startsWith(AUTH_PATH_PREFIX) || ME_PATH.equals(ctx.path())) {
             return;
         }
         final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(ctx.ip(), ignored -> new AuthRateLimitBucket());
@@ -1399,6 +1504,43 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
+     * The {@code {"authUserId", "emailAddress", "isAdmin"}} JSON response shape returned by {@code
+     * GET /auth/me}.
+     */
+    private record MeResponse(String authUserId, String emailAddress, boolean isAdmin) {
+        /** Builds a {@link MeResponse} straight from an {@link AuthUser} - the one place that mapping happens. */
+        private static MeResponse of(final AuthUser user) {
+            return new MeResponse(user.getId(), user.getEmailAddress(), user.isAdmin());
+        }
+    }
+
+    /**
+     * {@code GET /auth/me}: bearer-gated, resolves the caller's own account (from {@link
+     * #requireUserId}, never anything in the request itself) via {@link
+     * AuthService#getAuthUser(String)} and returns its id/email/admin flag. Added so a client can
+     * learn whether the signed-in account is flagged {@link AuthUser#isAdmin()} without needing to
+     * probe an admin-gated route and interpret a {@code 403} - the desktop app's Admin sidebar
+     * entry is shown/hidden based on this response.
+     */
+    private void handleGetMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.authService.getAuthUser(userId))
+                .handle((authUser, failure) -> {
+                    if (failure == null) {
+                        if (authUser.isEmpty()) {
+                            throw new UnauthorizedResponse("Account no longer exists");
+                        }
+                        ctx.contentType("application/json").result(this.gson.toJson(MeResponse.of(authUser.get())));
+                        return null;
+                    }
+                    System.err.println("[DefaultRestFactory] unmapped /auth/me lookup failure, returning 500:");
+                    failure.printStackTrace();
+                    throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
+                }));
+    }
+
+    /**
      * {@code GET /admin/authUsers}: lists every registered {@link AuthUser} via {@link
      * AuthService#getAuthUsers()} - gated by {@link #requireAdmin} (in addition to {@link
      * #requireValidBearerToken}), so only a caller whose own account is flagged {@link
@@ -1445,6 +1587,72 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     failure.printStackTrace();
                     throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
                 }));
+    }
+
+    /**
+     * One entry in {@code GET /admin/audit-log}'s response array - mirrors {@link
+     * de.lino.cloud.api.audit.AuditEvent}'s fields, with {@code actorAuthUserId} resolved to an
+     * email address (via {@link #resolveAuditActorEmail}) for display, the same way {@code
+     * AuditLogCommand}'s terminal listing already does.
+     */
+    private record AuditLogEntryResponse(long timestampEpochMillis, String action, String actorEmail, String targetId) {
+        /** Builds an {@link AuditLogEntryResponse} from a raw {@link de.lino.cloud.api.audit.AuditEvent} plus its already-resolved actor email. */
+        private static AuditLogEntryResponse of(final de.lino.cloud.api.audit.AuditEvent event, final String actorEmail) {
+            return new AuditLogEntryResponse(event.getTimestampEpochMillis(), event.getAction().name(), actorEmail, event.getTargetId());
+        }
+    }
+
+    /**
+     * {@code GET /admin/audit-log}: gated by {@link #requireAdmin} the same way {@link
+     * #handleListAuthUsers} is. Reads every {@link de.lino.cloud.api.audit.AuditEvent} directly off
+     * {@link #dataFactory} (mirroring {@code AuditLogCommand}'s terminal implementation, since
+     * {@code AuditLogService} itself deliberately exposes only {@code record} - see its own
+     * Javadoc), sorted newest-first. Returns the most recent {@link #DEFAULT_AUDIT_LOG_LIMIT}
+     * entries by default; {@code ?all=true} returns every entry instead, and {@code
+     * ?email=<address>} filters to only that account's own actions (resolved via {@link
+     * AuthService#getAuthUsers()} the same case-insensitive way {@code AuditLogCommand} does) -
+     * both query parameters can be combined.
+     */
+    private void handleListAuditLog(@NotNull final Context ctx) {
+        final boolean all = Boolean.parseBoolean(ctx.queryParam(AUDIT_LOG_ALL_QUERY_PARAM));
+        final String emailFilter = ctx.queryParam(AUDIT_LOG_EMAIL_QUERY_PARAM);
+        ctx.future(() -> this.dataFactory.getEntitiesAsync(de.lino.cloud.api.audit.AuditEvent.class)
+                .handle((events, failure) -> {
+                    if (failure != null) {
+                        System.err.println("[DefaultRestFactory] unmapped admin audit-log listing failure, returning 500:");
+                        failure.printStackTrace();
+                        throw failure instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(failure);
+                    }
+                    final List<de.lino.cloud.api.audit.AuditEvent> sorted = events.stream()
+                            .sorted(Comparator.comparingLong(de.lino.cloud.api.audit.AuditEvent::getTimestampEpochMillis).reversed())
+                            .toList();
+                    final List<de.lino.cloud.api.audit.AuditEvent> filtered;
+                    if (emailFilter != null && !emailFilter.isBlank()) {
+                        final String actorAuthUserId = this.authService.getAuthUsers().stream()
+                                .filter(candidate -> candidate.getEmailAddress().equalsIgnoreCase(emailFilter))
+                                .map(AuthUser::getId)
+                                .findFirst()
+                                .orElse(null);
+                        filtered = actorAuthUserId == null ? List.of()
+                                : sorted.stream().filter(event -> actorAuthUserId.equals(event.getActorAuthUserId())).toList();
+                    } else {
+                        filtered = sorted;
+                    }
+                    final List<de.lino.cloud.api.audit.AuditEvent> limited = all ? filtered : filtered.stream().limit(DEFAULT_AUDIT_LOG_LIMIT).toList();
+                    final List<AuditLogEntryResponse> response = limited.stream()
+                            .map(event -> AuditLogEntryResponse.of(event, resolveAuditActorEmail(event.getActorAuthUserId())))
+                            .toList();
+                    ctx.contentType("application/json").result(this.gson.toJson(response));
+                    return null;
+                }));
+    }
+
+    /** Resolves an {@link de.lino.cloud.api.audit.AuditEvent#getActorAuthUserId()} back to its account's email for display, or {@code null}/the raw id if it can't be resolved - mirrors {@code AuditLogCommand}'s own terminal resolution. */
+    private String resolveAuditActorEmail(final String actorAuthUserId) {
+        if (actorAuthUserId == null) {
+            return null;
+        }
+        return this.authService.getAuthUser(actorAuthUserId).map(AuthUser::getEmailAddress).orElse(actorAuthUserId);
     }
 
     /**
@@ -1736,8 +1944,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code GET /files/trash}: lists every {@link StoredFile} currently in the caller's trash, as
-     * {@link StoredFileSummary}s - the same descriptive-fields-only shape/cost {@link
-     * #handleListFiles} returns for a live listing, via {@link
+     * {@link de.lino.cloud.api.file.TrashedFileSummary}s (each carrying a {@code purgeAtEpochMillis}
+     * - see that record's own Javadoc, added 2026-09-02) - the same descriptive-fields-only
+     * shape/cost {@link #handleListFiles} returns for a live listing, via {@link
      * CloudUserService#listDeletedFiles}.
      */
     private void handleListDeletedFiles(@NotNull final Context ctx) {
@@ -1903,14 +2112,41 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * {@code GET /folders/trash}: lists every {@link Folder} currently in the caller's trash via
-     * {@link CloudUserService#listDeletedFolders}.
+     * {@code GET /folders/trash}: lists every {@link Folder} currently in the caller's trash, as
+     * {@link de.lino.cloud.api.file.TrashedFolderSummary}s (each carrying a {@code
+     * purgeAtEpochMillis}, added 2026-09-02) via {@link CloudUserService#listDeletedFolders}.
      */
     private void handleListDeletedFolders(@NotNull final Context ctx) {
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.listDeletedFolders(userId))
                 .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /**
+     * {@code POST /trash/empty} (added 2026-09-02): permanently removes every file and folder
+     * currently in the caller's trash via {@link CloudUserService#emptyTrash} - bypassing the
+     * configured retention window entirely, the "Empty trash bin" action. {@code 204} on success
+     * (also on an already-empty trash - idempotent, matching {@link CloudUserService#emptyTrash}'s
+     * own contract). No domain-specific failure is expected here (unlike {@link #handleDeleteFolder}
+     * etc.), so an unmapped failure is printed to {@link System#err} and rethrown directly, the same
+     * "make a silent 500 visible" fix already applied to {@link #folderFailureOrPropagate}/{@link
+     * #notFoundOrPropagate}/{@link #unauthorizedOrPropagate}/{@link #registrationFailureOrPropagate}.
+     */
+    private void handleEmptyTrash(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.emptyTrash(userId))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+                    System.err.println("[DefaultRestFactory] unmapped empty-trash failure for " + userId + ", returning 500:");
+                    cause.printStackTrace();
+                    throw cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
+                }));
     }
 
     /**
@@ -1985,6 +2221,26 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
+     * {@code GET /files/{id}/share}: lists the email addresses of every account {@code id} is
+     * currently shared with, via {@link CloudUserService#listFileShares} - owner-only, backing a
+     * "who can see this file"/revoke UI. {@code 404} (via {@link #folderFailureOrPropagate}'s
+     * {@link IllegalArgumentException} handling) if {@code id} isn't owned by the caller.
+     */
+    private void handleListFileShares(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listFileShares(userId, id))
+                .handle((emails, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(emails));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
      * {@code GET /files/shared-with-me}: lists every file directly shared with the caller, as
      * {@link StoredFileSummary}s, via {@link CloudUserService#listSharedWithMe}. Does not include a
      * file only reachable through a folder-level share - see that method's own Javadoc.
@@ -2038,6 +2294,25 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
+     * {@code GET /folders/{id}/share}: lists the email addresses of every account {@code id} is
+     * currently shared with, via {@link CloudUserService#listFolderShares} - same shape as {@link
+     * #handleListFileShares}.
+     */
+    private void handleListFolderShares(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listFolderShares(userId, id))
+                .handle((emails, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(emails));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
      * {@code GET /folders/shared-with-me}: lists every folder directly shared with the caller via
      * {@link CloudUserService#listSharedFoldersWithMe}.
      */
@@ -2046,6 +2321,32 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.listSharedFoldersWithMe(userId))
                 .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /** The {@code {"exists"}} JSON response body returned by {@code GET /cloudUsers/exists}. */
+    private record EmailExistsResponse(boolean exists) {
+    }
+
+    /**
+     * {@code GET /cloudUsers/exists?email=<address>} (added 2026-09-02): bearer-gated like every
+     * other {@code /cloudUsers} route, but not scoped to the caller's own account - it only ever
+     * answers "does <em>any</em> account exist under this address", via {@link
+     * CloudUserService#getCloudUserByEmail}. Backs the desktop app's Share dialog, which live-checks
+     * a typed grantee address as the caller types rather than only finding out it's wrong once
+     * {@code POST .../share} rejects it with {@link
+     * de.lino.cloud.api.user.GranteeAccountNotFoundException}. Revealing existence here is
+     * intentional for the same reason that exception's own translation is - the caller is already
+     * an authenticated account holder, not an anonymous visitor, so this isn't the same
+     * login-enumeration risk {@code AuthService#requestPasswordReset}'s own "don't leak" contract
+     * guards against. A missing/blank {@code email} query parameter is treated as simply not
+     * existing, rather than a {@code 400} - the caller's own debounced check already only fires for
+     * a non-blank value, so this is purely a defensive fallback.
+     */
+    private void handleCheckCloudUserExists(@NotNull final Context ctx) {
+        final String email = ctx.queryParam(EMAIL_QUERY_PARAM);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> email != null && !email.isBlank() && this.cloudUserService.getCloudUserByEmail(email).isPresent())
+                .thenAccept(exists -> ctx.contentType("application/json").result(this.gson.toJson(new EmailExistsResponse(exists)))));
     }
 
     /** {@code POST path}  ->  create (DataFactory#registerAsync), dispatched off the Jetty worker thread. */
@@ -2258,6 +2559,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static RuntimeException folderFailureOrPropagate(final Throwable failure, final Class<?> type, final String id) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        if (cause instanceof de.lino.cloud.api.user.GranteeAccountNotFoundException granteeNotFound) {
+            // Checked ahead of the plain IllegalArgumentException case below - it must never be
+            // collapsed into that branch's generic "No <type> with id <id>" message, which would
+            // misleadingly imply the file/folder itself is missing rather than the grantee address
+            // being wrong (a real, confirmed bug - see this exception's own Javadoc).
+            return new NotFoundResponse(granteeNotFound.getMessage());
+        }
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
         }

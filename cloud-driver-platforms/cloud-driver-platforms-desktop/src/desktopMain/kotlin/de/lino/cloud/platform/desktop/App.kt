@@ -12,8 +12,10 @@ import de.lino.cloud.platform.desktop.auth.ResetPasswordConfirmScreen
 import de.lino.cloud.platform.desktop.auth.ResetPasswordRequestScreen
 import de.lino.cloud.platform.desktop.auth.TwoFactorLoginScreen
 import de.lino.cloud.platform.desktop.model.Screen
+import de.lino.cloud.platform.desktop.panel.AdminScreen
 import de.lino.cloud.platform.desktop.panel.DashboardScreen
 import de.lino.cloud.platform.desktop.panel.FileBrowserScreen
+import de.lino.cloud.platform.desktop.panel.SharedWithMeScreen
 import de.lino.cloud.platform.desktop.panel.TrashScreen
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 
@@ -42,6 +44,8 @@ fun App(viewModel: AppViewModel) {
             Screen.Browser -> FileBrowserScreen(viewModel)
             Screen.Dashboard -> DashboardScreen(viewModel)
             Screen.Trash -> TrashScreen(viewModel)
+            Screen.SharedWithMe -> SharedWithMeScreen(viewModel)
+            Screen.Admin -> AdminScreen(viewModel)
         }
     }
 }

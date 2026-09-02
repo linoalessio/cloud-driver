@@ -18,7 +18,10 @@ import de.lino.cloud.platform.desktop.utils.mapConcurrently
 import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -126,6 +129,18 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     var currentUserMaxBytesToUpload: Long? by mutableStateOf(null)
         private set
 
+    /**
+     * Whether the signed-in account is flagged admin - fetched via [CloudDriverClient.getMe]
+     * alongside [refreshAccountInfo], since there is no other way for this client to learn it
+     * (admin-flag writes are deliberately terminal-only, never a REST route, and the account's own
+     * flag isn't part of [CloudUserResponse]). Drives whether the sidebar's "Admin" entry is shown
+     * at all - `false` on any fetch failure, same "don't assume" caution as every other
+     * `null`-on-failure Dashboard-only field in this class, just defaulting to the non-privileged
+     * value instead of `null` since a [Boolean] has no natural "unknown" state to fall back to.
+     */
+    var currentUserIsAdmin: Boolean by mutableStateOf(false)
+        private set
+
     var dashboardStats: AccountStats? by mutableStateOf(null)
         private set
 
@@ -229,6 +244,13 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
             this.currentUserUploadedBytes = null
             this.currentUserMaxBytesToUpload = null
         }
+        try {
+            this.currentUserIsAdmin = this.client.getMe().isAdmin()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            this.currentUserIsAdmin = false
+        }
     }
 
     // --- file browser state ---------------------------------------------
@@ -245,11 +267,31 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
 
     // --- trash state ------------------------------------------------------
 
-    /** Every folder currently in the caller's trash - see [Screen.Trash]/`TrashScreen`. Loaded/refreshed by [loadTrash]/[restoreFile]/[restoreFolder]. */
-    val trashFolders = mutableStateListOf<FolderResponse>()
+    /** Every folder currently in the caller's trash, each paired with when it becomes eligible for permanent removal - see [Screen.Trash]/`TrashScreen`. Loaded/refreshed by [loadTrash]/[restoreFile]/[restoreFolder]/[emptyTrash]. */
+    val trashFolders = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFolderSummaryResponse>()
 
-    /** Every file currently in the caller's trash - counterpart to [trashFolders]. */
-    val trashFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
+    /** Every file currently in the caller's trash, each paired with when it becomes eligible for permanent removal - counterpart to [trashFolders]. */
+    val trashFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse>()
+
+    // --- shared with me state ----------------------------------------------
+
+    /** Every folder directly shared with the signed-in account, each paired with the sharing account's email - see [Screen.SharedWithMe]. Loaded/refreshed by [loadSharedWithMe]. */
+    val sharedWithMeFolders = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse>()
+
+    /** Every file directly shared with the signed-in account, each paired with the sharing account's email - counterpart to [sharedWithMeFolders]. */
+    val sharedWithMeFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse>()
+
+    // --- admin panel state ---------------------------------------------------
+
+    /** Every registered account (admin-only) - see [Screen.Admin]. Loaded/refreshed by [loadAdmin]. */
+    val adminAuthUsers = mutableStateListOf<AuthUserResponse>()
+
+    /** The persisted audit trail (admin-only) - counterpart to [adminAuthUsers]. */
+    val adminAuditLog = mutableStateListOf<AuditLogEntryResponse>()
+
+    /** Whether [loadAdmin]/[refreshAdmin] last loaded every audit-log entry ([true]) or just the most recent 20 ([false], the default). */
+    var adminAuditLogShowAll: Boolean by mutableStateOf(false)
+        private set
 
     /**
      * [folders]/[files] are loaded a page ([FOLDER_VIEW_PAGE_SIZE] entries) at a time via
@@ -450,6 +492,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserCreatedAtEpochMillis = null
         this.currentUserUploadedBytes = null
         this.currentUserMaxBytesToUpload = null
+        this.currentUserIsAdmin = false
         this.showKeychainFallbackNotice = false
         this.dashboardStats = null
         this.breadcrumbs.clear()
@@ -461,6 +504,11 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.selected.clear()
         this.trashFolders.clear()
         this.trashFiles.clear()
+        this.sharedWithMeFolders.clear()
+        this.sharedWithMeFiles.clear()
+        this.adminAuthUsers.clear()
+        this.adminAuditLog.clear()
+        this.adminAuditLogShowAll = false
         this.screen = Screen.Login
     }
 
@@ -504,6 +552,57 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun restoreFolder(folderId: String) = run {
         this.client.restoreFolder(folderId)
         this.refreshTrash()
+    }
+
+    /**
+     * Permanently removes every file/folder currently in the trash - the "Empty trash bin" action.
+     * Bypasses the server's configured retention window entirely and is irreversible; the caller
+     * (`TrashScreen`) is responsible for confirming with the user first via a dialog, the same
+     * "this function performs the action unconditionally" convention [uninstall]/[deleteEntries]
+     * already use for their own destructive actions.
+     */
+    fun emptyTrash() = run {
+        this.client.emptyTrash()
+        this.refreshTrash()
+    }
+
+    // --- shared with me (item 9) ------------------------------------------
+
+    fun showSharedWithMe() {
+        this.screen = Screen.SharedWithMe
+        this.errorMessage = null
+    }
+
+    /** Public, guarded entry point - use from a screen (button/`LaunchedEffect`), mirroring [loadTrash]'s own shape. */
+    fun loadSharedWithMe() = run { this.refreshSharedWithMe() }
+
+    /** The actual reload, callable from inside another [run]-wrapped action without tripping [run]'s own `busy` guard - same reasoning as [refreshTrash]. */
+    private suspend fun refreshSharedWithMe() {
+        this.sharedWithMeFolders.clear()
+        this.sharedWithMeFolders.addAll(this.client.listSharedFoldersWithMe())
+        this.sharedWithMeFiles.clear()
+        this.sharedWithMeFiles.addAll(this.client.listSharedWithMe())
+    }
+
+    // --- admin panel --------------------------------------------------------
+
+    fun showAdmin() {
+        this.screen = Screen.Admin
+        this.errorMessage = null
+    }
+
+    /** Public, guarded entry point - use from a screen (button/`LaunchedEffect`). [showAll], if given, replaces [adminAuditLogShowAll] before reloading; otherwise the previous choice is kept (so e.g. `AdminScreen`'s own refresh button doesn't silently reset a "show all" toggle back to the default). */
+    fun loadAdmin(showAll: Boolean? = null) = run {
+        if (showAll != null) this.adminAuditLogShowAll = showAll
+        this.refreshAdmin()
+    }
+
+    /** The actual reload, callable from inside another [run]-wrapped action without tripping [run]'s own `busy` guard - same reasoning as [refreshTrash]/[refreshSharedWithMe]. */
+    private suspend fun refreshAdmin() {
+        this.adminAuthUsers.clear()
+        this.adminAuthUsers.addAll(this.client.listAdminAuthUsers())
+        this.adminAuditLog.clear()
+        this.adminAuditLog.addAll(this.client.listAdminAuditLog(all = this.adminAuditLogShowAll))
     }
 
     // --- file browser --------------------------------------------------

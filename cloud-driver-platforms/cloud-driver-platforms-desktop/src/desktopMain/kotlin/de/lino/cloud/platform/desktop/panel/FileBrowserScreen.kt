@@ -34,7 +34,10 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -47,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,7 +63,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draganddrop.DragAndDropEvent
@@ -106,6 +114,9 @@ private fun formatEpochMilli(epochMilli: Long): String = ENTRY_DATE_FORMAT.forma
 
 /** Two clicks land within this window (system default double-click speed, roughly) to count as a double-click - see `EntryRow`'s own click handling. */
 private const val DOUBLE_CLICK_THRESHOLD_MILLIS = 400L
+
+/** How long `ShareDialog` waits after the last keystroke in its grantee-email field before firing a live existence check - avoids a network round trip on every keystroke. */
+private const val EMAIL_CHECK_DEBOUNCE_MILLIS = 400L
 
 /**
  * The header's current-location display: a clickable "Home / Folder1 / Folder2" trail mirroring
@@ -186,6 +197,11 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     // own top level, rather than inside AuthenticatedShell's content lambda, precisely so it's
     // still in scope down there.
     var moveDialogEntry by remember { mutableStateOf<Entry?>(null) }
+
+    // The entry a right-click "Share" was requested for, if any - drives ShareDialog, rendered
+    // below the same "declared at this composable's own top level, outside AuthenticatedShell's
+    // content" way moveDialogEntry is, for the same reason (overlays the whole screen).
+    var shareDialogEntry by remember { mutableStateOf<Entry?>(null) }
 
     // The file a double-click was requested for, if any - see EntryRow's own click handling and
     // FilePreviewDialog. Same "declared at this composable's own top level, rendered outside
@@ -395,6 +411,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         onMoveRequest = { moveDialogEntry = entry },
                         onDuplicateRequest = { viewModel.duplicateEntries(listOf(entry)) },
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
+                        onShareRequest = { shareDialogEntry = entry },
                     )
                 }
                 // Explicit "Load more" rather than auto-loading on scroll - a large folder's next
@@ -448,6 +465,10 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
 
     moveDialogEntry?.let { entry ->
         MoveToFolderDialog(viewModel = viewModel, entry = entry, onDismiss = { moveDialogEntry = null })
+    }
+
+    shareDialogEntry?.let { entry ->
+        ShareDialog(viewModel = viewModel, entry = entry, onDismiss = { shareDialogEntry = null })
     }
 
     previewEntry?.let { entry ->
@@ -554,6 +575,192 @@ private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss:
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * The context menu's "Share" action (item 9, file/folder sharing - see `architecture/SERVICES.md`)
+ * - lets the caller grant another account (by email) read-only access to [entry], see who it's
+ * currently shared with, and revoke any of those grants. Deliberately a plain email text field, not
+ * a live-searching account picker: the server has no endpoint to search/list other accounts' emails
+ * (and building one would be a real account-enumeration risk this codebase avoids elsewhere, e.g.
+ * `AuthService#login`'s/`#requestPasswordReset`'s own "don't leak" error handling) - but the typed
+ * address itself *is* live-checked for existence (added 2026-09-02, via
+ * [CloudDriverClient.checkCloudUserExists], debounced [EMAIL_CHECK_DEBOUNCE_MILLIS] after the last
+ * keystroke) and the "Share" button disabled while it's known not to exist, showing "Cloud user
+ * account '&lt;email&gt;' does not exist" - checking existence for an already-authenticated caller
+ * sharing their own file isn't the same login-enumeration risk an anonymous account-search endpoint
+ * would be, the same reasoning `AuthService#requestEmailChange`'s own `EmailAlreadyRegisteredException`
+ * already relies on. **Fixed a real bug this same pass:** before this existed, a mistyped/nonexistent
+ * grantee address failed server-side with a misleading generic 404 (`DefaultRestFactory#folderFailureOrPropagate`
+ * collapsed it into "No StoredFile/Folder with id ...", implying the *file* was missing rather than
+ * the *address* being wrong - see `GranteeAccountNotFoundException`'s own Javadoc) with no grant ever
+ * persisted, so the intended recipient never saw the file and the sharer had no clear signal why.
+ *
+ * Fully self-contained (own local loading/error/list state, own [rememberCoroutineScope] for the
+ * share/revoke actions), the same way [MoveToFolderDialog]'s own folder browsing calls
+ * [AppViewModel.client] directly rather than going through [AppViewModel.run] - this dialog stays
+ * open across multiple share/revoke actions (unlike [MoveToFolderDialog], which closes itself after
+ * one move), so tying every action to the screen-wide `busy` guard would disable the rest of the
+ * app for no reason while this modal is simply open.
+ */
+@Composable
+private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var currentShares by remember { mutableStateOf<List<String>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var dialogError by remember { mutableStateOf<String?>(null) }
+    var emailInput by remember { mutableStateOf("") }
+    var actionInFlight by remember { mutableStateOf(false) }
+
+    // Live existence check for the typed grantee address, debounced so it doesn't fire a network
+    // call on every keystroke - null means "unknown/still checking", true/false once resolved.
+    // Keyed on the trimmed email so pure whitespace edits don't restart the debounce.
+    var checkedEmail by remember { mutableStateOf("") }
+    var emailExists by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(emailInput.trim()) {
+        val email = emailInput.trim()
+        if (email.isEmpty()) {
+            checkedEmail = ""
+            emailExists = null
+            return@LaunchedEffect
+        }
+        delay(EMAIL_CHECK_DEBOUNCE_MILLIS)
+        try {
+            emailExists = viewModel.client.checkCloudUserExists(email)
+            checkedEmail = email
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Couldn't determine (network hiccup, rate limit, etc.) - don't block sharing on a
+            // failed check, the server's own validation is still the real guard.
+            emailExists = null
+            checkedEmail = ""
+        }
+    }
+
+    suspend fun reload() {
+        loading = true
+        dialogError = null
+        try {
+            currentShares = when (entry) {
+                is Entry.FileEntry -> viewModel.client.listFileShares(entry.id)
+                is Entry.FolderEntry -> viewModel.client.listFolderShares(entry.id)
+            }
+        } catch (e: Exception) {
+            dialogError = e.message ?: "Failed to load shares"
+        } finally {
+            loading = false
+        }
+    }
+
+    LaunchedEffect(entry.id) { reload() }
+
+    fun share() {
+        val email = emailInput.trim()
+        if (email.isEmpty() || actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                when (entry) {
+                    is Entry.FileEntry -> viewModel.client.shareFile(entry.id, email)
+                    is Entry.FolderEntry -> viewModel.client.shareFolder(entry.id, email)
+                }
+                emailInput = ""
+                checkedEmail = ""
+                emailExists = null
+                reload()
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to share"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    fun revoke(email: String) {
+        if (actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                when (entry) {
+                    is Entry.FileEntry -> viewModel.client.revokeFileShare(entry.id, email)
+                    is Entry.FolderEntry -> viewModel.client.revokeFolderShare(entry.id, email)
+                }
+                reload()
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to revoke share"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    val trimmedEmail = emailInput.trim()
+    // Only treat the address as confirmed-missing once the debounced check has actually resolved
+    // for this exact (trimmed) value - checkedEmail lags emailInput while a check is still in
+    // flight/debouncing, so a stale `emailExists == false` from a previous, different address is
+    // never shown against the current one.
+    val emailKnownMissing = trimmedEmail.isNotEmpty() && checkedEmail == trimmedEmail && emailExists == false
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share \"${entry.name}\"") },
+        text = {
+            Column(Modifier.fillMaxWidth().height(340.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = emailInput,
+                        onValueChange = { emailInput = it },
+                        label = { Text("Account email") },
+                        singleLine = true,
+                        isError = emailKnownMissing,
+                        enabled = !actionInFlight,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = ::share, enabled = !actionInFlight && trimmedEmail.isNotEmpty() && !emailKnownMissing) {
+                        Icon(Icons.Filled.PersonAdd, contentDescription = "Share")
+                    }
+                }
+                if (emailKnownMissing) {
+                    Text(
+                        "Cloud user account '$trimmedEmail' does not exist",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Text("Currently shared with", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    dialogError != null -> Text(dialogError!!, color = MaterialTheme.colorScheme.error)
+                    currentShares.isEmpty() -> Text("Not shared with anyone yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else -> {
+                        LazyColumn(Modifier.weight(1f)) {
+                            items(currentShares, key = { it }) { email ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(email, modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { revoke(email) }, enabled = !actionInFlight) {
+                                        Icon(Icons.Filled.PersonRemove, contentDescription = "Revoke", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
     )
 }
 
@@ -690,6 +897,7 @@ private fun EntryRow(
     onMoveRequest: () -> Unit,
     onDuplicateRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
+    onShareRequest: () -> Unit,
 ) {
     var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
     var contextMenuExpanded by remember { mutableStateOf(false) }
@@ -799,6 +1007,12 @@ private fun EntryRow(
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = null) },
                 enabled = enabled,
                 onClick = { contextMenuExpanded = false; onMoveRequest() },
+            )
+            DropdownMenuItem(
+                text = { Text("Share") },
+                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                enabled = enabled,
+                onClick = { contextMenuExpanded = false; onShareRequest() },
             )
             DropdownMenuItem(
                 text = { Text("Delete") },

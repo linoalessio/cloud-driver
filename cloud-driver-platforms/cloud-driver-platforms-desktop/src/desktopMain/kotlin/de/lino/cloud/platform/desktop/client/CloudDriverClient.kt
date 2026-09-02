@@ -2,10 +2,15 @@ package de.lino.cloud.platform.desktop.client
 
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.SessionManager
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome
+import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
@@ -256,8 +261,8 @@ class CloudDriverClient(
         this.apiClient.deleteFolderAsync(folderId).await()
     }
 
-    /** Every file currently in the caller's trash, unpaginated - see [ApiClient.listDeletedFiles]'s own Javadoc. */
-    suspend fun listDeletedFiles(): List<StoredFileSummaryResponse> =
+    /** Every file currently in the caller's trash, unpaginated, each paired with when it becomes eligible for permanent removal - see [ApiClient.listDeletedFiles]'s own Javadoc. */
+    suspend fun listDeletedFiles(): List<de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse> =
         this.apiClient.listDeletedFilesAsync().await()
 
     /** Restores a trashed file back to its previous folder. */
@@ -265,9 +270,14 @@ class CloudDriverClient(
         this.apiClient.restoreFileAsync(fileId).await()
     }
 
-    /** Every folder currently in the caller's trash, unpaginated - see [ApiClient.listDeletedFolders]'s own Javadoc. */
-    suspend fun listDeletedFolders(): List<FolderResponse> =
+    /** Every folder currently in the caller's trash, unpaginated, each paired with when it becomes eligible for permanent removal - see [ApiClient.listDeletedFolders]'s own Javadoc. */
+    suspend fun listDeletedFolders(): List<de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFolderSummaryResponse> =
         this.apiClient.listDeletedFoldersAsync().await()
+
+    /** Permanently removes every file/folder currently in the caller's trash - the "Empty trash bin" action. Bypasses the retention window entirely. Irreversible. */
+    suspend fun emptyTrash() {
+        this.apiClient.emptyTrashAsync().await()
+    }
 
     /** Restores a trashed folder back to its previous parent. */
     suspend fun restoreFolder(folderId: String) {
@@ -277,6 +287,53 @@ class CloudDriverClient(
     /** The caller's own [CloudUserResponse] - its `timeStamp` is the account's creation time (see that DTO's own Javadoc). */
     suspend fun getCloudUser(authUserId: String): CloudUserResponse =
         this.apiClient.getCloudUserAsync(authUserId).await()
+
+    /** The signed-in account's own id/email/admin flag - used to decide whether to show admin-only UI. */
+    suspend fun getMe(): MeResponse = this.apiClient.getMeAsync().await()
+
+    /** Every registered account (admin-only) - throws if the signed-in account isn't flagged admin. */
+    suspend fun listAdminAuthUsers(): List<AuthUserResponse> = this.apiClient.listAdminAuthUsersAsync().await()
+
+    /** The persisted audit trail (admin-only) - `all` `true` lists every entry instead of the most recent 20; `emailFilter`, if non-null/non-blank, scopes to one account's own actions. */
+    suspend fun listAdminAuditLog(all: Boolean = false, emailFilter: String? = null): List<AuditLogEntryResponse> =
+        this.apiClient.listAdminAuditLogAsync(all, emailFilter).await()
+
+    // --- sharing (item 9) -------------------------------------------------
+
+    /** Grants [granteeEmail]'s account read-only access to [fileId]. Idempotent. */
+    suspend fun shareFile(fileId: String, granteeEmail: String) {
+        this.apiClient.shareFileAsync(fileId, granteeEmail).await()
+    }
+
+    /** Revokes a previously-granted share of [fileId] from [granteeEmail]. Idempotent - also succeeds if no such grant existed. */
+    suspend fun revokeFileShare(fileId: String, granteeEmail: String) {
+        this.apiClient.revokeFileShareAsync(fileId, granteeEmail).await()
+    }
+
+    /** Every account [fileId] is currently shared with, by email - backs a "who can see this"/revoke UI. */
+    suspend fun listFileShares(fileId: String): List<String> = this.apiClient.listFileSharesAsync(fileId).await()
+
+    /** Every file directly shared with the signed-in account, each paired with the sharing account's email address. */
+    suspend fun listSharedWithMe(): List<SharedFileSummaryResponse> = this.apiClient.listSharedWithMeAsync().await()
+
+    /** Grants [granteeEmail]'s account read-only access to [folderId] and everything nested inside it. Idempotent. */
+    suspend fun shareFolder(folderId: String, granteeEmail: String) {
+        this.apiClient.shareFolderAsync(folderId, granteeEmail).await()
+    }
+
+    /** Revokes a previously-granted share of [folderId] from [granteeEmail]. Idempotent. */
+    suspend fun revokeFolderShare(folderId: String, granteeEmail: String) {
+        this.apiClient.revokeFolderShareAsync(folderId, granteeEmail).await()
+    }
+
+    /** Every account [folderId] is currently shared with, by email. */
+    suspend fun listFolderShares(folderId: String): List<String> = this.apiClient.listFolderSharesAsync(folderId).await()
+
+    /** Every folder directly shared with the signed-in account, each paired with the sharing account's email address. */
+    suspend fun listSharedFoldersWithMe(): List<SharedFolderSummaryResponse> = this.apiClient.listSharedFoldersWithMeAsync().await()
+
+    /** Whether any account is registered under [email] - not scoped to the signed-in account's own address. Backs the Share dialog's live grantee-email check. */
+    suspend fun checkCloudUserExists(email: String): Boolean = this.apiClient.checkCloudUserExistsAsync(email).await()
 
     /**
      * Opens the item-10 live-push WebSocket connection (see `architecture/SERVICES.md`) - call
