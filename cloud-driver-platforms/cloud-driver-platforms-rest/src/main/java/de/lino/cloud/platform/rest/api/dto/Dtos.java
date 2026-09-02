@@ -144,6 +144,19 @@ public final class Dtos {
     }
 
     /**
+     * Mirrors the server's {@code CursorPage<T>} response envelope - what {@code GET /files}/
+     * {@code GET /folders} return instead of a bare array once a caller passes {@code ?limit=}
+     * (see {@code DefaultRestFactory#toPageEnvelope}). {@code nextCursor} is {@code null} once
+     * there is no next page; pass it back as the next call's {@code ?cursor=} otherwise.
+     *
+     * @param items      up to the requested page size
+     * @param nextCursor the cursor to request the next page with, or {@code null} if this was the last page
+     * @param <T>        the element type of one page - {@link StoredFileSummaryResponse} or {@link FolderResponse}
+     */
+    public record Page<T>(java.util.List<T> items, String nextCursor) {
+    }
+
+    /**
      * Shape of the object {@code GET /cloudUsers/{id}} returns - mirrors {@code CloudUser}'s
      * Gson-serialized fields. {@code timeStamp} is set once, when the {@code CloudUser} record is
      * first created (account confirmation time), so it doubles as the account's creation

@@ -91,6 +91,27 @@ public final class StoredFile extends Serialized {
     private final long updatedAtEpochMilli;
 
     /**
+     * When this file was soft-deleted, or {@code null} if it is not currently in the trash - see
+     * {@link #markedDeleted()}/{@link #restored()}. Boxed (not a primitive {@code long}, unlike
+     * {@link #createdAtEpochMilli}/{@link #updatedAtEpochMilli}) specifically so "not deleted" has
+     * its own representable state, the same "nullable field = feature not opted into" convention
+     * {@link Folder#getParentFolderId()} already uses.
+     *
+     * <p><b>Not the field {@code CloudUserService#deleteFile}/{@code #restoreFile} actually flip on
+     * a routine trash/restore.</b> Doing so here would mean a full {@code FileFactory#findById}
+     * (decrypt+decompress) followed by a full {@code DataFactory#update} (recompress+re-encrypt) on
+     * every single delete/restore - exactly the O(file size) full-content-rewrite cost {@code
+     * StoredFileOwnership} was built to avoid for ownership tracking in the first place. {@code
+     * CloudUserService} instead mirrors the trash flag onto the already-cheap {@code
+     * StoredFileOwnership} row it already reads for every listing - see that class's own Javadoc.
+     * This field remains real and usable on the entity itself for any lower-level caller working
+     * directly against {@code FileFactory}/{@code DataFactory} without going through {@code
+     * CloudUserService}'s ownership layer, and is what the trash-purge job ultimately checks before
+     * permanently removing a file's content.
+     */
+    private final Long deletedAtEpochMillis;
+
+    /**
      * Lazily-decoded (and decompressed) cache of {@link #contentBase64},
      * populated on first access. Transient so Gson never serializes it;
      * plain reads/writes are safe since resolving is a pure, deterministic
@@ -127,6 +148,26 @@ public final class StoredFile extends Serialized {
         this.checksum = Asserts.requireNonNull(checksum, "@StoredFile: checksum cannot be null");
         this.createdAtEpochMilli = Asserts.requireNonNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
         this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
+        this.deletedAtEpochMillis = null;
+    }
+
+    /**
+     * Copy constructor backing {@link #markedDeleted()}/{@link #restored()} - carries every field
+     * over from {@code source} unchanged except {@link #deletedAtEpochMillis}, reusing {@code
+     * source}'s already-resolved {@link #contentBase64}/{@link #decodedContent} directly rather
+     * than decompressing and recompressing content just to flip one flag.
+     */
+    private StoredFile(final StoredFile source, final Long deletedAtEpochMillis) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = deletedAtEpochMillis;
+        this.decodedContent = source.decodedContent;
     }
 
     /**

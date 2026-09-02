@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.rest.api;
 
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
@@ -14,6 +15,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
@@ -26,6 +28,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -700,6 +703,42 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files?folderId=" + encodedFolderId), true).GET().build();
     }
 
+    /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<StoredFileSummaryResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
+    private static final Type STORED_FILE_SUMMARY_PAGE_TYPE = new TypeToken<Page<StoredFileSummaryResponse>>() {
+    }.getType();
+
+    /**
+     * Cursor-paginated counterpart to {@link #listFiles(String)} - opts the server into the
+     * {@code {"items", "nextCursor"}} envelope response by sending {@code ?limit=}, instead of
+     * every owned/scoped file in one unpaginated array. Pass the previous call's {@link
+     * Page#nextCursor()} back as {@code cursor} to fetch the next page, or {@code null} for the
+     * first page.
+     *
+     * @param folderId the folder to scope the listing to, or {@code null} for the root
+     * @param cursor   the previous page's {@link Page#nextCursor()}, or {@code null} for the first page
+     * @param limit    the maximum number of entries to return; must be positive
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 400} if {@code limit} isn't positive, or any other failure
+     */
+    public Page<StoredFileSummaryResponse> listFilesPage(final String folderId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFilesPageRequest(folderId, cursor, limit), STORED_FILE_SUMMARY_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFilesPage(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<StoredFileSummaryResponse>> listFilesPageAsync(final String folderId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFilesPageRequest(folderId, cursor, limit), STORED_FILE_SUMMARY_PAGE_TYPE);
+    }
+
+    private HttpRequest listFilesPageRequest(final String folderId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/files?limit=").append(limit);
+        if (folderId != null) {
+            query.append("&folderId=").append(URLEncoder.encode(folderId, StandardCharsets.UTF_8));
+        }
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
     /**
      * Same route as {@link #listFiles()}, but never materializes the full response as one JSON
      * array or {@code byte[]}/{@code String}: the returned {@link Stream} is backed by a {@link
@@ -1103,6 +1142,39 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders?parentFolderId=" + encodedParentFolderId), true).GET().build();
     }
 
+    /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<FolderResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
+    private static final Type FOLDER_PAGE_TYPE = new TypeToken<Page<FolderResponse>>() {
+    }.getType();
+
+    /**
+     * Cursor-paginated counterpart to {@link #listFolders(String)} - same opt-in-via-{@code
+     * ?limit=} contract as {@link #listFilesPage}.
+     *
+     * @param parentFolderId the parent folder to list children of, or {@code null} for the top level
+     * @param cursor         the previous page's {@link Page#nextCursor()}, or {@code null} for the first page
+     * @param limit          the maximum number of entries to return; must be positive
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 400} if {@code limit} isn't positive, or any other failure
+     */
+    public Page<FolderResponse> listFoldersPage(final String parentFolderId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFoldersPageRequest(parentFolderId, cursor, limit), FOLDER_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFoldersPage(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<FolderResponse>> listFoldersPageAsync(final String parentFolderId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFoldersPageRequest(parentFolderId, cursor, limit), FOLDER_PAGE_TYPE);
+    }
+
+    private HttpRequest listFoldersPageRequest(final String parentFolderId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/folders?limit=").append(limit);
+        if (parentFolderId != null) {
+            query.append("&parentFolderId=").append(URLEncoder.encode(parentFolderId, StandardCharsets.UTF_8));
+        }
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
     /**
      * {@code PUT /folders/{id}}: renames and/or moves a folder in one step - a full replace of
      * both fields, not a partial patch; {@code newParentFolderId} {@code null} moves it to the
@@ -1210,10 +1282,29 @@ public final class ApiClient implements AutoCloseable {
 
     /** True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread. */
     private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Class<T> responseType) {
+        return this.sendAsync(request, (Type) responseType);
+    }
+
+    /** {@link Type}-based counterpart to {@link #send(HttpRequest, Class)}, for a generic response shape - see {@link #parseResponse(HttpResponse, Type)}. */
+    private <T> T send(final HttpRequest request, final Type responseType) throws ApiException {
+        final HttpResponse<InputStream> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return parseResponse(response, responseType);
+    }
+
+    /** {@link Type}-based counterpart to {@link #sendAsync(HttpRequest, Class)}, for a generic response shape - see {@link #parseResponse(HttpResponse, Type)}. */
+    private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Type responseType) {
         return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
                 .thenApply(response -> {
                     try {
-                        return parseResponse(response, responseType);
+                        return ApiClient.<T>parseResponse(response, responseType);
                     } catch (final ApiException e) {
                         // Matches this codebase's own *Async convention (see DataFactory/EventFactory/etc.
                         // in cloud-driver-plugin): a checked failure from the sync primitive is surfaced
@@ -1224,6 +1315,18 @@ public final class ApiClient implements AutoCloseable {
     }
 
     private static <T> T parseResponse(final HttpResponse<InputStream> response, final Class<T> responseType) throws ApiException {
+        return parseResponse(response, (Type) responseType);
+    }
+
+    /**
+     * {@link Type}-based counterpart to {@link #parseResponse(HttpResponse, Class)}, needed
+     * whenever the response shape itself is generic - e.g. {@code Page<StoredFileSummaryResponse>}
+     * - since a plain {@link Class} literal cannot carry a type argument and Gson would otherwise
+     * deserialize {@code items} as raw {@link java.util.LinkedHashMap}s instead of the real
+     * response record. Build the {@link Type} via {@link TypeToken} at the call site (see {@link
+     * #listFilesPage}/{@link #listFoldersPage}).
+     */
+    private static <T> T parseResponse(final HttpResponse<InputStream> response, final Type responseType) throws ApiException {
         final int status = response.statusCode();
         try (InputStream body = response.body()) {
             if (status >= 200 && status < 300) {

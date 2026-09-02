@@ -113,6 +113,19 @@ class CloudDriverClient(
     suspend fun listFiles(folderId: String? = null): List<StoredFileSummaryResponse> =
         this.apiClient.listFilesAsync(folderId).await()
 
+    /**
+     * Cursor-paginated counterpart to [listFiles] - one page of at most [limit] entries plus a
+     * `nextCursor` to request the next one, instead of every file in [folderId] at once. Used by
+     * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel]'s folder view (`refreshCurrentFolder`)
+     * so opening a very large folder doesn't wait for/hold its entire contents at once; every
+     * other caller here (delete/duplicate/download planning) still needs the *complete* set and
+     * keeps calling [listFiles].
+     */
+    suspend fun listFilesPage(
+        folderId: String?, cursor: String?, limit: Int
+    ): de.lino.cloud.platform.rest.api.dto.Dtos.Page<StoredFileSummaryResponse> =
+        this.apiClient.listFilesPageAsync(folderId, cursor, limit).await()
+
     /** Fetches one file's full content. */
     suspend fun downloadFile(fileId: String): StoredFileResponse =
         this.apiClient.downloadFileAsync(fileId).await()
@@ -143,6 +156,12 @@ class CloudDriverClient(
     /** Lists the caller's own folders directly inside [parentFolderId] (`null` = top-level). */
     suspend fun listFolders(parentFolderId: String? = null): List<FolderResponse> =
         this.apiClient.listFoldersAsync(parentFolderId).await()
+
+    /** Cursor-paginated counterpart to [listFolders] - same "used by the folder view only" reasoning as [listFilesPage]. */
+    suspend fun listFoldersPage(
+        parentFolderId: String?, cursor: String?, limit: Int
+    ): de.lino.cloud.platform.rest.api.dto.Dtos.Page<FolderResponse> =
+        this.apiClient.listFoldersPageAsync(parentFolderId, cursor, limit).await()
 
     /** Renames and/or moves a folder in one step (`newParentFolderId` `null` = top level). */
     suspend fun updateFolder(folderId: String, newName: String, newParentFolderId: String?): FolderResponse =

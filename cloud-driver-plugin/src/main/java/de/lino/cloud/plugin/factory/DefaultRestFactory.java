@@ -20,6 +20,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
@@ -127,6 +128,21 @@ public final class DefaultRestFactory extends RestFactory {
      * Javadoc) and this sentinel is the only way to explicitly ask for just the root's files.
      */
     private static final String ROOT_FOLDER_SENTINEL = "root";
+    /**
+     * Query parameter {@link #handleListFiles}/{@link #handleListFolders} read a page size from -
+     * its mere <em>presence</em> is what opts a request into the paginated, envelope-wrapped
+     * response shape ({@link #PAGE_ITEMS_FIELD}/{@link #PAGE_NEXT_CURSOR_FIELD}) instead of the
+     * original bare-JSON-array response; omitted, both routes keep returning every matching entry
+     * as a bare array exactly as before this feature existed, so no existing caller of either
+     * route breaks.
+     */
+    private static final String LIMIT_QUERY_PARAM = "limit";
+    /** Query parameter {@link #handleListFiles}/{@link #handleListFolders} read the previous page's {@link CursorPage#nextCursor()} from - absent/blank means "first page". Ignored unless {@link #LIMIT_QUERY_PARAM} is also present. */
+    private static final String CURSOR_QUERY_PARAM = "cursor";
+    /** JSON field name the paginated response envelope carries its page of entries under. */
+    private static final String PAGE_ITEMS_FIELD = "items";
+    /** JSON field name the paginated response envelope carries {@link CursorPage#nextCursor()} under - a JSON {@code null} once there is no next page. */
+    private static final String PAGE_NEXT_CURSOR_FIELD = "nextCursor";
 
     /**
      * The upload size ceiling, enforced two ways: it overrides Javalin's own {@link
@@ -961,16 +977,63 @@ public final class DefaultRestFactory extends RestFactory {
      * always had, kept as the default for any client that doesn't yet know about folders; present
      * (including {@link #ROOT_FOLDER_SENTINEL}) scopes the list to just that one folder (or the
      * root).
+     *
+     * <p>Optionally {@code ?limit=<n>} (and {@code ?cursor=<opaque>}): opts into cursor pagination
+     * (see {@link #LIMIT_QUERY_PARAM}'s own Javadoc for exactly what "opts into" means) - the
+     * response becomes {@code {"items": [...], "nextCursor": ...}} instead of a bare array, backed
+     * by {@link CloudUserService#listFileSummariesPage}.
      */
     private void handleListFiles(@NotNull final Context ctx) {
         final String folderIdParam = ctx.queryParam(FOLDER_ID_FIELD);
+        final String resolvedFolderId = folderIdParam == null ? null
+                : (ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam);
+        final Integer limit = parsePageLimit(ctx);
         final String userId = requireUserId(ctx);
+        if (limit == null) {
+            ctx.future(() -> MultiTaskingFactory.getInstance()
+                    .supplyAsync(() -> folderIdParam == null
+                            ? this.cloudUserService.listFileSummaries(userId)
+                            : this.cloudUserService.listFileSummaries(userId, resolvedFolderId))
+                    .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+            return;
+        }
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> folderIdParam == null
-                        ? this.cloudUserService.listFileSummaries(userId)
-                        : this.cloudUserService.listFileSummaries(
-                                userId, ROOT_FOLDER_SENTINEL.equals(folderIdParam) ? null : folderIdParam))
-                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+                .supplyAsync(() -> this.cloudUserService.listFileSummariesPage(userId, resolvedFolderId, cursor, limit))
+                .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
+    }
+
+    /**
+     * Reads {@link #LIMIT_QUERY_PARAM} as a positive integer, or {@code null} if absent/blank -
+     * {@code null} means "this request did not opt into pagination", not "page size zero".
+     *
+     * @throws BadRequestResponse if {@link #LIMIT_QUERY_PARAM} is present but not a positive integer
+     */
+    private static Integer parsePageLimit(final Context ctx) {
+        final String raw = ctx.queryParam(LIMIT_QUERY_PARAM);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            final int limit = Integer.parseInt(raw.trim());
+            if (limit <= 0) {
+                throw new BadRequestResponse("'" + LIMIT_QUERY_PARAM + "' must be a positive integer");
+            }
+            return limit;
+        } catch (final NumberFormatException exception) {
+            throw new BadRequestResponse("'" + LIMIT_QUERY_PARAM + "' must be a positive integer");
+        }
+    }
+
+    /**
+     * Builds the {@code {"items": [...], "nextCursor": ...}} envelope {@link #handleListFiles}/
+     * {@link #handleListFolders} serialize once a caller opts into pagination.
+     */
+    private JsonObject toPageEnvelope(final CursorPage<?> page) {
+        final JsonObject envelope = new JsonObject();
+        envelope.add(PAGE_ITEMS_FIELD, this.gson.toJsonTree(page.items()));
+        envelope.addProperty(PAGE_NEXT_CURSOR_FIELD, page.nextCursor());
+        return envelope;
     }
 
     /**
@@ -1114,13 +1177,24 @@ public final class DefaultRestFactory extends RestFactory {
      * #ROOT_FOLDER_SENTINEL}>}: lists every {@link Folder} owned by the caller directly inside
      * that parent, via {@link CloudUserService#listFolders} - omitted (or {@link
      * #ROOT_FOLDER_SENTINEL}) lists the caller's top-level folders.
+     *
+     * <p>Optionally {@code ?limit=<n>} (and {@code ?cursor=<opaque>}): same pagination opt-in as
+     * {@link #handleListFiles}, backed by {@link CloudUserService#listFoldersPage} instead.
      */
     private void handleListFolders(@NotNull final Context ctx) {
         final String parentFolderId = resolveFolderIdOrRoot(ctx, PARENT_FOLDER_ID_QUERY_PARAM);
+        final Integer limit = parsePageLimit(ctx);
         final String userId = requireUserId(ctx);
+        if (limit == null) {
+            ctx.future(() -> MultiTaskingFactory.getInstance()
+                    .supplyAsync(() -> this.cloudUserService.listFolders(userId, parentFolderId))
+                    .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+            return;
+        }
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.listFolders(userId, parentFolderId))
-                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+                .supplyAsync(() -> this.cloudUserService.listFoldersPage(userId, parentFolderId, cursor, limit))
+                .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
     }
 
     /**

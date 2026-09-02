@@ -62,6 +62,10 @@ data class TransferProgress(
  * caller's perspective: it launches a coroutine on [scope] and returns immediately, updating
  * [busy]/[errorMessage] as it goes - a screen composable never awaits an action's result itself.
  */
+
+/** Page size [AppViewModel.refreshCurrentFolder]/[AppViewModel.loadMoreEntries] request per [CloudDriverClient.listFilesPage]/[listFoldersPage] call. */
+private const val FOLDER_VIEW_PAGE_SIZE = 200
+
 class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, initialThemeMode: ThemeMode) {
 
     /** The active session's HTTP client, against the hardcoded server address(es) passed at construction (see `Main.kt`'s `DEFAULT_SERVER_URL`). */
@@ -158,6 +162,21 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     val folders = mutableStateListOf<FolderResponse>()
     val files = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
     val selected = mutableStateListOf<Entry>()
+
+    /**
+     * [folders]/[files] are loaded a page ([FOLDER_VIEW_PAGE_SIZE] entries) at a time via
+     * [CloudDriverClient.listFoldersPage]/[listFilesPage] - these hold each list's own [Page]
+     * cursor, `null` once that list has no further page. [hasMoreEntries] drives whether
+     * `FileBrowserScreen`'s "Load more" button is shown; a deliberate explicit action rather than
+     * an auto-load-on-scroll, so fetching the next page (a real network round trip) only ever
+     * happens on a user's own click, not silently as they scroll. Every *other* caller in this
+     * class that needs a folder's *complete* contents (delete/duplicate/download planning,
+     * `deleteFolderRecursively` etc.) still calls the unpaginated `listFiles`/`listFolders` -
+     * this pagination only applies to what's actually rendered in the current folder view.
+     */
+    private var foldersNextCursor: String? by mutableStateOf(null)
+    private var filesNextCursor: String? by mutableStateOf(null)
+    val hasMoreEntries: Boolean get() = this.foldersNextCursor != null || this.filesNextCursor != null
 
     /** The currently in-flight upload/download batch, if any - `null` otherwise. Rendered as a bottom progress bar (see `App.kt`/`Sidebar.kt`). Set/cleared exclusively by [runTransfer]. */
     var transferProgress: TransferProgress? by mutableStateOf(null)
@@ -326,6 +345,8 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentFolderId = null
         this.folders.clear()
         this.files.clear()
+        this.foldersNextCursor = null
+        this.filesNextCursor = null
         this.selected.clear()
         this.screen = Screen.Login
     }
@@ -359,12 +380,34 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     private suspend fun refreshCurrentFolder() {
         val folderId = this.currentFolderId
         this.selected.clear()
-        val newFolders = this.client.listFolders(folderId)
-        val newFiles = this.client.listFiles(folderId)
+        val folderPage = this.client.listFoldersPage(folderId, null, FOLDER_VIEW_PAGE_SIZE)
+        val filePage = this.client.listFilesPage(folderId, null, FOLDER_VIEW_PAGE_SIZE)
         this.folders.clear()
-        this.folders.addAll(newFolders)
+        this.folders.addAll(folderPage.items())
+        this.foldersNextCursor = folderPage.nextCursor()
         this.files.clear()
-        this.files.addAll(newFiles)
+        this.files.addAll(filePage.items())
+        this.filesNextCursor = filePage.nextCursor()
+    }
+
+    /**
+     * Public, guarded entry point (see [loadCurrentFolder]) for `FileBrowserScreen`'s "Load more"
+     * button: appends the next page of whichever of [folders]/[files] still has a [foldersNextCursor]/
+     * [filesNextCursor], rather than restarting the listing from the top. A no-op if neither has
+     * a next page ([hasMoreEntries] `false`) - the button that calls this is only shown while it's `true`.
+     */
+    fun loadMoreEntries() = run {
+        val folderId = this.currentFolderId
+        this.foldersNextCursor?.let { cursor ->
+            val page = this.client.listFoldersPage(folderId, cursor, FOLDER_VIEW_PAGE_SIZE)
+            this.folders.addAll(page.items())
+            this.foldersNextCursor = page.nextCursor()
+        }
+        this.filesNextCursor?.let { cursor ->
+            val page = this.client.listFilesPage(folderId, cursor, FOLDER_VIEW_PAGE_SIZE)
+            this.files.addAll(page.items())
+            this.filesNextCursor = page.nextCursor()
+        }
     }
 
     /**

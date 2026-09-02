@@ -6,7 +6,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.crypto.CryptoAlgorithm;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.DataEncryptionKey;
-import de.lino.cloud.plugin.security.keys.DataEncryptionKeyGenerator;
+import de.lino.cloud.plugin.security.keys.develop.DataEncryptionKeyGenerator;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.keys.WrappedKey;

@@ -14,6 +14,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
 import lombok.NonNull;
@@ -407,6 +408,50 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * See {@link ICloudUserService#listFileSummariesPage}'s Javadoc. Resolves the same
+     * full-scan/filter list {@link #listFileSummaries(String, String)} does, sorts it by {@link
+     * StoredFileSummary#fileId()}, then slices out one page via {@link #paginate}.
+     */
+    @NonNull
+    @Override
+    public CursorPage<StoredFileSummary> listFileSummariesPage(@NonNull final String authUserId, @Nullable final String folderId,
+                                                                @Nullable final String cursor, final int limit) {
+        final List<StoredFileOwnership> filtered = this.ownedFileOwnerships(authUserId).stream()
+                .filter(ownership -> Objects.equals(ownership.getFolderId(), folderId))
+                .toList();
+        final List<StoredFileSummary> sorted = this.resolveFileSummaries(filtered).stream()
+                .sorted(Comparator.comparing(StoredFileSummary::fileId))
+                .toList();
+        return paginate(sorted, cursor, limit, StoredFileSummary::fileId);
+    }
+
+    /**
+     * Generic keyset-pagination slice over an already-fully-materialized, ascending-{@code
+     * keyExtractor}-sorted list - the same "{@code WHERE key > cursor ORDER BY key LIMIT limit}"
+     * shape {@code DatabaseBackupScheduler#fetchBatch} applies at the SQL level, applied here at
+     * the application level instead (see {@link CursorPage}'s Javadoc for why a real SQL-level
+     * cursor isn't available for these owner-scoped, encrypted rows).
+     *
+     * @param sorted       the full result set, already sorted ascending by {@code keyExtractor}
+     * @param cursor       the previous page's {@link CursorPage#nextCursor()}, or {@code null} for the first page
+     * @param limit        the maximum number of entries to return; must be positive
+     * @param keyExtractor extracts the stable sort/cursor key from one element
+     */
+    private static <T> CursorPage<T> paginate(final List<T> sorted, @Nullable final String cursor,
+                                               final int limit, final java.util.function.Function<T, String> keyExtractor) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("@CloudUserService.paginate: limit must be positive, was " + limit);
+        }
+        final List<T> afterCursor = cursor == null
+                ? sorted
+                : sorted.stream().filter(item -> keyExtractor.apply(item).compareTo(cursor) > 0).toList();
+        final boolean hasMore = afterCursor.size() > limit;
+        final List<T> page = afterCursor.subList(0, Math.min(limit, afterCursor.size()));
+        final String nextCursor = hasMore ? keyExtractor.apply(page.get(page.size() - 1)) : null;
+        return new CursorPage<>(page, nextCursor);
+    }
+
+    /**
      * Builds one {@link StoredFileSummary} straight from {@code ownership}'s own fields - unless
      * it predates metadata capture ({@link StoredFileOwnership#hasMetadata()} {@code false}), in
      * which case this falls back to downloading the full {@link StoredFile} exactly once,
@@ -586,6 +631,27 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.listFolders: failed to list folders for " + authUserId, e);
         }
+    }
+
+    /**
+     * See {@link ICloudUserService#listFoldersPage}'s Javadoc. Same full-scan-then-sort-then-slice
+     * shape as {@link #listFileSummariesPage}, keyed on {@link Folder#getFolderId()}.
+     */
+    @NonNull
+    @Override
+    public CursorPage<Folder> listFoldersPage(@NonNull final String authUserId, @Nullable final String parentFolderId,
+                                               @Nullable final String cursor, final int limit) {
+        final List<Folder> sorted;
+        try {
+            sorted = this.dataFactory.getEntities(Folder.class).stream()
+                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+                    .filter(folder -> Objects.equals(folder.getParentFolderId(), parentFolderId))
+                    .sorted(Comparator.comparing(Folder::getFolderId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listFoldersPage: failed to list folders for " + authUserId, e);
+        }
+        return paginate(sorted, cursor, limit, Folder::getFolderId);
     }
 
     /**

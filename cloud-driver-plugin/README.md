@@ -133,7 +133,7 @@ facade, never through a `de.lino.cloud.plugin` type directly:
 
 ```java
 import de.lino.cloud.plugin.DefaultCloudDriver;
-import de.lino.cloud.plugin.security.keys.InMemoryKeyEncryptionService;
+import de.lino.cloud.plugin.security.keys.develop.InMemoryKeyEncryptionService;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.database.DatabaseType;
@@ -141,16 +141,24 @@ import de.lino.database.database.Credentials;
 
 // A throwaway local JSON-file-based DatabaseProvider - no external database needed for this sample.
 DatabaseProvider databaseProvider = DatabaseProvider.create(DatabaseType.JSON, credentials);
-EnvelopeEncryptionService envelopeEncryptionService =
-        new EnvelopeEncryptionService(new InMemoryKeyEncryptionService()); // KEK lost on restart - dev only
+        EnvelopeEncryptionService envelopeEncryptionService =
+                new EnvelopeEncryptionService(new InMemoryKeyEncryptionService()); // KEK lost on restart - dev only
 
-CloudDriver cloudDriver = DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
+        CloudDriver cloudDriver = DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService);
 
-cloudDriver.getFactoryContainer().getDataFactory().register(new CustomerRecord(42, "DE00..."));
-CustomerRecord fetched = cloudDriver.getFactoryContainer().getDataFactory()
-        .fetch("42", CustomerRecord.class); // decrypted transparently on the way back out
+cloudDriver.
 
-cloudDriver.shutdown(); // idempotent, tears down every facet this instance owns
+        getFactoryContainer().
+
+        getDataFactory().
+
+        register(new CustomerRecord(42, "DE00..."));
+        CustomerRecord fetched = cloudDriver.getFactoryContainer().getDataFactory()
+                .fetch("42", CustomerRecord.class); // decrypted transparently on the way back out
+
+cloudDriver.
+
+        shutdown(); // idempotent, tears down every facet this instance owns
 ```
 
 ## Worked examples (`src/test`)

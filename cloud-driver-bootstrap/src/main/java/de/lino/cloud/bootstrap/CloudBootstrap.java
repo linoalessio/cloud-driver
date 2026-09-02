@@ -24,7 +24,7 @@ import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
-import de.lino.cloud.plugin.security.keys.DatabaseKeyEncryptionService;
+import de.lino.cloud.plugin.security.keys.develop.DatabaseKeyEncryptionService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;

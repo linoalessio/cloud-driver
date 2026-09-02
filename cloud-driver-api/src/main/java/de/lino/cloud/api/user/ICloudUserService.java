@@ -4,6 +4,7 @@ import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
+import de.lino.cloud.api.utility.CursorPage;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -159,6 +160,24 @@ public interface ICloudUserService {
     List<StoredFileSummary> listFileSummaries(@NotNull String authUserId, @Nullable String folderId);
 
     /**
+     * Cursor-paginated variant of {@link #listFileSummaries(String, String)} - use when a folder
+     * may hold enough files that returning all of them in one response is wasteful. Summaries are
+     * sorted by {@link StoredFileSummary#fileId()} (stable but not chronological - an arbitrary,
+     * total order is all keyset pagination needs) before being sliced into a page; see {@link
+     * CursorPage}'s own Javadoc for why this bounds the response size only, not the per-request
+     * scan cost.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list
+     * @param folderId the folder to list files from, or {@code null} for the root
+     * @param cursor the {@link CursorPage#nextCursor()} of the previous page, or {@code null} for the first page
+     * @param limit the maximum number of entries to return; must be positive
+     * @return a page of at most {@code limit} {@link StoredFileSummary}s, in ascending {@code fileId} order
+     */
+    @NotNull
+    CursorPage<StoredFileSummary> listFileSummariesPage(@NotNull String authUserId, @Nullable String folderId,
+                                                         @Nullable String cursor, int limit);
+
+    /**
      * Fetches one file's full content, paired with its current folder placement. Unlike {@link
      * #listFileSummaries(String)}, this does decrypt/decompress the file's actual content - only
      * reach for this once a specific file's content is actually needed (e.g. the user opened or
@@ -219,6 +238,21 @@ public interface ICloudUserService {
      */
     @NotNull
     List<Folder> listFolders(@NotNull String authUserId, @Nullable String parentFolderId);
+
+    /**
+     * Cursor-paginated variant of {@link #listFolders(String, String)}, sorted by {@link
+     * Folder#getFolderId()} - see {@link #listFileSummariesPage}/{@link CursorPage}'s own Javadoc
+     * for the same "bounds response size, not scan cost" caveat.
+     *
+     * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose folders to list
+     * @param parentFolderId the parent folder to list children of, or {@code null} for the top level
+     * @param cursor the {@link CursorPage#nextCursor()} of the previous page, or {@code null} for the first page
+     * @param limit the maximum number of entries to return; must be positive
+     * @return a page of at most {@code limit} {@link Folder}s, in ascending {@code folderId} order
+     */
+    @NotNull
+    CursorPage<Folder> listFoldersPage(@NotNull String authUserId, @Nullable String parentFolderId,
+                                        @Nullable String cursor, int limit);
 
     /**
      * Renames and/or moves {@code folderId} in one step - a full replace of both its {@link
