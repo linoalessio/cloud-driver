@@ -353,4 +353,93 @@ public interface ICloudUserService {
     @NotNull
     List<Folder> listDeletedFolders(@NotNull String authUserId);
 
+    /**
+     * Grants {@code granteeEmail}'s account read-only access to {@code fileId} - owner-only, like
+     * every other mutating method on this interface: only {@code ownerAuthUserId} (the file's
+     * actual owner) may create or revoke a share on it, a grantee can never re-share what was
+     * shared with them. Idempotent - sharing with the same grantee again just refreshes the
+     * grant's timestamp. See {@code CloudUserService#getFile} for how a grantee actually exercises
+     * this grant, and this interface's own "which operations honor a share" summary (in {@code
+     * CLAUDE.md}'s "JWT authentication for end-user clients" section) for the complete picture.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file to share
+     * @param granteeEmail the email address of the account to grant read access to
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}, is
+     *                                   currently in the trash, {@code granteeEmail} has no
+     *                                   registered account, or {@code granteeEmail} resolves to
+     *                                   {@code ownerAuthUserId} itself
+     */
+    void shareFile(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail);
+
+    /**
+     * Revokes a previously-granted read-only share of {@code fileId} from {@code granteeEmail}'s
+     * account - owner-only, the reverse of {@link #shareFile}. Idempotent: a no-op if no such grant
+     * exists.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file to revoke a share of
+     * @param granteeEmail the email address of the account whose access to revoke
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId},
+     *                                   or {@code granteeEmail} has no registered account
+     */
+    void revokeFileShare(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail);
+
+    /**
+     * Lists every file directly shared with {@code authUserId} via {@link #shareFile} - as {@link
+     * StoredFileSummary}s, the same descriptive-fields-only shape {@link
+     * #listFileSummaries(String)} returns for the caller's own files. Does <b>not</b> include a
+     * file only reachable through a folder-level share ({@link #shareFolder}) - browsing a shared
+     * folder's own contents is a documented future extension, not implemented in this first
+     * sharing pass (see {@code CLAUDE.md}). A grant whose underlying file has since been deleted or
+     * trashed by its owner is silently omitted, rather than surfaced as an error.
+     *
+     * @param authUserId the account whose incoming file shares to list
+     * @return a {@link StoredFileSummary} for every file directly shared with {@code authUserId}
+     */
+    @NotNull
+    List<StoredFileSummary> listSharedWithMe(@NotNull String authUserId);
+
+    /**
+     * Grants {@code granteeEmail}'s account read-only access to {@code folderId} and everything
+     * nested inside it, at any depth - owner-only, the same shape as {@link #shareFile}.
+     * Idempotent - sharing with the same grantee again just refreshes the grant's timestamp.
+     *
+     * @param ownerAuthUserId the folder's actual owner, who must already own {@code folderId}
+     * @param folderId the folder to share
+     * @param granteeEmail the email address of the account to grant read access to
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId},
+     *                                   is currently in the trash, {@code granteeEmail} has no
+     *                                   registered account, or {@code granteeEmail} resolves to
+     *                                   {@code ownerAuthUserId} itself
+     */
+    void shareFolder(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail);
+
+    /**
+     * Revokes a previously-granted read-only share of {@code folderId} from {@code granteeEmail}'s
+     * account - owner-only, the reverse of {@link #shareFolder}. Idempotent: a no-op if no such
+     * grant exists. Does not affect any direct {@link #shareFile} grant on a file nested inside
+     * {@code folderId} - those are tracked independently and must be revoked separately.
+     *
+     * @param ownerAuthUserId the folder's actual owner, who must already own {@code folderId}
+     * @param folderId the folder to revoke a share of
+     * @param granteeEmail the email address of the account whose access to revoke
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId},
+     *                                   or {@code granteeEmail} has no registered account
+     */
+    void revokeFolderShare(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail);
+
+    /**
+     * Lists every folder directly shared with {@code authUserId} via {@link #shareFolder} - just
+     * the shared folders themselves (not their contents; see {@link #listSharedWithMe}'s own
+     * Javadoc for the same "browsing a shared folder's contents is a future extension" caveat). A
+     * grant whose underlying folder has since been deleted or trashed by its owner is silently
+     * omitted.
+     *
+     * @param authUserId the account whose incoming folder shares to list
+     * @return every {@link Folder} directly shared with {@code authUserId}
+     */
+    @NotNull
+    List<Folder> listSharedFoldersWithMe(@NotNull String authUserId);
+
 }

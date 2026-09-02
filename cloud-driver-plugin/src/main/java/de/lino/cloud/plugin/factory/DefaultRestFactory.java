@@ -110,6 +110,10 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String FOLDERS_PATH = "/folders";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - same static-segment-first routing note as {@link #FILES_TRASH_PATH}. */
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
+    /** Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder sharing) - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} the same way {@link #FILES_TRASH_PATH} already is. */
+    private static final String FILES_SHARED_WITH_ME_PATH = FILES_PATH + "/shared-with-me";
+    /** Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe} - same static-segment-first routing note as {@link #FILES_SHARED_WITH_ME_PATH}. */
+    private static final String FOLDERS_SHARED_WITH_ME_PATH = FOLDERS_PATH + "/shared-with-me";
     /**
      * Path prefix every {@code /auth/*} route falls under - checked by {@link
      * #requireWithinAuthRateLimit}, which applies to all nine {@code /auth/*} routes alike
@@ -472,6 +476,9 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
+                config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
+                config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
+                config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
 
                 config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
                 config.routes.get(FOLDERS_PATH, this::handleListFolders);
@@ -479,6 +486,9 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.put(FOLDERS_PATH + "/{id}", this::handleUpdateFolder);
                 config.routes.delete(FOLDERS_PATH + "/{id}", this::handleDeleteFolder);
                 config.routes.post(FOLDERS_PATH + "/{id}/restore", this::handleRestoreFolder);
+                config.routes.get(FOLDERS_SHARED_WITH_ME_PATH, this::handleListFoldersSharedWithMe);
+                config.routes.post(FOLDERS_PATH + "/{id}/share", this::handleShareFolder);
+                config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -1613,6 +1623,122 @@ public final class DefaultRestFactory extends RestFactory {
                     }
                     throw folderFailureOrPropagate(failure, Folder.class, id);
                 }));
+    }
+
+    /**
+     * The {@code {"granteeEmail"}} JSON body shape read by {@code POST /files/{id}/share} and
+     * {@code POST /folders/{id}/share} (item 9, file/folder sharing).
+     *
+     * @param granteeEmail the email address of the account to grant read access to
+     */
+    private record ShareRequest(String granteeEmail) {
+    }
+
+    /**
+     * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code id} via {@link CloudUserService#shareFile}, which checks the caller owns it. {@code
+     * 204} on success, {@code 404} (via {@link #folderFailureOrPropagate}'s {@link
+     * IllegalArgumentException} handling) if {@code id} isn't owned by the caller, is currently
+     * trashed, or {@code granteeEmail} has no registered account.
+     */
+    private void handleShareFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.shareFile(userId, id, request.granteeEmail()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /files/{id}/share/{email}}: revokes a previously-granted share of {@code id}
+     * from {@code email} via {@link CloudUserService#revokeFileShare}. {@code 204} on success
+     * (idempotent - also {@code 204} if no such grant existed), {@code 404} if {@code id} isn't
+     * owned by the caller or {@code email} has no registered account.
+     */
+    private void handleRevokeFileShare(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String email = ctx.pathParam("email");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.revokeFileShare(userId, id, email))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/shared-with-me}: lists every file directly shared with the caller, as
+     * {@link StoredFileSummary}s, via {@link CloudUserService#listSharedWithMe}. Does not include a
+     * file only reachable through a folder-level share - see that method's own Javadoc.
+     */
+    private void handleListFilesSharedWithMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listSharedWithMe(userId))
+                .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /**
+     * {@code POST /folders/{id}/share}: grants {@code granteeEmail}'s account read-only access to
+     * {@code id} and everything nested inside it via {@link CloudUserService#shareFolder}. Same
+     * status mapping as {@link #handleShareFile}.
+     */
+    private void handleShareFolder(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.shareFolder(userId, id, request.granteeEmail()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /folders/{id}/share/{email}}: revokes a previously-granted share of {@code id}
+     * from {@code email} via {@link CloudUserService#revokeFolderShare}. Same status mapping as
+     * {@link #handleRevokeFileShare}. Does not affect a direct {@code /files/{id}/share} grant on a
+     * file nested inside {@code id} - those must be revoked separately.
+     */
+    private void handleRevokeFolderShare(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String email = ctx.pathParam("email");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.revokeFolderShare(userId, id, email))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /folders/shared-with-me}: lists every folder directly shared with the caller via
+     * {@link CloudUserService#listSharedFoldersWithMe}.
+     */
+    private void handleListFoldersSharedWithMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listSharedFoldersWithMe(userId))
+                .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
     }
 
     /** {@code POST path}  ->  create (DataFactory#registerAsync), dispatched off the Jetty worker thread. */
