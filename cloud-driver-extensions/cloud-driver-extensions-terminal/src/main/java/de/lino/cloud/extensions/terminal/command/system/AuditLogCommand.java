@@ -1,4 +1,4 @@
-package de.lino.cloud.extensions.terminal.command;
+package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.audit.AuditEvent;
@@ -96,7 +96,7 @@ public class AuditLogCommand implements Command {
             final String target = event.getTargetId() == null ? "-" : event.getTargetId();
             terminal.displayApproved("&8- &7%s &8| &b%s &8| actor: &7%s &8| target: &7%s", timestamp, event.getAction(), actor, target);
         }
-        
+
         terminal.emptyLine();
 
     }

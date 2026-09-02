@@ -1,10 +1,11 @@
-package de.lino.cloud.extensions.terminal.command;
+package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.extensions.terminal.command.CloudUserCommand;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;

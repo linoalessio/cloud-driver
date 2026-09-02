@@ -6,6 +6,7 @@ import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.extensions.terminal.command.system.HardResetCommand;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;

@@ -3,6 +3,7 @@ package de.lino.cloud.extensions.terminal;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.extensions.terminal.command.*;
+import de.lino.cloud.extensions.terminal.command.system.*;
 
 import java.util.logging.Level;
 

@@ -1,4 +1,4 @@
-package de.lino.cloud.extensions.terminal.command;
+package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
