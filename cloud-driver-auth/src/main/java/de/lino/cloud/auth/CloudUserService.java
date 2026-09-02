@@ -1262,16 +1262,6 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-<<<<<<< HEAD
-     * An O(1) point lookup on {@code folderId}, failing if it doesn't exist or belongs to someone
-     * other than {@code authUserId}.
-     *
-     * @param authUserId the user expected to own the folder
-     * @param folderId the folder to check ownership of
-     * @return the matching {@link Folder}
-     * @throws IllegalArgumentException if {@code folderId} doesn't exist or isn't owned by {@code authUserId}
-     */
-=======
      * Forwards one metric event to {@link CloudDriver#getInstance()}'s {@link MetricsRecorder}, if
      * {@code cloud-driver-extensions-metrics} has published one - a no-op otherwise. Never throws:
      * a missing/misbehaving metrics sink must never affect a real upload, matching {@link
@@ -1291,8 +1281,15 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
-    /** O(1) point lookup, failing if {@code folderId} doesn't exist or belongs to someone other than {@code authUserId}. */
->>>>>>> dev
+    /**
+     * An O(1) point lookup on {@code folderId}, failing if it doesn't exist or belongs to someone
+     * other than {@code authUserId}.
+     *
+     * @param authUserId the user expected to own the folder
+     * @param folderId the folder to check ownership of
+     * @return the matching {@link Folder}
+     * @throws IllegalArgumentException if {@code folderId} doesn't exist or isn't owned by {@code authUserId}
+     */
     private Folder requireOwnedFolder(final String authUserId, final String folderId) {
         final Optional<Folder> folder;
         try {
@@ -1307,18 +1304,10 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-<<<<<<< HEAD
-     * Backs {@link #listFiles}/{@link #listFilesWithFolder} - see {@link #listFiles}'s Javadoc for
-     * the full-scan trade-off this implies.
-     *
-     * @param authUserId the user whose ownership rows should be listed
-     * @return every {@link StoredFileOwnership} row belonging to {@code authUserId}
-=======
      * Backs {@link #listFiles}/{@link #listFilesWithFolder}/{@link #listFileSummaries}/{@link
      * #deleteFolder}'s emptiness check - see {@link #listFiles}'s Javadoc for the full-scan
      * trade-off this implies. Excludes trashed rows by default; see {@link
      * #ownedFileOwnershipsIncludingDeleted(String)} for the raw, unfiltered scan.
->>>>>>> dev
      */
     private List<StoredFileOwnership> ownedFileOwnerships(final String authUserId) {
         return this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()

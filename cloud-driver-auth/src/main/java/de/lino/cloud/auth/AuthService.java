@@ -23,11 +23,8 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.user.ICloudUserService;
-<<<<<<< HEAD
-import de.lino.cloud.auth.mail.EmailTemplates;
-=======
 import de.lino.cloud.auth.entity.RefreshToken;
->>>>>>> dev
+import de.lino.cloud.auth.mail.EmailTemplates;
 import de.lino.cloud.auth.pending.PendingEmailChange;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
 import de.lino.cloud.auth.pending.PendingRegistration;

@@ -171,16 +171,13 @@ public final class ApiClient implements AutoCloseable {
      */
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
 
-<<<<<<< HEAD
-    /** Shared Gson instance used for every request/response (de)serialization in this class. */
-=======
     /** Path of {@link #refresh}'s route, checked by {@link #canRetryWithRefresh} to avoid ever attempting to auto-refresh the refresh call itself. */
     private static final String REFRESH_PATH = "/auth/refresh";
 
     /** Path of {@link #revokeRefreshToken}'s route. */
     private static final String LOGOUT_PATH = "/auth/logout";
 
->>>>>>> dev
+    /** Shared Gson instance used for every request/response (de)serialization in this class. */
     private static final Gson GSON = new Gson();
 
     /** Backs every async call and every {@link de.lino.cloud.platform.rest.api.session.TokenStore} call chained onto it; see {@link #executor()}. */
@@ -199,11 +196,6 @@ public final class ApiClient implements AutoCloseable {
     private final AtomicReference<String> token = new AtomicReference<>();
 
     /**
-<<<<<<< HEAD
-     * Builds a client backed by a fresh {@link HttpClient} and virtual-thread executor; call
-     * {@link #close()} once done with it.
-     *
-=======
      * The current session's refresh token, once {@link #login} has succeeded; {@code null} until
      * then. Rotated on every successful {@link #refresh}/{@link #refreshAsync} call - see {@link
      * AuthResponse}'s own Javadoc. Used automatically by {@link #send(HttpRequest, Type)}/{@link
@@ -214,7 +206,9 @@ public final class ApiClient implements AutoCloseable {
     private final AtomicReference<String> refreshToken = new AtomicReference<>();
 
     /**
->>>>>>> dev
+     * Builds a client backed by a fresh {@link HttpClient} and virtual-thread executor; call
+     * {@link #close()} once done with it.
+     *
      * @param authPanelBaseUrl base URL of the auth-panel server, e.g. {@code https://auth.example.com}
      * @param apiBaseUrl       base URL of the main REST API, e.g. {@code https://api.example.com}
      */
@@ -268,15 +262,6 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-<<<<<<< HEAD
-     * Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login.
-     *
-     * @param previouslyIssuedToken a JWT previously returned by {@link #login}/{@link #confirmRegistration}/
-     *                              {@link #confirmPasswordReset} and persisted by the caller
-     */
-    public void restoreSession(final String previouslyIssuedToken) {
-        this.token.set(Objects.requireNonNull(previouslyIssuedToken, "previouslyIssuedToken cannot be null"));
-=======
      * @return the raw access JWT currently held in memory (set by {@link #login}/{@link
      * #register}'s confirm step/{@link #restoreSession(String, String)}/{@link #refresh}), or
      * empty if not authenticated. Added for {@link SessionManager}-based session-restore callers
@@ -286,7 +271,6 @@ public final class ApiClient implements AutoCloseable {
      */
     public Optional<String> currentToken() {
         return Optional.ofNullable(this.token.get());
->>>>>>> dev
     }
 
     /**
@@ -333,16 +317,12 @@ public final class ApiClient implements AutoCloseable {
      * The request body's field is literally named {@code username} (see {@link AuthRequest}),
      * even though {@code emailAddress} is what's actually passed for it.
      *
-<<<<<<< HEAD
      * @param emailAddress the account's e-mail address, sent as the request's {@code username} field
      * @param password     the account's plaintext password
-     * @return the freshly issued JWT, already stored for subsequent calls
-=======
      * @return a {@link LoginOutcome} - real tokens (already stored for subsequent calls) if the
      *         matched account has two-factor authentication disabled, or a pending token (see
      *         {@link LoginOutcome#twoFactorRequired()}) to present, together with a TOTP code, to
      *         {@link #completeTwoFactorLogin} otherwise
->>>>>>> dev
      * @throws ApiException {@code 401} on wrong credentials, or any other transport/HTTP failure
      */
     public LoginOutcome login(final String emailAddress, final String password) throws ApiException {
@@ -660,8 +640,7 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if the held refresh token is missing, expired, or already
      *                       used/revoked, or any other transport/HTTP failure
      * @throws IllegalStateException if no refresh token is currently held (never logged in, or
-     *                                only {@link #restoreSession(String)} - not the two-argument
-     *                                overload - was used to restore a session)
+     *                                never restored via {@link #restoreSession(String, String)})
      */
     public String refresh() throws ApiException {
         final AuthResponse response = this.send(this.refreshRequest(this.requireCurrentRefreshToken()), AuthResponse.class);
@@ -1687,6 +1666,99 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true).DELETE().build();
     }
 
+    // --- trash ----------------------------------------------------------
+
+    /**
+     * {@code GET /files/trash}: lists every file currently in the caller's trash, unpaginated
+     * (trash is expected to stay small relative to a live tree - see the server-side route's own
+     * Javadoc).
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public List<StoredFileSummaryResponse> listDeletedFiles() throws ApiException {
+        final StoredFileSummaryResponse[] files = this.send(this.listDeletedFilesRequest(), StoredFileSummaryResponse[].class);
+        return List.of(files);
+    }
+
+    /** Async form of {@link #listDeletedFiles()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<StoredFileSummaryResponse>> listDeletedFilesAsync() {
+        return this.sendAsync(this.listDeletedFilesRequest(), StoredFileSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/trash} request against {@link #apiBaseUrl}. */
+    private HttpRequest listDeletedFilesRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/trash"), true).GET().build();
+    }
+
+    /**
+     * {@code POST /files/{id}/restore}: restores a trashed file back to its previous folder.
+     *
+     * @param fileId the file to restore
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 409} if it isn't currently in the trash, {@code 401}
+     *                       if not logged in / token expired
+     */
+    public void restoreFile(final String fileId) throws ApiException {
+        this.send(this.restoreFileRequest(fileId), Void.class);
+    }
+
+    /** Async form of {@link #restoreFile(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> restoreFileAsync(final String fileId) {
+        return this.sendAsync(this.restoreFileRequest(fileId), Void.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/restore} request against {@link #apiBaseUrl}. */
+    private HttpRequest restoreFileRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/restore"), true)
+                .POST(BodyPublishers.noBody())
+                .build();
+    }
+
+    /**
+     * {@code GET /folders/trash}: lists every folder currently in the caller's trash, unpaginated -
+     * same reasoning as {@link #listDeletedFiles()}.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public List<FolderResponse> listDeletedFolders() throws ApiException {
+        final FolderResponse[] folders = this.send(this.listDeletedFoldersRequest(), FolderResponse[].class);
+        return List.of(folders);
+    }
+
+    /** Async form of {@link #listDeletedFolders()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<FolderResponse>> listDeletedFoldersAsync() {
+        return this.sendAsync(this.listDeletedFoldersRequest(), FolderResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /folders/trash} request against {@link #apiBaseUrl}. */
+    private HttpRequest listDeletedFoldersRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/trash"), true).GET().build();
+    }
+
+    /**
+     * {@code POST /folders/{id}/restore}: restores a trashed folder back to its previous parent.
+     *
+     * @param folderId the folder to restore
+     * @throws ApiException {@code 404} if {@code folderId} doesn't exist or isn't owned by the
+     *                       caller, {@code 409} if it isn't currently in the trash, {@code 401}
+     *                       if not logged in / token expired
+     */
+    public void restoreFolder(final String folderId) throws ApiException {
+        this.send(this.restoreFolderRequest(folderId), Void.class);
+    }
+
+    /** Async form of {@link #restoreFolder(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> restoreFolderAsync(final String folderId) {
+        return this.sendAsync(this.restoreFolderRequest(folderId), Void.class);
+    }
+
+    /** Builds the {@code POST /folders/{id}/restore} request against {@link #apiBaseUrl}. */
+    private HttpRequest restoreFolderRequest(final String folderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/restore"), true)
+                .POST(BodyPublishers.noBody())
+                .build();
+    }
+
     // --- cloud users ------------------------------------------------------
 
     /**
@@ -1805,22 +1877,12 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-<<<<<<< HEAD
-     * True async send, via {@link HttpClient#sendAsync} - completes on {@link #executor()}, never a JDK-internal thread.
-     *
-     * @param request      the request to send
-     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
-     * @return a future completing with the deserialized response body, or exceptionally with a {@link CompletionException} wrapping an {@link ApiException}
-     */
-    private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Class<T> responseType) {
-=======
      * {@link Type}-based counterpart to {@link #sendAsync(HttpRequest, Class)}, for a generic
      * response shape - see {@link #parseResponse(HttpResponse, Type)}. Mirrors {@link
      * #send(HttpRequest, Type)}'s own transparent-retry-once-on-401 behavior - see that method's
      * Javadoc and {@link #canRetryWithRefresh} for the full contract.
      */
     private <T> CompletableFuture<T> sendAsync(final HttpRequest request, final Type responseType) {
->>>>>>> dev
         return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
                 .thenCompose(response -> {
                     if (this.canRetryWithRefresh(request, response)) {
@@ -1852,18 +1914,6 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-<<<<<<< HEAD
-     * Shared response-handling logic for both {@link #send} and {@link #sendAsync}: on a {@code
-     * 2xx} status, deserializes the body as JSON into {@code responseType} (or discards it and
-     * returns {@code null} if {@code responseType} is {@link Void}); otherwise closes the body and
-     * throws {@link ApiException} carrying the best available error message.
-     *
-     * @param response     the completed response, whose body is consumed and closed by this method
-     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
-     * @return the deserialized response body, or {@code null} for {@link Void}
-     * @throws ApiException on any non-{@code 2xx} status or I/O failure reading the body
-     */
-=======
      * Whether {@code request}/{@code response} qualifies for the transparent refresh-and-retry
      * behavior {@link #send(HttpRequest, Type)}/{@link #sendAsync(HttpRequest, Type)} implement:
      * the response is a {@code 401}, this client currently holds a refresh token to retry with,
@@ -1915,7 +1965,17 @@ public final class ApiClient implements AutoCloseable {
         return builder.build();
     }
 
->>>>>>> dev
+    /**
+     * Shared response-handling logic for both {@link #send} and {@link #sendAsync}: on a {@code
+     * 2xx} status, deserializes the body as JSON into {@code responseType} (or discards it and
+     * returns {@code null} if {@code responseType} is {@link Void}); otherwise closes the body and
+     * throws {@link ApiException} carrying the best available error message.
+     *
+     * @param response     the completed response, whose body is consumed and closed by this method
+     * @param responseType the type to deserialize a successful JSON body into ({@link Void} for no body)
+     * @return the deserialized response body, or {@code null} for {@link Void}
+     * @throws ApiException on any non-{@code 2xx} status or I/O failure reading the body
+     */
     private static <T> T parseResponse(final HttpResponse<InputStream> response, final Class<T> responseType) throws ApiException {
         return parseResponse(response, (Type) responseType);
     }

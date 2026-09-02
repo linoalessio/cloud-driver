@@ -109,9 +109,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
-<<<<<<< HEAD
-    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
-=======
     /** Path mounted by {@link #start} for {@link #handleBeginTwoFactorSetup} (item 12, see {@code architecture/SERVICES.md}) - bearer-gated, acts on the already-authenticated caller's own account. */
     private static final String TWO_FACTOR_SETUP_PATH = "/auth/2fa/setup";
     /** Path mounted by {@link #start} for {@link #handleConfirmTwoFactorSetup} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
@@ -120,8 +117,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String TWO_FACTOR_DISABLE_PATH = "/auth/2fa/disable";
     /** Path mounted by {@link #start} for {@link #handleTwoFactorLogin}, exempted from {@link #requireValidBearerToken} - the caller has no real access token yet, that's the whole point of this route. */
     private static final String TWO_FACTOR_LOGIN_PATH = "/auth/2fa/login";
-    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDeleteFile}. */
->>>>>>> dev
+    /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
     private static final String FILES_PATH = "/files";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment, matched ahead of {@link #FILES_PATH}{@code /{id}} by Javalin's own routing regardless of registration order. */
     private static final String FILES_TRASH_PATH = FILES_PATH + "/trash";
@@ -2277,20 +2273,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-<<<<<<< HEAD
-     * Unwraps an {@link AuthService#login} failure's {@link CompletionException} and
-     * translates {@link InvalidCredentialsException} into {@link UnauthorizedResponse}; any
-     * other cause is printed directly to {@link System#err} (bypassing this module's own
-     * deliberately-silenced {@code slf4j-simple}/{@link JavalinLogger} logging, see {@link
-     * #silenceJavalinLogging}) before being rethrown as-is to reach Javalin's default (500)
-     * handling - same reasoning as {@link #registrationFailureOrPropagate}/{@link
-     * #folderFailureOrPropagate}.
-=======
      * Unwraps an {@link AuthService#login}/{@link AuthService#refresh} failure's {@link
      * CompletionException} and translates {@link InvalidCredentialsException}/{@link
-     * InvalidRefreshTokenException} into {@link UnauthorizedResponse}; any other cause is
-     * rethrown as-is to reach Javalin's default (500) handling.
->>>>>>> dev
+     * InvalidRefreshTokenException} into {@link UnauthorizedResponse}; any other cause is logged
+     * (bypassing this module's own deliberately-silenced {@code slf4j-simple}/{@link
+     * JavalinLogger} logging, see {@link #silenceJavalinLogging}) before being rethrown as-is to
+     * reach Javalin's default (500) handling - same reasoning as {@link
+     * #registrationFailureOrPropagate}/{@link #folderFailureOrPropagate}.
      */
     private static RuntimeException unauthorizedOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;

@@ -9,9 +9,9 @@ import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.auth.AuthService;
+import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.audit.AuditLogServiceImpl;
 import de.lino.cloud.auth.entity.CloudUser;
-import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.jwt.JjwtSigner;
 import de.lino.cloud.auth.mail.LoggingEmailSender;
 import de.lino.cloud.auth.mail.SmtpEmailSender;
@@ -69,7 +69,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onRunning(String[] args) {
 
-        this.cloudDriver().getTerminal().displayApproved("Rest server connection &bopened &7and listening on port &b&l%s", REST_SERVER_PORT);
+        this.cloudDriver().getTerminal().displayApproved("Rest endpoint &bopened &7and listening on port &b&l%s", REST_SERVER_PORT);
 
     }
 

@@ -256,6 +256,24 @@ class CloudDriverClient(
         this.apiClient.deleteFolderAsync(folderId).await()
     }
 
+    /** Every file currently in the caller's trash, unpaginated - see [ApiClient.listDeletedFiles]'s own Javadoc. */
+    suspend fun listDeletedFiles(): List<StoredFileSummaryResponse> =
+        this.apiClient.listDeletedFilesAsync().await()
+
+    /** Restores a trashed file back to its previous folder. */
+    suspend fun restoreFile(fileId: String) {
+        this.apiClient.restoreFileAsync(fileId).await()
+    }
+
+    /** Every folder currently in the caller's trash, unpaginated - see [ApiClient.listDeletedFolders]'s own Javadoc. */
+    suspend fun listDeletedFolders(): List<FolderResponse> =
+        this.apiClient.listDeletedFoldersAsync().await()
+
+    /** Restores a trashed folder back to its previous parent. */
+    suspend fun restoreFolder(folderId: String) {
+        this.apiClient.restoreFolderAsync(folderId).await()
+    }
+
     /** The caller's own [CloudUserResponse] - its `timeStamp` is the account's creation time (see that DTO's own Javadoc). */
     suspend fun getCloudUser(authUserId: String): CloudUserResponse =
         this.apiClient.getCloudUserAsync(authUserId).await()

@@ -30,4 +30,7 @@ sealed interface Screen {
 
     /** After login: account overview - email, account id, storage/file/folder stats. */
     data object Dashboard : Screen
+
+    /** After login: the trash - trashed files/folders, restorable back to where they were. */
+    data object Trash : Screen
 }

@@ -10,14 +10,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 /**
-<<<<<<< HEAD
- * Ties {@link ApiClient} to a {@link TokenStore} so a session survives a desktop restart, and
- * centralizes the "token expired mid-use" handling: {@code cloud-driver} issues 12h JWTs with
- * no refresh mechanism (see {@code AUTH_IMPLEMENTATION.md}), so any authenticated call can fail
- * with a 401 well after a successful login. {@link #handleFailure(ApiException)} is the single
- * place that reacts to that by clearing the stale session, so every screen behaves consistently
- * instead of each controller re-implementing the same check.
-=======
  * Ties {@link ApiClient} to a {@link TokenStore} so a session survives an desktop restart, and
  * centralizes the "token expired mid-use" handling: {@code cloud-driver} issues 12h access JWTs,
  * refreshable via a longer-lived refresh token (see {@code IAuthService#refresh} server-side) -
@@ -26,7 +18,6 @@ import java.util.concurrent.CompletionException;
  * own Javadoc), so a caller here only ever observes {@link #handleFailure(ApiException)}'s reaction
  * once <em>that</em> automatic retry has also failed - meaning the refresh token itself is no
  * longer usable either, and only a fresh login can recover the session.
->>>>>>> dev
  *
  * <p>Every method here has an {@code *Async} counterpart built directly on {@link ApiClient}'s
  * own async methods, chained via {@link ApiClient#executor()} - so a {@link TokenStore}
@@ -109,14 +100,9 @@ public final class SessionManager {
      * call (see the class Javadoc) - this method does not need its own refresh-handling logic.
      *
      * @return {@code true} if a valid session was restored and the desktop can go straight to the
-<<<<<<< HEAD
-     * main screen; {@code false} if there was no stored token, or it's no longer valid - either
-     * way, show the login screen
-     * @throws TokenStoreException if reading the persisted token fails
-=======
      * main screen; {@code false} if there was no stored session, it didn't carry a usable refresh
      * token, or neither token is valid anymore - either way, show the login screen
->>>>>>> dev
+     * @throws TokenStoreException if reading the persisted token fails
      */
     public boolean tryRestoreSession() throws TokenStoreException {
         final Optional<StoredSession> session = this.tokenStore.load().flatMap(StoredSession::decode);
@@ -146,17 +132,14 @@ public final class SessionManager {
                 .thenCompose(session -> session.map(this::probeRestoredSessionAsync).orElseGet(() -> CompletableFuture.completedFuture(Boolean.FALSE)));
     }
 
-<<<<<<< HEAD
     /**
-     * Reads the persisted token, wrapping a checked {@link TokenStoreException} in an unchecked
-     * {@link CompletionException} so this can run as a {@link CompletableFuture#supplyAsync} task.
+     * Reads the persisted access/refresh token pair, wrapping a checked {@link
+     * TokenStoreException} in an unchecked {@link CompletionException} so this can run as a
+     * {@link CompletableFuture#supplyAsync} task.
      *
-     * @return the persisted token, if any
+     * @return the persisted session, if any
      */
-    private Optional<String> loadStoredTokenOrThrow() {
-=======
     private Optional<StoredSession> loadStoredSessionOrThrow() {
->>>>>>> dev
         try {
             return this.tokenStore.load().flatMap(StoredSession::decode);
         } catch (final TokenStoreException e) {
@@ -164,21 +147,16 @@ public final class SessionManager {
         }
     }
 
-<<<<<<< HEAD
     /**
-     * Restores {@code storedToken} into {@link #apiClient} and probes it with a lightweight
+     * Restores {@code session} into {@link #apiClient} and probes it with a lightweight
      * authenticated call, clearing the session on a {@code 401} the same way {@link
      * #tryRestoreSession()} does.
      *
-     * @param storedToken the token loaded from {@link #tokenStore}
-     * @return a future completing with {@code true} if the token is still accepted, {@code false} otherwise
+     * @param session the session loaded from {@link #tokenStore}
+     * @return a future completing with {@code true} if the session is still accepted, {@code false} otherwise
      */
-    private CompletableFuture<Boolean> probeRestoredSessionAsync(final String storedToken) {
-        this.apiClient.restoreSession(storedToken);
-=======
     private CompletableFuture<Boolean> probeRestoredSessionAsync(final StoredSession session) {
         this.apiClient.restoreSession(session.accessToken(), session.refreshToken());
->>>>>>> dev
         return this.apiClient.listFilesAsync().handleAsync((ignored, error) -> {
             if (error == null) {
                 return Boolean.TRUE;
@@ -193,33 +171,15 @@ public final class SessionManager {
     }
 
     /**
-<<<<<<< HEAD
-     * {@code POST /auth/login}, then persists the resulting token.
-     *
-     * @param emailAddress the account's e-mail address
-     * @param password     the account's plaintext password
-     * @throws ApiException        {@code 401} on wrong credentials, or any other transport/HTTP failure
-     * @throws TokenStoreException if persisting the freshly issued token fails
-     */
-    public void login(final String emailAddress, final String password) throws ApiException, TokenStoreException {
-        final String token = this.apiClient.login(emailAddress, password);
-        this.tokenStore.save(token);
-    }
-
-    /**
-     * Async form of {@link #login} - see the class Javadoc for the threading/executor contract.
-     *
-     * @param emailAddress the account's e-mail address
-     * @param password     the account's plaintext password
-     * @return a future completing once the token is both obtained and persisted, or exceptionally
-     * with a {@link CompletionException} wrapping an {@link ApiException}/{@link TokenStoreException}
-     */
-    public CompletableFuture<Void> loginAsync(final String emailAddress, final String password) {
-=======
      * {@code POST /auth/login} - persists the resulting access/refresh token pair only if the
      * matched account has two-factor authentication disabled (see {@link
      * LoginOutcome#twoFactorRequired()}); otherwise there is no session yet to persist - the
      * caller must follow up with {@link #completeTwoFactorLogin} once it has a TOTP code.
+     *
+     * @param emailAddress the account's e-mail address
+     * @param password     the account's plaintext password
+     * @throws ApiException        {@code 401} on wrong credentials, or any other transport/HTTP failure
+     * @throws TokenStoreException if persisting the freshly issued token pair fails
      */
     public LoginOutcome login(final String emailAddress, final String password) throws ApiException, TokenStoreException {
         final LoginOutcome outcome = this.apiClient.login(emailAddress, password);
@@ -229,9 +189,16 @@ public final class SessionManager {
         return outcome;
     }
 
-    /** Async form of {@link #login} - see the class Javadoc for the threading/executor contract. */
+    /**
+     * Async form of {@link #login} - see the class Javadoc for the threading/executor contract.
+     *
+     * @param emailAddress the account's e-mail address
+     * @param password     the account's plaintext password
+     * @return a future completing with the {@link LoginOutcome}, having also persisted the
+     * resulting token pair if two-factor authentication wasn't required, or exceptionally with a
+     * {@link CompletionException} wrapping an {@link ApiException}/{@link TokenStoreException}
+     */
     public CompletableFuture<LoginOutcome> loginAsync(final String emailAddress, final String password) {
->>>>>>> dev
         return this.apiClient.loginAsync(emailAddress, password)
                 .thenApplyAsync(outcome -> {
                     if (!outcome.twoFactorRequired()) {
@@ -279,19 +246,16 @@ public final class SessionManager {
         return this.apiClient.registerAsync(emailAddress, password).thenApply(ignored -> null);
     }
 
-<<<<<<< HEAD
     /**
-     * {@code POST /auth/register/confirm} (step two - creates the account and logs it in), then persists the resulting token.
+     * {@code POST /auth/register/confirm} (step two - creates the account and logs it in), then
+     * persists the resulting access/refresh token pair.
      *
      * @param emailAddress the address being confirmed - the same one passed to {@link #register}
      * @param code         the 6-digit verification code the server e-mailed
      * @throws ApiException        {@code 400} if the code is missing, expired, or does not match,
      *                              or any other transport/HTTP failure
-     * @throws TokenStoreException if persisting the freshly issued token fails
+     * @throws TokenStoreException if persisting the freshly issued token pair fails
      */
-=======
-    /** {@code POST /auth/register/confirm} (step two - creates the account and logs it in), then persists the resulting access/refresh token pair. */
->>>>>>> dev
     public void confirmRegistration(final String emailAddress, final String code) throws ApiException, TokenStoreException {
         this.apiClient.confirmRegistration(emailAddress, code);
         this.tokenStore.save(this.encodeCurrentSessionOrThrow());
@@ -310,17 +274,6 @@ public final class SessionManager {
                 .thenApplyAsync(this::persistCurrentSessionOrThrow, this.apiClient.executor());
     }
 
-<<<<<<< HEAD
-    /**
-     * Persists {@code token} via {@link #tokenStore}, wrapping a checked {@link
-     * TokenStoreException} in an unchecked {@link CompletionException} so this can run as a
-     * {@link CompletableFuture#thenApplyAsync} stage.
-     *
-     * @param token the token to persist
-     * @return always {@code null} (this stage produces {@link Void})
-     */
-    private Void saveTokenOrThrow(final String token) {
-=======
     /** {@code POST /auth/reset-password/confirm} (step two - replaces the password and logs it in), then persists the resulting access/refresh token pair. */
     public void confirmPasswordReset(final String emailAddress, final String code, final String newPassword) throws ApiException, TokenStoreException {
         this.apiClient.confirmPasswordReset(emailAddress, code, newPassword);
@@ -342,8 +295,15 @@ public final class SessionManager {
         return new StoredSession(accessToken, refreshToken).encode();
     }
 
+    /**
+     * Persists the currently held access/refresh token pair via {@link #tokenStore}, wrapping a
+     * checked {@link TokenStoreException} in an unchecked {@link CompletionException} so this can
+     * run as a {@link CompletableFuture#thenApplyAsync} stage.
+     *
+     * @param ignoredAuthCallResult the result of whichever auth call this stage follows - unused, only its completion matters
+     * @return always {@code null} (this stage produces {@link Void})
+     */
     private Void persistCurrentSessionOrThrow(final Object ignoredAuthCallResult) {
->>>>>>> dev
         try {
             this.tokenStore.save(this.encodeCurrentSessionOrThrow());
         } catch (final TokenStoreException e) {
@@ -353,16 +313,12 @@ public final class SessionManager {
     }
 
     /**
-<<<<<<< HEAD
-     * Ends the session both in memory and in persisted storage.
-     *
-     * @throws TokenStoreException if clearing the persisted token fails
-=======
      * Ends the session both in memory and in persisted storage - first revoking the held refresh
      * token server-side (see {@link ApiClient#revokeRefreshToken()}), best-effort: a failed
      * revoke (e.g. no network) never blocks clearing the local session, since the caller is
      * logging out regardless and there is nothing more useful to do with that failure here.
->>>>>>> dev
+     *
+     * @throws TokenStoreException if clearing the persisted token fails
      */
     public void logout() throws TokenStoreException {
         try {
