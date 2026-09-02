@@ -2,11 +2,18 @@ package de.lino.cloud.platform.desktop.model
 
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
 
-/** Aggregate counts for [DashboardScreen] - everything the signed-in account owns, across every folder. */
+/**
+ * Aggregate counts for [DashboardScreen] - everything the signed-in account owns, across every
+ * folder. [trashBytes] is the total size of files currently sitting in the trash (a subset of
+ * [totalBytes] - a trashed file still occupies real storage until it's purged, see
+ * `CloudUserService`'s own "Recycle bin / soft delete" Javadoc server-side), summed separately
+ * from the live-tree walk below since trashed files aren't part of it.
+ */
 data class AccountStats(
     val fileCount: Int,
     val folderCount: Int,
     val totalBytes: Long,
+    val trashBytes: Long,
 )
 
 /**
@@ -46,5 +53,6 @@ suspend fun CloudDriverClient.computeAccountStats(): AccountStats {
     }
 
     walk(null)
-    return AccountStats(fileCount, folderCount, totalBytes)
+    val trashBytes = this.listDeletedFiles().sumOf { it.sizeBytes() }
+    return AccountStats(fileCount, folderCount, totalBytes, trashBytes)
 }

@@ -243,6 +243,14 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     val files = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
     val selected = mutableStateListOf<Entry>()
 
+    // --- trash state ------------------------------------------------------
+
+    /** Every folder currently in the caller's trash - see [Screen.Trash]/`TrashScreen`. Loaded/refreshed by [loadTrash]/[restoreFile]/[restoreFolder]. */
+    val trashFolders = mutableStateListOf<FolderResponse>()
+
+    /** Every file currently in the caller's trash - counterpart to [trashFolders]. */
+    val trashFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
+
     /**
      * [folders]/[files] are loaded a page ([FOLDER_VIEW_PAGE_SIZE] entries) at a time via
      * [CloudDriverClient.listFoldersPage]/[listFilesPage] - these hold each list's own [Page]
@@ -451,6 +459,8 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.foldersNextCursor = null
         this.filesNextCursor = null
         this.selected.clear()
+        this.trashFolders.clear()
+        this.trashFiles.clear()
         this.screen = Screen.Login
     }
 
@@ -464,6 +474,36 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun loadDashboardStats() = run {
         this.refreshAccountInfo()
         this.dashboardStats = this.client.computeAccountStats()
+    }
+
+    // --- trash -------------------------------------------------------
+
+    fun showTrash() {
+        this.screen = Screen.Trash
+        this.errorMessage = null
+    }
+
+    /** Public, guarded entry point - use from a screen (button/`LaunchedEffect`), mirroring [loadCurrentFolder]'s own shape. */
+    fun loadTrash() = run { this.refreshTrash() }
+
+    /** The actual reload, callable from inside another [run]-wrapped action (e.g. after [restoreFile]/[restoreFolder]) without tripping [run]'s own `busy` guard - same reasoning as [refreshCurrentFolder]. */
+    private suspend fun refreshTrash() {
+        this.trashFolders.clear()
+        this.trashFolders.addAll(this.client.listDeletedFolders())
+        this.trashFiles.clear()
+        this.trashFiles.addAll(this.client.listDeletedFiles())
+    }
+
+    /** Restores a trashed file back to its previous folder, then refreshes [trashFiles]/[trashFolders]. */
+    fun restoreFile(fileId: String) = run {
+        this.client.restoreFile(fileId)
+        this.refreshTrash()
+    }
+
+    /** Restores a trashed folder back to its previous parent, then refreshes [trashFiles]/[trashFolders]. */
+    fun restoreFolder(folderId: String) = run {
+        this.client.restoreFolder(folderId)
+        this.refreshTrash()
     }
 
     // --- file browser --------------------------------------------------

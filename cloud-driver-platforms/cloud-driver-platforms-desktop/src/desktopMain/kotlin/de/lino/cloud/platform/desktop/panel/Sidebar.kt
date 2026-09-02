@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Home
@@ -198,6 +199,12 @@ fun Sidebar(viewModel: AppViewModel) {
             label = "Dashboard",
             selected = viewModel.screen == Screen.Dashboard,
             onClick = { viewModel.showDashboard() },
+        )
+        SidebarItem(
+            icon = Icons.Filled.Delete,
+            label = "Trash",
+            selected = viewModel.screen == Screen.Trash,
+            onClick = { viewModel.showTrash() },
         )
         SidebarItem(
             icon = Icons.Filled.Home,

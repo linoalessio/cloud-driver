@@ -7,7 +7,6 @@ target/
 ### Local secrets (DB credentials, key-encryption keys, API keys) ###
 cloud-driver/postgres-database.json
 cloud-driver/configuration.json
-cloud-driver
 
 architecture
 architecture/*.md

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LockReset
@@ -115,6 +116,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
                     StatCard(Icons.AutoMirrored.Filled.InsertDriveFile, "Uploaded files", stats.fileCount.toString(), Modifier.weight(1f))
                     StatCard(Icons.Filled.Folder, "Folders", stats.folderCount.toString(), Modifier.weight(1f))
                     StatCard(Icons.Filled.Storage, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
+                    StatCard(Icons.Filled.Delete, "Trash", formatBytes(stats.trashBytes), Modifier.weight(1f))
                 }
             }
 

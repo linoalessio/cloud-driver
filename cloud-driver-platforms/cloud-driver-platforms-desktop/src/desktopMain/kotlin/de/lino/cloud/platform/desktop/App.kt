@@ -14,6 +14,7 @@ import de.lino.cloud.platform.desktop.auth.TwoFactorLoginScreen
 import de.lino.cloud.platform.desktop.model.Screen
 import de.lino.cloud.platform.desktop.panel.DashboardScreen
 import de.lino.cloud.platform.desktop.panel.FileBrowserScreen
+import de.lino.cloud.platform.desktop.panel.TrashScreen
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 
 /**
@@ -40,6 +41,7 @@ fun App(viewModel: AppViewModel) {
             is Screen.TwoFactorLogin -> TwoFactorLoginScreen(viewModel, screen.pendingToken, screen.email)
             Screen.Browser -> FileBrowserScreen(viewModel)
             Screen.Dashboard -> DashboardScreen(viewModel)
+            Screen.Trash -> TrashScreen(viewModel)
         }
     }
 }
