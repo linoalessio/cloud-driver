@@ -69,9 +69,7 @@ public final class SessionManager {
     public CompletableFuture<Boolean> tryRestoreSessionAsync() {
         return CompletableFuture
                 .supplyAsync(this::loadStoredTokenOrThrow, this.apiClient.executor())
-                .thenCompose(storedToken -> storedToken.isEmpty()
-                        ? CompletableFuture.completedFuture(Boolean.FALSE)
-                        : this.probeRestoredSessionAsync(storedToken.get()));
+                .thenCompose(storedToken -> storedToken.map(this::probeRestoredSessionAsync).orElseGet(() -> CompletableFuture.completedFuture(Boolean.FALSE)));
     }
 
     private Optional<String> loadStoredTokenOrThrow() {
@@ -132,6 +130,18 @@ public final class SessionManager {
     /** Async form of {@link #confirmRegistration} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Void> confirmRegistrationAsync(final String emailAddress, final String code) {
         return this.apiClient.confirmRegistrationAsync(emailAddress, code)
+                .thenApplyAsync(this::saveTokenOrThrow, this.apiClient.executor());
+    }
+
+    /** {@code POST /auth/reset-password/confirm} (step two - replaces the password and logs it in), then persists the resulting token. */
+    public void confirmPasswordReset(final String emailAddress, final String code, final String newPassword) throws ApiException, TokenStoreException {
+        final String token = this.apiClient.confirmPasswordReset(emailAddress, code, newPassword);
+        this.tokenStore.save(token);
+    }
+
+    /** Async form of {@link #confirmPasswordReset} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> confirmPasswordResetAsync(final String emailAddress, final String code, final String newPassword) {
+        return this.apiClient.confirmPasswordResetAsync(emailAddress, code, newPassword)
                 .thenApplyAsync(this::saveTokenOrThrow, this.apiClient.executor());
     }
 

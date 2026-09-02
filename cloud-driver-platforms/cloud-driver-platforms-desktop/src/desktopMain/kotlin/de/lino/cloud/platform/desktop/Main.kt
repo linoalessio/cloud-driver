@@ -50,6 +50,13 @@ fun main() = application {
         icon = painterResource(Res.drawable.app_icon),
     ) {
         LaunchedEffect(Unit) { window.minimumSize = MINIMUM_WINDOW_SIZE }
+        // Session persistence (item 4, SERVICES.md): before the first real screen is meaningfully
+        // interacted with, try to restore a session persisted from a previous run (OS
+        // keychain/fallback file - see CloudDriverClient/SessionManager) so a returning user goes
+        // straight to Screen.Browser instead of always starting at the login screen. A no-op if
+        // there was no persisted session or it's no longer valid - viewModel.screen simply stays
+        // at its initial Screen.Login.
+        LaunchedEffect(Unit) { viewModel.tryRestoreSession() }
 
         CloudDriverTheme(viewModel.themeMode) {
             App(viewModel)

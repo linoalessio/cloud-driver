@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CancellationException;
@@ -199,6 +200,18 @@ public final class ApiClient implements AutoCloseable {
     /** @return {@code true} once {@link #login} has produced a token still held in memory. */
     public boolean isAuthenticated() {
         return this.token.get() != null;
+    }
+
+    /**
+     * @return the raw JWT currently held in memory (set by {@link #login}/{@link #register}'s
+     * confirm step/{@link #restoreSession}), or empty if not authenticated. Added for {@link
+     * SessionManager}-based session-restore callers that need the token itself after a successful
+     * {@link SessionManager#tryRestoreSession()}/{@code tryRestoreSessionAsync()} (e.g. to decode
+     * its {@code sub} claim client-side) rather than just the boolean "did it work" answer that
+     * method returns.
+     */
+    public Optional<String> currentToken() {
+        return Optional.ofNullable(this.token.get());
     }
 
     /** Restores a previously persisted token (e.g. loaded from the OS keychain) without a fresh login. */

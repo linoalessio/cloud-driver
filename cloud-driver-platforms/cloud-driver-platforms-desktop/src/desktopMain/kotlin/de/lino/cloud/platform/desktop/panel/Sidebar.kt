@@ -26,11 +26,14 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +65,9 @@ import org.jetbrains.compose.resources.painterResource
 @Composable
 fun AuthenticatedShell(viewModel: AppViewModel, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize()) {
+        if (viewModel.showKeychainFallbackNotice) {
+            KeychainFallbackNotice(onDismiss = { viewModel.dismissKeychainFallbackNotice() })
+        }
         Row(Modifier.weight(1f)) {
             Sidebar(viewModel)
             Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -69,6 +75,47 @@ fun AuthenticatedShell(viewModel: AppViewModel, content: @Composable () -> Unit)
             }
         }
         viewModel.transferProgress?.let { TransferProgressBar(it) }
+    }
+}
+
+/**
+ * A dismissible warning banner shown across every authenticated screen (see [AuthenticatedShell])
+ * while [AppViewModel.showKeychainFallbackNotice] is `true` - i.e. no real OS keychain/secret
+ * service was found and the session token is instead persisted to a permission-restricted plain
+ * file (see [de.lino.cloud.platform.desktop.client.CloudDriverClient.usedKeychainFallback]).
+ * Surfacing this explicitly, rather than silently degrading to the less-secure fallback, matches
+ * [de.lino.cloud.platform.rest.api.session.TokenStoreFactory]'s own Javadoc instruction to callers.
+ */
+@Composable
+private fun KeychainFallbackNotice(onDismiss: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        Icon(
+            Icons.Filled.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "No system keychain was found - your session is stored in a plain, permission-restricted file instead of a secure OS keychain.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Dismiss",
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 

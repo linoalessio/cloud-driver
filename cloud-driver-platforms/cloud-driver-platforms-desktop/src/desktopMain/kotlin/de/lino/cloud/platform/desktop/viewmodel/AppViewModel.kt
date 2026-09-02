@@ -121,10 +121,56 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     var dashboardStats: AccountStats? by mutableStateOf(null)
         private set
 
+    /**
+     * `true` once [client] reported [CloudDriverClient.usedKeychainFallback] after the first
+     * successful authentication (fresh login, registration/password-reset confirm, or a restored
+     * session at startup) - surfaced as a dismissible banner (`Sidebar.kt`'s `AuthenticatedShell`)
+     * rather than silently persisting the session token less securely than a real OS keychain
+     * would, with no signal to the user. Intentionally re-armed on every fresh sign-in within a
+     * single run of the app (not persisted as "already seen forever") - `usedKeychainFallback`
+     * itself never changes for a given process, so this only ever flips `false` via explicit
+     * [dismissKeychainFallbackNotice].
+     */
+    var showKeychainFallbackNotice: Boolean by mutableStateOf(false)
+        private set
+
+    fun dismissKeychainFallbackNotice() {
+        this.showKeychainFallbackNotice = false
+    }
+
     private suspend fun onAuthenticated(email: String, jwt: String) {
         this.currentUserEmail = email
         this.currentUserId = decodeJwtSubject(jwt)
+        if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
         this.refreshAccountInfo()
+    }
+
+    /**
+     * Called once at startup (see `Main.kt`) after [CloudDriverClient.tryRestoreSession] finds a
+     * still-valid persisted session. Unlike [onAuthenticated], there is no e-mail address on hand
+     * here - restoring a session is not itself a server call that returns one, and this app has no
+     * `GET /me`-style endpoint to fetch it back from - so [currentUserEmail] stays `null` (the
+     * Dashboard's "Email" row already renders `"-"` for that case) until the next explicit
+     * login/register/password-reset or e-mail change.
+     */
+    private suspend fun onSessionRestored(jwt: String) {
+        this.currentUserId = decodeJwtSubject(jwt)
+        if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
+        this.refreshAccountInfo()
+    }
+
+    /**
+     * Call once at app startup, before the first screen renders (see `Main.kt`) - if a valid
+     * session was persisted from a previous run, skips the login screen entirely and goes straight
+     * to [Screen.Browser], mirroring what [login]/[confirmRegister]/[confirmPasswordReset] already
+     * do on success. A no-op (silently falls through to the initial [Screen.Login]) if there was no
+     * persisted session or it's no longer valid - the same "either way, show the login screen"
+     * contract [de.lino.cloud.platform.rest.api.SessionManager.tryRestoreSession] itself documents.
+     */
+    fun tryRestoreSession() = run {
+        val jwt = this.client.tryRestoreSession() ?: return@run
+        this.onSessionRestored(jwt)
+        this.screen = Screen.Browser
     }
 
     /**
@@ -327,19 +373,28 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      */
     fun uninstall() {
         this.scope.launch(Dispatchers.IO) {
+            this@AppViewModel.client.clearPersistedSession()
             this@AppViewModel.client.close()
             uninstallApp()
             kotlin.system.exitProcess(0)
         }
     }
 
+    /**
+     * Ends the session both in memory (synchronously, via [CloudDriverClient.logout] - so the
+     * screen switch back to [Screen.Login] below can't race a still-authenticated [client]) and in
+     * persisted storage (asynchronously, via [CloudDriverClient.clearPersistedSession] - a real OS
+     * keychain call/file write with no reason to block this screen transition on).
+     */
     fun logout() {
         this.client.logout()
+        this.scope.launch { this@AppViewModel.client.clearPersistedSession() }
         this.currentUserEmail = null
         this.currentUserId = null
         this.currentUserCreatedAtEpochMillis = null
         this.currentUserUploadedBytes = null
         this.currentUserMaxBytesToUpload = null
+        this.showKeychainFallbackNotice = false
         this.dashboardStats = null
         this.breadcrumbs.clear()
         this.currentFolderId = null
