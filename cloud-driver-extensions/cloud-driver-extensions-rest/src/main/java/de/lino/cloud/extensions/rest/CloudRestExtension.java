@@ -131,7 +131,15 @@ public class CloudRestExtension extends Extension {
         this.cloudDriver().getServiceContainer().setAuthService(authService);
         this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
 
-        REST_FACTORY = new DefaultRestFactory(dataFactory, authService, cloudUserService);
+        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService);
+        REST_FACTORY = restFactory;
+
+        // Item 10 (live push via WebSocket, see architecture/SERVICES.md): DefaultRestFactory
+        // itself implements LiveUpdatePublisher (it owns the WebSocket route's connected-session
+        // registry) - published here the same way authService/cloudUserService are, so
+        // DatabaseWatchEvent#handle (cloud-driver-api, no dependency on this module) can reach it
+        // purely through IServiceContainer without cloud-driver-api ever depending on Javalin.
+        this.cloudDriver().getServiceContainer().setLiveUpdatePublisher(restFactory);
 
         // AuthUser and StoredFile are deliberately NOT mounted here at all - both are entities
         // with no Owned scoping (AuthUser has no ownership concept, it IS the account; StoredFile's

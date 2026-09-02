@@ -7,6 +7,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
+import de.lino.cloud.platform.rest.api.push.LiveUpdateClient
 import de.lino.cloud.platform.rest.api.session.TokenStoreFactory
 import kotlinx.coroutines.future.await
 import java.nio.file.Path
@@ -52,6 +53,12 @@ class CloudDriverClient(
 
     /** Ties [apiClient] to the OS-appropriate [de.lino.cloud.platform.rest.api.session.TokenStore] so a session survives a restart. */
     private val sessionManager: SessionManager = SessionManager(this.apiClient, this.tokenStoreResult.store())
+
+    /**
+     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - the currently-open
+     * connection, or `null` before [startLiveUpdates]/after [stopLiveUpdates]/[close].
+     */
+    private var liveUpdateClient: LiveUpdateClient? = null
 
     val isAuthenticated: Boolean
         get() = this.apiClient.isAuthenticated
@@ -225,7 +232,34 @@ class CloudDriverClient(
     suspend fun getCloudUser(authUserId: String): CloudUserResponse =
         this.apiClient.getCloudUserAsync(authUserId).await()
 
-    /** Shuts down the wrapped [ApiClient]'s executor. Idempotent. */
-    override fun close() = this.apiClient.close()
+    /**
+     * Opens the item-10 live-push WebSocket connection (see `architecture/SERVICES.md`) - call
+     * once authenticated (see [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.onAuthenticated]/
+     * `onSessionRestored`). [onUpdate] fires for every pushed change notification, on whatever
+     * internal HTTP-client thread delivered it - the caller must dispatch back onto its own
+     * coroutine scope before touching any Compose state from it, the same way [LiveUpdateClient.Listener]'s
+     * own Javadoc documents. Replaces any already-open connection (idempotent, matching this
+     * class's other "call this again to reset" methods).
+     */
+    fun startLiveUpdates(onUpdate: () -> Unit) {
+        this.stopLiveUpdates()
+        val liveUpdateClient = LiveUpdateClient(this.apiClient, object : LiveUpdateClient.Listener {
+            override fun onUpdate(update: LiveUpdateClient.Update) = onUpdate()
+        })
+        this.liveUpdateClient = liveUpdateClient
+        liveUpdateClient.connect()
+    }
+
+    /** Stops the live-push connection and its reconnect loop, if one is running - call from [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.logout]/`quit`. Idempotent. */
+    fun stopLiveUpdates() {
+        this.liveUpdateClient?.close()
+        this.liveUpdateClient = null
+    }
+
+    /** Stops any open live-push connection and shuts down the wrapped [ApiClient]'s executor. Idempotent. */
+    override fun close() {
+        this.stopLiveUpdates()
+        this.apiClient.close()
+    }
 
 }

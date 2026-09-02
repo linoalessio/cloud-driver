@@ -20,6 +20,7 @@ import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.auth.AuthTokens;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
@@ -34,6 +35,9 @@ import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 import io.javalin.http.*;
 import io.javalin.util.JavalinLogger;
+import io.javalin.websocket.WsCloseStatus;
+import io.javalin.websocket.WsConfig;
+import io.javalin.websocket.WsContext;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -80,7 +84,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * else, and {@link #update}/{@link #delete} 404 the same way rather than
  * letting one user mutate another's record.
  */
-public final class DefaultRestFactory extends RestFactory {
+public final class DefaultRestFactory extends RestFactory implements LiveUpdatePublisher {
 
     /** HTTP request header {@link #requireValidApiKey} checks against {@link #apiKey}. */
     private static final String API_KEY_HEADER = "X-API-Key";
@@ -143,6 +147,15 @@ public final class DefaultRestFactory extends RestFactory {
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
     private static final String ADMIN_AUTH_USERS_PATH = "/admin/authUsers";
+    /**
+     * Path mounted by {@link #start} for the item-10 (live push via WebSocket, see {@code
+     * architecture/SERVICES.md}) WebSocket route, configured by {@link #configureLiveUpdatesWebSocket}.
+     * Only mounted when {@link #authService} is set - the same bearer-token identity the HTTP
+     * routes use also gates this connection (see that method's own Javadoc for how, since a
+     * WebSocket handshake can't carry a custom {@code Authorization} header the way a normal HTTP
+     * client request can).
+     */
+    private static final String LIVE_UPDATES_PATH = "/ws/updates";
     /** HTTP request header carrying the bearer token, checked by {@link #resolveBearerToken}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
     /** Prefix a valid {@link #AUTHORIZATION_HEADER} value must start with, stripped by {@link #resolveBearerToken}. */
@@ -257,6 +270,17 @@ public final class DefaultRestFactory extends RestFactory {
      * scale, but a future multi-tenant/high-traffic deployment would want to evict stale entries.
      */
     private final ConcurrentHashMap<String, AuthRateLimitBucket> authRateLimitBuckets = new ConcurrentHashMap<>();
+
+    /**
+     * Every currently-connected {@link #LIVE_UPDATES_PATH} session, grouped by the {@code
+     * authUserId} it authenticated as (see {@link #configureLiveUpdatesWebSocket}) - an account
+     * can have more than one connected client (e.g. the desktop app open on two machines), so
+     * this is a set per key, not a single session. Read by {@link #publish} to know which
+     * sessions, if any, to forward a {@link de.lino.cloud.api.event.database.DatabaseWatchEvent}
+     * notification to; an entry is removed entirely once its last session disconnects, so a
+     * long-running server never accumulates empty sets for accounts that have since gone offline.
+     */
+    private final ConcurrentHashMap<String, Set<WsContext>> liveUpdateSessions = new ConcurrentHashMap<>();
 
     /**
      * One client IP's current fixed-window {@code /auth/*} request count. {@code windowStartEpochMillis}
@@ -465,6 +489,8 @@ public final class DefaultRestFactory extends RestFactory {
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
                 config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
                 config.routes.before(this::requireAdmin);
+
+                config.routes.ws(LIVE_UPDATES_PATH, this::configureLiveUpdatesWebSocket);
             }
 
             if (this.cloudUserService != null) {
@@ -507,6 +533,7 @@ public final class DefaultRestFactory extends RestFactory {
             this.app.stop();
             this.app = null;
         }
+        this.liveUpdateSessions.clear();
     }
 
     /**
@@ -677,6 +704,111 @@ public final class DefaultRestFactory extends RestFactory {
         return configuration.contains(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
                 ? configuration.getInteger(AUTH_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
                 : DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS;
+    }
+
+    /**
+     * Item 10 (live push via WebSocket, see {@code architecture/SERVICES.md}): configures the
+     * {@link #LIVE_UPDATES_PATH} WebSocket route. Unlike every HTTP route, authentication cannot
+     * go through {@link #requireValidBearerToken} - Javalin's {@code before} filters only run
+     * ahead of the HTTP upgrade request, and a browser {@code WebSocket} client cannot set a
+     * custom {@code Authorization} header on the handshake the way a normal HTTP client can -
+     * so the token is instead resolved (header, or the {@link #TOKEN_QUERY_PARAM} query-parameter
+     * fallback {@link #resolveBearerToken(Context)}'s own Javadoc already documents the trade-off
+     * of) directly inside {@code onConnect}, once the socket itself is already open, and an
+     * invalid/missing token immediately closes it with {@link WsCloseStatus#POLICY_VIOLATION}
+     * rather than ever registering the session.
+     *
+     * <p>A validated session is tracked in {@link #liveUpdateSessions}, keyed by the resolved
+     * {@code authUserId} (stashed on the {@link WsContext} itself under {@link
+     * #USER_ID_ATTRIBUTE}, mirroring {@link #requireValidBearerToken}'s own HTTP-side
+     * convention), and untracked again in {@code onClose} regardless of why the connection ended.
+     *
+     * @param ws the Javalin WebSocket handler registry for {@link #LIVE_UPDATES_PATH}
+     */
+    private void configureLiveUpdatesWebSocket(@NotNull final WsConfig ws) {
+        ws.onConnect(ctx -> {
+            final String token = resolveBearerToken(ctx);
+            if (token == null) {
+                ctx.closeSession(WsCloseStatus.POLICY_VIOLATION, "Missing " + AUTHORIZATION_HEADER + " header or '" + TOKEN_QUERY_PARAM + "' query parameter");
+                return;
+            }
+            final String userId;
+            try {
+                userId = this.authService.validate(token);
+            } catch (final InvalidJwtException e) {
+                ctx.closeSession(WsCloseStatus.POLICY_VIOLATION, "Invalid or expired token");
+                return;
+            }
+            ctx.attribute(USER_ID_ATTRIBUTE, userId);
+            this.liveUpdateSessions.computeIfAbsent(userId, ignored -> ConcurrentHashMap.newKeySet()).add(ctx);
+        });
+        ws.onClose(ctx -> {
+            final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
+            if (userId == null) {
+                return;
+            }
+            this.liveUpdateSessions.computeIfPresent(userId, (ignored, sessions) -> {
+                sessions.remove(ctx);
+                return sessions.isEmpty() ? null : sessions;
+            });
+        });
+    }
+
+    /**
+     * {@link #resolveBearerToken(Context)}'s exact logic, against a {@link WsContext} instead of
+     * a plain {@link Context} - the two share no common supertype exposing {@code header}/{@code
+     * queryParam}, so this is a small, deliberate duplication rather than a shared helper.
+     *
+     * @return the raw token, or {@code null} if neither source carries one
+     */
+    @Nullable
+    private static String resolveBearerToken(@NotNull final WsContext ctx) {
+        final String header = ctx.header(AUTHORIZATION_HEADER);
+        if (header != null && header.startsWith(BEARER_PREFIX)) {
+            return header.substring(BEARER_PREFIX.length());
+        }
+        return ctx.queryParam(TOKEN_QUERY_PARAM);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Forwards to every session tracked in {@link #liveUpdateSessions} under {@code
+     * authUserId}, if any - a no-op if nobody belonging to that account is currently connected to
+     * {@link #LIVE_UPDATES_PATH}. Never throws: a failure sending to one session (e.g. it just
+     * disconnected but hasn't been untracked yet) is caught and skipped so it can never prevent
+     * delivery to that account's other connected sessions, matching this interface's own
+     * "must never throw" contract.
+     */
+    @Override
+    public void publish(@NonNull final String authUserId, @NonNull final String table,
+                         @NonNull final String operation, @NonNull final String id) {
+        try {
+
+            final Set<WsContext> sessions = this.liveUpdateSessions.get(authUserId);
+            if (sessions == null || sessions.isEmpty()) {
+                return;
+            }
+
+            final JsonObject payload = new JsonObject();
+            payload.addProperty("table", table);
+            payload.addProperty("operation", operation);
+            payload.addProperty("id", id);
+            final String json = this.gson.toJson(payload);
+
+            for (final WsContext session : sessions) {
+                try {
+                    session.send(json);
+                } catch (final RuntimeException ignored) {
+                    // A single broken/already-closing session must never stop delivery to its
+                    // siblings - onClose (see configureLiveUpdatesWebSocket) is what untracks it.
+                }
+            }
+
+        } catch (final RuntimeException e) {
+            System.err.println("[DefaultRestFactory] failed to publish live update for account '" + authUserId + "':");
+            e.printStackTrace();
+        }
     }
 
     /**

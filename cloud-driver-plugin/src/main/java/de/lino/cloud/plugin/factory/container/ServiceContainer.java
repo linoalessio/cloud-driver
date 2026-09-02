@@ -2,6 +2,7 @@ package de.lino.cloud.plugin.factory.container;
 
 import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
 
@@ -20,6 +21,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile ICloudUserService cloudUserService;
     /** The login/JWT service, {@code null} until {@link #setAuthService} publishes one. */
     private volatile IAuthService authService;
+    /** The live-update push transport, {@code null} until {@link #setLiveUpdatePublisher} publishes one. */
+    private volatile LiveUpdatePublisher liveUpdatePublisher;
 
     /** {@inheritDoc} */
     @Override
@@ -43,6 +46,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setAuthService(@NonNull final IAuthService authService) {
         this.authService = authService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public LiveUpdatePublisher getLiveUpdatePublisher() {
+        return this.liveUpdatePublisher;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setLiveUpdatePublisher(@NonNull final LiveUpdatePublisher liveUpdatePublisher) {
+        this.liveUpdatePublisher = liveUpdatePublisher;
     }
 
 }

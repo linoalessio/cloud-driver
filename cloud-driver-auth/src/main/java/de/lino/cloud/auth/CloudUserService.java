@@ -112,6 +112,31 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Scans every {@link StoredFileOwnership} row (same full-section-scan trade-off {@link
+     * #getCloudUserByEmail(String)}/{@link #listFiles} already accept) for the one tracking
+     * {@code storedFileId}, and returns its {@code authUserId}. Deliberately does not filter out
+     * a trashed row (item 3, soft delete) - the owner of a file that was just moved to trash (or
+     * restored, or hard-deleted) is exactly who a live-push notification about that change should
+     * still reach.
+     *
+     * @param storedFileId the {@link StoredFile#fileId()} to resolve an owner for
+     * @return the owning {@code authUserId}, or {@link Optional#empty()} if no ownership row tracks this file
+     */
+    @Override
+    public @NonNull Optional<String> resolveOwnerAuthUserId(@NotNull final String storedFileId) {
+        try {
+
+            return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
+                    .filter(ownership -> ownership.getStoredFileId().equals(storedFileId))
+                    .map(StoredFileOwnership::getAuthUserId)
+                    .findFirst();
+
+        } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.resolveOwnerAuthUserId: failed to look up owner for " + storedFileId, e);
+        }
+    }
+
+    /**
      * Deletes every {@link StoredFile}/{@link Folder} owned by {@code authUserId} (via {@link
      * #resetCloudUser(String)}) and additionally removes the {@link CloudUser} record itself -
      * unlike {@link #resetCloudUser(String)}, the account is no longer tracked at all afterwards.

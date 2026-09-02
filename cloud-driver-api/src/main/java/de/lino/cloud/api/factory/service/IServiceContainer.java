@@ -1,6 +1,7 @@
 package de.lino.cloud.api.factory.service;
 
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
 
@@ -56,5 +57,25 @@ public interface IServiceContainer {
      * @param authService the instance backing the JWT-authenticated REST API's login/registration routes
      */
     void setAuthService(@NonNull IAuthService authService);
+
+    /**
+     * Returns the live-update push transport (item 10, live push via WebSocket - see {@code
+     * architecture/SERVICES.md}), or {@code null} if {@code CloudRestExtension} hasn't published
+     * one yet (not started, the REST API is disabled for this deployment, or this deployment's
+     * {@code cloud-driver-plugin} version predates this feature). {@link
+     * de.lino.cloud.api.event.database.DatabaseWatchEvent#handle} must null-check this the same
+     * way it already does for {@link #getCloudUserService()}.
+     *
+     * @return the {@link LiveUpdatePublisher}, or {@code null}
+     */
+    LiveUpdatePublisher getLiveUpdatePublisher();
+
+    /**
+     * Publishes the real {@link LiveUpdatePublisher}, once the WebSocket-backed {@code
+     * RestFactory} it forwards to is actually running.
+     *
+     * @param liveUpdatePublisher the instance backing the JWT-authenticated REST API's WebSocket push route
+     */
+    void setLiveUpdatePublisher(@NonNull LiveUpdatePublisher liveUpdatePublisher);
 
 }

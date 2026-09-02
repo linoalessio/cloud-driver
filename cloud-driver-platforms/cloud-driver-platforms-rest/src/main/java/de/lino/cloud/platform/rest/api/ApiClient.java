@@ -214,6 +214,28 @@ public final class ApiClient implements AutoCloseable {
         return this.executor;
     }
 
+    /**
+     * The main REST API's base URL - the same host {@code /files}/{@code /folders}/{@code
+     * /cloudUsers} calls go to. Exposed for {@link de.lino.cloud.platform.rest.api.push.LiveUpdateClient}
+     * (item 10, live push via WebSocket - see {@code architecture/SERVICES.md}), which derives
+     * its {@code wss://}/{@code ws://} URL from it rather than duplicating this client's own
+     * base-URL configuration.
+     */
+    public URI apiBaseUrl() {
+        return this.apiBaseUrl;
+    }
+
+    /**
+     * The underlying {@link HttpClient}, exposed so {@link
+     * de.lino.cloud.platform.rest.api.push.LiveUpdateClient} can open its WebSocket connection
+     * through the exact same client (connection pool, {@link HttpClient.Version#HTTP_2}
+     * negotiation, {@link #executor()}) this instance already uses for every HTTP call, rather
+     * than standing up a second, independently-configured one.
+     */
+    public HttpClient httpClient() {
+        return this.httpClient;
+    }
+
     /** @return {@code true} once {@link #login} has produced a token still held in memory. */
     public boolean isAuthenticated() {
         return this.token.get() != null;

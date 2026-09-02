@@ -143,6 +143,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserId = decodeJwtSubject(jwt)
         if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
         this.refreshAccountInfo()
+        this.startLiveUpdates()
     }
 
     /**
@@ -157,6 +158,31 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserId = decodeJwtSubject(jwt)
         if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
         this.refreshAccountInfo()
+        this.startLiveUpdates()
+    }
+
+    /**
+     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - opens the connection via
+     * [CloudDriverClient.startLiveUpdates] and reacts to a pushed notification by refreshing
+     * whichever of the file browser/[Dashboard] is currently showing, instead of requiring the
+     * user to hit "Refresh" to see a change made from elsewhere (another device, or a file shared
+     * with this account - see item 9). The push callback fires on an internal HTTP-client thread
+     * (see [de.lino.cloud.platform.rest.api.push.LiveUpdateClient.Listener]'s own Javadoc), so it
+     * is immediately re-dispatched onto [scope] before touching any Compose state or calling
+     * [loadCurrentFolder]/[loadDashboardStats] - both already re-entrant-safe (each goes through
+     * [run]'s own `busy` guard), so an update arriving while another action is in flight is simply
+     * dropped rather than queued; the next push (or the user's own "Refresh") catches up.
+     */
+    private fun startLiveUpdates() {
+        this.client.startLiveUpdates {
+            this.scope.launch {
+                when (this@AppViewModel.screen) {
+                    Screen.Browser -> this@AppViewModel.loadCurrentFolder()
+                    Screen.Dashboard -> this@AppViewModel.loadDashboardStats()
+                    else -> {}
+                }
+            }
+        }
     }
 
     /**
@@ -387,6 +413,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      * keychain call/file write with no reason to block this screen transition on).
      */
     fun logout() {
+        this.client.stopLiveUpdates()
         this.client.logout()
         this.scope.launch { this@AppViewModel.client.clearPersistedSession() }
         this.currentUserEmail = null

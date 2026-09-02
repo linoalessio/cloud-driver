@@ -49,6 +49,19 @@ public interface ICloudUserService {
     Optional<ICloudUser> getCloudUserByEmail(@NonNull String emailAddress);
 
     /**
+     * Looks up which account owns {@code storedFileId}, via the same full-{@code
+     * StoredFileOwnership}-section scan {@link #getCloudUserByEmail(String)} performs over
+     * {@code AuthUser} - added for item 10 (live push via WebSocket, see {@code
+     * architecture/SERVICES.md}) so a {@code DatabaseWatchEvent} (which only ever learns a
+     * changed file's id, never its owner) can resolve which connected session(s) to notify.
+     *
+     * @param storedFileId the {@link StoredFile#fileId()} to resolve an owner for
+     * @return the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}, or {@link Optional#empty()} if no ownership row tracks this file (e.g. it was hard-deleted)
+     */
+    @NonNull
+    Optional<String> resolveOwnerAuthUserId(@NotNull String storedFileId);
+
+    /**
      * Deletes every {@link StoredFile} and {@link Folder} owned by {@code authUserId} (the
      * same wipe {@link #resetCloudUser(String)} performs) and additionally removes {@code
      * authUserId}'s own {@link ICloudUser} record itself - after this call the user is no
