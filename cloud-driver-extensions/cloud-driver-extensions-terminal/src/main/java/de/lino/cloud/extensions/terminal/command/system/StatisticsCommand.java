@@ -44,6 +44,15 @@ public class StatisticsCommand implements Command {
      * #getCloudUserService()} is not yet available - i.e. {@code cloud-driver-rest} has not
      * started), and total uploaded file count/storage used.
      *
+     * <p><b>Fixed a real bug (2026-09-02):</b> this used to call {@code fileFactory
+     * .getEntitiesAsync().join()} twice - once for the size sum, once for the count - each call
+     * independently re-fetching, decrypting, and checksum-verifying (base64-decode plus, for a
+     * compressed file, DEFLATE-inflate) every uploaded file's full content. Against an account
+     * holding real file content, that's a real, large allocation paid twice for no reason; combined
+     * with {@code DefaultFileFactory#verifyAll}'s (at the time still-unbounded) per-file concurrent
+     * decode, this command was one of the two real call sites behind a live {@code
+     * OutOfMemoryError} on {@code strato}. Now calls it once and reuses the same list for both.
+     *
      * @param arguments unused
      */
     @Override
@@ -55,11 +64,13 @@ public class StatisticsCommand implements Command {
         final ExtensionFactory extensionFactory = CloudDriver.getInstance().getFactoryContainer().getExtensionFactory();
         final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
 
+        final List<StoredFile> allFiles = fileFactory.getEntitiesAsync().join();
+
         final String cloudRunningFor = Constraints.resolveMilliSecondsToUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
-        final String usedStorage = Constraints.resolveBytesToUnit(fileFactory.getEntitiesAsync().join().stream().mapToLong(StoredFile::sizeBytes).sum());
+        final String usedStorage = Constraints.resolveBytesToUnit(allFiles.stream().mapToLong(StoredFile::sizeBytes).sum());
         final String totalCloudServerStorage = Constraints.resolveBytesToUnit(CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available"));
 
-        final String totalFiles = String.valueOf(fileFactory.getEntitiesAsync().join().size());
+        final String totalFiles = String.valueOf(allFiles.size());
         final String totalCloudUsers = cloudUserService != null ? String.valueOf(cloudUserService.getCloudUsers().size()) : "N/A";
 
         final String totalExtensions = String.valueOf(extensionFactory.getExtensions().size());

@@ -3,6 +3,7 @@ package de.lino.cloud.api.user;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.SharedFileSummary;
+import de.lino.cloud.api.file.SharedFolderContents;
 import de.lino.cloud.api.file.SharedFolderSummary;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
@@ -492,16 +493,37 @@ public interface ICloudUserService {
     /**
      * Lists every folder directly shared with {@code authUserId} via {@link #shareFolder} - as
      * {@link SharedFolderSummary}s (added 2026-09-02, same "pair with the sharing account's email"
-     * reasoning as {@link #listSharedWithMe}) - just the shared folders themselves (not their
-     * contents; see {@link #listSharedWithMe}'s own Javadoc for the same "browsing a shared folder's
-     * contents is a future extension" caveat). A grant whose underlying folder has since been
-     * deleted or trashed by its owner is silently omitted.
+     * reasoning as {@link #listSharedWithMe}) - just the shared folders themselves, not their
+     * contents; see {@link #listSharedFolderContents} for browsing what's actually inside one. A
+     * grant whose underlying folder has since been deleted or trashed by its owner is silently
+     * omitted.
      *
      * @param authUserId the account whose incoming folder shares to list
      * @return a {@link SharedFolderSummary} for every folder directly shared with {@code authUserId}
      */
     @NotNull
     List<SharedFolderSummary> listSharedFoldersWithMe(@NotNull String authUserId);
+
+    /**
+     * Lists the non-trashed files and subfolders directly inside {@code folderId}, for a caller who
+     * doesn't own it but reaches it via a share - either a direct {@link #shareFolder} grant on
+     * {@code folderId} itself, or an inherited one on any of its ancestor folders (a folder share
+     * covers everything nested inside it, at any depth - the same ancestor-walk {@code
+     * CloudUserService#getFile}'s own share-aware lookup already performs for a single file, applied
+     * here to browsing instead). Added 2026-09-02, finally implementing the "browsing a shared
+     * folder's contents" extension {@link #listSharedWithMe}'s own Javadoc used to describe as
+     * future/out of scope. If {@code authUserId} happens to <em>own</em> {@code folderId}, this
+     * still works (ownership trivially satisfies "has access") but {@link #listFileSummaries}/{@link
+     * #listFolders} are the normal, more direct way for an owner to browse their own folder.
+     *
+     * @param authUserId the caller, who must own {@code folderId} or have it shared with them (directly or via an ancestor)
+     * @param folderId the folder to browse
+     * @return the non-trashed files/subfolders directly inside {@code folderId}
+     * @throws IllegalArgumentException if {@code folderId} doesn't exist, is currently trashed, or
+     *                                   isn't owned by or shared with {@code authUserId}
+     */
+    @NotNull
+    SharedFolderContents listSharedFolderContents(@NotNull String authUserId, @NotNull String folderId);
 
     /**
      * Lists the email addresses of every account {@code fileId} is currently shared with - the

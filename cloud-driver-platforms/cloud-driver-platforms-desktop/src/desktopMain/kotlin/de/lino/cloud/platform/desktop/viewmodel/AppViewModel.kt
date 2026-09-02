@@ -281,6 +281,22 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     /** Every file directly shared with the signed-in account, each paired with the sharing account's email - counterpart to [sharedWithMeFolders]. */
     val sharedWithMeFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse>()
 
+    // --- shared folder browsing (item 9, added 2026-09-02) ------------------
+
+    /** The path from the originally-opened shared folder down to [sharedBrowseCurrentFolderId], root-first - mirrors [breadcrumbs]' own shape for the caller's own folders, but there is no "shared root" below index 0 (the shared folder itself is the topmost reachable node). */
+    val sharedBrowseBreadcrumbs = mutableStateListOf<FolderResponse>()
+
+    /** The folder currently being browsed via a share - `null` before [openSharedFolder] is first called. */
+    var sharedBrowseCurrentFolderId: String? by mutableStateOf(null)
+        private set
+
+    /** The email of the account that shared the *root* folder of the current browse session - carried through every subfolder navigated into, for display ("Shared by ..."). */
+    var sharedBrowseOwnerEmail: String? by mutableStateOf(null)
+        private set
+
+    val sharedBrowseFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse>()
+    val sharedBrowseFolders = mutableStateListOf<FolderResponse>()
+
     // --- admin panel state ---------------------------------------------------
 
     /** Every registered account (admin-only) - see [Screen.Admin]. Loaded/refreshed by [loadAdmin]. */
@@ -506,6 +522,11 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.trashFiles.clear()
         this.sharedWithMeFolders.clear()
         this.sharedWithMeFiles.clear()
+        this.sharedBrowseBreadcrumbs.clear()
+        this.sharedBrowseCurrentFolderId = null
+        this.sharedBrowseOwnerEmail = null
+        this.sharedBrowseFiles.clear()
+        this.sharedBrowseFolders.clear()
         this.adminAuthUsers.clear()
         this.adminAuditLog.clear()
         this.adminAuditLogShowAll = false
@@ -582,6 +603,74 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.sharedWithMeFolders.addAll(this.client.listSharedFoldersWithMe())
         this.sharedWithMeFiles.clear()
         this.sharedWithMeFiles.addAll(this.client.listSharedWithMe())
+    }
+
+    // --- shared folder browsing (item 9, added 2026-09-02) ------------------
+
+    /** Opens [folder] (a top-level entry from [sharedWithMeFolders]) for browsing - the context menu/row click backing "click a shared folder to browse into it". Resets [sharedBrowseBreadcrumbs] to just this one folder. */
+    fun openSharedFolder(folder: FolderResponse, ownerEmail: String) = run {
+        this.sharedBrowseBreadcrumbs.clear()
+        this.sharedBrowseBreadcrumbs.add(folder)
+        this.sharedBrowseCurrentFolderId = folder.folderId()
+        this.sharedBrowseOwnerEmail = ownerEmail
+        this.screen = Screen.SharedFolderBrowser
+        this.refreshSharedBrowseFolder()
+    }
+
+    /** Navigates one level deeper, into [folder] (a subfolder of the currently-browsed shared folder). */
+    fun openSharedSubfolder(folder: FolderResponse) = run {
+        this.sharedBrowseBreadcrumbs.add(folder)
+        this.sharedBrowseCurrentFolderId = folder.folderId()
+        this.refreshSharedBrowseFolder()
+    }
+
+    /** Jumps back to breadcrumb [index] (0 = the originally-opened shared folder) - mirrors [navigateToBreadcrumb]'s own truncate-then-reload shape, but there is no "-1"/root case here, since the shared folder itself is the topmost reachable node (leaving it entirely means returning to [Screen.SharedWithMe] via the sidebar). */
+    fun navigateSharedBreadcrumb(index: Int) = run {
+        while (this.sharedBrowseBreadcrumbs.size > index + 1) {
+            this.sharedBrowseBreadcrumbs.removeAt(this.sharedBrowseBreadcrumbs.lastIndex)
+        }
+        this.sharedBrowseCurrentFolderId = this.sharedBrowseBreadcrumbs.last().folderId()
+        this.refreshSharedBrowseFolder()
+    }
+
+    /** Public, guarded entry point for a manual refresh of the currently-browsed shared folder (e.g. a "Refresh" button), mirroring [loadCurrentFolder]'s own shape. */
+    fun reloadSharedBrowseFolder() = run { this.refreshSharedBrowseFolder() }
+
+    /** The actual reload, callable from inside another [run]-wrapped action (e.g. [openSharedFolder]/[openSharedSubfolder]/[navigateSharedBreadcrumb]) without tripping [run]'s own `busy` guard - same reasoning as [refreshCurrentFolder]. A no-op if [sharedBrowseCurrentFolderId] is somehow unset. */
+    private suspend fun refreshSharedBrowseFolder() {
+        val folderId = this.sharedBrowseCurrentFolderId ?: return
+        val contents = this.client.listSharedFolderContents(folderId)
+        this.sharedBrowseFiles.clear()
+        this.sharedBrowseFiles.addAll(contents.files())
+        this.sharedBrowseFolders.clear()
+        this.sharedBrowseFolders.addAll(contents.subfolders())
+    }
+
+    /**
+     * Downloads an entire shared folder (recursively - every file and nested subfolder) into
+     * `destinationDirectory/<folderName>`, reporting aggregate byte-level progress the same way
+     * [downloadEntries] does for the caller's own folders - backs the download icon next to a
+     * shared folder row (both at the top level in `SharedWithMeScreen` and while browsing deeper
+     * in `SharedFolderBrowserScreen`). Every file download still goes through the caller's own
+     * share-checked [de.lino.cloud.platform.desktop.client.CloudDriverClient.downloadFileStreaming]
+     * - the same route/access check an owner's own download uses - so no separate "shared
+     * download" primitive was needed once [planSharedFolderDownload] (below) can already resolve
+     * which files exist.
+     */
+    fun downloadSharedFolder(folderId: String, folderName: String, destinationDirectory: Path) = run {
+        val items = this.planSharedFolderDownload(folderId, destinationDirectory.resolve(folderName))
+        this.runTransfer(TransferKind.DOWNLOAD, items, DownloadItem::sizeBytes) { item, onBytesTransferred ->
+            this.client.downloadFileStreaming(item.fileId, item.fileName, item.destinationDirectory, onBytesTransferred)
+        }
+    }
+
+    /** Flattens a shared folder tree (via [de.lino.cloud.platform.desktop.client.CloudDriverClient.listSharedFolderContents], recursively) into one list of [DownloadItem]s, mirroring [planFolderDownload]'s own shape but reading through the share-aware listing instead of the caller's own [de.lino.cloud.platform.desktop.client.CloudDriverClient.listFiles]/[de.lino.cloud.platform.desktop.client.CloudDriverClient.listFolders]. */
+    private suspend fun planSharedFolderDownload(folderId: String, destination: Path): List<DownloadItem> {
+        val contents = this.client.listSharedFolderContents(folderId)
+        val items = mutableListOf<DownloadItem>()
+        contents.files().forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
+        contents.subfolders().forEach { subfolder -> items += this.planSharedFolderDownload(subfolder.folderId(), destination.resolve(subfolder.name())) }
+        return items
     }
 
     // --- admin panel --------------------------------------------------------

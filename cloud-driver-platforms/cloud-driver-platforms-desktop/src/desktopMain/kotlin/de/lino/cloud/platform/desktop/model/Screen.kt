@@ -37,6 +37,9 @@ sealed interface Screen {
     /** After login: files/folders other accounts have shared with the signed-in account. */
     data object SharedWithMe : Screen
 
+    /** After login: browsing inside a folder reached via a share (added 2026-09-02) - current folder/breadcrumbs tracked on [AppViewModel], the same shape [Browser] uses for the caller's own folders. */
+    data object SharedFolderBrowser : Screen
+
     /** After login: read-only admin panel (registered accounts + audit trail) - only reachable while [AppViewModel.currentUserIsAdmin]. */
     data object Admin : Screen
 }

@@ -9,6 +9,7 @@ import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.SharedFileSummary;
+import de.lino.cloud.api.file.SharedFolderContents;
 import de.lino.cloud.api.file.SharedFolderSummary;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
@@ -228,6 +229,11 @@ public final class CloudUserService implements ICloudUserService {
                     "@CloudUserService.hardDeleteFile: failed to untrack ownership of " + storedFileId + " for " + authUserId, e
             );
         }
+        // Item 9 (sharing), fixed 2026-09-02 - a no-op scan if deleteFile already revoked these
+        // (the normal trash-then-purge path), but resetCloudUser/deleteCloudUser call this
+        // directly on a possibly still-live file (bypassing the trash entirely), so this must not
+        // assume deleteFile's own revocation already ran.
+        this.revokeAllFileShares(storedFileId);
         if (ownership.hasMetadata()) {
             this.updateCloudUserBytesUsage(authUserId, -ownership.getSizeBytes());
         }
@@ -354,6 +360,8 @@ public final class CloudUserService implements ICloudUserService {
                 } catch (final DatabaseClientException e) {
                     throw new RuntimeException("@CloudUserService.deleteAllOwnedFolders: failed to delete folder " + leaf.getFolderId(), e);
                 }
+                // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment.
+                this.revokeAllFolderShares(leaf.getFolderId());
             }
             remaining.removeAll(leaves);
         }
@@ -425,6 +433,8 @@ public final class CloudUserService implements ICloudUserService {
                 } catch (final DatabaseClientException e) {
                     throw new RuntimeException("@CloudUserService.deleteAllTrashedFolders: failed to delete folder " + leaf.getFolderId(), e);
                 }
+                // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment.
+                this.revokeAllFolderShares(leaf.getFolderId());
             }
             remainingTrashed.removeAll(leaves);
             stillExisting.removeAll(leaves);
@@ -968,6 +978,68 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Permanently revokes every outstanding {@link SharedFileGrant} on {@code fileId}, regardless
+     * of grantee - called from every place a file is deleted (soft, via {@link #deleteFile}, or
+     * permanent, via {@link #hardDeleteFile}), added 2026-09-02 to fix a real bug: {@link
+     * CloudUserService#getFile}'s {@code ownership.isDeleted()} check already blocked a grantee's
+     * <em>access</em> to a trashed file, but left the grant row itself dangling - so restoring the
+     * file later (via {@link #restoreFile}) silently re-granted every previously-shared recipient
+     * access again, without the owner ever choosing to re-share. Explicitly deleting the grant here
+     * closes that gap: a restored file starts back at "not shared with anyone," matching what an
+     * owner who deleted a shared file would actually expect. Idempotent (a no-op if no grants
+     * exist) - safe to call from multiple delete paths that might already have run this.
+     *
+     * @param fileId the file whose outstanding shares (if any) to revoke
+     */
+    private void revokeAllFileShares(final String fileId) {
+        final List<SharedFileGrant> grants;
+        try {
+            grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
+                    .filter(grant -> grant.getStoredFileId().equals(fileId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokeAllFileShares: failed to list shares of " + fileId, e);
+        }
+        for (final SharedFileGrant grant : grants) {
+            try {
+                this.dataFactory.delete(SharedFileGrant.compositeKey(grant.getGranteeAuthUserId(), fileId), SharedFileGrant.class);
+            } catch (final DatabaseClientException e) {
+                throw new RuntimeException("@CloudUserService.revokeAllFileShares: failed to revoke a share of " + fileId, e);
+            }
+        }
+    }
+
+    /**
+     * Permanently revokes every outstanding {@link SharedFolderGrant} on {@code folderId} - the
+     * folder-level counterpart to {@link #revokeAllFileShares}, called from every place a folder is
+     * deleted (soft, via {@link #deleteFolder}, or permanent, via {@link #deleteAllOwnedFolders}/
+     * {@link #deleteAllTrashedFolders}), for the same reason. Does <b>not</b> revoke a direct {@link
+     * SharedFileGrant} on a file nested inside {@code folderId} - those are tracked independently
+     * (see {@link ICloudUserService#revokeFolderShare}'s own Javadoc for the same distinction) and
+     * are already covered separately, since any file actually being permanently removed goes
+     * through {@link #revokeAllFileShares} itself via {@link #hardDeleteFile}.
+     *
+     * @param folderId the folder whose outstanding shares (if any) to revoke
+     */
+    private void revokeAllFolderShares(final String folderId) {
+        final List<SharedFolderGrant> grants;
+        try {
+            grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
+                    .filter(grant -> grant.getFolderId().equals(folderId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokeAllFolderShares: failed to list shares of " + folderId, e);
+        }
+        for (final SharedFolderGrant grant : grants) {
+            try {
+                this.dataFactory.delete(SharedFolderGrant.compositeKey(grant.getGranteeAuthUserId(), folderId), SharedFolderGrant.class);
+            } catch (final DatabaseClientException e) {
+                throw new RuntimeException("@CloudUserService.revokeAllFolderShares: failed to revoke a share of " + folderId, e);
+            }
+        }
+    }
+
+    /**
      * Resolves {@code email} to a registered account's {@code authUserId}, via the existing {@link
      * #getCloudUserByEmail(String)} lookup - reused rather than re-implemented, since an {@link
      * ICloudUser}'s {@link ICloudUser#getAuthUserId()} already equals the {@link
@@ -1054,6 +1126,77 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Resolves share-based read access to {@code folderId} for a non-owning {@code authUserId} -
+     * the folder-browsing counterpart to {@link #requireSharedFileAccess}, added 2026-09-02 for
+     * {@link #listSharedFolderContents}. Checks {@code folderId} itself first, then walks up its
+     * ancestor chain via {@link Folder#getParentFolderId()} the exact same way {@link
+     * #requireSharedFileAccess} does for a file's containing folder - so a share on an ancestor
+     * folder covers browsing into any of its descendants too, not just the exact folder it was
+     * granted on.
+     *
+     * @throws IllegalArgumentException if {@code folderId} isn't shared with {@code authUserId},
+     *                                   directly or via any ancestor
+     */
+    private void requireSharedFolderAccess(final String authUserId, final String folderId) {
+        try {
+            String currentFolderId = folderId;
+            while (currentFolderId != null) {
+                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class).isPresent()) {
+                    return;
+                }
+                currentFolderId = this.dataFactory.findById(currentFolderId, Folder.class)
+                        .map(Folder::getParentFolderId)
+                        .orElse(null);
+            }
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.requireSharedFolderAccess: failed checking share grants for " + folderId, e);
+        }
+        throw new IllegalArgumentException(
+                "@CloudUserService.requireSharedFolderAccess: " + folderId + " is not owned by or shared with " + authUserId);
+    }
+
+    /**
+     * Lists the non-trashed files/subfolders directly inside {@code folderId} for a caller reaching
+     * it via ownership or a share - see {@link ICloudUserService#listSharedFolderContents}'s own
+     * Javadoc. Resolves {@code folderId}'s actual owner (not necessarily {@code authUserId}) and
+     * scans that owner's own rows for children, the same "resolve the real owner first, since a
+     * grantee has no O(1) lookup of their own" cost {@link #requireSharedFileAccess} already
+     * documents and accepts.
+     */
+    @NonNull
+    @Override
+    public SharedFolderContents listSharedFolderContents(@NonNull final String authUserId, @NonNull final String folderId) {
+        final Folder folder;
+        final List<Folder> allFolders;
+        try {
+            folder = this.dataFactory.findById(folderId, Folder.class)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "@CloudUserService.listSharedFolderContents: no such folder " + folderId));
+            allFolders = this.dataFactory.getEntities(Folder.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listSharedFolderContents: failed to look up " + folderId, e);
+        }
+        if (folder.isDeleted()) {
+            throw new IllegalArgumentException("@CloudUserService.listSharedFolderContents: " + folderId + " is trashed");
+        }
+        if (!folder.getOwnerId().equals(authUserId)) {
+            this.requireSharedFolderAccess(authUserId, folderId);
+        }
+        final String ownerAuthUserId = folder.getOwnerId();
+
+        final List<StoredFileSummary> files = this.ownedFileOwnerships(ownerAuthUserId).stream()
+                .filter(ownership -> Objects.equals(ownership.getFolderId(), folderId))
+                .map(this::resolveFileSummary)
+                .toList();
+        final List<Folder> subfolders = allFolders.stream()
+                .filter(candidate -> candidate.getOwnerId().equals(ownerAuthUserId))
+                .filter(candidate -> !candidate.isDeleted())
+                .filter(candidate -> Objects.equals(candidate.getParentFolderId(), folderId))
+                .toList();
+        return new SharedFolderContents(files, subfolders);
+    }
+
+    /**
      * Moves {@code storedFileId} into {@code folderId} (or back to the root, if {@code null}) -
      * a single-row update on its {@link StoredFileOwnership}, never touching the file's own
      * content or any other file's placement.
@@ -1123,6 +1266,12 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.deleteFile: failed to trash " + storedFileId, e);
         }
+        // Item 9 (sharing), fixed 2026-09-02: revoke every outstanding share on this file the
+        // moment it's deleted (trashed), not merely relying on getFile's own isDeleted() check to
+        // block access - that check alone left the grant itself dangling, so a later restoreFile
+        // would silently re-grant every previously-shared recipient access again, without the
+        // owner ever having chosen to re-share. See revokeAllFileShares's own Javadoc.
+        this.revokeAllFileShares(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
     }
 
@@ -1351,6 +1500,9 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.deleteFolder: failed to trash " + folderId, e);
         }
+        // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment on why this must be
+        // explicit rather than relying on Folder#isDeleted() alone.
+        this.revokeAllFolderShares(folderId);
     }
 
     /**

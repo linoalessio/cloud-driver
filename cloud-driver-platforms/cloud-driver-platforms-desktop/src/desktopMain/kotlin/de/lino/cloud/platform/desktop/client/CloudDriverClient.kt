@@ -332,6 +332,10 @@ class CloudDriverClient(
     /** Every folder directly shared with the signed-in account, each paired with the sharing account's email address. */
     suspend fun listSharedFoldersWithMe(): List<SharedFolderSummaryResponse> = this.apiClient.listSharedFoldersWithMeAsync().await()
 
+    /** The non-trashed files/subfolders directly inside [folderId] - reachable if the caller owns it or it's shared with them (directly or via an ancestor). Backs "browse into a shared folder"/"download this shared folder". */
+    suspend fun listSharedFolderContents(folderId: String): de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse =
+        this.apiClient.listSharedFolderContentsAsync(folderId).await()
+
     /** Whether any account is registered under [email] - not scoped to the signed-in account's own address. Backs the Share dialog's live grantee-email check. */
     suspend fun checkCloudUserExists(email: String): Boolean = this.apiClient.checkCloudUserExistsAsync(email).await()
 

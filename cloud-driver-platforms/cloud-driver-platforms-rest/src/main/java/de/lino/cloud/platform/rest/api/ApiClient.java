@@ -25,6 +25,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ShareRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
@@ -2036,6 +2037,28 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the {@code GET /folders/{id}/share} request against {@link #apiBaseUrl}. */
     private HttpRequest listFolderSharesRequest(final String folderId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /folders/{id}/shared-contents}: lists the non-trashed files/subfolders directly
+     * inside {@code folderId} - reachable by its owner or by anyone it's shared with (directly or
+     * via an ancestor folder). Backs "browse into a shared folder"/"download this shared folder".
+     *
+     * @throws ApiException {@code 404} if {@code folderId} doesn't exist, is trashed, or isn't
+     *                       owned by/shared with the caller, {@code 401} if not logged in / token expired
+     */
+    public SharedFolderContentsResponse listSharedFolderContents(final String folderId) throws ApiException {
+        return this.send(this.listSharedFolderContentsRequest(folderId), SharedFolderContentsResponse.class);
+    }
+
+    /** Async form of {@link #listSharedFolderContents(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<SharedFolderContentsResponse> listSharedFolderContentsAsync(final String folderId) {
+        return this.sendAsync(this.listSharedFolderContentsRequest(folderId), SharedFolderContentsResponse.class);
+    }
+
+    /** Builds the {@code GET /folders/{id}/shared-contents} request against {@link #apiBaseUrl}. */
+    private HttpRequest listSharedFolderContentsRequest(final String folderId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/shared-contents"), true).GET().build();
     }
 
     /**

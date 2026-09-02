@@ -1,5 +1,6 @@
 package de.lino.cloud.platform.desktop.panel
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material3.Card
@@ -58,12 +60,14 @@ private fun chooseDirectory(title: String, initialDirectory: Path? = null): Path
 /**
  * Files/folders other accounts have directly shared with the signed-in account (item 9, see
  * `architecture/SERVICES.md`) - read-only, much simpler than `FileBrowserScreen`: no selection,
- * drag-and-drop, previews, or nested browsing. A shared folder's own contents aren't independently
- * reachable here (browsing a shared folder's contents is a documented server-side future
- * extension, not implemented yet - see `CloudUserService#listSharedFoldersWithMe`'s own Javadoc),
- * so a shared folder row is display-only; a shared file can be downloaded directly - the server's
- * `GET /files/{id}/content` route already honors a share the exact same way it honors ownership.
- * Each row shows who shared it (`SharedRow`'s `ownerEmail`, added 2026-09-02).
+ * drag-and-drop, previews, or upload/create/move/delete/share. A shared folder row is now (added
+ * 2026-09-02, finally implementing the "browsing a shared folder's contents" extension this
+ * codebase's own docs used to describe as out of scope) clickable - opens
+ * `SharedFolderBrowserScreen` via [AppViewModel.openSharedFolder] - and carries its own "Download"
+ * icon downloading the whole folder (recursively) via [AppViewModel.downloadSharedFolder]; a
+ * shared file's own "Download" icon fetches just that file - the server's `GET /files/{id}/content`
+ * route already honors a share the exact same way it honors ownership. Each row shows who shared it
+ * (`ownerEmail`, added 2026-09-02).
  */
 @Composable
 fun SharedWithMeScreen(viewModel: AppViewModel) {
@@ -97,7 +101,18 @@ fun SharedWithMeScreen(viewModel: AppViewModel) {
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                     items(viewModel.sharedWithMeFolders, key = { it.folder().folderId() }) { shared ->
-                        SharedRow(entry = Entry.FolderEntry(shared.folder()), ownerEmail = shared.ownerEmail(), enabled = !viewModel.busy, onDownload = null)
+                        val folder = shared.folder()
+                        SharedRow(
+                            entry = Entry.FolderEntry(folder),
+                            ownerEmail = shared.ownerEmail(),
+                            enabled = !viewModel.busy,
+                            onOpen = { viewModel.openSharedFolder(folder, shared.ownerEmail()) },
+                            onDownload = {
+                                chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY)?.let {
+                                    viewModel.downloadSharedFolder(folder.folderId(), folder.name(), it)
+                                }
+                            },
+                        )
                     }
                     items(viewModel.sharedWithMeFiles, key = { it.file().fileId() }) { shared ->
                         val file = shared.file()
@@ -105,6 +120,7 @@ fun SharedWithMeScreen(viewModel: AppViewModel) {
                             entry = Entry.FileEntry(file),
                             ownerEmail = shared.ownerEmail(),
                             enabled = !viewModel.busy,
+                            onOpen = null,
                             onDownload = {
                                 chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY)?.let {
                                     viewModel.downloadEntries(listOf(Entry.FileEntry(file)), it)
@@ -138,11 +154,12 @@ private fun EmptySharedNotice() {
 /**
  * One shared file/folder row - icon, name, who shared it ([ownerEmail], added 2026-09-02 - the
  * whole reason a recipient can tell entries apart when several people share with them), and size
- * (files only). [onDownload] is `null` for a folder row (not independently browsable/downloadable
- * here).
+ * (files only). [onOpen] is non-`null` only for a folder row (added 2026-09-02) - clicking it opens
+ * `SharedFolderBrowserScreen`; a chevron hints at that navigability the same way `SharedFolderRow`
+ * (in that same screen) does. [onDownload] fetches the file, or the whole folder recursively.
  */
 @Composable
-private fun SharedRow(entry: Entry, ownerEmail: String, enabled: Boolean, onDownload: (() -> Unit)?) {
+private fun SharedRow(entry: Entry, ownerEmail: String, enabled: Boolean, onOpen: (() -> Unit)?, onDownload: () -> Unit) {
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -150,7 +167,9 @@ private fun SharedRow(entry: Entry, ownerEmail: String, enabled: Boolean, onDown
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth()
+                .let { base -> if (onOpen != null) base.clickable(enabled = enabled, onClick = onOpen) else base }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -169,11 +188,12 @@ private fun SharedRow(entry: Entry, ownerEmail: String, enabled: Boolean, onDown
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (onDownload != null) {
-                Spacer(Modifier.width(12.dp))
-                IconButton(onClick = onDownload, enabled = enabled) {
-                    Icon(Icons.Filled.Download, contentDescription = "Download")
-                }
+            Spacer(Modifier.width(12.dp))
+            IconButton(onClick = onDownload, enabled = enabled) {
+                Icon(Icons.Filled.Download, contentDescription = "Download")
+            }
+            if (onOpen != null) {
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
             }
         }
     }

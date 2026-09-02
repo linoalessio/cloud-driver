@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Semaphore;
 
 /**
  * {@link FileFactory} implementation backed by a {@link DataFactory}: since
@@ -231,13 +232,67 @@ public final class DefaultFileFactory extends FileFactory {
         this.dataFactory.deleteSection(StoredFile.class);
     }
 
-    /** Verifies every file in {@code files} via {@link #verifyIntegrity}, concurrently. */
+    /**
+     * Caps how many files {@link #verifyAll} decodes/decompresses at once - each in-flight
+     * verification holds its own decoded (and, for a compressed file, decompressed) {@code byte[]}
+     * copy of the file's full content in memory for its duration (see {@link #verifyAll}'s own
+     * Javadoc for why), so an unbounded one-task-per-file fan-out spikes peak memory with the
+     * *total* size of whichever files happen to finish decrypting at the same moment - unrelated to
+     * how many files are in the batch overall. Matches {@code cloud-driver-platforms-rest}'s own
+     * {@code ApiClient.DEFAULT_MAX_CONCURRENT_TRANSFERS} cap (8), the same "bound concurrent
+     * per-file work, don't just fan out unbounded" convention applied there for uploads/downloads.
+     */
+    private static final int MAX_CONCURRENT_VERIFICATIONS = 8;
+
+    /**
+     * Verifies every file in {@code files} via {@link #verifyIntegrity}, concurrently but capped
+     * at {@link #MAX_CONCURRENT_VERIFICATIONS} in flight at once via a {@link Semaphore} - not
+     * unbounded, one task per file, the way this used to run.
+     *
+     * <p><b>Fixed a real, server-crashing {@code OutOfMemoryError} (2026-09-02):</b> every file
+     * already sits in {@code files} fully decrypted (its base64-encoded content included) by the
+     * time this method runs - {@link DataFactory#getEntities}/{@code #fetch} already resolved that
+     * much. {@link StoredFile#verifyChecksum()} additionally base64-decodes (and, for a compressed
+     * file, DEFLATE-inflates) that content into a second, separate, typically larger {@code byte[]}
+     * - cached on the {@link StoredFile} instance afterward, but very much a fresh, real allocation
+     * at the moment this call happens. Dispatching one such decode per file, for every file in the
+     * batch, with no concurrency limit at all, meant the terminal's {@code stats} command - which
+     * calls {@link de.lino.cloud.api.factory.FileFactory#getEntities()} to sum every uploaded
+     * file's size - decoded the *entire* account's file corpus simultaneously, all at once, the
+     * moment enough real file content existed in the database (confirmed live: extracting a ~700 MB
+     * zip archive in the desktop app grew the corpus enough to trip this). Capping concurrency here
+     * bounds how many of those decode buffers can exist at the same instant, regardless of how many
+     * files the batch contains overall - it does not reduce the *total* memory `verifyAll` will
+     * eventually touch (every file is still decoded, just not all simultaneously), which is why
+     * {@code StatisticsCommand} was separately fixed to stop calling this path twice per invocation.
+     */
     private static List<StoredFile> verifyAll(final List<StoredFile> files) throws FileIntegrityException {
+        final Semaphore concurrencyLimit = new Semaphore(MAX_CONCURRENT_VERIFICATIONS);
         final List<CompletableFuture<Void>> verifications = files.stream()
-                .map(file -> MultiTaskingFactory.getInstance().runAsync(() -> verifyIntegrityUnchecked(file)))
+                .map(file -> MultiTaskingFactory.getInstance().runAsync(() -> verifyIntegrityBounded(file, concurrencyLimit)))
                 .toList();
         joinAllVerifications(verifications);
         return files;
+    }
+
+    /**
+     * Acquires {@code concurrencyLimit} before delegating to {@link #verifyIntegrityUnchecked},
+     * releasing it afterward regardless of outcome - see {@link #verifyAll}'s own Javadoc.
+     *
+     * @throws CompletionException wrapping an {@link InterruptedException} if interrupted while waiting for a permit
+     */
+    private static void verifyIntegrityBounded(final StoredFile file, final Semaphore concurrencyLimit) {
+        try {
+            concurrencyLimit.acquire();
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CompletionException(e);
+        }
+        try {
+            verifyIntegrityUnchecked(file);
+        } finally {
+            concurrencyLimit.release();
+        }
     }
 
     /**

@@ -621,6 +621,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FOLDERS_PATH + "/{id}/share", this::handleShareFolder);
                 config.routes.get(FOLDERS_PATH + "/{id}/share", this::handleListFolderShares);
                 config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
+                config.routes.get(FOLDERS_PATH + "/{id}/shared-contents", this::handleListSharedFolderContents);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -2321,6 +2322,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.listSharedFoldersWithMe(userId))
                 .thenAccept(folders -> ctx.contentType("application/json").result(this.gson.toJson(folders))));
+    }
+
+    /**
+     * {@code GET /folders/{id}/shared-contents} (added 2026-09-02): lists the non-trashed
+     * files/subfolders directly inside folder {@code id} via {@link
+     * CloudUserService#listSharedFolderContents} - reachable by the folder's owner or anyone it's
+     * shared with (directly or via an ancestor). {@code 404} (via {@link #folderFailureOrPropagate}'s
+     * {@link IllegalArgumentException} handling) if {@code id} doesn't exist, is trashed, or isn't
+     * owned by/shared with the caller.
+     */
+    private void handleListSharedFolderContents(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listSharedFolderContents(userId, id))
+                .handle((contents, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(contents));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
     }
 
     /** The {@code {"exists"}} JSON response body returned by {@code GET /cloudUsers/exists}. */

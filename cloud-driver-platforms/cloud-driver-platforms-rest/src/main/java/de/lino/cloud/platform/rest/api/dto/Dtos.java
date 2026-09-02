@@ -303,4 +303,13 @@ public final class Dtos {
     public record TrashedFolderSummaryResponse(FolderResponse folder, long purgeAtEpochMillis) {
     }
 
+    /**
+     * Response of {@code GET /folders/{id}/shared-contents} (added 2026-09-02) - the non-trashed
+     * files/subfolders directly inside a folder reached via ownership or a share, mirroring the
+     * server's {@code SharedFolderContents}. Backs the desktop app's "browse into a shared folder"
+     * and "download this shared folder" actions.
+     */
+    public record SharedFolderContentsResponse(java.util.List<StoredFileSummaryResponse> files, java.util.List<FolderResponse> subfolders) {
+    }
+
 }

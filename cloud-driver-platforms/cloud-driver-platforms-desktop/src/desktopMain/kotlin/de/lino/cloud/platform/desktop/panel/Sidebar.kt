@@ -219,7 +219,7 @@ fun Sidebar(viewModel: AppViewModel) {
         SidebarItem(
             icon = Icons.Filled.FolderShared,
             label = "Shared with me",
-            selected = viewModel.screen == Screen.SharedWithMe,
+            selected = viewModel.screen == Screen.SharedWithMe || viewModel.screen == Screen.SharedFolderBrowser,
             onClick = { viewModel.showSharedWithMe() },
         )
         SidebarItem(
