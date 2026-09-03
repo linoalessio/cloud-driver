@@ -3,6 +3,7 @@ package de.lino.cloud.api.factory.service;
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
+import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
@@ -117,5 +118,24 @@ public interface IServiceContainer {
      * @param metricsRecorder the instance backing this deployment's Prometheus-scrapeable {@code /metrics} endpoint
      */
     void setMetricsRecorder(@NonNull MetricsRecorder metricsRecorder);
+
+    /**
+     * Returns the metrics read side (item 13, metrics/observability exporter - see {@code
+     * architecture/SERVICES.md}), or {@code null} if {@code cloud-driver-extensions-metrics}'s
+     * {@code CloudMetricsExtension} hasn't published one yet (not started, or this deployment
+     * doesn't run that extension at all). {@code DefaultRestFactory}'s admin-gated {@code GET
+     * /admin/metrics} route (backing the desktop app's Admin panel metrics section) must
+     * null-check this the same way it already does for {@link #getCloudUserService()}.
+     *
+     * @return the {@link MetricsSnapshotProvider}, or {@code null}
+     */
+    MetricsSnapshotProvider getMetricsSnapshotProvider();
+
+    /**
+     * Publishes the real {@link MetricsSnapshotProvider}, once built.
+     *
+     * @param metricsSnapshotProvider the instance backing {@code GET /admin/metrics}
+     */
+    void setMetricsSnapshotProvider(@NonNull MetricsSnapshotProvider metricsSnapshotProvider);
 
 }

@@ -4,6 +4,7 @@ import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
+import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
@@ -29,6 +30,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile AuditLogService auditLogService;
     /** The metrics sink, {@code null} until {@link #setMetricsRecorder} publishes one. */
     private volatile MetricsRecorder metricsRecorder;
+    /** The metrics read side, {@code null} until {@link #setMetricsSnapshotProvider} publishes one. */
+    private volatile MetricsSnapshotProvider metricsSnapshotProvider;
 
     /** {@inheritDoc} */
     @Override
@@ -88,6 +91,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setMetricsRecorder(@NonNull final MetricsRecorder metricsRecorder) {
         this.metricsRecorder = metricsRecorder;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public MetricsSnapshotProvider getMetricsSnapshotProvider() {
+        return this.metricsSnapshotProvider;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setMetricsSnapshotProvider(@NonNull final MetricsSnapshotProvider metricsSnapshotProvider) {
+        this.metricsSnapshotProvider = metricsSnapshotProvider;
     }
 
 }

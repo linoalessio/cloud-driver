@@ -20,6 +20,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
@@ -1887,6 +1888,29 @@ public final class ApiClient implements AutoCloseable {
             query.append("&email=").append(URLEncoder.encode(emailFilter, StandardCharsets.UTF_8));
         }
         return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
+    /**
+     * {@code GET /admin/metrics} on the main REST API - admin-gated. Reads item 13's
+     * counters/gauges (upload outcomes, quota rejections, pending-upload queue depth, extensions
+     * by status) straight from the server's in-process Prometheus registry.
+     *
+     * @throws ApiException {@code 403} if the caller's own account isn't flagged admin, {@code
+     *                       401} if not logged in / token expired, {@code 503} if {@code
+     *                       cloud-driver-extensions-metrics} isn't running on this deployment
+     */
+    public MetricsSnapshotResponse getAdminMetrics() throws ApiException {
+        return this.send(this.getAdminMetricsRequest(), MetricsSnapshotResponse.class);
+    }
+
+    /** Async form of {@link #getAdminMetrics()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<MetricsSnapshotResponse> getAdminMetricsAsync() {
+        return this.sendAsync(this.getAdminMetricsRequest(), MetricsSnapshotResponse.class);
+    }
+
+    /** Builds the {@code GET /admin/metrics} request against {@link #apiBaseUrl}. */
+    private HttpRequest getAdminMetricsRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/admin/metrics"), true).GET().build();
     }
 
     // --- sharing (item 9) --------------------------------------------------

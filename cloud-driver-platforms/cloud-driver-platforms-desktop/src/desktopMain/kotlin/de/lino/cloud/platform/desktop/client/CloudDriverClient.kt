@@ -9,6 +9,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
@@ -297,6 +298,9 @@ class CloudDriverClient(
     /** The persisted audit trail (admin-only) - `all` `true` lists every entry instead of the most recent 20; `emailFilter`, if non-null/non-blank, scopes to one account's own actions. */
     suspend fun listAdminAuditLog(all: Boolean = false, emailFilter: String? = null): List<AuditLogEntryResponse> =
         this.apiClient.listAdminAuditLogAsync(all, emailFilter).await()
+
+    /** Item 13's counters/gauges (admin-only) - throws (`ApiException`, `503`) if `cloud-driver-extensions-metrics` isn't running on this deployment. */
+    suspend fun getAdminMetrics(): MetricsSnapshotResponse = this.apiClient.getAdminMetricsAsync().await()
 
     // --- sharing (item 9) -------------------------------------------------
 

@@ -1,5 +1,7 @@
 package de.lino.cloud.platform.rest.api.dto;
 
+import java.util.Map;
+
 /**
  * Plain request/response shapes mirrored 1:1 against the server's REST contract - see
  * {@code CloudRestExtension}/{@code DefaultRestFactory} in cloud-driver for the authoritative
@@ -249,6 +251,18 @@ public final class Dtos {
      * actor (e.g. a failed login against an unknown address).
      */
     public record AuditLogEntryResponse(long timestampEpochMillis, String action, String actorEmail, String targetId) {
+    }
+
+    /**
+     * Response of {@code GET /admin/metrics} (admin-gated) - mirrors the server's {@code
+     * MetricsSnapshot} field-for-field, read in-process off {@code cloud-driver-extensions-metrics}'s
+     * Prometheus registry rather than a separate scrape call. {@code 404}/{@code
+     * ApiException(503, ...)} if that extension isn't running on this deployment at all - the
+     * desktop client should treat that as "metrics unavailable", not a bug.
+     */
+    public record MetricsSnapshotResponse(long uploadsSucceeded, long uploadsFailed, long uploadsQueued,
+                                           long uploadQuotaRejections, long pendingUploadQueueDepth,
+                                           Map<String, Long> extensionsByStatus) {
     }
 
     /**

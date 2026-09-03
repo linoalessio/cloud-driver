@@ -24,6 +24,12 @@ import java.util.logging.Level;
  * no separate polling thread needed, since a Micrometer {@link Gauge} backed by a live supplier is
  * evaluated by the scrape itself), and serves the result over {@link MetricsHttpServer}.
  *
+ * <p>Also publishes a {@link MicrometerMetricsSnapshotProvider} into {@code
+ * IServiceContainer#setMetricsSnapshotProvider} - the in-process read side {@code
+ * DefaultRestFactory}'s admin-gated {@code GET /admin/metrics} route uses to serve these same
+ * numbers to the desktop app's Admin panel, without that route needing its own HTTP client to
+ * reach this extension's separate, loopback-only {@link MetricsHttpServer} port.
+ *
  * <p>Declares a dependency on {@code "cloud-driver-bootstrap"} only in its {@code extension.json} -
  * deliberately not {@code "cloud-driver-rest"}/{@code "cloud-driver-watcher"}, so this extension
  * (and therefore the metrics it exposes) comes up regardless of whether either of those does.
@@ -59,8 +65,9 @@ public class CloudMetricsExtension extends Extension {
 
     /**
      * Builds the {@link PrometheusMeterRegistry}, registers every gauge, publishes the {@link
-     * MicrometerMetricsRecorder} into {@code IServiceContainer#setMetricsRecorder}, and starts
-     * {@link MetricsHttpServer} listening.
+     * MicrometerMetricsRecorder} into {@code IServiceContainer#setMetricsRecorder} and the {@link
+     * MicrometerMetricsSnapshotProvider} into {@code IServiceContainer#setMetricsSnapshotProvider},
+     * and starts {@link MetricsHttpServer} listening.
      */
     @Override
     public void onLoading() {
@@ -78,6 +85,7 @@ public class CloudMetricsExtension extends Extension {
         this.registerExtensionStatusGauges();
 
         this.cloudDriver().getServiceContainer().setMetricsRecorder(new MicrometerMetricsRecorder(this.registry));
+        this.cloudDriver().getServiceContainer().setMetricsSnapshotProvider(new MicrometerMetricsSnapshotProvider(this.registry));
 
         this.httpServer = new MetricsHttpServer(this.registry);
         this.httpServer.start(bindHost, this.metricsPort);
@@ -128,7 +136,7 @@ public class CloudMetricsExtension extends Extension {
     @Override
     public void onRunning(String[] args) {
         this.cloudDriver().getTerminal().displayApproved(
-                "Metrics endpoint &bopened &7and listening on port &b&l%s &7(&b/metrics&7)", this.metricsPort);
+                "&dMetrics endpoint &bopened &7and listening on port &b&l%s &7(&b/metrics&7)", this.metricsPort);
     }
 
     /** Stops {@link MetricsHttpServer}, if it was ever started. */

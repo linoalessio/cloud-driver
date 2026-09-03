@@ -223,6 +223,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String ADMIN_AUTH_USERS_PATH = "/admin/authUsers";
     /** Path mounted by {@link #start} for {@link #handleListAuditLog} - admin-gated, backs the desktop app's read-only Admin panel. */
     private static final String ADMIN_AUDIT_LOG_PATH = "/admin/audit-log";
+    /** Path mounted by {@link #start} for {@link #handleGetAdminMetrics} - admin-gated, backs the desktop app's Admin panel metrics section. */
+    private static final String ADMIN_METRICS_PATH = "/admin/metrics";
     /** Query parameter {@link #handleListAuditLog} reads to switch from the default recent-20 listing to every entry - see that method's own Javadoc. */
     private static final String AUDIT_LOG_ALL_QUERY_PARAM = "all";
     /** Query parameter {@link #handleListAuditLog} reads to filter the listing to one account's actions, by email. */
@@ -576,6 +578,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
                 config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
                 config.routes.get(ADMIN_AUDIT_LOG_PATH, this::handleListAuditLog);
+                config.routes.get(ADMIN_METRICS_PATH, this::handleGetAdminMetrics);
                 config.routes.before(this::requireAdmin);
 
                 config.routes.ws(LIVE_UPDATES_PATH, this::configureLiveUpdatesWebSocket);
@@ -1654,6 +1657,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             return null;
         }
         return this.authService.getAuthUser(actorAuthUserId).map(AuthUser::getEmailAddress).orElse(actorAuthUserId);
+    }
+
+    /**
+     * {@code GET /admin/metrics}: returns the current {@link de.lino.cloud.api.metrics.MetricsSnapshot}
+     * (item 13's counters/gauges), read in-process off {@code
+     * cloud-driver-extensions-metrics}'s own {@code MicrometerMetricsSnapshotProvider} - gated by
+     * {@link #requireAdmin} the same way {@link #handleListAuthUsers}/{@link #handleListAuditLog}
+     * are. This route deliberately never makes an HTTP call to that extension's own separate,
+     * loopback-only Prometheus port ({@code MetricsHttpServer}) - it reads the same {@code
+     * PrometheusMeterRegistry} that port scrapes directly, via {@link
+     * de.lino.cloud.api.factory.service.IServiceContainer#getMetricsSnapshotProvider()}. Responds
+     * {@code 503} (via {@link ServiceUnavailableResponse}) if {@code cloud-driver-extensions-metrics}
+     * isn't running in this deployment at all, rather than a bare {@code 500} or a fabricated
+     * all-zero snapshot that would misreport a genuinely running metrics exporter as idle.
+     */
+    private void handleGetAdminMetrics(@NotNull final Context ctx) {
+        final de.lino.cloud.api.metrics.MetricsSnapshotProvider provider =
+                CloudDriver.getInstance().getServiceContainer().getMetricsSnapshotProvider();
+        if (provider == null) {
+            throw new ServiceUnavailableResponse("Metrics extension is not running on this deployment");
+        }
+        ctx.status(200).contentType("application/json").result(this.gson.toJson(provider.getSnapshot()));
     }
 
     /**

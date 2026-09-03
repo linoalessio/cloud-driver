@@ -21,6 +21,7 @@ import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
@@ -310,6 +311,15 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         private set
 
     /**
+     * Item 13's counters/gauges (admin-only), or `null` if `cloud-driver-extensions-metrics` isn't
+     * running on this deployment (or the last [refreshAdmin] call's own fetch simply failed) - see
+     * [refreshAdmin]'s own try/catch. `AdminScreen` renders an "unavailable" notice for `null`
+     * rather than treating it as a loading error that should fail the whole panel.
+     */
+    var adminMetrics: MetricsSnapshotResponse? by mutableStateOf(null)
+        private set
+
+    /**
      * [folders]/[files] are loaded a page ([FOLDER_VIEW_PAGE_SIZE] entries) at a time via
      * [CloudDriverClient.listFoldersPage]/[listFilesPage] - these hold each list's own [Page]
      * cursor, `null` once that list has no further page. [hasMoreEntries] drives whether
@@ -530,6 +540,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.adminAuthUsers.clear()
         this.adminAuditLog.clear()
         this.adminAuditLogShowAll = false
+        this.adminMetrics = null
         this.screen = Screen.Login
     }
 
@@ -692,6 +703,13 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.adminAuthUsers.addAll(this.client.listAdminAuthUsers())
         this.adminAuditLog.clear()
         this.adminAuditLog.addAll(this.client.listAdminAuditLog(all = this.adminAuditLogShowAll))
+        this.adminMetrics = try {
+            this.client.getAdminMetrics()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null // metrics extension not running, or fetch failed - must never fail the rest of this panel
+        }
     }
 
     // --- file browser --------------------------------------------------
