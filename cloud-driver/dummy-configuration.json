@@ -5,6 +5,9 @@
   "web-panel-port": "WEB_PANEL_PORT",
   "web-panel-bind-host": "WEB_PANEL_HOST",
 
+  "metrics-port": 9404,
+  "metrics-bind-host": "DEFAULT_METRICS_SERVER_HOST",
+
   "cloud-server-max-bytes-available": "MAX_BYTES_AVAILABLE_ON_SERVER",
   "cloud-user-max-bytes-to-upload": "MAX_BYTES_TO_UPLOAD_PER_USER",
 

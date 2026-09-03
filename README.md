@@ -39,17 +39,18 @@ full diagram with class names at each stage.
 | Module | What it is | README |
 |---|---|---|
 | `cloud-driver-api` | Contracts only - interfaces, abstract classes, value objects, exceptions. No concrete implementations except a handful of narrow entities with no `cloud-driver-plugin` dependency to place them in instead (`StoredFile`, `ApiKey`, `AuthUser`, the `security.*` value objects). Also hosts the self-contained `jline`-based terminal engine. | [`cloud-driver-api/README.md`](cloud-driver-api/README.md) |
-| `cloud-driver-auth` | The framework-agnostic e-mail + password → JWT authentication engine (`AuthService`, `JjwtSigner`, `SmtpEmailSender`/`LoggingEmailSender`, `PendingRegistration`, `CloudUser`/`CloudUserService`, `StoredFileOwnership`). No Javalin dependency of its own. | [`cloud-driver-auth/README.md`](cloud-driver-auth/README.md) |
-| `cloud-driver-plugin` | Every concrete implementation of `cloud-driver-api`'s contracts: `DefaultCloudDriver`, the five `Default*Factory` classes, `EntityDatabaseClient`, the AES-256-GCM/DEK-KEK stack, `Argon2idPasswordHasher`, the extension jar-loading classes, offline-safe upload machinery. | [`cloud-driver-plugin/README.md`](cloud-driver-plugin/README.md) |
+| `cloud-driver-auth` | The framework-agnostic e-mail + password → JWT authentication engine, now also owning file/folder sharing and the recycle bin: `AuthService` (2FA, refresh tokens, password/e-mail reset), `CloudUserService` (`CloudUser`, `StoredFileOwnership`, `SharedFileGrant`/`SharedFolderGrant`, trash + `emptyTrash`), `JjwtSigner`, `SmtpEmailSender`/`LoggingEmailSender`, `AuditLogServiceImpl`. No Javalin dependency of its own. | [`cloud-driver-auth/README.md`](cloud-driver-auth/README.md) |
+| `cloud-driver-plugin` | Every concrete implementation of `cloud-driver-api`'s contracts: `DefaultCloudDriver`, the five `Default*Factory` classes, `EntityDatabaseClient`, the AES-256-GCM/DEK-KEK stack (incl. the production `AwsKmsKeyEncryptionService`), `Argon2idPasswordHasher`, the extension jar-loading classes, offline-safe upload machinery, and `DefaultRestFactory` (the ~50-route JWT-gated REST surface). | [`cloud-driver-plugin/README.md`](cloud-driver-plugin/README.md) |
 | `cloud-driver-bootstrap` | The runnable entry point (shaded jar via `maven-shade-plugin`) that wires a real Postgres-backed `CloudDriver` together and starts every subsystem a deployment needs. New accounts are created exclusively through `POST /auth/register`/`POST /auth/register/confirm` (see `cloud-driver-extensions-rest`) - there is no operator-run account-creation CLI. | [`cloud-driver-bootstrap/README.md`](cloud-driver-bootstrap/README.md) |
 | `cloud-driver-extensions` | Parent aggregator (no source of its own) for the concrete `Extension`s built on the `Extension`/`ExtensionFactory` framework. | [`cloud-driver-extensions/README.md`](cloud-driver-extensions/README.md) |
-| ├─ `cloud-driver-extensions-watcher` | Postgres `LISTEN`/`NOTIFY` change notification - push, not poll, cross-process awareness of new `StoredFile` writes. | [README](cloud-driver-extensions/cloud-driver-extensions-watcher/README.md) |
-| ├─ `cloud-driver-extensions-terminal` | Registers the real `Command` catalog (`exit`, `help`, `extensions`, `about`, `dispatch`, ...) on the terminal engine and starts its reading loop. | [README](cloud-driver-extensions/cloud-driver-extensions-terminal/README.md) |
+| ├─ `cloud-driver-extensions-watcher` | Postgres `LISTEN`/`NOTIFY` change notification - push, not poll, cross-process awareness of new `StoredFile` writes; also forwards live-push updates to connected clients over WebSocket. | [README](cloud-driver-extensions/cloud-driver-extensions-watcher/README.md) |
+| ├─ `cloud-driver-extensions-terminal` | Registers the real `Command` catalog (12 commands: `exit`/`help`/`extensions`/`stats`/`screen-leave`/`dispatch`/`cloudUser`/`hardReset`/`admin`/`recomputeStorage`/`auditLog`, ...) on the terminal engine and starts its reading loop. | [README](cloud-driver-extensions/cloud-driver-extensions-terminal/README.md) |
 | ├─ `cloud-driver-extensions-backup` | Keyset-paginated, streaming Postgres backup job, purpose-built for 150-200GB-class tables. | [README](cloud-driver-extensions/cloud-driver-extensions-backup/README.md) |
-| └─ `cloud-driver-extensions-rest` | Stands up the JWT-authenticated `RestFactory` (login, e-mail-verified self-registration, per-user `CloudUser` data, per-user file upload/list/delete) over Javalin. | [README](cloud-driver-extensions/cloud-driver-extensions-rest/README.md) |
+| ├─ `cloud-driver-extensions-rest` | Stands up the JWT-authenticated `RestFactory` (login, e-mail-verified self-registration, 2FA, refresh tokens, per-user file/folder CRUD + trash + sharing, admin routes, live push) over Javalin. | [README](cloud-driver-extensions/cloud-driver-extensions-rest/README.md) |
+| └─ `cloud-driver-extensions-metrics` | Prometheus-scrapeable `/metrics` endpoint (own standalone Javalin instance, loopback-only by default) - upload counters, pending-queue depth, per-extension status. | [README](cloud-driver-extensions/cloud-driver-extensions-metrics/README.md) |
 | `cloud-driver-platforms` | Parent aggregator (no source of its own) for the **client-side** modules - code that talks to a running server purely over its REST API. Sibling to `cloud-driver-extensions`, not a submodule of it; sits entirely outside the `api`/`auth`/`plugin`/`bootstrap` server-side dependency chain. | [`cloud-driver-platforms/README.md`](cloud-driver-platforms/README.md) |
-| ├─ `cloud-driver-platforms-rest` | Dependency-free (of any other module in this repo) REST API client library: `ApiClient`, `SessionManager`, `Dtos`, OS-specific `TokenStore` implementations. | [README](cloud-driver-platforms/cloud-driver-platforms-rest/README.md) |
-| └─ `cloud-driver-platforms-desktop` | JavaFX desktop client built on top of `cloud-driver-platforms-rest` - register, login, list/upload/delete files. | [README](cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
+| ├─ `cloud-driver-platforms-rest` | Dependency-free (of any other module in this repo) REST API client library: `ApiClient`, `SessionManager`, `Dtos`, `LiveUpdateClient`, OS-specific `TokenStore` implementations. | [README](cloud-driver-platforms/cloud-driver-platforms-rest/README.md) |
+| └─ `cloud-driver-platforms-desktop` | **Not a Maven module** (Gradle/Kotlin Multiplatform/Compose Desktop, own `gradlew`) - the real end-user desktop app built on `cloud-driver-platforms-rest`: register/login/2FA, browse/upload/download/share files+folders, trash, admin panel. | [README](cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
 
 Dependency direction is one-way: `api` ← `auth` ← `plugin` ← `bootstrap`/`extensions-*`
 (`bootstrap` and `plugin` both also depend on `auth` directly, not just transitively). Never add a
@@ -164,9 +165,10 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
 - **DEK/KEK envelope encryption with rotation.** A fresh, random data-encryption key is generated
   per payload and wrapped under the currently active key-encryption key; rotation activates a new
   KEK for future wraps without breaking the ability to unwrap data wrapped under an earlier
-  version. All three `KeyEncryptionService` implementations shipped in this repo
-  (`InMemory`/`File`/`Database`) are explicitly documented as **not for production** - swap in a
-  real KMS/HSM client for anything that leaves a developer machine.
+  version. Four `KeyEncryptionService` implementations exist: `InMemory`/`File`/`Database` are all
+  explicitly documented as **not for production**; `AwsKmsKeyEncryptionService` (backed by real AWS
+  KMS, KEK material never leaves AWS's HSMs) is the production implementation and is wired in by
+  default in `CloudBootstrap` as of 2026-09-02.
 - **Type/identity binding closes a substitution attack.** `SecureEntityChannel` binds an entity's
   fully-qualified type name and primary key into the AEAD's associated data, and rejects any
   envelope whose associated data doesn't match the expected type before ever attempting to
@@ -178,11 +180,17 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
   type, to prevent account enumeration.
 - **Two independent, mutually exclusive REST auth mechanisms.** A static `ApiKey`/`X-API-Key`
   check (constant-time comparison against a SHA-256 digest, never the raw key) for
-  machine-to-machine use, or a per-user JWT (`cloud-driver-auth`, HMAC-SHA256, 12-hour expiry, no
-  refresh token) for end-user clients - never combined on one `DefaultRestFactory` instance. A JWT-
-  authenticated instance additionally scopes any `Owned`-implementing entity type to its caller:
-  writes have their `ownerId` overwritten server-side (spoofing is a no-op), and reads 404 rather
-  than 403 on a record the caller doesn't own, to avoid confirming its existence at all.
+  machine-to-machine use, or a per-user JWT (`cloud-driver-auth`, HMAC-SHA256, 12-hour access token)
+  for end-user clients - never combined on one `DefaultRestFactory` instance. A JWT-authenticated
+  instance additionally scopes any `Owned`-implementing entity type to its caller: writes have
+  their `ownerId` overwritten server-side (spoofing is a no-op), and reads 404 rather than 403 on a
+  record the caller doesn't own, to avoid confirming its existence at all.
+- **Refresh tokens, two-factor authentication, and an admin flag all exist.** Each access JWT is
+  paired with a longer-lived (30-day), opaque, single-use `RefreshToken` (rotated on every use) so a
+  long-running client stays signed in without re-prompting for a password every 12 hours. TOTP-based
+  2FA is opt-in per account. `AuthUser#isAdmin` is a single boolean, written only from a terminal
+  `Command` (never a REST route, to avoid a privilege-escalation hole) and readable only via
+  admin-gated `GET /admin/authUsers`/`GET /admin/audit-log`.
 - **Self-registration is opt-in and e-mail-verified, not silently open.** `POST /auth/register`
   (mounted by `cloud-driver-extensions-rest`'s JWT-gated `DefaultRestFactory`) only e-mails a
   time-limited (10-minute) numeric verification code via `AuthService#register`; the `AuthUser`
@@ -195,7 +203,9 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
 - **Batch and async operations fan out concurrently**, not sequentially, throughout the stack -
   see "Performance" above.
 - **Extension isolation limits blast radius.** Each extension runs its lifecycle on its own
-  dedicated, non-daemon thread; a `RuntimeException` from one extension's `onLoading`/`onRunning`
+  dedicated, *daemon* thread (it never by itself keeps the JVM alive - see
+  `cloud-driver-extensions/README.md` for the distinction from `cloud-driver-extensions-terminal`'s
+  own non-daemon `ReadingThread`); a `RuntimeException` from one extension's `onLoading`/`onRunning`
   is caught, routed to that extension's own `onException`, and never aborts starting/stopping any
   other registered extension.
 - **Push, not poll, for cross-process change awareness.** `cloud-driver-extensions-watcher` uses

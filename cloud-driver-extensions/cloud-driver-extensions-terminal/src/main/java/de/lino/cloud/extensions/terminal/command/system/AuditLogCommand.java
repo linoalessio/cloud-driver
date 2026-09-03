@@ -41,7 +41,7 @@ public class AuditLogCommand implements Command {
 
     @Override
     public @NotNull List<String> aliases() {
-        return List.of("audit");
+        return List.of("audit", "log");
     }
 
     @Override
