@@ -3,6 +3,7 @@ package de.lino.cloud.platform.desktop
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -27,13 +28,13 @@ import org.jetbrains.compose.resources.painterResource
 private const val DEFAULT_SERVER_URL = "https://api.cloud-driver.de"
 
 /**
- * Floor on how small the window can be resized/minimized to - Compose Desktop has no
+ * Floor on how small the window can be resized/minimized to, in `dp` - Compose Desktop has no
  * `Window`-level "minimum size" parameter of its own, so this is applied imperatively via
  * `WindowScope.window` (the underlying `ComposeWindow`/AWT `Window`) below. Fixes a real bug:
  * without it, the window could be dragged smaller and smaller until it shrank to nothing and
  * effectively vanished, with no way to grab an edge to resize it back up.
  */
-private val MINIMUM_WINDOW_SIZE = Dimension(1200, 800)
+private val MINIMUM_WINDOW_SIZE = DpSize(1200.dp, 800.dp)
 
 fun main() = application {
     val scope = rememberCoroutineScope()
@@ -49,7 +50,20 @@ fun main() = application {
         state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
         icon = painterResource(Res.drawable.app_icon),
     ) {
-        LaunchedEffect(Unit) { window.minimumSize = MINIMUM_WINDOW_SIZE }
+        // Fixed a real bug: `window.minimumSize` (AWT) takes physical pixels, not dp - passing
+        // MINIMUM_WINDOW_SIZE's raw numbers straight through under-enforced the intended floor on
+        // any HiDPI/Retina display (2x scaling halves the effective logical minimum), letting the
+        // window be dragged down to roughly 600x400 dp - well below what this app's screens are
+        // laid out for, which read as widgets "disappearing" on resize (see DashboardScreen.kt's
+        // own verticalScroll fix for the complementary "still doesn't fit" fallback). Converting
+        // through the real screen density before calling minimumSize enforces the same logical
+        // floor on every display, so the window can no longer shrink far enough to trigger that.
+        val density = LocalDensity.current
+        LaunchedEffect(density) {
+            window.minimumSize = with(density) {
+                Dimension(MINIMUM_WINDOW_SIZE.width.roundToPx(), MINIMUM_WINDOW_SIZE.height.roundToPx())
+            }
+        }
         // Session persistence (item 4, SERVICES.md): before the first real screen is meaningfully
         // interacted with, try to restore a session persisted from a previous run (OS
         // keychain/fallback file - see CloudDriverClient/SessionManager) so a returning user goes

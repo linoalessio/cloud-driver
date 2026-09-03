@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
@@ -91,7 +93,13 @@ fun DashboardScreen(viewModel: AppViewModel) {
     var showUninstallConfirmation by remember { mutableStateOf(false) }
 
     AuthenticatedShell(viewModel) {
-        Column(Modifier.fillMaxSize().padding(32.dp)) {
+        // verticalScroll, not just fillMaxSize: this screen has no LazyColumn of its own (unlike
+        // every other screen this app scrolls internally), so without this, a window shrunk
+        // shorter than this Column's own content (Account/Storage/stat cards) simply clipped the
+        // overflow with nothing to reveal it - widgets appeared to "disappear" on resize instead
+        // of the content staying reachable. Mirrors FilePreviewDialog.kt's own verticalScroll use,
+        // the only existing precedent for a plain (non-Lazy) scrollable Column in this app.
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp)) {
             Text("Dashboard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Text(
