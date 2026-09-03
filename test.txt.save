@@ -1,0 +1,22 @@
+Full Xcode still isn't installed on this machine — only the Command Line Tools, which can't build iOS apps (no iOS SDK/simulator). Here's the path to actually run it:                            
+                                                                                                                                                                                                    
+  1. Install Xcode (one-time, ~10-15 GB): App Store → search "Xcode" → Get/Install. Or xcodebuild will offer a link if you try running it without it.                                               
+                                                                                                                                                                                                    
+  2. Point the command line at it (Xcode's installer usually does this, but if not):                                                                                                                
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer                                                                                                                                   
+                                                                                                                                                                                                    
+  3. Open the project:                                                                                                                                                                              
+  open "/Users/linokauschinger/Desktop/IntelliJ IDEA/cloud-driver/cloud-driver-platforms/cloud-driver-platforms-mobile/CloudDriverMobile.xcodeproj"                                                 
+                                                                                                                                                                                                    
+  4. Pick a run destination and hit Run:                                                                                                                                                            
+  - In Xcode's toolbar, next to the scheme name ("CloudDriverMobile"), click the device dropdown and pick a simulator, e.g. iPhone 16.                                                              
+  - Press ⌘R (or the ▶ button). First build will take a minute; the simulator boots and the app launches straight to the login screen.                                                              
+                                                                                                                                                                                                    
+  To run on your actual iPhone instead of the simulator:                                                                                                                                            
+  - Xcode → Settings → Accounts → sign in with your Apple ID.                                                                                                                                       
+  - Select the CloudDriverMobile target → Signing & Capabilities → check "Automatically manage signing" → pick your personal team.                                                                  
+  - Plug in your iPhone via cable (or pair over Wi-Fi), select it as the run destination, hit ⌘R.                                                                                                   
+  - First launch on-device: on the iPhone, go to Settings → General → VPN & Device Management and trust your developer certificate, then relaunch the app.                                          
+                                                                                                                                                                                                    
+  One thing to know before you log in: the app talks to https://api.cloud-driver.de (hardcoded in CloudDriverMobileApp.swift's underlying APIClient.shared) — same server the desktop app uses — so 
+  you'll need that server reachable and an existing account (or use the in-app "Create an account" flow).       

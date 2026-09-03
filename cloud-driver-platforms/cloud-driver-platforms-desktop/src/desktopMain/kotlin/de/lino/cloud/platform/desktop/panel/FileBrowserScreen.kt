@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.Entry
+import de.lino.cloud.platform.desktop.utils.colorFor
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
 import de.lino.cloud.platform.desktop.utils.isZipArchive
@@ -974,7 +975,10 @@ private fun EntryRow(
                 Icon(
                     iconFor(entry),
                     contentDescription = null,
-                    tint = if (entry is Entry.FolderEntry) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    // A distinct color per folder/file category (see EntryIcons.kt#colorFor) -
+                    // the real macOS iCloud app renders every service as its own colorful icon
+                    // rather than one repeated monochrome tint.
+                    tint = colorFor(entry),
                     modifier = Modifier.size(20.dp),
                 )
             }

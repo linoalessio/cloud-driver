@@ -1,5 +1,6 @@
 package de.lino.cloud.platform.desktop.panel
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Badge
@@ -47,10 +48,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import de.lino.cloud.platform.desktop.model.AccountStats
+import de.lino.cloud.platform.desktop.theme.CardShape
+import de.lino.cloud.platform.desktop.theme.CloudColors
+import de.lino.cloud.platform.desktop.theme.IconTile
+import de.lino.cloud.platform.desktop.theme.StorageBar
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import java.time.Instant
@@ -95,7 +102,11 @@ fun DashboardScreen(viewModel: AppViewModel) {
 
             Spacer(Modifier.height(28.dp))
 
-            AccountInfoCard(viewModel)
+            AccountInfoCard(viewModel, onUninstallClick = { showUninstallConfirmation = true })
+
+            Spacer(Modifier.height(20.dp))
+
+            StorageOverviewCard(viewModel, viewModel.dashboardStats)
 
             Spacer(Modifier.height(20.dp))
 
@@ -115,15 +126,11 @@ fun DashboardScreen(viewModel: AppViewModel) {
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     FilesAndFoldersStatCard(stats.folderCount, stats.fileCount, Modifier.weight(1f))
-                    StatCard(Icons.Filled.Storage, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
-                    StatCard(Icons.Filled.Delete, "Trash", formatBytes(stats.trashBytes), Modifier.weight(1f))
-                    StatCard(Icons.Filled.FolderShared, "Shared files", stats.sharedFileCount.toString(), Modifier.weight(1f))
+                    StatCard(Icons.Filled.Storage, CloudColors.Indigo, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
+                    StatCard(Icons.Filled.Delete, CloudColors.Gray, "Trash", formatBytes(stats.trashBytes), Modifier.weight(1f))
+                    StatCard(Icons.Filled.FolderShared, CloudColors.Purple, "Shared files", stats.sharedFileCount.toString(), Modifier.weight(1f))
                 }
             }
-
-            Spacer(Modifier.height(20.dp))
-
-            DangerZoneCard(busy = viewModel.busy, onUninstallClick = { showUninstallConfirmation = true })
         }
     }
 
@@ -135,46 +142,6 @@ fun DashboardScreen(viewModel: AppViewModel) {
             },
             onDismiss = { showUninstallConfirmation = false },
         )
-    }
-}
-
-/**
- * A "Danger Zone" card housing the app's one destructive, machine-wide action: uninstalling
- * itself. Kept visually separate (its own bordered card, an error-tinted button) from the
- * account-info/stat cards above so it doesn't read as just another piece of account information.
- */
-@Composable
-private fun DangerZoneCard(busy: Boolean, onUninstallClick: () -> Unit) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(24.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Danger zone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Permanently remove cloud-driver and its local settings from this computer. This does not delete anything from your account.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Button(
-                onClick = onUninstallClick,
-                enabled = !busy,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-            ) {
-                Icon(Icons.Filled.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Uninstall")
-            }
-        }
     }
 }
 
@@ -203,7 +170,7 @@ private fun UninstallConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> 
 }
 
 @Composable
-private fun AccountInfoCard(viewModel: AppViewModel) {
+private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Unit) {
     // Local, transient UI state - which of the settings-menu dialogs (if any) is currently open.
     // Not on AppViewModel: purely dialog visibility, the same "local remember, not view-model
     // state" reasoning FileBrowserScreen.kt's own moveDialogEntry/showUninstallConfirmation use.
@@ -212,15 +179,15 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
     var showTwoFactorDialog by remember { mutableStateOf(false) }
 
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.CloudQueue, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
-                Spacer(Modifier.width(10.dp))
+                IconTile(Icons.Filled.CloudQueue, CloudColors.Blue, size = 38.dp, iconSize = 21.dp)
+                Spacer(Modifier.width(12.dp))
                 Text("Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
 
                 // The account settings entry point - a gear icon opening "Reset Password"/"Change
@@ -247,11 +214,11 @@ private fun AccountInfoCard(viewModel: AppViewModel) {
                             },
                         )
                         DropdownMenuItem(
-                            text = { Text("Two-Factor Authentication") },
-                            leadingIcon = { Icon(Icons.Filled.Security, contentDescription = null) },
+                            text = { Text("Uninstall", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Filled.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 settingsMenuExpanded = false
-                                showTwoFactorDialog = true
+                                onUninstallClick()
                             },
                         )
                     }
@@ -509,14 +476,14 @@ private fun InfoRow(icon: ImageVector, label: String, value: String) {
 @Composable
 private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: Modifier = Modifier) {
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier,
     ) {
         Column(Modifier.padding(20.dp)) {
-            Icon(Icons.Filled.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-            Spacer(Modifier.height(12.dp))
+            IconTile(Icons.Filled.Folder, CloudColors.Blue)
+            Spacer(Modifier.height(14.dp))
             Text(
                 "Folders: $folderCount",
                 style = MaterialTheme.typography.bodyLarge,
@@ -534,18 +501,93 @@ private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: 
 }
 
 @Composable
-private fun StatCard(icon: ImageVector, label: String, value: String, modifier: Modifier = Modifier) {
+private fun StatCard(icon: ImageVector, tileColor: Color, label: String, value: String, modifier: Modifier = Modifier) {
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier,
     ) {
         Column(Modifier.padding(20.dp)) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-            Spacer(Modifier.height(12.dp))
+            IconTile(icon, tileColor)
+            Spacer(Modifier.height(14.dp))
             Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * The iCloud app's own signature widget, adapted here: a capsule [StorageBar] segmented by
+ * category (live files, then trash - both real subsets of the account's total usage, see
+ * [AccountStats]'s own Javadoc) followed by a small legend, plus the "used of total" headline
+ * [SidebarStorageSummary] already shows in miniature - this is the full-size version, with a
+ * breakdown [Sidebar] has no room for. Renders a loading notice until both [stats] and
+ * [AppViewModel.currentUserUploadedBytes]/[AppViewModel.currentUserMaxBytesToUpload] are available.
+ */
+@Composable
+private fun StorageOverviewCard(viewModel: AppViewModel, stats: AccountStats?) {
+    val uploaded = viewModel.currentUserUploadedBytes
+    val max = viewModel.currentUserMaxBytesToUpload
+
+    Card(
+        shape = CardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconTile(Icons.Filled.Storage, CloudColors.Indigo, size = 38.dp, iconSize = 21.dp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        formatStorageStatus(uploaded, max) + " used",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            if (uploaded != null && max != null && max > 0 && stats != null) {
+                val liveFraction = stats.totalBytes.toFloat() / max.toFloat()
+                val trashFraction = stats.trashBytes.toFloat() / max.toFloat()
+                StorageBar(
+                    segments = listOf(liveFraction to CloudColors.Blue, trashFraction to CloudColors.Gray),
+                    height = 14.dp,
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                    StorageLegendItem(CloudColors.Blue, "Files", formatBytes(stats.totalBytes))
+                    StorageLegendItem(CloudColors.Gray, "Trash", formatBytes(stats.trashBytes))
+                    StorageLegendItem(
+                        MaterialTheme.colorScheme.outline,
+                        "Free",
+                        formatBytes((max - uploaded).coerceAtLeast(0)),
+                    )
+                }
+            } else {
+                Text(
+                    "Storage details are still loading...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageLegendItem(color: Color, label: String, value: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(9.dp).background(color, CircleShape))
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(value, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

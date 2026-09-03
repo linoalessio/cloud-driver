@@ -55,10 +55,10 @@ public final class EntityDatabaseClient {
     private static final String DATA_KEY = "data";
 
     /** Default per-type cache time-to-live, used by the single-argument constructor. */
-    private static final Duration DEFAULT_CACHE_TTL = Duration.ofSeconds(30);
+    public static final Duration DEFAULT_CACHE_TTL = Duration.ofSeconds(30);
 
     /** Default per-type cache maximum entry count, used by the single-argument constructor. */
-    private static final long DEFAULT_CACHE_MAX_SIZE = 1_000;
+    public static final long DEFAULT_CACHE_MAX_SIZE = 1_000;
 
     /** The provider every entity type's {@link DatabaseSection} is resolved against. */
     private final DatabaseProvider databaseProvider;
@@ -72,11 +72,44 @@ public final class EntityDatabaseClient {
     /** Per-type decrypted-entity cache maximum entry count; {@code <= 0} means unbounded. */
     private final long cacheMaxSize;
 
+    /**
+     * Time-to-live for {@link #entityListCache}, independent of {@link #cacheTtl} - see {@link
+     * #getEntities}. {@code null} means unbounded (never expires on its own, only ever
+     * invalidated by a write). Deliberately a separate knob from {@link #cacheTtl}: a full
+     * {@link #getEntities} scan on a large, rarely-changing type (e.g. {@code
+     * StoredFileOwnership}, scanned on every GUI file listing) benefits from staying cached far
+     * longer than a single freshly-fetched entity should (which is what {@link #cacheTtl} governs
+     * for e.g. a just-downloaded {@code StoredFile}'s full content) - one shared value would force
+     * a choice between "listings stay slow" and "large content lingers in memory far longer than
+     * it needs to."
+     */
+    private final Duration listCacheTtl;
+
     /** One cache per entity type, created lazily via {@link #cacheFor}. */
     private final Map<Class<? extends Serialized>, Cache<String, ? extends Serialized>> caches = new ConcurrentHashMap<>();
 
     /** One {@link DatabaseSection} per entity type, created lazily via {@link #sectionFor}. */
     private final Map<Class<?>, DatabaseSection> sections = new ConcurrentHashMap<>();
+
+    /**
+     * One cached {@link #getEntities} result per entity type, keyed by {@code type} - see {@link
+     * #getEntities} for why this exists. Distinct from {@link #caches} (which caches one
+     * <em>individual</em> decrypted entity per id): a {@link #getEntities} call decrypts
+     * <em>every</em> row of a type in one pass, so without this, the same full-type scan+decrypt
+     * is repeated on every single call even when nothing has changed since the last one.
+     */
+    private final Map<Class<?>, CachedEntities<?>> entityListCache = new ConcurrentHashMap<>();
+
+    /**
+     * One {@link #getEntities} result, snapshotted at {@code cachedAtEpochMillis} - expired once
+     * {@link #listCacheTtl} has elapsed since then (never, if {@link #listCacheTtl} is {@code
+     * null}).
+     *
+     * @param entities the cached, already-decrypted result list
+     * @param cachedAtEpochMillis when this snapshot was taken ({@link System#currentTimeMillis()})
+     */
+    private record CachedEntities<T extends Serialized>(List<T> entities, long cachedAtEpochMillis) {
+    }
 
     /**
      * Constructs a client with the default cache bounds ({@link #DEFAULT_CACHE_TTL}/{@link #DEFAULT_CACHE_MAX_SIZE}).
@@ -87,11 +120,14 @@ public final class EntityDatabaseClient {
      */
     public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
                                  @NotNull final EnvelopeEncryptionService envelopeEncryptionService) {
-        this(databaseProvider, envelopeEncryptionService, DEFAULT_CACHE_TTL, DEFAULT_CACHE_MAX_SIZE);
+        this(databaseProvider, envelopeEncryptionService, DEFAULT_CACHE_TTL, DEFAULT_CACHE_MAX_SIZE, DEFAULT_CACHE_TTL);
     }
 
     /**
-     * Constructs a client with explicit cache bounds - see the class Javadoc's "Caching" section.
+     * Constructs a client with explicit per-entity cache bounds and {@link #listCacheTtl}
+     * defaulted to the same value as {@code cacheTtl} - see the class Javadoc's "Caching" section
+     * and {@link #EntityDatabaseClient(DatabaseProvider, EnvelopeEncryptionService, Duration, long, Duration)}
+     * for a deployment that wants the two decoupled.
      *
      * @param databaseProvider the provider meta sections are resolved against
      * @param envelopeEncryptionService the envelope-encryption service backing this client's {@link SecureEntityChannel}
@@ -102,12 +138,31 @@ public final class EntityDatabaseClient {
     public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
                                  @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
                                  final Duration cacheTtl, final long cacheMaxSize) {
+        this(databaseProvider, envelopeEncryptionService, cacheTtl, cacheMaxSize, cacheTtl);
+    }
+
+    /**
+     * Constructs a client with explicit, independent per-entity and {@link #getEntities}-list
+     * cache bounds - see the class Javadoc's "Caching" section and {@link #listCacheTtl}'s own
+     * Javadoc for why these two are worth tuning separately.
+     *
+     * @param databaseProvider the provider meta sections are resolved against
+     * @param envelopeEncryptionService the envelope-encryption service backing this client's {@link SecureEntityChannel}
+     * @param cacheTtl how long a decrypted meta stays cached; {@code null} for unbounded
+     * @param cacheMaxSize maximum cached entries per meta type; {@code <= 0} for unbounded
+     * @param listCacheTtl how long a {@link #getEntities} scan result stays cached; {@code null} for unbounded
+     * @throws NullPointerException if {@code databaseProvider} or {@code envelopeEncryptionService} is {@code null}
+     */
+    public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
+                                 @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
+                                 final Duration cacheTtl, final long cacheMaxSize, final Duration listCacheTtl) {
         this.databaseProvider = Asserts.requireNonNull(databaseProvider, "@EntityDatabaseClient: databaseProvider cannot be null");
         this.secureEntityChannel = new SecureEntityChannel(
                 Asserts.requireNonNull(envelopeEncryptionService, "@EntityDatabaseClient: envelopeEncryptionService cannot be null")
         );
         this.cacheTtl = cacheTtl;
         this.cacheMaxSize = cacheMaxSize;
+        this.listCacheTtl = listCacheTtl;
     }
 
     /** Returns {@code type}'s {@link DatabaseSection} (named after its simple class name), creating it if needed. */
@@ -164,6 +219,9 @@ public final class EntityDatabaseClient {
     private <T extends Serialized> void cachePut(final T entity) {
         final Class<T> type = (Class<T>) entity.getClass();
         cacheFor(type).put(entity.primaryKey(), entity);
+        // A getEntities(type) snapshot taken before this write no longer reflects reality - see
+        // that method's own Javadoc/entityListCache for why this cache exists at all.
+        invalidateEntityListCache(type);
     }
 
     /**
@@ -363,6 +421,19 @@ public final class EntityDatabaseClient {
      * the whole batch - a still-present-but-corrupted record is still
      * rethrown, the same distinction {@link #findById} already draws.
      *
+     * <p><b>Result is cached per type</b> (bounded by {@link #cacheTtl}, invalidated by any write
+     * to {@code type} - see {@link #entityListCache}), separately from the per-id {@link #caches}.
+     * Without this, every single call re-lists and re-decrypts <em>every</em> row of {@code type}
+     * from scratch, even back-to-back calls a caller makes for e.g. one page of a paginated
+     * listing followed immediately by the next - decrypting under a KMS-backed {@link
+     * de.lino.cloud.api.security.keys.KeyEncryptionService} means one network round trip per row,
+     * so for a type with thousands of rows this made every single listing call (not just the
+     * first) cost thousands of KMS calls. Fixed a real incident (2026-09-03): after a ~2,500-file
+     * upload, browsing the desktop app's file list - which calls this via {@code
+     * CloudUserService#listFileSummariesPage}/{@code ownedFileOwnerships} on every folder open and
+     * every "Load more" click - took several minutes instead of a few seconds, since each of those
+     * calls independently re-decrypted all ~2,500 {@code StoredFileOwnership} rows from scratch.
+     *
      * @param type the entity type
      * @return every decrypted entity of {@code type} that could still be resolved
      * @throws NullPointerException if {@code type} is {@code null}
@@ -371,9 +442,15 @@ public final class EntityDatabaseClient {
      * @throws AuthenticationFailedException if any authentication tag verification fails
      */
     @NotNull
+    @SuppressWarnings("unchecked") // safe: entityListCache is only ever written a List<T> keyed by that same Class<T>
     public <T extends Serialized> List<T> getEntities(@NotNull final Class<T> type)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
+
+        final CachedEntities<T> cached = (CachedEntities<T>) entityListCache.get(type);
+        if (cached != null && !isExpired(cached.cachedAtEpochMillis())) {
+            return cached.entities();
+        }
 
         final List<String> objectIds = sectionFor(type).getEntries().stream().map(DatabaseEntry::getId).toList();
         final List<CompletableFuture<Optional<T>>> futures = objectIds.stream()
@@ -383,7 +460,24 @@ public final class EntityDatabaseClient {
         joinAll(futures);
         // Every future is already complete at this point (joinAll waited on
         // all of them), so these joins return immediately.
-        return futures.stream().map(CompletableFuture::join).flatMap(Optional::stream).toList();
+        final List<T> result = futures.stream().map(CompletableFuture::join).flatMap(Optional::stream).toList();
+
+        // A concurrent write racing this scan may invalidate entityListCache (see invalidateEntityListCache)
+        // between the read above and this put - in that (rare) case this simply re-caches a snapshot that
+        // may already be one write stale, exactly as if this call had just lost that race entirely; the next
+        // getEntities call picks up the write via that same invalidation, same as any other cache miss.
+        entityListCache.put(type, new CachedEntities<>(result, System.currentTimeMillis()));
+        return result;
+    }
+
+    /** @return {@code true} if a snapshot cached at {@code cachedAtEpochMillis} is now past {@link #listCacheTtl} */
+    private boolean isExpired(final long cachedAtEpochMillis) {
+        return listCacheTtl != null && System.currentTimeMillis() - cachedAtEpochMillis >= listCacheTtl.toMillis();
+    }
+
+    /** Drops {@code type}'s cached {@link #getEntities} snapshot, if any - called from every write path below. */
+    private void invalidateEntityListCache(final Class<?> type) {
+        entityListCache.remove(type);
     }
 
     /**
@@ -423,6 +517,7 @@ public final class EntityDatabaseClient {
         }
 
         cacheFor(type).invalidate(objectId);
+        invalidateEntityListCache(type);
     }
 
     /**
@@ -477,6 +572,7 @@ public final class EntityDatabaseClient {
         if (cache != null) {
             cache.invalidateAll();
         }
+        invalidateEntityListCache(type);
     }
 
     /**
@@ -496,6 +592,7 @@ public final class EntityDatabaseClient {
         if (cache != null) {
             cache.invalidateAll();
         }
+        invalidateEntityListCache(type);
     }
 
     /**
@@ -516,6 +613,7 @@ public final class EntityDatabaseClient {
         this.databaseProvider.deleteSection(type.getSimpleName());
         this.sections.remove(type);
         this.caches.remove(type);
+        invalidateEntityListCache(type);
     }
 
     /** Shuts the backing {@link DatabaseProvider} down, releasing its connection(s)/pool. */

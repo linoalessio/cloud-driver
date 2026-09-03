@@ -48,6 +48,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.Screen
+import de.lino.cloud.platform.desktop.theme.CloudColors
+import de.lino.cloud.platform.desktop.theme.IconTile
+import de.lino.cloud.platform.desktop.theme.StorageBar
 import de.lino.cloud.platform.desktop.theme.ThemeMode
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -170,126 +173,177 @@ private fun TransferProgressBar(progress: TransferProgress) {
 
 /**
  * The left navigation panel every after-login screen shares (via [AuthenticatedShell]) - app
- * branding, "Dashboard"/"Home" as the two primary destinations, the current folder path nested
- * under "Home" as a clickable vertical trail (mirroring [AppViewModel.breadcrumbs] - one entry
- * per nested folder, deepest selected, only shown while browsing), and account/theme actions
- * pinned to the bottom. Styled after iCloud Drive's/Finder's own sidebar rather than a top
- * toolbar, matching this app's "modern cloud system" brief.
+ * branding, "Dashboard"/"Home" as the two primary destinations (each drawn as a colored [IconTile]
+ * "app icon", not a flat monochrome glyph - modeled on the real macOS iCloud app's own Photos/
+ * Drive/Mail-style icon grid), the current folder path nested under "Home" as a clickable vertical
+ * trail (mirroring [AppViewModel.breadcrumbs] - one entry per nested folder, deepest selected,
+ * only shown while browsing), a compact storage capsule mirroring Finder's own "used of total"
+ * disk-space indicator for a mounted volume, and account/theme actions pinned to the bottom.
  */
 @Composable
 fun Sidebar(viewModel: AppViewModel) {
-    Column(
-        modifier = Modifier
-            .width(240.dp)
-            .fillMaxHeight()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(vertical = 20.dp),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 20.dp),
+    Row(Modifier.fillMaxHeight()) {
+        Column(
+            modifier = Modifier
+                .width(248.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(vertical = 20.dp),
         ) {
-            Image(painterResource(Res.drawable.app_icon), contentDescription = null, modifier = Modifier.size(28.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("cloud-driver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(Modifier.height(28.dp))
-
-        SidebarItem(
-            icon = Icons.Filled.Dashboard,
-            label = "Dashboard",
-            selected = viewModel.screen == Screen.Dashboard,
-            onClick = { viewModel.showDashboard() },
-        )
-        if (viewModel.currentUserIsAdmin) {
-            SidebarItem(
-                icon = Icons.Filled.AdminPanelSettings,
-                label = "Admin",
-                selected = viewModel.screen == Screen.Admin,
-                onClick = { viewModel.showAdmin() },
-            )
-        }
-        SidebarItem(
-            icon = Icons.Filled.Delete,
-            label = "Trash",
-            selected = viewModel.screen == Screen.Trash,
-            onClick = { viewModel.showTrash() },
-        )
-        SidebarItem(
-            icon = Icons.Filled.FolderShared,
-            label = "Shared with me",
-            selected = viewModel.screen == Screen.SharedWithMe || viewModel.screen == Screen.SharedFolderBrowser,
-            onClick = { viewModel.showSharedWithMe() },
-        )
-        SidebarItem(
-            icon = Icons.Filled.Home,
-            label = "Home",
-            selected = viewModel.screen == Screen.Browser && viewModel.breadcrumbs.isEmpty(),
-            onClick = { viewModel.navigateToBreadcrumb(-1) },
-        )
-        if (viewModel.screen == Screen.Browser) {
-            viewModel.breadcrumbs.forEachIndexed { index, folder ->
-                SidebarItem(
-                    icon = Icons.Filled.Folder,
-                    label = folder.name(),
-                    selected = index == viewModel.breadcrumbs.lastIndex,
-                    indent = (index + 1) * 16,
-                    onClick = { viewModel.navigateToBreadcrumb(index) },
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            ) {
+                Image(painterResource(Res.drawable.app_icon), contentDescription = null, modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("cloud-driver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
+
+            Spacer(Modifier.height(24.dp))
+
+            SidebarItem(
+                label = "Dashboard",
+                selected = viewModel.screen == Screen.Dashboard,
+                onClick = { viewModel.showDashboard() },
+            ) { IconTile(Icons.Filled.Dashboard, CloudColors.Blue) }
+
+            if (viewModel.currentUserIsAdmin) {
+                SidebarItem(
+                    label = "Admin",
+                    selected = viewModel.screen == Screen.Admin,
+                    onClick = { viewModel.showAdmin() },
+                ) { IconTile(Icons.Filled.AdminPanelSettings, CloudColors.Orange) }
+            }
+            SidebarItem(
+                label = "Trash",
+                selected = viewModel.screen == Screen.Trash,
+                onClick = { viewModel.showTrash() },
+            ) { IconTile(Icons.Filled.Delete, CloudColors.Gray) }
+            SidebarItem(
+                label = "Shared with me",
+                selected = viewModel.screen == Screen.SharedWithMe || viewModel.screen == Screen.SharedFolderBrowser,
+                onClick = { viewModel.showSharedWithMe() },
+            ) { IconTile(Icons.Filled.FolderShared, CloudColors.Purple) }
+            SidebarItem(
+                label = "Home",
+                selected = viewModel.screen == Screen.Browser && viewModel.breadcrumbs.isEmpty(),
+                onClick = { viewModel.navigateToBreadcrumb(-1) },
+            ) { IconTile(Icons.Filled.Home, CloudColors.Teal) }
+
+            if (viewModel.screen == Screen.Browser) {
+                viewModel.breadcrumbs.forEachIndexed { index, folder ->
+                    SidebarItem(
+                        label = folder.name(),
+                        selected = index == viewModel.breadcrumbs.lastIndex,
+                        indent = (index + 1) * 16,
+                        onClick = { viewModel.navigateToBreadcrumb(index) },
+                    ) { PlainSidebarIcon(Icons.Filled.Folder, tint = CloudColors.Blue) }
+                }
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            SidebarStorageSummary(viewModel)
+
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+
+            SidebarItem(
+                label = if (viewModel.themeMode == ThemeMode.DARK) "Light mode" else "Dark mode",
+                selected = false,
+                onClick = { viewModel.toggleTheme() },
+            ) { PlainSidebarIcon(if (viewModel.themeMode == ThemeMode.DARK) Icons.Filled.LightMode else Icons.Filled.DarkMode) }
+            SidebarItem(
+                label = "Sign out",
+                selected = false,
+                onClick = { viewModel.logout() },
+            ) { PlainSidebarIcon(Icons.AutoMirrored.Filled.Logout) }
+            SidebarItem(
+                label = "Quit",
+                selected = false,
+                onClick = { viewModel.quit() },
+            ) { PlainSidebarIcon(Icons.Filled.PowerSettingsNew) }
         }
 
-        Spacer(Modifier.weight(1f))
+        // A hairline separator between the sidebar and the content pane - real macOS sidebars
+        // (Finder, Mail, System Settings) always draw one, even though the sidebar's own tinted
+        // background already differs slightly from the content area's.
+        Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+    }
+}
 
-        HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+/**
+ * A compact "used of total" capsule mirroring Finder's own disk-space indicator for a mounted
+ * volume, or the macOS iCloud app's own storage bar shrunk to sidebar scale - rendered only once
+ * [AppViewModel.currentUserUploadedBytes]/[AppViewModel.currentUserMaxBytesToUpload] have actually
+ * loaded (both are populated right after sign-in via `AppViewModel#refreshAccountInfo`, so this is
+ * normally visible on every authenticated screen, not just the Dashboard).
+ */
+@Composable
+private fun SidebarStorageSummary(viewModel: AppViewModel) {
+    val uploaded = viewModel.currentUserUploadedBytes
+    val max = viewModel.currentUserMaxBytesToUpload
+    if (uploaded == null || max == null || max <= 0) return
 
-        SidebarItem(
-            icon = if (viewModel.themeMode == ThemeMode.DARK) Icons.Filled.LightMode else Icons.Filled.DarkMode,
-            label = if (viewModel.themeMode == ThemeMode.DARK) "Light mode" else "Dark mode",
-            selected = false,
-            onClick = { viewModel.toggleTheme() },
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text(
+            "Storage",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        SidebarItem(
-            icon = Icons.AutoMirrored.Filled.Logout,
-            label = "Sign out",
-            selected = false,
-            onClick = { viewModel.logout() },
+        Spacer(Modifier.height(6.dp))
+        StorageBar(
+            segments = listOf((uploaded.toFloat() / max.toFloat()) to MaterialTheme.colorScheme.primary),
+            height = 6.dp,
         )
-        SidebarItem(
-            icon = Icons.Filled.PowerSettingsNew,
-            label = "Quit",
-            selected = false,
-            onClick = { viewModel.quit() },
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "${formatBytes(uploaded)} of ${formatBytes(max)} used",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
 @Composable
-private fun SidebarItem(icon: ImageVector, label: String, selected: Boolean, indent: Int = 0, onClick: () -> Unit) {
+private fun SidebarItem(label: String, selected: Boolean, indent: Int = 0, onClick: () -> Unit, leading: @Composable () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(9.dp))
             .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(start = (8 + indent).dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = (8 + indent).dp, end = 12.dp, top = 7.dp, bottom = 7.dp),
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
+        leading()
         Spacer(Modifier.width(12.dp))
         Text(
             label,
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 160.dp),
+            modifier = Modifier.widthIn(max = 156.dp),
+        )
+    }
+}
+
+/**
+ * A plain, monochrome sidebar glyph (no [IconTile] backing) for a utility row - theme toggle,
+ * sign out, quit, and a nested breadcrumb folder - mirroring macOS's own convention that only
+ * destinations/services get a colorful icon tile, while a plain action keeps a flat outline
+ * glyph. Sized to visually match [IconTile]'s own footprint so rows line up regardless of which
+ * leading slot they use.
+ */
+@Composable
+private fun PlainSidebarIcon(icon: ImageVector, tint: Color? = null) {
+    Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(19.dp),
         )
     }
 }

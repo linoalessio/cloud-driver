@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import de.lino.cloud.platform.desktop.theme.CardShape
 import de.lino.cloud.platform.desktop.utils.PASSWORD_REQUIREMENT_HINT
 import de.lino.cloud.platform.desktop.utils.isValidPasswordFormat
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -62,9 +63,9 @@ private fun AuthCard(title: String, content: @Composable ColumnScope.() -> Unit)
 
             Card(
                 modifier = Modifier.widthIn(max = 420.dp),
-                shape = RoundedCornerShape(20.dp),
+                shape = CardShape,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
             ) {
                 Column(
                     modifier = Modifier.padding(32.dp),

@@ -20,6 +20,7 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.auth.entity.StoredFileOwnership;
 import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
@@ -93,6 +94,8 @@ public final class CloudBootstrap {
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
 
                     , startExtensionsBootstrapScheduler(args)
+
+                    , warmFileListingCache()
 
                     , stopTerminal()
 
@@ -239,6 +242,24 @@ public final class CloudBootstrap {
         extensionFactory.getExtensions().forEach(extension -> CLOUD_DRIVER.getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extension.getExtensionProperties().getExtensionName())));
 
         return extensionFactory::stopAll;
+    }
+
+    /**
+     * Fires a fire-and-forget {@link DataFactory#getEntitiesAsync} scan of {@link
+     * StoredFileOwnership} right after boot, so {@code EntityDatabaseClient}'s list-cache (see
+     * {@code FactoryContainer#ENTITY_LIST_CACHE_TTL}) is already warm by the time a real client
+     * makes its first {@code GET /files}/{@code GET /folders} call - every desktop-app file/folder
+     * listing scans this exact type. Without this, the very first listing after every restart
+     * still pays the full scan-and-decrypt cost (unavoidable - nothing has been read yet); this
+     * just moves that one-time cost from "whoever happens to open the app first" to "boot itself",
+     * where nobody is waiting on it. Not a subsystem with any real lifecycle of its own - fires
+     * once and returns a no-op shutdown action, the same shape {@link #startEventScheduler} uses.
+     *
+     * @return a no-op shutdown action
+     */
+    private static Runnable warmFileListingCache() {
+        CLOUD_DRIVER.getFactoryContainer().getDataFactory().getEntitiesAsync(StoredFileOwnership.class);
+        return () -> {};
     }
 
     /**

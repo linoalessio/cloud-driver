@@ -12,6 +12,8 @@ import lombok.Getter;
 import lombok.NonNull;
 import lombok.SneakyThrows;
 
+import java.time.Duration;
+
 /**
  * Default {@link IFactoryContainer} implementation: builds one mutually
  * consistent set of {@link CloudDriver} facets - a {@link DefaultDataFactory}
@@ -24,6 +26,19 @@ import lombok.SneakyThrows;
  */
 @Getter
 public class FactoryContainer implements IFactoryContainer {
+
+    /**
+     * How long a {@link EntityDatabaseClient#getEntities} scan result stays cached, independent
+     * of that same client's much shorter (30s default) per-entity cache TTL - see {@link
+     * EntityDatabaseClient}'s own {@code listCacheTtl} Javadoc for why these two are deliberately
+     * decoupled. 5 minutes: long enough that a normal GUI browsing/pagination session (repeated
+     * folder navigation, "Load more" clicks) essentially always hits this cache after its first
+     * call, short enough that a rarely-run, full-content scan (e.g. the terminal's {@code stats}
+     * command, which calls {@code getEntities(StoredFile.class)} - content included, unlike the
+     * {@code StoredFileOwnership} scan the GUI's own listing calls) doesn't linger in memory
+     * indefinitely. See CLAUDE.md's "`EntityDatabaseClient`" section for the incident this fixes.
+     */
+    private static final Duration ENTITY_LIST_CACHE_TTL = Duration.ofMinutes(5);
 
     /** Encrypted entity persistence, backed by a fresh {@link EntityDatabaseClient}. */
     private final DataFactory dataFactory;
@@ -55,7 +70,10 @@ public class FactoryContainer implements IFactoryContainer {
     @SneakyThrows
     public FactoryContainer(@NonNull final DatabaseProvider databaseProvider, @NonNull final EnvelopeEncryptionService envelopeEncryptionService, @NonNull final ConnectivityChecker connectivityChecker) {
 
-        this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(databaseProvider, envelopeEncryptionService));
+        this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(
+                databaseProvider, envelopeEncryptionService,
+                EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL
+        ));
         this.fileFactory = new DefaultFileFactory(this.dataFactory, new InMemoryPendingUploadCache(), connectivityChecker);
         this.extensionFactory = new DefaultExtensionFactory();
         this.eventFactory = new DefaultEventFactory();
