@@ -320,6 +320,9 @@ class CloudDriverClient(
     /** Every file directly shared with the signed-in account, each paired with the sharing account's email address. */
     suspend fun listSharedWithMe(): List<SharedFileSummaryResponse> = this.apiClient.listSharedWithMeAsync().await()
 
+    /** How many of the signed-in account's own files currently have at least one active share - the owner-side count, distinct from [listSharedWithMe]'s grantee-side listing. */
+    suspend fun countFilesSharedByMe(): Int = this.apiClient.countFilesSharedByMeAsync().await()
+
     /** Grants [granteeEmail]'s account read-only access to [folderId] and everything nested inside it. Idempotent. */
     suspend fun shareFolder(folderId: String, granteeEmail: String) {
         this.apiClient.shareFolderAsync(folderId, granteeEmail).await()

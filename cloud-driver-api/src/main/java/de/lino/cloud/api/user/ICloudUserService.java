@@ -554,4 +554,20 @@ public interface ICloudUserService {
     @NotNull
     List<String> listFolderShares(@NotNull String ownerAuthUserId, @NotNull String folderId);
 
+    /**
+     * Counts the distinct files {@code authUserId} owns that currently have at least one active
+     * {@link #shareFile} grant - i.e. how many of the caller's own files are shared with someone
+     * else. The owner-side counterpart to {@link #listSharedWithMe}'s grantee-side count; backs
+     * the desktop app's Dashboard "Shared files" stat card (fixed 2026-09-03 - that card used to
+     * display {@code listSharedWithMe(authUserId).size()}, the wrong direction entirely: files
+     * shared <em>with</em> the account, not files the account has shared <em>with others</em>).
+     * A file shared with more than one grantee is still only counted once. Does not count a file
+     * only reachable via a {@link #shareFolder} grant on one of its ancestor folders - the same
+     * "direct grants only" scope {@link #listSharedWithMe} already documents for the grantee side.
+     *
+     * @param authUserId the account whose own outgoing file shares to count
+     * @return the number of distinct files {@code authUserId} owns with at least one active share, {@code 0} if none
+     */
+    int countFilesSharedByMe(@NotNull String authUserId);
+
 }

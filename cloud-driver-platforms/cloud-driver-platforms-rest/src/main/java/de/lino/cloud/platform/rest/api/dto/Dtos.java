@@ -254,6 +254,15 @@ public final class Dtos {
     }
 
     /**
+     * Response of {@code GET /files/shared-by-me/count} - how many of the caller's own files
+     * currently have at least one active share (the owner-side count, distinct from {@code
+     * GET /files/shared-with-me}'s grantee-side listing). Backs the desktop app's Dashboard
+     * "Shared files" stat card.
+     */
+    public record SharedByMeCountResponse(int count) {
+    }
+
+    /**
      * Response of {@code GET /admin/metrics} (admin-gated) - mirrors the server's {@code
      * MetricsSnapshot} field-for-field, read in-process off {@code cloud-driver-extensions-metrics}'s
      * Prometheus registry rather than a separate scrape call. {@code 404}/{@code

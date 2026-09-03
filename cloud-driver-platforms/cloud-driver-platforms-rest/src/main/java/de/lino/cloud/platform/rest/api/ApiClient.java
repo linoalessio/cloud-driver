@@ -25,6 +25,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SharedByMeCountResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse;
@@ -2003,6 +2004,27 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the {@code GET /files/shared-with-me} request against {@link #apiBaseUrl}. */
     private HttpRequest listSharedWithMeRequest() {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/shared-with-me"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/shared-by-me/count}: counts the caller's own distinct files that currently
+     * have at least one active share - the owner-side counterpart to {@link #listSharedWithMe()}'s
+     * grantee-side listing. Backs the desktop app's Dashboard "Shared files" stat card.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public int countFilesSharedByMe() throws ApiException {
+        return this.send(this.countFilesSharedByMeRequest(), SharedByMeCountResponse.class).count();
+    }
+
+    /** Async form of {@link #countFilesSharedByMe()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Integer> countFilesSharedByMeAsync() {
+        return this.sendAsync(this.countFilesSharedByMeRequest(), SharedByMeCountResponse.class).thenApply(SharedByMeCountResponse::count);
+    }
+
+    /** Builds the {@code GET /files/shared-by-me/count} request against {@link #apiBaseUrl}. */
+    private HttpRequest countFilesSharedByMeRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/shared-by-me/count"), true).GET().build();
     }
 
     /**

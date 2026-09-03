@@ -171,6 +171,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final String FILES_SHARED_WITH_ME_PATH = FILES_PATH + "/shared-with-me";
     /**
+     * Path mounted by {@link #start} for {@link #handleCountFilesSharedByMe} (added 2026-09-03,
+     * backing the desktop app's Dashboard "Shared files" stat card - which used to display {@code
+     * GET /files/shared-with-me}'s own count, the wrong direction: files shared <em>with</em> the
+     * caller, not files the caller has shared <em>with others</em>). A 3-segment path ({@code
+     * /files/shared-by-me/count}) with no registration-order collision risk against {@code /files/
+     * {id}/content|folder|share|restore} - those only match when their own literal third segment
+     * is present, and {@code "count"} isn't any of them - but registered alongside {@link
+     * #FILES_SHARED_WITH_ME_PATH} (before {@code GET /files/{id}}) anyway, for the same "static
+     * routes first" consistency that constant's own Javadoc documents, not because this one
+     * actually needs it.
+     */
+    private static final String FILES_SHARED_BY_ME_COUNT_PATH = FILES_PATH + "/shared-by-me/count";
+    /**
      * Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe}. Unlike {@link
      * #FILES_SHARED_WITH_ME_PATH}, this one was never actually broken by the registration-order bug
      * described there - there is no {@code GET /folders/{id}} route at all (folder-by-id is only
@@ -605,6 +618,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 // shipped. FILES_TRASH_PATH above only ever worked by the same registration-order
                 // coincidence, not because of any framework guarantee.
                 config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
+                config.routes.get(FILES_SHARED_BY_ME_COUNT_PATH, this::handleCountFilesSharedByMe);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
@@ -2276,6 +2290,22 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.listSharedWithMe(userId))
                 .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+    }
+
+    /** Response shape of {@link #handleCountFilesSharedByMe} - a bare count, no other fields needed. */
+    private record SharedByMeCountResponse(int count) {
+    }
+
+    /**
+     * {@code GET /files/shared-by-me/count}: counts the caller's own distinct files that currently
+     * have at least one active share, via {@link CloudUserService#countFilesSharedByMe} - the
+     * owner-side counterpart to {@link #handleListFilesSharedWithMe}'s grantee-side listing.
+     */
+    private void handleCountFilesSharedByMe(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.countFilesSharedByMe(userId))
+                .thenAccept(count -> ctx.contentType("application/json").result(this.gson.toJson(new SharedByMeCountResponse(count)))));
     }
 
     /**

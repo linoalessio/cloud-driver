@@ -959,6 +959,25 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Counts the distinct files {@code authUserId} owns with at least one active share - see
+     * {@link ICloudUserService#countFilesSharedByMe}'s Javadoc. Same full-{@link
+     * SharedFileGrant}-table-scan trade-off {@link #listFileShares}/{@link #listSharedWithMe}
+     * already accept elsewhere in this class.
+     */
+    @Override
+    public int countFilesSharedByMe(@NonNull final String authUserId) {
+        try {
+            return (int) this.dataFactory.getEntities(SharedFileGrant.class).stream()
+                    .filter(grant -> grant.getOwnerAuthUserId().equals(authUserId))
+                    .map(SharedFileGrant::getStoredFileId)
+                    .distinct()
+                    .count();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.countFilesSharedByMe: failed to count shares for " + authUserId, e);
+        }
+    }
+
+    /**
      * Resolves {@code authUserId} back to its account's email address - the reverse of {@link
      * #resolveGranteeAuthUserId}, used by {@link #listFileShares}/{@link #listFolderShares} to
      * display a grant's grantee as an email rather than a raw id. Same full-{@code AuthUser}-scan
