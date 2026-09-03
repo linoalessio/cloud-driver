@@ -12,7 +12,9 @@ Maven `packaging=pom` aggregator, `groupId=de.lino.cloud.platforms`, `artifactId
 
 *Historical note:* an earlier revision of this repo had a JavaFX desktop app living under this same `cloud-driver-platforms-desktop` name (`de.lino.cloud.platform.app`, before that `cloud-driver-platform-app`). That module was deleted outright (`MainApp`/`LoginController`/`RegisterController`/`FileListController`/`app.css` do not exist anymore — check with `git log --diff-filter=D` if you need the history). The name was later reused for the current, unrelated Kotlin Multiplatform module described above. Don't trust any doc or Javadoc describing "the desktop app" as JavaFX unless it's explicitly dated before that deletion.
 
-Sibling to `cloud-driver-extensions` (both are children of the root aggregator), **not** a submodule of it. `cloud-driver-platforms` sits entirely outside the `cloud-driver-api ← cloud-driver-auth ← cloud-driver-plugin ← cloud-driver-bootstrap` server-side dependency chain — neither child depends on any of those four modules, or on each other in the reverse direction (`cloud-driver-platforms-desktop` depends on `cloud-driver-platforms-rest`, never the other way around). This is deliberate: a desktop/mobile/CLI client should only ever need an HTTP connection to a server, never the server's own database credentials or encryption internals on its classpath.
+**`cloud-driver-platforms-mobile` (added 2026-09-03) also lives in this same directory and is also *not* a Maven module** — it's a native iOS (iPhone) app, plain Swift/SwiftUI, built with Xcode. It is **not** Kotlin Multiplatform and shares **no code** with `cloud-driver-platforms-desktop`/`cloud-driver-platforms-rest` — a deliberate choice, not an oversight; see [`cloud-driver-platforms-mobile/README.md`](cloud-driver-platforms-mobile/README.md)'s own "Why native Swift instead of Kotlin Multiplatform" section for the full reasoning (short version: `cloud-driver-platforms-rest`'s networking/keychain code is plain JVM Java, unreachable from Kotlin/Native/iOS without a full rewrite, and mobile UX needs different screens from desktop regardless). Its `CloudDriverMobile.xcodeproj` is generated from a committed `project.yml` via [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen && xcodegen generate`) rather than hand-maintained, the same "generated, not hand-edited" reasoning this repo already applies to `cloud-driver-bootstrap`'s shaded jar. It talks to the exact same REST API `cloud-driver-platforms-rest`/`-desktop` do, hand-implementing its own thin Swift client (`APIClient.swift`) rather than depending on either sibling module (`URLSession`/`Codable`, not Java/Kotlin at all).
+
+Sibling to `cloud-driver-extensions` (both are children of the root aggregator), **not** a submodule of it. `cloud-driver-platforms` sits entirely outside the `cloud-driver-api ← cloud-driver-auth ← cloud-driver-plugin ← cloud-driver-bootstrap` server-side dependency chain — no child (Maven, Gradle, or Xcode alike) depends on any of those four modules, or on each other beyond `cloud-driver-platforms-desktop` depending on `cloud-driver-platforms-rest` (never the other way around; `cloud-driver-platforms-mobile` depends on neither, being a separate-language client of the same HTTP API). This is deliberate: a desktop/mobile/CLI client should only ever need an HTTP connection to a server, never the server's own database credentials or encryption internals on its classpath.
 
 ## Performance
 
@@ -49,4 +51,13 @@ cd cloud-driver-platforms/cloud-driver-platforms-desktop
 
 # ...or package a native installer for the current OS:
 ./gradlew packageDistributionForCurrentOS
+```
+
+```bash
+# The iOS app (Xcode, not Maven/Gradle - needs no other module built first, it talks to the
+# server purely over HTTP with its own hand-written Swift client)
+brew install xcodegen   # if not already installed
+cd cloud-driver-platforms/cloud-driver-platforms-mobile
+xcodegen generate       # regenerate after adding/removing/renaming a source file
+open CloudDriverMobile.xcodeproj   # then build/run from Xcode - requires full Xcode, not just the CLTs
 ```

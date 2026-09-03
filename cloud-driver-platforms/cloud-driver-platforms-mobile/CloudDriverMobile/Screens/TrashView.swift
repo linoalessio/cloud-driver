@@ -1,0 +1,146 @@
+import SwiftUI
+
+/// The Trash tab - files/folders soft-deleted via `AppViewModel.deleteFile`/`deleteFolder`
+/// (`DELETE /files/{id}`/`DELETE /folders/{id}`, already soft deletes server-side), listed via
+/// `GET /files/trash`/`GET /folders/trash`. Each row restores individually; "Empty Trash"
+/// permanently removes everything, bypassing the retention window, behind a confirmation.
+struct TrashView: View {
+    @ObservedObject var viewModel: AppViewModel
+    @State private var showingEmptyTrashConfirmation = false
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter
+    }()
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                CloudTheme.backgroundGradient
+
+                ScrollView {
+                    VStack(spacing: 16) {
+                        if !viewModel.trashFolders.isEmpty {
+                            CloudCard(
+                                icon: "folder.fill",
+                                iconColor: CloudTheme.iconFolder,
+                                title: "Trashed Folders",
+                                subtitle: itemCountText(viewModel.trashFolders.count)
+                            ) {
+                                VStack(spacing: 0) {
+                                    ForEach(Array(viewModel.trashFolders.enumerated()), id: \.element.id) { index, entry in
+                                        CloudRow(
+                                            icon: "folder.fill",
+                                            iconColor: CloudTheme.iconFolder,
+                                            title: entry.folder.name,
+                                            subtitle: purgeText(entry.purgeAtEpochMillis),
+                                            showDivider: index != viewModel.trashFolders.count - 1
+                                        ) {
+                                            Button {
+                                                viewModel.restoreFolder(entry)
+                                            } label: {
+                                                Image(systemName: "arrow.uturn.backward.circle")
+                                                    .foregroundStyle(CloudTheme.accent)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !viewModel.trashFiles.isEmpty {
+                            CloudCard(
+                                icon: "doc.fill",
+                                iconColor: CloudTheme.iconFile,
+                                title: "Trashed Files",
+                                subtitle: itemCountText(viewModel.trashFiles.count)
+                            ) {
+                                VStack(spacing: 0) {
+                                    ForEach(Array(viewModel.trashFiles.enumerated()), id: \.element.id) { index, entry in
+                                        CloudRow(
+                                            icon: fileIcon(for: entry.file.contentType),
+                                            iconColor: CloudTheme.iconFile,
+                                            title: entry.file.fileName,
+                                            subtitle: purgeText(entry.purgeAtEpochMillis),
+                                            showDivider: index != viewModel.trashFiles.count - 1
+                                        ) {
+                                            Button {
+                                                viewModel.restoreFile(entry)
+                                            } label: {
+                                                Image(systemName: "arrow.uturn.backward.circle")
+                                                    .foregroundStyle(CloudTheme.accent)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if viewModel.trashFiles.isEmpty && viewModel.trashFolders.isEmpty {
+                            if !viewModel.busy {
+                                emptyState
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                showingEmptyTrashConfirmation = true
+                            } label: {
+                                Text("Empty Trash")
+                                    .font(CloudTheme.headline(.body))
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .padding(.vertical, 14)
+                            .foregroundStyle(.white)
+                            .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                    .padding(16)
+                }
+                .scrollIndicators(.hidden)
+                .refreshable {
+                    viewModel.loadTrash()
+                }
+
+                if viewModel.busy && viewModel.trashFiles.isEmpty && viewModel.trashFolders.isEmpty {
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+            .navigationTitle("Trash")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
+        }
+        .task {
+            viewModel.loadTrash()
+        }
+        .confirmationDialog("Empty Trash?", isPresented: $showingEmptyTrashConfirmation, titleVisibility: .visible) {
+            Button("Empty Trash", role: .destructive) {
+                viewModel.emptyTrash()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every trashed file and folder will be permanently deleted. This can't be undone.")
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "trash")
+                .font(.system(size: 40))
+                .foregroundStyle(CloudTheme.textSecondary)
+            Text("Trash is empty")
+                .foregroundStyle(CloudTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 60)
+    }
+
+    private func itemCountText(_ count: Int) -> String {
+        "\(count) item\(count == 1 ? "" : "s")"
+    }
+
+    private func purgeText(_ purgeAtEpochMillis: Int64) -> String {
+        "Permanently deleted on \(Self.dateFormatter.string(from: Date(timeIntervalSince1970: Double(purgeAtEpochMillis) / 1000)))"
+    }
+}

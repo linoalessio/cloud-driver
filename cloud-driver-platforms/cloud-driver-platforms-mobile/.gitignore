@@ -1,0 +1,9 @@
+# Xcode user-specific state - never shared, always regenerated locally.
+CloudDriverMobile.xcodeproj/xcuserdata/
+CloudDriverMobile.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# Build output.
+DerivedData/
+build/
+.build/
