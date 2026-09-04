@@ -3,13 +3,11 @@ package de.lino.cloud.platform.desktop
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import java.awt.Dimension
 import de.lino.cloud.platform.desktop.theme.CloudDriverTheme
 import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -28,11 +26,24 @@ import org.jetbrains.compose.resources.painterResource
 private const val DEFAULT_SERVER_URL = "https://api.cloud-driver.de"
 
 /**
- * Floor on how small the window can be resized/minimized to, in `dp` - Compose Desktop has no
- * `Window`-level "minimum size" parameter of its own, so this is applied imperatively via
- * `WindowScope.window` (the underlying `ComposeWindow`/AWT `Window`) below. Fixes a real bug:
- * without it, the window could be dragged smaller and smaller until it shrank to nothing and
+ * Floor on how small the window can be resized/minimized to, in `dp`. Fixes a real bug: without
+ * some floor, the window could be dragged smaller and smaller until it shrank to nothing and
  * effectively vanished, with no way to grab an edge to resize it back up.
+ *
+ * <p><b>Enforced entirely through [rememberWindowState]'s own [androidx.compose.ui.window.WindowState.size],
+ * not by mutating the underlying AWT `window.minimumSize` directly</b> - an earlier revision did
+ * the latter (`WindowScope.window.minimumSize = ...`, from a `LaunchedEffect`), which caused a
+ * real, confirmed bug (2026-09-04): reaching into the raw AWT peer outside Compose's own
+ * layout/resize plumbing desynced the Skia rendering surface from the native window's actual
+ * bounds, rendering every screen's content into a small, mispositioned patch (observed pinned to
+ * the bottom-right corner) of an otherwise-blank, oversized window - reported as "the login
+ * panel's size is destroyed" and reproduced identically in both `./gradlew run` and the packaged
+ * `.app` (ruling out a jlink/packaging-specific cause). Confirmed fixed by removing that AWT
+ * mutation entirely; this `WindowState`-based clamp is the replacement, staying inside Compose's
+ * own state system so the resize goes through the normal recomposition path instead of bypassing
+ * it. The trade-off: unlike a hard OS-level minimum, a drag can overshoot below this floor for one
+ * frame before snapping back, rather than being physically blocked - acceptable given the
+ * alternative broke rendering outright.
  */
 private val MINIMUM_WINDOW_SIZE = DpSize(1200.dp, 800.dp)
 
@@ -40,6 +51,7 @@ fun main() = application {
     val scope = rememberCoroutineScope()
     // Loaded synchronously - see AppSettingsStore#loadThemeMode's own Javadoc for why that's fine here.
     val viewModel = remember { AppViewModel(scope, DEFAULT_SERVER_URL, AppSettingsStore.loadThemeMode()) }
+    val windowState = rememberWindowState(size = MINIMUM_WINDOW_SIZE)
 
     Window(
         onCloseRequest = {
@@ -47,21 +59,18 @@ fun main() = application {
             exitApplication()
         },
         title = "cloud-driver",
-        state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
+        state = windowState,
         icon = painterResource(Res.drawable.app_icon),
     ) {
-        // Fixed a real bug: `window.minimumSize` (AWT) takes physical pixels, not dp - passing
-        // MINIMUM_WINDOW_SIZE's raw numbers straight through under-enforced the intended floor on
-        // any HiDPI/Retina display (2x scaling halves the effective logical minimum), letting the
-        // window be dragged down to roughly 600x400 dp - well below what this app's screens are
-        // laid out for, which read as widgets "disappearing" on resize (see DashboardScreen.kt's
-        // own verticalScroll fix for the complementary "still doesn't fit" fallback). Converting
-        // through the real screen density before calling minimumSize enforces the same logical
-        // floor on every display, so the window can no longer shrink far enough to trigger that.
-        val density = LocalDensity.current
-        LaunchedEffect(density) {
-            window.minimumSize = with(density) {
-                Dimension(MINIMUM_WINDOW_SIZE.width.roundToPx(), MINIMUM_WINDOW_SIZE.height.roundToPx())
+        // Clamps windowState.size back up to MINIMUM_WINDOW_SIZE whenever a drag takes it below
+        // that floor - see MINIMUM_WINDOW_SIZE's own Javadoc for why this goes through WindowState
+        // rather than the raw AWT window object.
+        LaunchedEffect(windowState.size) {
+            val current = windowState.size
+            val clampedWidth = current.width.coerceAtLeast(MINIMUM_WINDOW_SIZE.width)
+            val clampedHeight = current.height.coerceAtLeast(MINIMUM_WINDOW_SIZE.height)
+            if (clampedWidth != current.width || clampedHeight != current.height) {
+                windowState.size = DpSize(clampedWidth, clampedHeight)
             }
         }
         // Session persistence (item 4, SERVICES.md): before the first real screen is meaningfully
