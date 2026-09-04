@@ -90,7 +90,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      * ask before that point, e.g. while the login screen itself is showing. Toggled via
      * [toggleTheme].
      */
-    var themeMode: ThemeMode by mutableStateOf(ThemeMode.LIGHT)
+    var themeMode: ThemeMode by mutableStateOf(ThemeMode.DARK)
         private set
 
     /** Flips [themeMode] and syncs the new choice to the account via [CloudDriverClient.updateThemePreference], so it follows the account to every other signed-in device. */

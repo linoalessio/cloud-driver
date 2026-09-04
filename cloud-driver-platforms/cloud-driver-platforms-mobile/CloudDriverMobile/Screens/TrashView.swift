@@ -14,94 +14,108 @@ struct TrashView: View {
         return formatter
     }()
 
+    /// Whether there is currently nothing to empty - drives both the "Empty Trash" header
+    /// button's `disabled` state and the dimmed styling below, since a `Button` with `role:
+    /// .destructive` doesn't automatically dim itself when disabled the way some other button
+    /// styles do.
+    private var isTrashEmpty: Bool {
+        viewModel.trashFiles.isEmpty && viewModel.trashFolders.isEmpty
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 CloudTheme.backgroundGradient
 
-                ScrollView {
-                    VStack(spacing: 16) {
-                        if !viewModel.trashFolders.isEmpty {
-                            CloudCard(
-                                icon: "folder.fill",
-                                iconColor: CloudTheme.iconFolder,
-                                title: "Trashed Folders",
-                                subtitle: itemCountText(viewModel.trashFolders.count)
-                            ) {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(viewModel.trashFolders.enumerated()), id: \.element.id) { index, entry in
-                                        CloudRow(
-                                            icon: "folder.fill",
-                                            iconColor: CloudTheme.iconFolder,
-                                            title: entry.folder.name,
-                                            subtitle: purgeText(entry.purgeAtEpochMillis),
-                                            showDivider: index != viewModel.trashFolders.count - 1
-                                        ) {
-                                            Button {
-                                                viewModel.restoreFolder(entry)
-                                            } label: {
-                                                Image(systemName: "arrow.uturn.backward.circle")
-                                                    .foregroundStyle(CloudTheme.accent)
+                VStack(spacing: 0) {
+                    // Always shown at the top, disabled (not hidden) once there's nothing left
+                    // to empty - fixed outside the `ScrollView` below so it never scrolls away,
+                    // per Lino's own request ("shall be displayed at the top, ALWAYS").
+                    Button(role: .destructive) {
+                        showingEmptyTrashConfirmation = true
+                    } label: {
+                        Text("Empty Trash")
+                            .font(CloudTheme.headline(.body))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.vertical, 14)
+                    .foregroundStyle(.white)
+                    .background(Color.red.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .disabled(isTrashEmpty)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            if !viewModel.trashFolders.isEmpty {
+                                CloudCard(
+                                    icon: "folder.fill",
+                                    iconColor: CloudTheme.iconFolder,
+                                    title: "Trashed Folders",
+                                    subtitle: itemCountText(viewModel.trashFolders.count)
+                                ) {
+                                    VStack(spacing: 0) {
+                                        ForEach(Array(viewModel.trashFolders.enumerated()), id: \.element.id) { index, entry in
+                                            CloudRow(
+                                                icon: "folder.fill",
+                                                iconColor: CloudTheme.iconFolder,
+                                                title: entry.folder.name,
+                                                subtitle: purgeText(entry.purgeAtEpochMillis),
+                                                showDivider: index != viewModel.trashFolders.count - 1
+                                            ) {
+                                                Button {
+                                                    viewModel.restoreFolder(entry)
+                                                } label: {
+                                                    Image(systemName: "arrow.uturn.backward.circle")
+                                                        .foregroundStyle(CloudTheme.accent)
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        if !viewModel.trashFiles.isEmpty {
-                            CloudCard(
-                                icon: "doc.fill",
-                                iconColor: CloudTheme.iconFile,
-                                title: "Trashed Files",
-                                subtitle: itemCountText(viewModel.trashFiles.count)
-                            ) {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(viewModel.trashFiles.enumerated()), id: \.element.id) { index, entry in
-                                        CloudRow(
-                                            icon: fileIcon(for: entry.file.contentType),
-                                            iconColor: CloudTheme.iconFile,
-                                            title: entry.file.fileName,
-                                            subtitle: purgeText(entry.purgeAtEpochMillis),
-                                            showDivider: index != viewModel.trashFiles.count - 1
-                                        ) {
-                                            Button {
-                                                viewModel.restoreFile(entry)
-                                            } label: {
-                                                Image(systemName: "arrow.uturn.backward.circle")
-                                                    .foregroundStyle(CloudTheme.accent)
+                            if !viewModel.trashFiles.isEmpty {
+                                CloudCard(
+                                    icon: "doc.fill",
+                                    iconColor: CloudTheme.iconFile,
+                                    title: "Trashed Files",
+                                    subtitle: itemCountText(viewModel.trashFiles.count)
+                                ) {
+                                    VStack(spacing: 0) {
+                                        ForEach(Array(viewModel.trashFiles.enumerated()), id: \.element.id) { index, entry in
+                                            CloudRow(
+                                                icon: fileIcon(for: entry.file.contentType),
+                                                iconColor: CloudTheme.iconFile,
+                                                title: entry.file.fileName,
+                                                subtitle: purgeText(entry.purgeAtEpochMillis),
+                                                showDivider: index != viewModel.trashFiles.count - 1
+                                            ) {
+                                                Button {
+                                                    viewModel.restoreFile(entry)
+                                                } label: {
+                                                    Image(systemName: "arrow.uturn.backward.circle")
+                                                        .foregroundStyle(CloudTheme.accent)
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        if viewModel.trashFiles.isEmpty && viewModel.trashFolders.isEmpty {
-                            if !viewModel.busy {
+                            if isTrashEmpty && !viewModel.busy {
                                 emptyState
                             }
-                        } else {
-                            Button(role: .destructive) {
-                                showingEmptyTrashConfirmation = true
-                            } label: {
-                                Text("Empty Trash")
-                                    .font(CloudTheme.headline(.body))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .padding(.vertical, 14)
-                            .foregroundStyle(.white)
-                            .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
+                        .padding(16)
                     }
-                    .padding(16)
-                }
-                .scrollIndicators(.hidden)
-                .refreshable {
-                    viewModel.loadTrash()
+                    .scrollIndicators(.hidden)
+                    .refreshable {
+                        viewModel.loadTrash()
+                    }
                 }
 
-                if viewModel.busy && viewModel.trashFiles.isEmpty && viewModel.trashFolders.isEmpty {
+                if viewModel.busy && isTrashEmpty {
                     ProgressView()
                         .tint(.white)
                 }

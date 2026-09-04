@@ -60,7 +60,7 @@ fun main() = application {
             viewModel.client.close()
             exitApplication()
         },
-        title = "cloud-driver",
+        title = "CloudDriver",
         state = windowState,
         icon = painterResource(Res.drawable.app_icon),
     ) {
