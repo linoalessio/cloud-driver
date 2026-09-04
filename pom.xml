@@ -24,4 +24,17 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
+    <!-- Inherited by every child module, so `mvn deploy` (see .github/workflows/maven-publish.yml)
+         publishes the whole reactor to this repository's own GitHub Packages Maven registry. The
+         "github" id must match maven-publish.yml's setup-java `server-id` exactly - that's what
+         Maven uses to look up the matching <server> credentials setup-java wrote into
+         ~/.m2/settings.xml. -->
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>GitHub Packages - cloud-driver</name>
+            <url>https://maven.pkg.github.com/linoalessio/cloud-driver</url>
+        </repository>
+    </distributionManagement>
+
 </project>

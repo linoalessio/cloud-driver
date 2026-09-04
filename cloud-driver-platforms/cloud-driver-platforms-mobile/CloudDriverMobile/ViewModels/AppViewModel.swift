@@ -56,6 +56,10 @@ enum TransferKind: Equatable {
     /// extracted contents) under one label - from the user's perspective "unarchiving" is a
     /// single action, even though it's a download followed by a batch of uploads under the hood.
     case extract
+    /// `emptyTrash` - a single `POST /trash/empty` call with no incremental byte signal of its own
+    /// (unlike upload/download/extract, which stream), so `TransferProgressBar` renders this kind
+    /// as an indeterminate spinner rather than a filling bar.
+    case emptyTrash
 }
 
 /// A snapshot of an in-flight upload/download/extraction - `AppViewModel.transferProgress` is
@@ -360,6 +364,8 @@ final class AppViewModel: ObservableObject {
     /// its own confirmation dialog before calling it.
     func emptyTrash() {
         run {
+            self.transferProgress = TransferProgress(kind: .emptyTrash, totalItems: 1, completedItems: 0, totalBytes: 0, transferredBytes: 0)
+            defer { self.transferProgress = nil }
             try await self.client.emptyTrash()
             try await self.refreshTrash()
         }
@@ -390,17 +396,11 @@ final class AppViewModel: ObservableObject {
     }
 
     func deleteFile(_ file: StoredFileSummaryResponse) {
-        run {
-            try await self.client.deleteFile(fileId: file.fileId)
-            try await self.refreshCurrentFolder()
-        }
+        deleteEntries([.file(file)])
     }
 
     func deleteFolder(_ folder: FolderResponse) {
-        run {
-            try await self.client.deleteFolder(folderId: folder.folderId)
-            try await self.refreshCurrentFolder()
-        }
+        deleteEntries([.folder(folder)])
     }
 
     /// `folderId` `nil` moves the file back to the root - see `MoveToFolderSheet`.
@@ -451,17 +451,92 @@ final class AppViewModel: ObservableObject {
     /// refreshes the listing regardless of outcome, so successfully-deleted items disappear even
     /// if one item in the batch failed.
     func deleteSelected() {
-        let entries = Array(selectedEntries)
+        deleteEntries(Array(selectedEntries))
+    }
+
+    /// Every file id and every folder id (ordered deepest-first) a `deleteEntries` call needs to
+    /// remove to fully delete the folders it was given - see `planDelete`'s own Javadoc for why a
+    /// folder needs this at all, rather than a single `client.deleteFolder` call.
+    private struct PlannedDelete {
+        var fileIds: [String] = []
+        var folderIdsDeepestFirst: [String] = []
+    }
+
+    /// Recursively lists `folderId`'s own contents and flattens them into one `PlannedDelete`,
+    /// with every subfolder's own id appended *after* it has recursed into and planned that
+    /// subfolder's contents - so `folderIdsDeepestFirst` ends up ordered leaf-first regardless of
+    /// nesting depth, the order `deleteEntries` needs to actually delete them in (a folder can
+    /// only be deleted once every file/subfolder placed directly inside it is already gone).
+    private func planDeleteFolder(_ folderId: String) async throws -> PlannedDelete {
+        async let filesResult = client.listFiles(folderId: folderId)
+        async let foldersResult = client.listFolders(parentFolderId: folderId)
+        let files = try await filesResult
+        let subfolders = try await foldersResult
+
+        var plan = PlannedDelete()
+        plan.fileIds.append(contentsOf: files.map(\.fileId))
+        for subfolder in subfolders {
+            let childPlan = try await planDeleteFolder(subfolder.folderId)
+            plan.fileIds.append(contentsOf: childPlan.fileIds)
+            plan.folderIdsDeepestFirst.append(contentsOf: childPlan.folderIdsDeepestFirst)
+        }
+        plan.folderIdsDeepestFirst.append(folderId)
+        return plan
+    }
+
+    /// Flattens `entries` (files delete as-is; each folder recurses via `planDeleteFolder`) into
+    /// one combined `PlannedDelete` covering the whole batch - mirrors
+    /// cloud-driver-platforms-desktop's own `AppViewModel.kt#planDelete`.
+    private func planDelete(_ entries: [SelectableEntry]) async throws -> PlannedDelete {
+        var combined = PlannedDelete()
+        for entry in entries {
+            switch entry {
+            case .file(let file):
+                combined.fileIds.append(file.fileId)
+            case .folder(let folder):
+                let plan = try await planDeleteFolder(folder.folderId)
+                combined.fileIds.append(contentsOf: plan.fileIds)
+                combined.folderIdsDeepestFirst.append(contentsOf: plan.folderIdsDeepestFirst)
+            }
+        }
+        return combined
+    }
+
+    /// Deletes every entry in `entries` - backs `deleteFile`/`deleteFolder`/`deleteSelected` alike,
+    /// so there is only one delete code path in this app.
+    ///
+    /// **Fixed a real bug (2026-09-04): deleting a non-empty folder failed with the server's raw,
+    /// unfriendly error message, `"@CloudUserService.deleteFolder: <id> is not empty"`.** The
+    /// server's own `deleteFolder` deliberately 409s on a non-empty folder - a folder is never
+    /// deleted recursively server-side (see cloud-driver's own `CLAUDE.md`) - so a client that
+    /// wants "delete this folder and everything inside it" has to empty it client-side first, the
+    /// same cascade `cloud-driver-platforms-desktop`'s own `deleteEntries`/`planDelete` already
+    /// perform; this app's mobile client never did, and just called `client.deleteFolder` directly,
+    /// surfacing that raw message as-is through the shared error alert.
+    ///
+    /// `planDelete` first walks every folder in `entries` recursively (listings only - no deletes
+    /// issued yet) into one flat, deepest-first plan; every file id is then deleted (attempting
+    /// every one regardless of an earlier failure), then every folder id, deepest first, so a
+    /// parent folder is never deleted before its own already-emptied children. The *first* failure
+    /// encountered across the whole batch is surfaced only once every item has been attempted,
+    /// matching cloud-driver-platforms-desktop's own batch-operation convention. Exits selection
+    /// mode (a harmless no-op if it wasn't active - e.g. a single-item delete via a row's own menu)
+    /// and refreshes the listing regardless of outcome, so successfully-deleted items disappear
+    /// even if one item in the batch failed.
+    private func deleteEntries(_ entries: [SelectableEntry]) {
         run {
+            let plan = try await self.planDelete(entries)
             var firstError: Error?
-            for entry in entries {
+            for fileId in plan.fileIds {
                 do {
-                    switch entry {
-                    case .file(let file):
-                        try await self.client.deleteFile(fileId: file.fileId)
-                    case .folder(let folder):
-                        try await self.client.deleteFolder(folderId: folder.folderId)
-                    }
+                    try await self.client.deleteFile(fileId: fileId)
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            for folderId in plan.folderIdsDeepestFirst {
+                do {
+                    try await self.client.deleteFolder(folderId: folderId)
                 } catch {
                     if firstError == nil { firstError = error }
                 }

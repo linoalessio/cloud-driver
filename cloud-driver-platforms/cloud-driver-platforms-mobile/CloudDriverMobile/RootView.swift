@@ -74,10 +74,14 @@ private struct TransferProgressBar: View {
         case .upload: return "Uploading"
         case .download: return "Downloading"
         case .extract: return "Extracting"
+        case .emptyTrash: return "Emptying Trash"
         }
     }
 
     private var label: String {
+        // `.emptyTrash` is a single request/response with no byte-level signal of its own (unlike
+        // upload/download/extract, which stream) - just the verb, no byte counts to show.
+        guard progress.kind != .emptyTrash else { return "\(verb)…" }
         let byteText = "\(formatBytes(progress.transferredBytes)) / \(formatBytes(progress.totalBytes))"
         guard progress.totalItems > 1 else {
             return "\(verb) - \(byteText)"
@@ -94,8 +98,16 @@ private struct TransferProgressBar: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(CloudTheme.textSecondary)
-                ProgressView(value: progress.fraction)
-                    .tint(CloudTheme.accent)
+                // `.emptyTrash` has no fraction to report (a single request/response, not a
+                // stream) - an indeterminate bar communicates "in progress" without implying a
+                // real percentage it doesn't actually have.
+                if progress.kind == .emptyTrash {
+                    ProgressView()
+                        .tint(CloudTheme.accent)
+                } else {
+                    ProgressView(value: progress.fraction)
+                        .tint(CloudTheme.accent)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

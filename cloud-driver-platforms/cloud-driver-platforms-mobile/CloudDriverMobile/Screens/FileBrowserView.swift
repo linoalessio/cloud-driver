@@ -24,6 +24,21 @@ struct FileBrowserView: View {
         case folder
     }
 
+    /// A `QuickActionMenu` currently being shown, plus where (in `Self.menuCoordinateSpace`) it
+    /// should appear - see `quickActionGesture`/the overlay rendering it, right below the "Content
+    /// Hidden" button in `body`.
+    private struct ActiveQuickActionMenu: Identifiable {
+        let id = UUID()
+        let location: CGPoint
+        let actions: [QuickAction]
+    }
+
+    /// Named coordinate space every `quickActionGesture`'s own `DragGesture` reads its press
+    /// location in, and that the `ActiveQuickActionMenu` overlay positions itself within -
+    /// declared once, on the outer `ZStack` in `body`, so both sides agree on the same origin
+    /// regardless of how deeply nested the row that was actually pressed is.
+    private static let menuCoordinateSpace = "FileBrowserView.menuSpace"
+
     @ObservedObject var viewModel: AppViewModel
     @State private var pendingImport: PendingImport?
     @State private var showingNewFolderAlert = false
@@ -31,6 +46,20 @@ struct FileBrowserView: View {
     @State private var movingTargets: MoveTargets?
     @State private var sharingTargets: ShareTargets?
     @State private var showingDeleteSelectedConfirmation = false
+    @State private var quickActionMenu: ActiveQuickActionMenu?
+    /// Continuously updated by `quickActionGesture`'s own `DragGesture` while a press is active -
+    /// read once a long press actually succeeds, to know where to show the menu. A single shared
+    /// piece of state is fine since only one press can be in progress at a time, and there is only
+    /// ever one `quickActionGesture` attached at all (see its own doc comment for why).
+    @State private var pressLocation: CGPoint = .zero
+    /// Each currently-rendered folder/file row's own on-screen frame, in `Self.menuCoordinateSpace`
+    /// - populated by every row's `.onGeometryChange`, read by `quickActions(at:)` to resolve which
+    /// row (if any) a long press landed on. Keyed by the row's own id (`folderId`/`fileId`), not
+    /// cleared on navigation - a stale entry for a folder/file no longer in the current listing is
+    /// harmless (it's simply never looked up again, since `quickActions(at:)` also checks the id
+    /// still resolves against `viewModel.folders`/`viewModel.files`).
+    @State private var folderRowFrames: [String: CGRect] = [:]
+    @State private var fileRowFrames: [String: CGRect] = [:]
     /// Privacy toggle - blurs and disables interaction with the listing below without navigating
     /// away from it, e.g. before showing the screen to someone else. Local, transient UI state,
     /// not persisted - resets to visible on every fresh appearance of this screen.
@@ -79,7 +108,7 @@ struct FileBrowserView: View {
                                                 ) {
                                                     if !viewModel.isSelecting {
                                                         Menu {
-                                                            folderMenuItems(folder, entry: entry)
+                                                            menuButtons(folderMenuActions(folder, entry: entry))
                                                         } label: {
                                                             Image(systemName: "ellipsis")
                                                                 .foregroundStyle(CloudTheme.textSecondary)
@@ -93,15 +122,13 @@ struct FileBrowserView: View {
                                             }
                                         }
                                         .buttonStyle(.plain)
-                                        // Long-pressing a row opens the exact same actions as
-                                        // tapping its "..." menu, via `folderMenuItems` - native
-                                        // SwiftUI `.contextMenu` already recognizes a long press,
-                                        // no custom gesture needed. Suppressed while multi-selecting,
-                                        // matching the "..." menu's own visibility.
-                                        .contextMenu {
-                                            if !viewModel.isSelecting {
-                                                folderMenuItems(folder, entry: entry)
-                                            }
+                                        // Tracks this row's own on-screen frame so the *one*
+                                        // shared `quickActionGesture` (attached once, to the
+                                        // whole `ScrollView` - see its own doc comment) can tell
+                                        // a long press landed here and show `folderMenuActions`
+                                        // instead of the background's own "+" actions.
+                                        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(Self.menuCoordinateSpace)) }) { newValue in
+                                            folderRowFrames[folder.folderId] = newValue
                                         }
                                     }
                                 }
@@ -136,7 +163,7 @@ struct FileBrowserView: View {
                                                 ) {
                                                     if !viewModel.isSelecting {
                                                         Menu {
-                                                            fileMenuItems(file, entry: entry)
+                                                            menuButtons(fileMenuActions(file, entry: entry))
                                                         } label: {
                                                             Image(systemName: "ellipsis.circle")
                                                                 .foregroundStyle(CloudTheme.textSecondary)
@@ -146,12 +173,10 @@ struct FileBrowserView: View {
                                             }
                                         }
                                         .buttonStyle(.plain)
-                                        // Same long-press-opens-the-"..."-menu affordance the
-                                        // folder rows above get - see that comment.
-                                        .contextMenu {
-                                            if !viewModel.isSelecting {
-                                                fileMenuItems(file, entry: entry)
-                                            }
+                                        // Same frame-tracking the folder rows above get - see that
+                                        // row's own comment for why this isn't a per-row gesture.
+                                        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(Self.menuCoordinateSpace)) }) { newValue in
+                                            fileRowFrames[file.fileId] = newValue
                                         }
                                     }
                                 }
@@ -173,6 +198,18 @@ struct FileBrowserView: View {
                 .refreshable {
                     viewModel.loadCurrentFolder()
                 }
+                // The one and only `quickActionGesture` - attached to the ScrollView itself (not
+                // the background gradient behind it) since the ScrollView is the view that
+                // actually receives touches across its whole frame, rows included. Long-pressing
+                // directly on a row still opens *that* row's own actions (`quickActions(at:)`
+                // checks `folderRowFrames`/`fileRowFrames` first) - long-pressing anywhere else
+                // opens the same "+" actions the toolbar button does. Deliberately a single
+                // shared gesture rather than one per row plus a separate one here: two
+                // `.simultaneousGesture`s covering the same touch (one on a row, one on this
+                // ScrollView, since the row sits inside it) would both recognize the same long
+                // press with no exclusivity between them, racing to each set `quickActionMenu`
+                // independently.
+                .simultaneousGesture(quickActionGesture())
 
                 if viewModel.busy && viewModel.files.isEmpty && viewModel.folders.isEmpty {
                     ProgressView()
@@ -200,7 +237,28 @@ struct FileBrowserView: View {
                     .buttonStyle(.plain)
                     .transition(.opacity)
                 }
+
+                // The instantly-appearing dropdown itself - rendered as the topmost `ZStack`
+                // child so it draws over everything else, positioned via `clampedPosition` at
+                // (as close as possible to) the exact point pressed, per Lino's explicit
+                // instruction: appear directly at the press location, not with a native
+                // `.contextMenu`'s delayed preview/blur. Deliberately no `.transition` -
+                // "directly" means no fade-in either.
+                if let menu = quickActionMenu {
+                    GeometryReader { proxy in
+                        // A near-invisible full-screen tap catcher, so tapping anywhere outside
+                        // the menu itself dismisses it - the standard "tap outside to close" a
+                        // dropdown menu is expected to have.
+                        Color.black.opacity(0.001)
+                            .contentShape(Rectangle())
+                            .onTapGesture { quickActionMenu = nil }
+
+                        QuickActionMenu(actions: menu.actions) { quickActionMenu = nil }
+                            .position(clampedPosition(for: menu.location, in: proxy.size, itemCount: menu.actions.count))
+                    }
+                }
             }
+            .coordinateSpace(name: Self.menuCoordinateSpace)
             .navigationTitle(viewModel.breadcrumbs.last?.name ?? "Home")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -228,7 +286,7 @@ struct FileBrowserView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            addMenuItems()
+                            menuButtons(addMenuActions())
                         } label: {
                             Image(systemName: "plus.circle.fill")
                                 .foregroundStyle(CloudTheme.accent)
@@ -247,6 +305,15 @@ struct FileBrowserView: View {
                     )
                 }
             }
+        }
+        // Fixed a real bug: switching away to another tab (Dashboard/Trash/Shared) left an
+        // already-open `QuickActionMenu` visible/interactive - `TabView` keeps every tab's view
+        // hierarchy alive rather than tearing it down on switch, so `quickActionMenu` simply kept
+        // its last value with nothing to ever clear it. `onDisappear` fires when this tab's own
+        // content leaves the screen (a tab switch included), which is exactly the right moment to
+        // dismiss a menu that's tied to a specific press location on this now-hidden screen.
+        .onDisappear {
+            quickActionMenu = nil
         }
         .task {
             viewModel.loadCurrentFolder()
@@ -309,59 +376,145 @@ struct FileBrowserView: View {
         return !everything.isEmpty && viewModel.selectedEntries == everything
     }
 
+    /// The Home screen's "add" actions - shared between the toolbar's "+" `Menu` (tap, via
+    /// `menuButtons`) and the long-press dropdown on the screen's own background
+    /// (`quickActionGesture`/`quickActions(at:)`), so the two affordances can never drift out of
+    /// sync with each other.
+    private func addMenuActions() -> [QuickAction] {
+        var actions: [QuickAction] = [
+            QuickAction("Upload file", systemImage: "square.and.arrow.up") {
+                pendingImport = .file
+            },
+            QuickAction("Upload folder", systemImage: "folder.badge.plus") {
+                pendingImport = .folder
+            },
+            QuickAction("New folder", systemImage: "plus.rectangle.on.folder") {
+                newFolderName = ""
+                showingNewFolderAlert = true
+            }
+        ]
+        if !viewModel.folders.isEmpty || !viewModel.files.isEmpty {
+            actions.append(QuickAction("Select items", systemImage: "checkmark.circle") {
+                viewModel.enterSelectionMode()
+            })
+        }
+        return actions
+    }
+
     /// The actions available on one folder - shared between the row's tap-to-open "..." `Menu` and
-    /// its long-press `.contextMenu`, so the two affordances can never drift out of sync with each
-    /// other.
-    @ViewBuilder
-    private func folderMenuItems(_ folder: FolderResponse, entry: SelectableEntry) -> some View {
-        Button {
-            movingTargets = MoveTargets(entries: [entry])
-        } label: {
-            Label("Move to...", systemImage: "folder")
-        }
-        Button {
-            sharingTargets = ShareTargets(entries: [entry])
-        } label: {
-            Label("Share", systemImage: "person.badge.plus")
-        }
-        Button(role: .destructive) {
-            viewModel.deleteFolder(folder)
-        } label: {
-            Label("Delete", systemImage: "trash")
-        }
+    /// its long-press dropdown, so the two affordances can never drift out of sync with each other.
+    private func folderMenuActions(_ folder: FolderResponse, entry: SelectableEntry) -> [QuickAction] {
+        [
+            QuickAction("Move to...", systemImage: "folder") {
+                movingTargets = MoveTargets(entries: [entry])
+            },
+            QuickAction("Share", systemImage: "person.badge.plus") {
+                sharingTargets = ShareTargets(entries: [entry])
+            },
+            QuickAction("Delete", systemImage: "trash", role: .destructive) {
+                viewModel.deleteFolder(folder)
+            }
+        ]
     }
 
     /// The actions available on one file - same "shared between tap-to-open and long-press" shape
-    /// as `folderMenuItems`.
-    @ViewBuilder
-    private func fileMenuItems(_ file: StoredFileSummaryResponse, entry: SelectableEntry) -> some View {
-        Button {
-            viewModel.download(file)
-        } label: {
-            Label("Download", systemImage: "arrow.down.circle")
-        }
+    /// as `folderMenuActions`.
+    private func fileMenuActions(_ file: StoredFileSummaryResponse, entry: SelectableEntry) -> [QuickAction] {
+        var actions: [QuickAction] = [
+            QuickAction("Download", systemImage: "arrow.down.circle") {
+                viewModel.download(file)
+            }
+        ]
         if isZipArchive(file.contentType) {
-            Button {
+            actions.append(QuickAction("Extract", systemImage: "doc.zipper") {
                 viewModel.extractArchive(file)
-            } label: {
-                Label("Extract", systemImage: "doc.zipper")
+            })
+        }
+        actions.append(contentsOf: [
+            QuickAction("Move to...", systemImage: "folder") {
+                movingTargets = MoveTargets(entries: [entry])
+            },
+            QuickAction("Share", systemImage: "person.badge.plus") {
+                sharingTargets = ShareTargets(entries: [entry])
+            },
+            QuickAction("Delete", systemImage: "trash", role: .destructive) {
+                viewModel.deleteFile(file)
+            }
+        ])
+        return actions
+    }
+
+    /// Renders a `[QuickAction]` list as native `Menu` content - shared by the toolbar's "+"
+    /// `Menu` and each row's "..." `Menu`, so both stay native (VoiceOver/keyboard/Slide Over
+    /// friendly) while sourcing their content from the exact same action lists the custom
+    /// long-press dropdown (`QuickActionMenu`) below shows.
+    @ViewBuilder
+    private func menuButtons(_ actions: [QuickAction]) -> some View {
+        ForEach(actions) { action in
+            Button(role: action.role, action: action.action) {
+                Label(action.title, systemImage: action.systemImage)
             }
         }
-        Button {
-            movingTargets = MoveTargets(entries: [entry])
-        } label: {
-            Label("Move to...", systemImage: "folder")
+    }
+
+    /// The one gesture recognizer behind every long-press dropdown on this screen - attached once,
+    /// to the `ScrollView` (see its own comment), rather than once per row plus a separate one for
+    /// the background. A plain `DragGesture(minimumDistance: 0, ...)` tracks the live touch point
+    /// into `pressLocation` (a `LongPressGesture` alone reports no location); once the accompanying
+    /// `LongPressGesture` actually succeeds, `quickActions(at:)` resolves what to show from that
+    /// point - immediately, with no preview/blur animation, unlike a native `.contextMenu`, per
+    /// Lino's explicit request. `SimultaneousGesture` (not `.exclusively(before:)`) so this never
+    /// competes with - or blocks - a row's own tap-to-open `Button` action underneath it.
+    private func quickActionGesture() -> some Gesture {
+        SimultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.menuCoordinateSpace))
+                .onChanged { pressLocation = $0.location },
+            LongPressGesture(minimumDuration: 0.2)
+                .onEnded { _ in
+                    let actions = quickActions(at: pressLocation)
+                    guard !actions.isEmpty else { return }
+                    quickActionMenu = ActiveQuickActionMenu(location: pressLocation, actions: actions)
+                }
+        )
+    }
+
+    /// Resolves which `QuickAction`s a long press at `point` (in `Self.menuCoordinateSpace`) should
+    /// show: a folder/file row's own actions if `point` falls inside one of the frames
+    /// `folderRowFrames`/`fileRowFrames` track (populated by each row's `.onGeometryChange`),
+    /// otherwise the screen's own "+" actions for a press over empty background - never both,
+    /// since this is the only place that decides, unlike two independently-firing gestures would.
+    private func quickActions(at point: CGPoint) -> [QuickAction] {
+        guard !viewModel.isSelecting else { return [] }
+        if let folderId = folderRowFrames.first(where: { $0.value.contains(point) })?.key,
+           let folder = viewModel.folders.first(where: { $0.folderId == folderId }) {
+            return folderMenuActions(folder, entry: .folder(folder))
         }
-        Button {
-            sharingTargets = ShareTargets(entries: [entry])
-        } label: {
-            Label("Share", systemImage: "person.badge.plus")
+        if let fileId = fileRowFrames.first(where: { $0.value.contains(point) })?.key,
+           let file = viewModel.files.first(where: { $0.fileId == fileId }) {
+            return fileMenuActions(file, entry: .file(file))
         }
-        Button(role: .destructive) {
-            viewModel.deleteFile(file)
-        } label: {
-            Label("Delete", systemImage: "trash")
-        }
+        guard !isContentHidden else { return [] }
+        return addMenuActions()
+    }
+
+    /// Positions a `QuickActionMenu` so it appears anchored at `point` - the exact spot pressed -
+    /// while never rendering partly outside `containerSize`. The menu's own size is estimated from
+    /// `QuickActionMenu.width`/`rowHeight` (real layout hasn't run yet at the point this is called)
+    /// and nudged away from whichever edge(s) it would otherwise overflow.
+    private func clampedPosition(for point: CGPoint, in containerSize: CGSize, itemCount: Int) -> CGPoint {
+        let menuWidth = QuickActionMenu.width
+        let menuHeight = CGFloat(itemCount) * QuickActionMenu.rowHeight
+        let margin: CGFloat = 12
+
+        var x = point.x + menuWidth / 2
+        x = min(x, containerSize.width - margin - menuWidth / 2)
+        x = max(x, margin + menuWidth / 2)
+
+        var y = point.y + menuHeight / 2
+        y = min(y, containerSize.height - margin - menuHeight / 2)
+        y = max(y, margin + menuHeight / 2)
+
+        return CGPoint(x: x, y: y)
     }
 
     @ViewBuilder

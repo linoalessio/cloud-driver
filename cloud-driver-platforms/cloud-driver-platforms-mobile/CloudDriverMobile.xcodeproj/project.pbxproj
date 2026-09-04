@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0F7E6EFB6D92414300ED19A9 /* KeychainTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A913A7D152AA909C606D41 /* KeychainTokenStore.swift */; };
 		14DBB07F56E0BE219BEA89AC /* SharedFolderBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */; };
+		19FEB89901626E0643F5BB3A /* QuickActionMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */; };
 		224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */; };
 		32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */; };
 		59CF963C04A97C28243CA2A4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */; };
@@ -45,6 +46,7 @@
 		638C74856A457BF0C68E3920 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangeEmailSheet.swift; sourceTree = "<group>"; };
 		84A913A7D152AA909C606D41 /* KeychainTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainTokenStore.swift; sourceTree = "<group>"; };
+		865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionMenu.swift; sourceTree = "<group>"; };
 		88DF4365F0C76396A0A3A8D4 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToFolderSheet.swift; sourceTree = "<group>"; };
 		AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSupport.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */,
 				5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */,
 				B1E4109F19145B980EE9E021 /* FileIcons.swift */,
+				865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */,
 				88DF4365F0C76396A0A3A8D4 /* RootView.swift */,
 				B8CAB6D77147ACDBCFAFEA2E /* Theme.swift */,
 				6FF21B218FA719B4B11E2EC6 /* Networking */,
@@ -223,6 +226,7 @@
 				9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */,
 				0F7E6EFB6D92414300ED19A9 /* KeychainTokenStore.swift in Sources */,
 				ED9B038466C119AAD543DAB8 /* MoveToFolderSheet.swift in Sources */,
+				19FEB89901626E0643F5BB3A /* QuickActionMenu.swift in Sources */,
 				FBE51A44D38595738AFE9777 /* RootView.swift in Sources */,
 				FF940AF5B2BC7068B17186C3 /* SessionManager.swift in Sources */,
 				59CF963C04A97C28243CA2A4 /* ShareSheet.swift in Sources */,
