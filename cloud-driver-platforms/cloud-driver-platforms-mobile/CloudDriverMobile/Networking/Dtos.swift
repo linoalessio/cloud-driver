@@ -44,6 +44,38 @@ struct MoveFileRequest: Encodable {
     let folderId: String?
 }
 
+/// Body for `POST /files/upload-url` - the first step of a presigned, direct-to-client upload
+/// (see cloud-driver's `architecture/AWS_S3_IMPL.md`). `sizeBytes` is checked against quota now
+/// and again (against the real uploaded size) at `CompleteUploadRequest`.
+struct BeginUploadUrlRequest: Encodable {
+    let fileName: String
+    let sizeBytes: Int64
+    let folderId: String?
+}
+
+/// Response from `POST /files/upload-url` - `requiredHeaders` must be replayed exactly on this
+/// app's own `PUT` to `uploadUrl`, or the object store rejects the request's signature.
+struct BeginUploadUrlResponse: Decodable {
+    let fileId: String
+    let uploadUrl: String
+    let requiredHeaders: [String: String]
+    let expiresAtEpochMillis: Int64
+}
+
+/// Body for `POST /files/{id}/complete-upload` - the second step of a presigned upload. No
+/// `sizeBytes` field here: the server always re-reads the real size from the object store itself.
+struct CompleteUploadRequest: Encodable {
+    let fileName: String
+    let checksumSha256: String
+    let folderId: String?
+}
+
+/// Response from `GET /files/{id}/download-url` - this app `GET`s `downloadUrl` directly, bypassing the server.
+struct BeginDownloadUrlResponse: Decodable {
+    let downloadUrl: String
+    let expiresAtEpochMillis: Int64
+}
+
 /// Body for `PUT /folders/{id}` - a full replace of both fields (matching `PUT`'s
 /// whole-resource-replace semantics), used here to change only `parentFolderId` while carrying
 /// the folder's existing `name` through unchanged.

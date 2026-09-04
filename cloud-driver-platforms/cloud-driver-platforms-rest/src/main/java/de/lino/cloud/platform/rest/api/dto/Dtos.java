@@ -196,6 +196,34 @@ public final class Dtos {
     public record MoveFileRequest(String folderId) {
     }
 
+    /**
+     * Body for {@code POST /files/upload-url} - the first step of a presigned, direct-to-client
+     * upload (see {@code architecture/AWS_S3_IMPL.md}). {@code sizeBytes} is checked against
+     * quota now and again (against the real uploaded size) at {@link CompleteUploadRequest}.
+     */
+    public record BeginUploadUrlRequest(String fileName, long sizeBytes, String folderId) {
+    }
+
+    /**
+     * Response from {@code POST /files/upload-url} - {@code requiredHeaders} must be replayed
+     * exactly on the client's own {@code PUT} to {@code uploadUrl}, or the object store rejects
+     * the request's signature.
+     */
+    public record BeginUploadUrlResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders, long expiresAtEpochMillis) {
+    }
+
+    /**
+     * Body for {@code POST /files/{id}/complete-upload} - the second step of a presigned upload.
+     * No {@code sizeBytes} field here: the server always re-reads the real size from the object
+     * store itself, never trusting the client's declared size a second time.
+     */
+    public record CompleteUploadRequest(String fileName, String checksumSha256, String folderId) {
+    }
+
+    /** Response from {@code GET /files/{id}/download-url} - the client {@code GET}s {@code downloadUrl} directly, bypassing this server. */
+    public record BeginDownloadUrlResponse(String downloadUrl, long expiresAtEpochMillis) {
+    }
+
     /** Body Javalin's default error responses use ({@code BadRequestResponse} etc. all share this shape). */
     public record ErrorResponse(String title) {
     }

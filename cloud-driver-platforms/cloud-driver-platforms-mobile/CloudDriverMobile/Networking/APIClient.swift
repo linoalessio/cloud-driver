@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Failures surfaced from `APIClient`. `errorDescription` is what view models put directly into
@@ -200,6 +201,142 @@ actor APIClient {
     func moveFile(fileId: String, folderId: String?) async throws {
         let request = try jsonRequest("/files/\(fileId)/folder", method: "PUT", body: MoveFileRequest(folderId: folderId), authenticated: true)
         _ = try await execute(request)
+    }
+
+    // MARK: - Presigned direct-to-client transfer (architecture/AWS_S3_IMPL.md)
+
+    /// Uploads `fileURL` directly to the configured object store, bypassing this app's own server
+    /// for the data path entirely - orchestrates `beginUploadURL`, a raw `PUT` to the returned
+    /// URL, then `completeUpload`. Computes the SHA-256 checksum `completeUpload` needs via a
+    /// dedicated pre-pass reading `fileURL` once before the upload itself streams it a second time.
+    ///
+    /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
+    /// transfer - callers should fall back to `uploadFile(fileName:data:folderId:)` on exactly
+    /// that status.
+    func uploadFileViaPresignedURL(fileName: String, fileURL: URL, folderId: String?) async throws -> StoredFileSummaryResponse {
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        let checksumSha256 = try sha256Hex(of: fileURL)
+
+        let begin = try await beginUploadURL(fileName: fileName, sizeBytes: sizeBytes, folderId: folderId)
+        guard let uploadURL = URL(string: begin.uploadUrl) else {
+            throw APIError.network(URLError(.badURL))
+        }
+        try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: fileURL)
+        return try await completeUpload(fileId: begin.fileId, fileName: fileName, checksumSha256: checksumSha256, folderId: folderId)
+    }
+
+    /// Downloads a file directly from the configured object store, bypassing this app's own
+    /// server for the data path entirely - orchestrates `beginDownloadURL` then a raw `GET` to the
+    /// returned URL, streamed straight to `destination` on disk.
+    ///
+    /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
+    /// transfer, or this particular file isn't eligible for it - callers should fall back to
+    /// `downloadFileContent(fileId:)` on exactly that status.
+    func downloadFileViaPresignedURL(fileId: String, destination: URL) async throws {
+        let begin = try await beginDownloadURL(fileId: fileId)
+        guard let downloadURL = URL(string: begin.downloadUrl) else {
+            throw APIError.network(URLError(.badURL))
+        }
+        try await downloadFromPresignedURL(url: downloadURL, destination: destination)
+    }
+
+    private func beginUploadURL(fileName: String, sizeBytes: Int64, folderId: String?) async throws -> BeginUploadUrlResponse {
+        let request = try jsonRequest("/files/upload-url", method: "POST", body: BeginUploadUrlRequest(fileName: fileName, sizeBytes: sizeBytes, folderId: folderId), authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    private func completeUpload(fileId: String, fileName: String, checksumSha256: String, folderId: String?) async throws -> StoredFileSummaryResponse {
+        let request = try jsonRequest("/files/\(fileId)/complete-upload", method: "POST", body: CompleteUploadRequest(fileName: fileName, checksumSha256: checksumSha256, folderId: folderId), authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    private func beginDownloadURL(fileId: String) async throws -> BeginDownloadUrlResponse {
+        let request = plainRequest("/files/\(fileId)/download-url", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// `PUT`s `fileURL`'s bytes directly to `url` (a presigned upload URL, not this app's own
+    /// server) - unauthenticated (no `Authorization` header; nothing needs one against the object
+    /// store), replaying every one of `requiredHeaders` exactly, or the object store rejects the
+    /// request's signature. Streams from disk via `URLSession.upload(for:fromFile:)`, not a
+    /// fully-buffered `Data` upload - this is also the first upload path in this app that streams
+    /// rather than fully buffering (see this module's own README on that pre-existing gap).
+    private func putToPresignedURL(url: URL, requiredHeaders: [String: String], fileURL: URL) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        for (key, value) in requiredHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.upload(for: request, fromFile: fileURL)
+        } catch {
+            throw APIError.network(error)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.network(URLError(.badServerResponse))
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            // The object store's own error body (XML, not this app's JSON ErrorResponse shape) -
+            // included as-is rather than run through ErrorResponse decoding, which is built around
+            // this app's own JSON error convention.
+            let body = String(data: data, encoding: .utf8) ?? "(no body)"
+            throw APIError.server(status: httpResponse.statusCode, message: "presigned upload failed: \(body)")
+        }
+    }
+
+    /// Downloads directly from `url` (a presigned download URL, not this app's own server) straight
+    /// to `destination` on disk via `URLSession.download(for:)` - `destination` must not already
+    /// exist, the same contract `FileManager.moveItem` itself has.
+    private func downloadFromPresignedURL(url: URL, destination: URL) async throws {
+        let tempURL: URL
+        let response: URLResponse
+        do {
+            (tempURL, response) = try await session.download(for: URLRequest(url: url))
+        } catch {
+            throw APIError.network(error)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.network(URLError(.badServerResponse))
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = (try? String(contentsOf: tempURL, encoding: .utf8)) ?? "(no body)"
+            try? FileManager.default.removeItem(at: tempURL)
+            throw APIError.server(status: httpResponse.statusCode, message: "presigned download failed: \(body)")
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+    }
+
+    /// Computes `fileURL`'s SHA-256 checksum as a lowercase hex string, streamed via `InputStream`
+    /// rather than loading the whole file into memory - the shape the server's `FileChecksum`
+    /// carries, so it can persist the value verbatim without knowing anything about this type.
+    private func sha256Hex(of fileURL: URL) throws -> String {
+        guard let stream = InputStream(url: fileURL) else {
+            throw APIError.network(URLError(.cannotOpenFile))
+        }
+        stream.open()
+        defer { stream.close() }
+
+        var hasher = SHA256()
+        let bufferSize = 1 << 16
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let bytesRead = stream.read(&buffer, maxLength: bufferSize)
+            if bytesRead < 0 {
+                throw APIError.network(stream.streamError ?? URLError(.unknown))
+            }
+            if bytesRead == 0 {
+                break
+            }
+            hasher.update(data: Data(buffer[0..<bytesRead]))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Folders

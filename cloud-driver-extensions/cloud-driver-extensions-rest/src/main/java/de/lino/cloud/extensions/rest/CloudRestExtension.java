@@ -8,6 +8,7 @@ import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.api.storage.object.PresignedTransferService;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.audit.AuditLogServiceImpl;
@@ -18,7 +19,9 @@ import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
 import de.lino.cloud.plugin.security.secrets.SecretRedactor;
+import de.lino.cloud.plugin.storage.object.S3PresignedTransferService;
 import de.lino.database.json.JsonDocument;
+import software.amazon.awssdk.regions.Region;
 
 import java.util.logging.Level;
 
@@ -128,7 +131,8 @@ public class CloudRestExtension extends Extension {
         // CLAUDE.md's "Module layout and dependency direction"). This extension already depends on
         // both modules, so it's the natural place to close that gap via constructor injection.
         final AuditLogService auditLogService = new AuditLogServiceImpl(dataFactory, SecretRedactor::redact);
-        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService);
+        final PresignedTransferService presignedTransferService = this.resolvePresignedTransferService(this.cloudDriver().getConfiguration());
+        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService, presignedTransferService);
         final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService, auditLogService);
 
         // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal
@@ -225,6 +229,40 @@ public class CloudRestExtension extends Extension {
         }
 
         return new SmtpEmailSender(host, configuration.getInteger("smtp-port"), username, password, fromAddress);
+    }
+
+    /**
+     * Resolves an optional {@link S3PresignedTransferService} from {@code configuration.json}'s
+     * {@code "aws-s3-region"}/{@code "aws-s3-bucket"}/{@code "aws-s3-key-prefix"} keys - the exact
+     * same keys {@code CloudBootstrap.resolveObjectStorageService} reads for {@code
+     * ObjectStorageService} itself. Necessarily a separate, duplicated read: this extension and
+     * {@code cloud-driver-bootstrap} share no common ancestor either could read the value from
+     * once and hand down, the same "duplicated optional-key read" precedent {@code
+     * CloudUserService}/{@code TrashPurgeScheduler}'s own {@code "trash-retention-days"} reads
+     * already established. A missing/blank {@code "aws-s3-bucket"} (including on a {@code
+     * configuration.json} that predates this feature) returns {@code null} - presigned
+     * direct-to-client transfer stays disabled, {@code CloudUserService}'s three
+     * {@code beginPresignedUpload}/{@code completePresignedUpload}/{@code beginPresignedDownload}
+     * methods all throw {@code PresignedTransferUnavailableException}, and every client falls back
+     * to the ordinary server-mediated upload/download routes.
+     *
+     * @param configuration this deployment's loaded {@code configuration.json}
+     * @return a configured {@link S3PresignedTransferService}, or {@code null} if not configured
+     */
+    private PresignedTransferService resolvePresignedTransferService(final JsonDocument configuration) {
+        final String bucket = this.configString(configuration, "aws-s3-bucket");
+        if (bucket.isBlank()) {
+            return null;
+        }
+        final String regionName = this.configString(configuration, "aws-s3-region");
+        if (regionName.isBlank()) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.resolvePresignedTransferService: 'aws-s3-bucket' is set but 'aws-s3-region' is "
+                            + "missing/blank in configuration.json - presigned direct-to-client transfer stays disabled.");
+            return null;
+        }
+        final String keyPrefix = this.configString(configuration, "aws-s3-key-prefix");
+        return new S3PresignedTransferService(Region.of(regionName), bucket, keyPrefix);
     }
 
     /**

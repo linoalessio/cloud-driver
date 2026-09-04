@@ -193,6 +193,19 @@ class CloudDriverClient(
     ): StoredFileSummaryResponse = this.apiClient.uploadFileAsync(fileName, filePath, folderId, onBytesTransferred).await()
 
     /**
+     * Uploads [filePath] directly to the configured object store, bypassing this app's own server
+     * for the data path entirely (see `architecture/AWS_S3_IMPL.md`) - throws [ApiClient.ApiException]
+     * with [ApiClient.ApiException.statusCode] `503` if this deployment hasn't configured presigned
+     * transfer, in which case the caller should fall back to [uploadFile] instead.
+     */
+    suspend fun uploadFileViaPresignedUrl(
+        fileName: String,
+        filePath: Path,
+        folderId: String? = null,
+        onBytesTransferred: (Long) -> Unit = {},
+    ): StoredFileSummaryResponse = this.apiClient.uploadFileViaPresignedUrlAsync(fileName, filePath, folderId, onBytesTransferred).await()
+
+    /**
      * Every file directly inside [folderId] (`null` = the root's own files, **not** every file
      * regardless of folder). Always calls [ApiClient]'s one-arg `listFilesAsync(String)` overload
      * - which maps a `null` argument to `?folderId=root` server-side - and deliberately never the
@@ -230,6 +243,15 @@ class CloudDriverClient(
      */
     suspend fun downloadFileToPath(fileId: String, destination: Path, onBytesTransferred: (Long) -> Unit = {}): Path =
         this.apiClient.downloadFileToPathAsync(fileId, destination, onBytesTransferred).await()
+
+    /**
+     * Downloads a file directly from the configured object store, bypassing this app's own server
+     * for the data path entirely - throws [ApiClient.ApiException] with [ApiClient.ApiException.statusCode]
+     * `503` if this deployment hasn't configured presigned transfer, or this particular file isn't
+     * eligible for it, in which case the caller should fall back to [downloadFileToPath] instead.
+     */
+    suspend fun downloadFileViaPresignedUrl(fileId: String, destination: Path, onBytesTransferred: (Long) -> Unit = {}): Path =
+        this.apiClient.downloadFileViaPresignedUrlAsync(fileId, destination, onBytesTransferred).await()
 
     suspend fun deleteFile(fileId: String) {
         this.apiClient.deleteFileAsync(fileId).await()

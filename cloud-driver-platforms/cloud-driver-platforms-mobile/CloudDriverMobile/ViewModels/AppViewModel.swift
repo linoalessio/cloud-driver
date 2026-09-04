@@ -16,6 +16,36 @@ struct IdentifiableURL: Identifiable {
     let url: URL
 }
 
+/// A file or folder as a single, selectable browser entry - the one shared file/folder union type
+/// backing both `FileBrowserView`'s multi-select set and the single-item payload its per-row "..."
+/// menu already builds (a selection of one). Replaces what used to be two near-identical
+/// single-item enums (`MoveTarget`/`ShareTarget`).
+enum SelectableEntry: Identifiable, Hashable {
+    case file(StoredFileSummaryResponse)
+    case folder(FolderResponse)
+
+    var id: String {
+        switch self {
+        case .file(let file): return "file-\(file.fileId)"
+        case .folder(let folder): return "folder-\(folder.folderId)"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .file(let file): return file.fileName
+        case .folder(let folder): return folder.name
+        }
+    }
+
+    /// The folder id this entry itself refers to, if it is a folder - `nil` for a file. Used by
+    /// `MoveToFolderSheet` to exclude every selected folder from its own list of valid destinations.
+    var ownFolderId: String? {
+        if case .folder(let folder) = self { return folder.folderId }
+        return nil
+    }
+}
+
 /// Which screen `RootView` is currently showing - the mobile counterpart to
 /// cloud-driver-platforms-desktop's `Screen.kt` sealed interface.
 enum AppScreen: Equatable {
@@ -51,6 +81,11 @@ final class AppViewModel: ObservableObject {
     @Published var breadcrumbs: [Breadcrumb] = [Breadcrumb(folderId: nil, name: "Home")]
     @Published var files: [StoredFileSummaryResponse] = []
     @Published var folders: [FolderResponse] = []
+
+    /// Whether `FileBrowserView` is currently in multi-select mode - see `enterSelectionMode`/
+    /// `exitSelectionMode`/`toggleSelection`/`selectAll`/`deleteSelected`/`moveEntries`/`shareEntries`.
+    @Published var isSelecting = false
+    @Published var selectedEntries: Set<SelectableEntry> = []
 
     @Published var sharedFiles: [SharedFileSummaryResponse] = []
     @Published var sharedFolders: [SharedFolderSummaryResponse] = []
@@ -344,10 +379,7 @@ final class AppViewModel: ObservableObject {
 
     /// `folderId` `nil` moves the file back to the root - see `MoveToFolderSheet`.
     func moveFile(_ file: StoredFileSummaryResponse, toFolderId folderId: String?) {
-        run {
-            try await self.client.moveFile(fileId: file.fileId, folderId: folderId)
-            try await self.refreshCurrentFolder()
-        }
+        moveEntries([.file(file)], toFolderId: folderId)
     }
 
     /// A folder move is a `PUT` (full replace), so this carries the folder's current `name`
@@ -355,28 +387,145 @@ final class AppViewModel: ObservableObject {
     /// moving a folder into itself or one of its own descendants (409); that failure surfaces
     /// through the ordinary shared error alert like any other action here.
     func moveFolder(_ folder: FolderResponse, toFolderId folderId: String?) {
-        run {
-            _ = try await self.client.updateFolder(folderId: folder.folderId, name: folder.name, parentFolderId: folderId)
-            try await self.refreshCurrentFolder()
+        moveEntries([.folder(folder)], toFolderId: folderId)
+    }
+
+    // MARK: - Multi-select
+
+    func enterSelectionMode() {
+        isSelecting = true
+        selectedEntries = []
+    }
+
+    func exitSelectionMode() {
+        isSelecting = false
+        selectedEntries = []
+    }
+
+    func toggleSelection(_ entry: SelectableEntry) {
+        if selectedEntries.contains(entry) {
+            selectedEntries.remove(entry)
+        } else {
+            selectedEntries.insert(entry)
         }
     }
 
-    /// `url` is a security-scoped URL handed back by `.fileImporter` - the actual (blocking) file
-    /// read happens off the main actor via `readFileData`, so a large pick never stalls the UI.
+    /// Selects every currently-listed file and folder in `currentFolderId` - if everything is
+    /// already selected, deselects instead (the standard "Select All" <-> "Deselect All" toggle).
+    func selectAll() {
+        let everything = Set(files.map(SelectableEntry.file) + folders.map(SelectableEntry.folder))
+        selectedEntries = selectedEntries == everything ? [] : everything
+    }
+
+    /// Deletes every entry in `selectedEntries`, one `client.deleteFile`/`deleteFolder` call each -
+    /// every item is attempted regardless of an earlier failure (e.g. a non-empty folder still
+    /// 409s exactly like a single-item delete already does today), and the *first* failure
+    /// encountered is surfaced only once every item has been attempted, matching
+    /// cloud-driver-platforms-desktop's own batch-operation convention. Exits selection mode and
+    /// refreshes the listing regardless of outcome, so successfully-deleted items disappear even
+    /// if one item in the batch failed.
+    func deleteSelected() {
+        let entries = Array(selectedEntries)
+        run {
+            var firstError: Error?
+            for entry in entries {
+                do {
+                    switch entry {
+                    case .file(let file):
+                        try await self.client.deleteFile(fileId: file.fileId)
+                    case .folder(let folder):
+                        try await self.client.deleteFolder(folderId: folder.folderId)
+                    }
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            self.exitSelectionMode()
+            try await self.refreshCurrentFolder()
+            if let firstError { throw firstError }
+        }
+    }
+
+    /// Moves every entry in `entries` into `folderId` (`nil` = the root) - same
+    /// attempt-everything/surface-the-first-failure shape as `deleteSelected`. Backs both the
+    /// single-item `moveFile`/`moveFolder` (a one-element array) and `MoveToFolderSheet`'s
+    /// multi-select confirm.
+    func moveEntries(_ entries: [SelectableEntry], toFolderId folderId: String?) {
+        run {
+            var firstError: Error?
+            for entry in entries {
+                do {
+                    switch entry {
+                    case .file(let file):
+                        try await self.client.moveFile(fileId: file.fileId, folderId: folderId)
+                    case .folder(let folder):
+                        _ = try await self.client.updateFolder(folderId: folder.folderId, name: folder.name, parentFolderId: folderId)
+                    }
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            self.exitSelectionMode()
+            try await self.refreshCurrentFolder()
+            if let firstError { throw firstError }
+        }
+    }
+
+    /// Shares every entry in `entries` with `granteeEmail` - a plain `async` helper, not wrapped
+    /// in `run` itself, since `ShareSheet` (the only caller) is deliberately self-contained with
+    /// its own local loading/error state rather than routed through this view model's global
+    /// `busy` guard (see that sheet's own doc comment for why). Attempts every item regardless of
+    /// an earlier failure, then rethrows the first one encountered - the caller decides how to
+    /// surface it.
+    func shareEntries(_ entries: [SelectableEntry], granteeEmail: String) async throws {
+        var firstError: Error?
+        for entry in entries {
+            do {
+                switch entry {
+                case .file(let file):
+                    try await client.shareFile(fileId: file.fileId, granteeEmail: granteeEmail)
+                case .folder(let folder):
+                    try await client.shareFolder(folderId: folder.folderId, granteeEmail: granteeEmail)
+                }
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstError { throw firstError }
+    }
+
+    /// `url` is a security-scoped URL handed back by `.fileImporter` - see `uploadFileStreaming`
+    /// for how the actual (blocking or streaming) file access happens off the main actor.
     func uploadPickedFile(url: URL) {
         run {
-            let data = try await Self.readFileData(at: url)
-            _ = try await self.client.uploadFile(fileName: url.lastPathComponent, data: data, folderId: self.currentFolderId)
+            try await self.uploadFileStreaming(fileName: url.lastPathComponent, sourceURL: url)
             try await self.refreshCurrentFolder()
         }
     }
 
-    private static func readFileData(at url: URL) async throws -> Data {
-        try await Task.detached(priority: .userInitiated) {
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            return try Data(contentsOf: url)
-        }.value
+    /// Uploads `sourceURL` (a security-scoped URL from `.fileImporter`) as `fileName`, preferring
+    /// the presigned direct-to-client path - `APIClient.uploadFileViaPresignedURL`, which streams
+    /// straight from disk via `URLSession.upload(for:fromFile:)`, bypassing this app's own server
+    /// for the data path entirely (see cloud-driver's `architecture/AWS_S3_IMPL.md`) - and
+    /// transparently falling back to the ordinary server-mediated `uploadFile(fileName:data:folderId:)`
+    /// the moment the server reports (`503`) it hasn't configured presigned transfer, so this works
+    /// unchanged against an older or non-S3-configured deployment too.
+    ///
+    /// The security-scoped access brackets the *whole* operation, not just a read - unlike the
+    /// fallback path (which still needs the full file in memory as `Data`), the presigned path
+    /// streams directly from `sourceURL` for as long as the upload takes, so the scope must stay
+    /// open for that entire duration.
+    private func uploadFileStreaming(fileName: String, sourceURL: URL) async throws {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+        do {
+            _ = try await client.uploadFileViaPresignedURL(fileName: fileName, fileURL: sourceURL, folderId: currentFolderId)
+        } catch APIError.server(let status, _) where status == 503 {
+            let data = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: sourceURL)
+            }.value
+            _ = try await client.uploadFile(fileName: fileName, data: data, folderId: currentFolderId)
+        }
     }
 
     /// Downloads a file's content to a throwaway temp file and, once ready, surfaces it via
@@ -384,13 +533,26 @@ final class AppViewModel: ObservableObject {
     /// it into Files, AirDrop it, etc.
     func download(_ file: StoredFileSummaryResponse) {
         run {
-            let data = try await self.client.downloadFileContent(fileId: file.fileId)
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + file.fileName)
+            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination)
+            self.fileToShare = IdentifiableURL(url: destination)
+        }
+    }
+
+    /// Downloads `fileId` directly to `destination`, preferring the presigned direct-to-client
+    /// path (`APIClient.downloadFileViaPresignedURL`, bypassing this app's own server for the data
+    /// path entirely) and transparently falling back to the ordinary server-mediated
+    /// `downloadFileContent(fileId:)` the moment the server reports (`503`) presigned transfer
+    /// isn't available for this file/deployment.
+    private func downloadFileStreaming(fileId: String, destination: URL) async throws {
+        do {
+            try await client.downloadFileViaPresignedURL(fileId: fileId, destination: destination)
+        } catch APIError.server(let status, _) where status == 503 {
+            let data = try await client.downloadFileContent(fileId: fileId)
             try await Task.detached(priority: .userInitiated) {
                 try data.write(to: destination, options: .atomic)
             }.value
-            self.fileToShare = IdentifiableURL(url: destination)
         }
     }
 }

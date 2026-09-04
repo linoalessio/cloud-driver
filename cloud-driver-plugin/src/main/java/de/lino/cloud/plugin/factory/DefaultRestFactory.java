@@ -26,6 +26,7 @@ import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
+import de.lino.cloud.api.storage.object.PresignedUpload;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
@@ -183,6 +184,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * actually needs it.
      */
     private static final String FILES_SHARED_BY_ME_COUNT_PATH = FILES_PATH + "/shared-by-me/count";
+    /**
+     * Path mounted by {@link #start} for {@link #handleBeginPresignedUpload} (presigned
+     * direct-to-client transfer - see {@code architecture/AWS_S3_IMPL.md} section 8, now
+     * implemented). A {@code POST} route, unlike every other constant on this page - no {@code
+     * FILES_PATH + "/{id}"} route exists for {@code POST}, only {@code GET}, so this 2-segment
+     * path has no registration-order collision risk regardless of where it's registered (the
+     * {@code FILES_TRASH_PATH}/{@code FILES_SHARED_WITH_ME_PATH} pitfall only ever applies within
+     * one HTTP method).
+     */
+    private static final String FILES_UPLOAD_URL_PATH = FILES_PATH + "/upload-url";
     /**
      * Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe}. Unlike {@link
      * #FILES_SHARED_WITH_ME_PATH}, this one was never actually broken by the registration-order bug
@@ -627,6 +638,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
+                config.routes.post(FILES_UPLOAD_URL_PATH, this::handleBeginPresignedUpload);
+                config.routes.post(FILES_PATH + "/{id}/complete-upload", this::handleCompletePresignedUpload);
+                config.routes.get(FILES_PATH + "/{id}/download-url", this::handleBeginPresignedDownload);
 
                 config.routes.post(FOLDERS_PATH, this::handleCreateFolder);
                 config.routes.get(FOLDERS_PATH, this::handleListFolders);
@@ -1853,6 +1867,121 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
+     * The {@code {"fileName", "sizeBytes", "folderId"}} JSON body shape read by {@code POST
+     * /files/upload-url}.
+     *
+     * @param fileName the file's original name
+     * @param sizeBytes the file's declared size, checked against quota now and again (against the
+     *                   real uploaded size) at {@code POST /files/{id}/complete-upload}
+     * @param folderId the folder the file will be placed in once completed, or {@code null} for the root
+     */
+    private record BeginUploadRequest(String fileName, long sizeBytes, String folderId) {
+    }
+
+    /**
+     * The {@code {"fileId", "uploadUrl", "requiredHeaders", "expiresAtEpochMillis"}} JSON shape
+     * returned by {@code POST /files/upload-url} - {@code requiredHeaders} must be replayed
+     * exactly by the client's own {@code PUT} to {@code uploadUrl}, or the object store rejects
+     * the signature.
+     */
+    private record BeginUploadResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders, long expiresAtEpochMillis) {
+    }
+
+    /**
+     * The {@code {"fileName", "checksumSha256", "folderId"}} JSON body shape read by {@code POST
+     * /files/{id}/complete-upload} - no {@code sizeBytes} field here (unlike {@link
+     * BeginUploadRequest}): the real size is always read back from the object store itself (see
+     * {@code CloudUserService#completePresignedUpload}), never trusted from the client a second time.
+     *
+     * @param fileName the file's original name
+     * @param checksumSha256 the SHA-256 checksum the uploading client computed over the file's own content, as a lowercase hex string
+     * @param folderId the folder to place the new file in, or {@code null} for the root
+     */
+    private record CompleteUploadRequest(String fileName, String checksumSha256, String folderId) {
+    }
+
+    /**
+     * {@code POST /files/upload-url}: begins a presigned, direct-to-client upload via {@link
+     * CloudUserService#beginPresignedUpload} - the client uploads {@code PUT}s its content
+     * directly to {@link BeginUploadResponse#uploadUrl()} afterward, bypassing this server for the
+     * data path entirely, then calls {@code POST /files/{id}/complete-upload} ({@link
+     * #handleCompletePresignedUpload}) to finish. {@code 200} with the ticket on success; a {@code
+     * 503} (via {@link #folderFailureOrPropagate}) if presigned transfer isn't configured on this
+     * deployment - the client falls back to the ordinary {@code POST /files} route instead.
+     */
+    private void handleBeginPresignedUpload(@NotNull final Context ctx) {
+        final BeginUploadRequest request = this.gson.fromJson(ctx.body(), BeginUploadRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.beginPresignedUpload(userId, request.fileName(), request.sizeBytes(), request.folderId()))
+                .handle((ticket, failure) -> {
+                    if (failure == null) {
+                        final PresignedUpload upload = ticket.upload();
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(new BeginUploadResponse(
+                                ticket.fileId(), upload.url().toString(), upload.requiredHeaders(), upload.expiresAt().toEpochMilli()
+                        )));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, request.fileName());
+                }));
+    }
+
+    /**
+     * {@code POST /files/{id}/complete-upload}: confirms a presigned upload begun via {@link
+     * #handleBeginPresignedUpload} actually finished, via {@link
+     * CloudUserService#completePresignedUpload} - which verifies the object's real size against
+     * quota, deleting it and rejecting if it's exceeded. {@code 201} with the same {@link
+     * StoredFileSummary} shape {@link #handleUploadFile} returns; {@code 404} (via {@link
+     * #folderFailureOrPropagate}) if no object was actually uploaded under {@code id} yet.
+     */
+    private void handleCompletePresignedUpload(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final CompleteUploadRequest request = this.gson.fromJson(ctx.body(), CompleteUploadRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.completePresignedUpload(userId, id, request.fileName(), request.checksumSha256(), request.folderId()))
+                .handle((summary, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(summary));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"downloadUrl", "expiresAtEpochMillis"}} JSON shape returned by {@code GET
+     * /files/{id}/download-url}.
+     */
+    private record BeginDownloadResponse(String downloadUrl, long expiresAtEpochMillis) {
+    }
+
+    /**
+     * {@code GET /files/{id}/download-url}: begins a presigned, direct-to-client download via
+     * {@link CloudUserService#beginPresignedDownload} - ownership/share-checked the same way
+     * {@link #handleDownloadFile}/{@link #handleDownloadFileContent} already are. {@code 200} with
+     * the URL on success; a {@code 503} (via {@link #folderFailureOrPropagate}) if presigned
+     * transfer isn't configured on this deployment, or {@code id} isn't eligible for it (an
+     * inline/app-encrypted file, rather than a direct-transfer one) - the client falls back to
+     * {@code GET /files/{id}/content} instead either way.
+     */
+    private void handleBeginPresignedDownload(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.beginPresignedDownload(userId, id))
+                .handle((download, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(
+                                new BeginDownloadResponse(download.url().toString(), download.expiresAt().toEpochMilli())
+                        ));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
      * {@code GET /files}, optionally {@code ?folderId=<id-or-{@value #ROOT_FOLDER_SENTINEL}>}:
      * lists every {@link StoredFile} tracked as belonging to the caller as a {@link
      * StoredFileSummary} - descriptive fields plus folder placement, deliberately without content
@@ -2670,6 +2799,15 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         }
         if (cause instanceof UploadQuotaExceededException uploadQuotaExceeded) {
             return new ContentTooLargeResponse(uploadQuotaExceeded.getMessage());
+        }
+        if (cause instanceof de.lino.cloud.api.storage.object.PresignedTransferUnavailableException) {
+            // Either this deployment has no PresignedTransferService configured at all, or (for
+            // beginPresignedDownload specifically) this particular file isn't eligible for direct
+            // transfer - see that method's own Javadoc. Either way, the client's correct response
+            // is the same: fall back to the server-mediated POST /files / GET /files/{id}/content
+            // routes instead, so this is surfaced as 503 rather than folded into the generic
+            // unmapped-failure 500 case below.
+            return new ServiceUnavailableResponse("Presigned direct-to-client transfer is not available");
         }
         CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.folderFailureOrPropagate: unmapped " + type.getSimpleName() + " failure (id " + id + "), returning 500:");
         cause.printStackTrace();

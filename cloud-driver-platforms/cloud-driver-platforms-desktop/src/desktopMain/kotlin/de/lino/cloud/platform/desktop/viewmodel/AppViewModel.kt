@@ -799,6 +799,34 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     }
 
     /**
+     * Uploads [filePath] as [fileName] into [folderId], preferring the presigned direct-to-client
+     * path (bypassing this app's own server for the data path entirely - see
+     * `architecture/AWS_S3_IMPL.md`) and transparently falling back to the ordinary
+     * server-mediated [CloudDriverClient.uploadFile] the moment the server reports (`503`) it
+     * hasn't configured presigned transfer - so every upload call site below works unchanged
+     * against an older or non-S3-configured deployment too, with no capability negotiation of its
+     * own needed. Shared by [uploadFiles]/[uploadFolderAsZip]/[uploadDroppedPaths]; the
+     * archive-extraction re-upload path (`extractArchive`) deliberately still calls
+     * [CloudDriverClient.uploadFile] directly - a secondary, lower-volume flow not worth the same
+     * treatment in this first pass.
+     */
+    private suspend fun uploadFileStreaming(
+        fileName: String,
+        filePath: Path,
+        folderId: String?,
+        onBytesTransferred: (Long) -> Unit,
+    ): StoredFileSummaryResponse =
+        try {
+            this.client.uploadFileViaPresignedUrl(fileName, filePath, folderId, onBytesTransferred)
+        } catch (e: ApiClient.ApiException) {
+            if (e.statusCode() == 503) {
+                this.client.uploadFile(fileName, filePath, folderId, onBytesTransferred)
+            } else {
+                throw e
+            }
+        }
+
+    /**
      * Uploads every chosen local file concurrently (capped - see [mapConcurrently]), reporting
      * aggregate progress via [transferProgress] - see [runTransfer]. `ApiClient`'s own batch
      * upload can't be reused here since it has no `folderId` parameter (always targets the root),
@@ -807,7 +835,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     fun uploadFiles(paths: List<Path>) = run {
         val sizes = withContext(Dispatchers.IO) { paths.associateWith { Files.size(it) } }
         this.runTransfer(TransferKind.UPLOAD, paths, { sizes.getValue(it) }) { path, onBytesTransferred ->
-            this.client.uploadFile(path, this.currentFolderId, onBytesTransferred)
+            this.uploadFileStreaming(path.fileName.toString(), path, this.currentFolderId, onBytesTransferred)
         }
         this.refreshCurrentFolder()
     }
@@ -819,7 +847,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
             val zipName = "${directory.fileName}.zip"
             val zipSize = withContext(Dispatchers.IO) { Files.size(zipPath) }
             this.runTransfer(TransferKind.UPLOAD, listOf(zipPath), { zipSize }) { path, onBytesTransferred ->
-                this.client.uploadFile(zipName, path, this.currentFolderId, onBytesTransferred)
+                this.uploadFileStreaming(zipName, path, this.currentFolderId, onBytesTransferred)
             }
         } finally {
             withContext(Dispatchers.IO) { Files.deleteIfExists(zipPath) }
@@ -852,7 +880,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
                     zippedDirectories.map { (directory, zipPath) -> DroppedUploadItem("${directory.fileName}.zip", zipPath, Files.size(zipPath)) }
             }
             this.runTransfer(TransferKind.UPLOAD, items, DroppedUploadItem::sizeBytes) { item, onBytesTransferred ->
-                this.client.uploadFile(item.uploadName, item.sourcePath, this.currentFolderId, onBytesTransferred)
+                this.uploadFileStreaming(item.uploadName, item.sourcePath, this.currentFolderId, onBytesTransferred)
             }
         } finally {
             withContext(Dispatchers.IO) { zippedDirectories.forEach { (_, zipPath) -> Files.deleteIfExists(zipPath) } }
@@ -872,12 +900,19 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
      *    upload.
      * 2. Extracts it into a fresh temp directory via [extractZip] (fast, local, no network - no
      *    progress reporting needed, same as [zipDirectory]'s own write-side equivalent), then
-     *    recreates its entire contents - every folder and file, nested structure included -
-     *    directly inside the current folder: [planAndCreateDirectoryTree] creates every needed
-     *    remote subfolder up front and returns one flat list of files-to-upload with sizes already
-     *    known, which a second batch then uploads with one aggregated percentage across the whole
-     *    tree - the same "plan first, so `runTransfer` never has to guess a total up front" shape
-     *    [planDownload]/[downloadEntries] already use.
+     *    recreates its entire contents - every folder and file, nested structure included - inside
+     *    a **new destination folder** created for this extraction (fixed 2026-09-04; previously
+     *    extracted straight into the current folder, dumping the archive's contents alongside
+     *    whatever else was already there): [entry]'s own name with its extension stripped
+     *    ([archiveBaseName] - `"test.zip"` -> `"test"`), disambiguated against the current folder's
+     *    already-loaded subfolder names via [uniqueFolderName] (`"test"`, then `"test 2"`,
+     *    `"test 3"`, ... if a folder by that name already exists - deliberately not
+     *    [uniqueCopyName]'s `"... copy"` convention, since a re-extracted archive isn't a duplicate
+     *    of anything). [planAndCreateDirectoryTree] then creates every needed remote subfolder
+     *    under that new destination folder and returns one flat list of files-to-upload with sizes
+     *    already known, which a second batch uploads with one aggregated percentage across the
+     *    whole tree - the same "plan first, so `runTransfer` never has to guess a total up front"
+     *    shape [planDownload]/[downloadEntries] already use.
      *
      * A genuinely single [runTransfer] batch spanning both phases isn't possible here: the
      * upload phase's item list (and therefore its total byte count) only exists *after* phase 1's
@@ -896,7 +931,10 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
                 this.client.downloadFileToPath(entry.id, archiveTempFile, onBytesTransferred)
             }
             extractZip(archiveTempFile, extractedDir)
-            val plannedUploads = this.planAndCreateDirectoryTree(extractedDir, this.currentFolderId)
+            val existingFolderNames = this.folders.map { it.name() }.toSet()
+            val destinationFolderName = uniqueFolderName(archiveBaseName(entry.name), existingFolderNames)
+            val destinationFolder = this.client.createFolder(destinationFolderName, this.currentFolderId)
+            val plannedUploads = this.planAndCreateDirectoryTree(extractedDir, destinationFolder.folderId())
             this.runTransfer(TransferKind.EXTRACT, plannedUploads, PlannedUpload::sizeBytes) { item, onBytesTransferred ->
                 this.client.uploadFile(item.localPath.fileName.toString(), item.localPath, item.remoteFolderId, onBytesTransferred)
             }
@@ -1224,4 +1262,30 @@ private fun uniqueCopyName(originalName: String, existingNames: Set<String>): St
         suffix++
     }
     return candidate
+}
+
+/**
+ * [archiveFileName] with its extension stripped - `"test.zip"` -> `"test"` - used by
+ * [AppViewModel.extractArchive] to name the folder an archive's contents are extracted into.
+ */
+private fun archiveBaseName(archiveFileName: String): String {
+    val dotIndex = archiveFileName.lastIndexOf('.')
+    val hasExtension = dotIndex > 0 && dotIndex < archiveFileName.length - 1
+    return if (hasExtension) archiveFileName.substring(0, dotIndex) else archiveFileName
+}
+
+/**
+ * Picks a folder name for [baseName] that doesn't collide with anything in [existingNames] -
+ * `"test"`, then `"test 2"`, `"test 3"`, ... if `"test"` is already taken. Used by
+ * [AppViewModel.extractArchive] for the new folder an archive is extracted into - deliberately
+ * not [uniqueCopyName]'s `"... copy"`/`"... copy 2"` convention, since a re-extracted archive
+ * isn't a duplicate of anything, it's the same archive's content landing in a fresh folder.
+ */
+private fun uniqueFolderName(baseName: String, existingNames: Set<String>): String {
+    if (baseName !in existingNames) return baseName
+    var suffix = 2
+    while ("$baseName $suffix" in existingNames) {
+        suffix++
+    }
+    return "$baseName $suffix"
 }

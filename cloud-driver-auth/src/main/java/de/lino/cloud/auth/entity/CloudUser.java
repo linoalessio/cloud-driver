@@ -60,6 +60,18 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
     private long currentUploadedBytes;
 
     /**
+     * This account's stored light/dark theme preference (e.g. {@code "LIGHT"}/{@code "DARK"}),
+     * synced across every device signed into this account instead of being a local, per-device
+     * setting - updated via {@link CloudUserService#updateThemePreference}. {@code null} means
+     * never explicitly set (a fresh account, or one that predates this field); a client falls
+     * back to its own default in that case, the same "nullable = not opted into" convention
+     * {@code Folder#parentFolderId} uses elsewhere in this codebase. Deliberately a plain
+     * {@code String}, not a real enum, at this layer - the actual {@code ThemeMode}-shaped enum
+     * lives client-side; the server only ever stores and echoes back whatever string a client sent.
+     */
+    private String themeMode;
+
+    /**
      * {@code configuration.json} key {@link #resolveMaxBytesToUpload} reads {@link
      * #maxBytesToUpload} from - a sibling of {@code "jwt-signing-key"}/{@code "rest-server-port"}.
      */

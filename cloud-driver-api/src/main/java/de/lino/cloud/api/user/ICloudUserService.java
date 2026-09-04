@@ -2,6 +2,7 @@ package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
+import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.file.SharedFileSummary;
 import de.lino.cloud.api.file.SharedFolderContents;
 import de.lino.cloud.api.file.SharedFolderSummary;
@@ -9,6 +10,8 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.file.TrashedFolderSummary;
+import de.lino.cloud.api.storage.object.PresignedDownload;
+import de.lino.cloud.api.storage.object.PresignedTransferUnavailableException;
 import de.lino.cloud.api.utility.CursorPage;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -120,6 +123,21 @@ public interface ICloudUserService {
     void updateCloudUserBytesLimit(@NonNull String authUserId, final long bytes);
 
     /**
+     * Replaces {@code authUserId}'s stored theme preference (see {@link
+     * ICloudUser#getThemeMode()}) and persists the change - the same single-row {@link
+     * de.lino.cloud.api.factory.DataFactory#update} shape {@link #updateCloudUserBytesLimit}
+     * uses. Lets a light/dark mode choice made on one device (desktop, mobile, ...) sync to
+     * every other device signed into the same account, instead of being a local-only setting.
+     * A no-op if {@code authUserId} has no {@link ICloudUser} record yet.
+     *
+     * @param authUserId the account whose theme preference to update
+     * @param themeMode the new theme preference (e.g. {@code "LIGHT"}/{@code "DARK"} - this
+     *                   layer treats it as an opaque string, the actual enum lives client-side),
+     *                   or {@code null} to clear it back to "unset"
+     */
+    void updateThemePreference(@NonNull String authUserId, @Nullable String themeMode);
+
+    /**
      * One-off, operator-triggered backfill/repair for {@code authUserId}'s {@link
      * ICloudUser#getCurrentUploadedBytes()}: recomputes it from scratch as the sum of every
      * currently-tracked {@link de.lino.cloud.api.file.StoredFile}'s recorded size (including
@@ -169,6 +187,64 @@ public interface ICloudUserService {
      */
     @NotNull
     StoredFile uploadFile(@NotNull String authUserId, @NotNull String fileName, byte[] content, @Nullable String folderId);
+
+    /**
+     * Begins a presigned, direct-to-client upload (see {@code architecture/AWS_S3_IMPL.md}'s
+     * "Explicitly deferred" section, now implemented): checks {@code authUserId}'s quota against
+     * the declared {@code sizeBytes} and that {@code folderId} (if given) is actually owned by
+     * {@code authUserId}, then returns a fresh {@link PresignedUploadTicket} the caller uploads its
+     * content to directly, bypassing this server for the data path entirely. <b>Persists nothing</b>
+     * - call {@link #completePresignedUpload} once the upload has actually finished; an abandoned
+     * ticket just leaves an orphaned, unlinked object once its URL expires.
+     *
+     * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param fileName the file's original name
+     * @param sizeBytes the file's declared size - checked against quota now, and again against the
+     *                  real uploaded size in {@link #completePresignedUpload}
+     * @param folderId the folder the file will be placed in once completed, or {@code null} for the root
+     * @return a ticket pairing the new file's id with where to upload its content
+     * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the declared size would exceed {@code authUserId}'s quota
+     * @throws de.lino.cloud.api.storage.object.PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
+     */
+    @NotNull
+    PresignedUploadTicket beginPresignedUpload(@NotNull String authUserId, @NotNull String fileName, long sizeBytes, @Nullable String folderId);
+
+    /**
+     * Confirms a presigned upload begun via {@link #beginPresignedUpload} actually completed,
+     * verifies its real size against the object store (not the {@code sizeBytes} originally
+     * declared - a client could otherwise under-declare to dodge the quota check in {@link
+     * #beginPresignedUpload}), and persists the resulting {@link StoredFile}/ownership/usage
+     * update - the same effect {@link #uploadFile(String, String, byte[], String)} has, just
+     * without this server ever holding the content itself.
+     *
+     * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - must match the ticket's own {@link #beginPresignedUpload} caller
+     * @param fileId the {@link PresignedUploadTicket#fileId()} returned by {@link #beginPresignedUpload}
+     * @param fileName the file's original name
+     * @param checksumSha256Hex the SHA-256 checksum the uploading client computed over the file's own content, as a lowercase hex string
+     * @param folderId the folder to place the new file in, or {@code null} for the root
+     * @return a summary of the newly created file
+     * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}, or if no object exists yet under {@code fileId}
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the object's real size exceeds {@code authUserId}'s quota - the uploaded object is deleted before this is thrown
+     * @throws de.lino.cloud.api.storage.object.PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
+     */
+    @NotNull
+    StoredFileSummary completePresignedUpload(@NotNull String authUserId, @NotNull String fileId, @NotNull String fileName,
+                                               @NotNull String checksumSha256Hex, @Nullable String folderId);
+
+    /**
+     * Begins a presigned, direct-to-client download of an already-owned (or shared-with-{@code
+     * authUserId}) file - the same ownership/share rules {@link #getFile} applies, but without
+     * this server ever fetching the file's content itself.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to download
+     * @return where to download the file's content directly from
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by, or shared with, {@code authUserId}
+     * @throws PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured, or {@code storedFileId} doesn't have its content in that store
+     */
+    @NotNull
+    PresignedDownload beginPresignedDownload(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
      * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list

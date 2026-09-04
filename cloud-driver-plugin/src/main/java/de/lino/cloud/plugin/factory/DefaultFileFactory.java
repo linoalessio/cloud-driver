@@ -226,6 +226,13 @@ public final class DefaultFileFactory extends FileFactory {
     @NotNull
     public StoredFile prepareForPersistence(@NotNull final StoredFile file) throws KeyWrapException {
         Asserts.requireNonNull(file, "@DefaultFileFactory.prepareForPersistence: file cannot be null");
+        if (file.isS3Backed()) {
+            // Already S3-backed (e.g. a direct-transfer file built by CloudUserService#completePresignedUpload,
+            // whose content already lives in the object store and was never handed to this class at
+            // all) - nothing left for this method to do. Defensive: no production call site actually
+            // reaches this with such a file today, since that path registers via DataFactory directly.
+            return file;
+        }
         if (this.objectStorageService == null) {
             return file;
         }
@@ -392,6 +399,13 @@ public final class DefaultFileFactory extends FileFactory {
      * file call objectStorageService.getObject(...) and attach the result via withResolvedContent
      * before verifyIntegrity runs" instruction.
      *
+     * <p>Branches on {@link StoredFile#isDirectTransfer()}: a direct-transfer file's object is
+     * already plaintext (uploaded raw by the client itself, decrypted transparently by S3's own
+     * server-side encryption on the way out) and was never DEFLATE-compressed, so it's handed
+     * straight to {@link StoredFile#withResolvedContent(byte[])} with no {@link
+     * #contentChannel}/{@link StoredFile#decompressIfNeeded(byte[])} step - both would be actively
+     * wrong here (there is no app-level envelope to decrypt, and no compression to undo).
+     *
      * @param file the file, as read back from {@link #dataFactory} - possibly S3-backed
      * @return {@code file} itself if not S3-backed, otherwise a hydrated copy with content resolved
      * @throws IllegalStateException if {@code file} is S3-backed but {@link #objectStorageService} isn't configured
@@ -408,6 +422,10 @@ public final class DefaultFileFactory extends FileFactory {
                     "@DefaultFileFactory: file '" + file.fileId() + "' is S3-backed (object key '" + file.objectStorageKey()
                             + "') but this DefaultFileFactory instance has no ObjectStorageService configured"
             );
+        }
+        if (file.isDirectTransfer()) {
+            final byte[] plaintext = this.objectStorageService.getObject(file.objectStorageKey());
+            return file.withResolvedContent(plaintext);
         }
         final byte[] storedBytes = this.objectStorageService.getObject(file.objectStorageKey());
         final byte[] rawBytes = this.contentChannel.receive(file.fileId(), storedBytes);

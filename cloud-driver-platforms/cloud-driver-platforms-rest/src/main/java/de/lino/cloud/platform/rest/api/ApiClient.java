@@ -7,7 +7,11 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.BeginDownloadUrlResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.BeginUploadUrlRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.BeginUploadUrlResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ChangeEmailRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.CompleteUploadRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
@@ -62,9 +66,13 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -1031,6 +1039,212 @@ public final class ApiClient implements AutoCloseable {
                 .runAsync(permits::acquireUninterruptibly, this.executor)
                 .thenCompose(ignored -> action.get())
                 .whenComplete((result, error) -> permits.release());
+    }
+
+    // --- files: presigned direct-to-client transfer ------------------------
+
+    /**
+     * Uploads {@code filePath} directly to the object store, bypassing this app's own server for
+     * the data path entirely (see {@code architecture/AWS_S3_IMPL.md}) - orchestrates all three
+     * steps: {@link #beginUploadUrl}, a raw {@code PUT} to the returned URL, then {@link
+     * #completeUpload}. Computes the SHA-256 checksum {@link #completeUpload} needs via a
+     * dedicated pre-pass reading {@code filePath} once before the upload itself reads it a second
+     * time - a deliberate, accepted trade-off over a custom digesting {@link BodyPublisher}
+     * wrapper for this first pass.
+     *
+     * @param fileName           the name to store the file under
+     * @param filePath           the local file to upload
+     * @param folderId           the destination folder's id, or {@code null} for the root
+     * @param onBytesTransferred invoked with the cumulative bytes {@code PUT} to the object store so far
+     * @return the newly created file's summary, same shape {@link #uploadFile(String, Path, String)} returns
+     * @throws ApiException {@code 503} if this deployment has no presigned transfer configured -
+     *                       callers should fall back to {@link #uploadFile(String, Path, String)}
+     *                       on exactly this status; {@code 401} if not logged in / token expired;
+     *                       {@code 413} if the file would exceed the account's quota; or any other failure
+     */
+    public StoredFileSummaryResponse uploadFileViaPresignedUrl(final String fileName, final Path filePath, final String folderId,
+                                                                 final LongConsumer onBytesTransferred) throws ApiException {
+        final long sizeBytes;
+        final String checksumSha256;
+        try {
+            sizeBytes = Files.size(filePath);
+            checksumSha256 = sha256Hex(filePath);
+        } catch (final IOException e) {
+            throw new ApiException(0, "failed to read file for presigned upload: " + filePath, e);
+        }
+
+        final BeginUploadUrlResponse begin = this.beginUploadUrl(fileName, sizeBytes, folderId);
+        this.putToPresignedUrl(begin.uploadUrl(), begin.requiredHeaders(), filePath, onBytesTransferred);
+        return this.completeUpload(begin.fileId(), fileName, checksumSha256, folderId);
+    }
+
+    /**
+     * Async form of {@link #uploadFileViaPresignedUrl} - runs the whole three-step flow on {@link
+     * #executor()} (never a JDK-internal thread), matching this codebase's own {@code *Async}
+     * convention of wrapping a checked failure from the sync primitive in a {@link
+     * CompletionException}.
+     */
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileViaPresignedUrlAsync(final String fileName, final Path filePath, final String folderId,
+                                                                                         final LongConsumer onBytesTransferred) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.uploadFileViaPresignedUrl(fileName, filePath, folderId, onBytesTransferred);
+            } catch (final ApiException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
+    /** {@code POST /files/upload-url}: begins a presigned upload - see {@link #uploadFileViaPresignedUrl} for the full three-step flow. */
+    public BeginUploadUrlResponse beginUploadUrl(final String fileName, final long sizeBytes, final String folderId) throws ApiException {
+        return this.send(this.beginUploadUrlRequest(fileName, sizeBytes, folderId), BeginUploadUrlResponse.class);
+    }
+
+    /** Async form of {@link #beginUploadUrl} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<BeginUploadUrlResponse> beginUploadUrlAsync(final String fileName, final long sizeBytes, final String folderId) {
+        return this.sendAsync(this.beginUploadUrlRequest(fileName, sizeBytes, folderId), BeginUploadUrlResponse.class);
+    }
+
+    /** Builds the {@code POST /files/upload-url} request against {@link #apiBaseUrl}. */
+    private HttpRequest beginUploadUrlRequest(final String fileName, final long sizeBytes, final String folderId) {
+        return this.postRequest(this.apiBaseUrl.resolve("/files/upload-url"), new BeginUploadUrlRequest(fileName, sizeBytes, folderId), true);
+    }
+
+    /** {@code POST /files/{id}/complete-upload}: confirms a presigned upload - see {@link #uploadFileViaPresignedUrl} for the full three-step flow. */
+    public StoredFileSummaryResponse completeUpload(final String fileId, final String fileName, final String checksumSha256, final String folderId) throws ApiException {
+        return this.send(this.completeUploadRequest(fileId, fileName, checksumSha256, folderId), StoredFileSummaryResponse.class);
+    }
+
+    /** Async form of {@link #completeUpload} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileSummaryResponse> completeUploadAsync(final String fileId, final String fileName, final String checksumSha256, final String folderId) {
+        return this.sendAsync(this.completeUploadRequest(fileId, fileName, checksumSha256, folderId), StoredFileSummaryResponse.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/complete-upload} request against {@link #apiBaseUrl}. */
+    private HttpRequest completeUploadRequest(final String fileId, final String fileName, final String checksumSha256, final String folderId) {
+        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/complete-upload"),
+                new CompleteUploadRequest(fileName, checksumSha256, folderId), true);
+    }
+
+    /**
+     * {@code PUT}s {@code filePath}'s bytes directly to {@code url} (a presigned upload URL, not
+     * this app's own server) - unauthenticated (no {@code Authorization} header; nothing needs
+     * one against the object store), replaying every one of {@code requiredHeaders} exactly, or
+     * the object store rejects the request's signature.
+     */
+    private void putToPresignedUrl(final String url, final Map<String, String> requiredHeaders, final Path filePath,
+                                    final LongConsumer onBytesTransferred) throws ApiException {
+        final HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url)).timeout(TRANSFER_TIMEOUT);
+        requiredHeaders.forEach(builder::header);
+
+        final HttpRequest request;
+        try {
+            request = builder.PUT(progressTrackingFilePublisher(filePath, onBytesTransferred)).build();
+        } catch (final FileNotFoundException e) {
+            throw new ApiException(0, "file not found or unreadable: " + filePath, e);
+        }
+
+        final HttpResponse<String> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofString());
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error uploading to presigned URL", e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted uploading to presigned URL", e);
+        }
+
+        final int status = response.statusCode();
+        if (status < 200 || status >= 300) {
+            // The object store's own error body (XML, not this app's JSON ErrorResponse shape) -
+            // included as-is rather than run through extractErrorMessage/extractErrorMessageFromFile,
+            // which are both built around this app's own JSON error convention.
+            throw new ApiException(status, "presigned upload failed: " + response.body(), null);
+        }
+    }
+
+    /**
+     * Downloads a file directly from the object store, bypassing this app's own server for the
+     * data path entirely - orchestrates {@link #beginDownloadUrl} then a raw {@code GET} to the
+     * returned URL, streamed straight to {@code destination} (same {@link BodyHandlers#ofFile}-based
+     * mechanism {@link #downloadFileToPath} uses server-side).
+     *
+     * @param fileId             the file to fetch
+     * @param destination        the local path to write the file to; must not already exist
+     * @param onBytesTransferred invoked with the cumulative bytes written to {@code destination} so far
+     * @return {@code destination}, unchanged, once the file has been fully written
+     * @throws ApiException {@code 503} if this deployment has no presigned transfer configured, or
+     *                       {@code fileId} isn't eligible for it - callers should fall back to
+     *                       {@link #downloadFileToPath(String, Path)} on exactly this status;
+     *                       {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller; {@code 401} if not logged in / token expired; or any other failure
+     */
+    public Path downloadFileViaPresignedUrl(final String fileId, final Path destination, final LongConsumer onBytesTransferred) throws ApiException {
+        final BeginDownloadUrlResponse begin = this.beginDownloadUrl(fileId);
+        final HttpRequest request = HttpRequest.newBuilder(URI.create(begin.downloadUrl())).timeout(TRANSFER_TIMEOUT).GET().build();
+
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, progressTrackingFileHandler(destination, onBytesTransferred));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error downloading from presigned URL", e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted downloading from presigned URL", e);
+        }
+        return requireSuccessfulFileDownload(response);
+    }
+
+    /**
+     * Async form of {@link #downloadFileViaPresignedUrl} - runs the whole two-step flow on {@link
+     * #executor()} (never a JDK-internal thread), matching this codebase's own {@code *Async}
+     * convention of wrapping a checked failure from the sync primitive in a {@link
+     * CompletionException}.
+     */
+    public CompletableFuture<Path> downloadFileViaPresignedUrlAsync(final String fileId, final Path destination, final LongConsumer onBytesTransferred) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.downloadFileViaPresignedUrl(fileId, destination, onBytesTransferred);
+            } catch (final ApiException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
+    /** {@code GET /files/{id}/download-url}: begins a presigned download - see {@link #downloadFileViaPresignedUrl} for the full flow. */
+    public BeginDownloadUrlResponse beginDownloadUrl(final String fileId) throws ApiException {
+        return this.send(this.beginDownloadUrlRequest(fileId), BeginDownloadUrlResponse.class);
+    }
+
+    /** Async form of {@link #beginDownloadUrl} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<BeginDownloadUrlResponse> beginDownloadUrlAsync(final String fileId) {
+        return this.sendAsync(this.beginDownloadUrlRequest(fileId), BeginDownloadUrlResponse.class);
+    }
+
+    /** Builds the {@code GET /files/{id}/download-url} request against {@link #apiBaseUrl}. */
+    private HttpRequest beginDownloadUrlRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/download-url"), true).GET().build();
+    }
+
+    /**
+     * Computes {@code filePath}'s SHA-256 checksum as a lowercase hex string - the shape {@code
+     * FileChecksum#hexDigest()} carries server-side, so the server can persist it verbatim without
+     * this client needing to know anything about that type.
+     */
+    private static String sha256Hex(final Path filePath) throws IOException {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("@ApiClient.sha256Hex: JVM does not provide SHA-256", e);
+        }
+        try (InputStream in = new DigestInputStream(Files.newInputStream(filePath), digest)) {
+            final byte[] buffer = new byte[8192];
+            while (in.read(buffer) != -1) {
+                // DigestInputStream updates the digest as a side effect of read() - nothing else to do per chunk.
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     // --- files: list ------------------------------------------------------

@@ -1,42 +1,32 @@
 import SwiftUI
 
-/// A file or folder awaiting a destination in `MoveToFolderSheet`.
-enum MoveTarget: Identifiable {
-    case file(StoredFileSummaryResponse)
-    case folder(FolderResponse)
-
-    var id: String {
-        switch self {
-        case .file(let file): return "move-file-\(file.fileId)"
-        case .folder(let folder): return "move-folder-\(folder.folderId)"
-        }
-    }
+/// A batch of files/folders awaiting a destination in `MoveToFolderSheet` - wraps `[SelectableEntry]`
+/// so it can drive a SwiftUI `.sheet(item:)` (which needs `Identifiable`); a single-item move (from
+/// a row's own "..." menu) is just a one-element `entries` array.
+struct MoveTargets: Identifiable {
+    let entries: [SelectableEntry]
+    var id: String { entries.map(\.id).joined(separator: ",") }
 
     var displayName: String {
-        switch self {
-        case .file(let file): return file.fileName
-        case .folder(let folder): return folder.name
-        }
+        entries.count == 1 ? entries[0].displayName : "\(entries.count) items"
     }
 
-    /// The folder id this target itself refers to, if it is a folder - excluded from the list of
-    /// destinations one level down so a folder is never trivially offered as its own new parent.
-    /// The server's own cycle check (409) is still the real guard against a deeper cycle (moving
-    /// into a descendant reached via further navigation) - this only avoids the obviously-doomed
-    /// single-tap case.
-    var ownFolderId: String? {
-        if case .folder(let folder) = self { return folder.folderId }
-        return nil
+    /// Every selected folder's own id - excluded from the list of destinations one level down so
+    /// a folder is never trivially offered as its own new parent. The server's own cycle check
+    /// (409) is still the real guard against a deeper cycle (moving into a descendant reached via
+    /// further navigation) - this only avoids the obviously-doomed single-tap case.
+    var ownFolderIds: Set<String> {
+        Set(entries.compactMap(\.ownFolderId))
     }
 }
 
-/// A folder-picker sheet for moving a file or folder to a new parent - navigates the caller's own
-/// folder tree independently of `AppViewModel`'s main browser state (its own local `@State`), the
-/// same self-contained shape `SharedFolderBrowserView`/`ShareSheet` use. Confirming calls
-/// `AppViewModel.moveFile`/`moveFolder`, which refreshes the main browser listing afterwards.
+/// A folder-picker sheet for moving one or more files/folders to a new parent - navigates the
+/// caller's own folder tree independently of `AppViewModel`'s main browser state (its own local
+/// `@State`), the same self-contained shape `SharedFolderBrowserView`/`ShareSheet` use. Confirming
+/// calls `AppViewModel.moveEntries`, which refreshes the main browser listing afterwards.
 struct MoveToFolderSheet: View {
     @ObservedObject var viewModel: AppViewModel
-    let target: MoveTarget
+    let targets: MoveTargets
     @Environment(\.dismiss) private var dismiss
 
     @State private var currentFolderId: String?
@@ -107,7 +97,7 @@ struct MoveToFolderSheet: View {
                         .tint(.white)
                 }
             }
-            .navigationTitle("Move \u{201C}\(target.displayName)\u{201D}")
+            .navigationTitle("Move \u{201C}\(targets.displayName)\u{201D}")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -140,7 +130,7 @@ struct MoveToFolderSheet: View {
     }
 
     private var visibleFolders: [FolderResponse] {
-        folders.filter { $0.folderId != target.ownFolderId }
+        folders.filter { !targets.ownFolderIds.contains($0.folderId) }
     }
 
     private func open(_ folder: FolderResponse) {
@@ -172,12 +162,7 @@ struct MoveToFolderSheet: View {
     }
 
     private func confirmMove() {
-        switch target {
-        case .file(let file):
-            viewModel.moveFile(file, toFolderId: currentFolderId)
-        case .folder(let folder):
-            viewModel.moveFolder(folder, toFolderId: currentFolderId)
-        }
+        viewModel.moveEntries(targets.entries, toFolderId: currentFolderId)
         dismiss()
     }
 }

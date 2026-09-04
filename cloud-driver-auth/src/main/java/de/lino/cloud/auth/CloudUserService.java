@@ -17,11 +17,18 @@ import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
+import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
+import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.storage.object.ObjectStorageException;
+import de.lino.cloud.api.storage.object.PresignedDownload;
+import de.lino.cloud.api.storage.object.PresignedTransferService;
+import de.lino.cloud.api.storage.object.PresignedTransferUnavailableException;
+import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
@@ -35,8 +42,11 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 /**
@@ -68,7 +78,18 @@ public final class CloudUserService implements ICloudUserService {
     private final AuditLogService auditLogService;
 
     /**
-     * Creates a {@code CloudUserService} backed by the given collaborators.
+     * Generates presigned URLs for direct-to-client upload/download - {@code null} if this
+     * deployment hasn't configured one, in which case {@link #beginPresignedUpload}/{@link
+     * #completePresignedUpload}/{@link #beginPresignedDownload} all throw {@link
+     * PresignedTransferUnavailableException}.
+     */
+    @Nullable
+    private final PresignedTransferService presignedTransferService;
+
+    /**
+     * Same as {@link #CloudUserService(DataFactory, FileFactory, AuditLogService,
+     * PresignedTransferService)} with {@link #presignedTransferService} defaulted to {@code null} -
+     * presigned direct-to-client transfer not configured.
      *
      * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
      * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
@@ -76,6 +97,21 @@ public final class CloudUserService implements ICloudUserService {
      */
     public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
                              @NonNull final AuditLogService auditLogService) {
+        this(dataFactory, fileFactory, auditLogService, null);
+    }
+
+    /**
+     * Creates a {@code CloudUserService} backed by the given collaborators.
+     *
+     * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
+     * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
+     * @param presignedTransferService generates presigned URLs for direct-to-client transfer, or
+     *     {@code null} if this deployment hasn't configured one
+     */
+    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
+                             @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService) {
+        this.presignedTransferService = presignedTransferService;
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
         this.auditLogService = auditLogService;
@@ -506,6 +542,142 @@ public final class CloudUserService implements ICloudUserService {
         this.updateCloudUserBytesUsage(authUserId, content.length);
 
         return storedFile;
+    }
+
+    /** Default lifetime of a presigned upload/download URL - long enough for a slow connection on a large file, short enough that a leaked URL doesn't stay usable indefinitely. */
+    private static final Duration PRESIGNED_URL_EXPIRY = Duration.ofMinutes(15);
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PresignedUploadTicket beginPresignedUpload(@NonNull final String authUserId, @NonNull final String fileName,
+                                                        final long sizeBytes, @Nullable final String folderId) {
+        final PresignedTransferService presignedTransferService = requirePresignedTransferService();
+
+        final ICloudUser cloudUser = this.getOrCreate(authUserId);
+        // Soft check only - the client's own declared sizeBytes, not yet verified against the
+        // real uploaded object (that happens in completePresignedUpload, once it's knowable).
+        if (cloudUser.isUploadLimitReached(sizeBytes)) {
+            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+            throw new UploadQuotaExceededException(
+                    authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
+        }
+        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
+        if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
+
+        final String fileId = UUID.randomUUID().toString();
+        return new PresignedUploadTicket(fileId, presignedTransferService.presignUpload(fileId, sizeBytes, PRESIGNED_URL_EXPIRY));
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public StoredFileSummary completePresignedUpload(@NonNull final String authUserId, @NonNull final String fileId, @NonNull final String fileName,
+                                                       @NonNull final String checksumSha256Hex, @Nullable final String folderId) {
+        final PresignedTransferService presignedTransferService = requirePresignedTransferService();
+
+        final long realSizeBytes;
+        try {
+            realSizeBytes = presignedTransferService.headObjectContentLength(fileId);
+        } catch (final ObjectStorageException e) {
+            throw new IllegalArgumentException("@CloudUserService.completePresignedUpload: no object uploaded yet under '" + fileId + "'", e);
+        }
+
+        final ICloudUser cloudUser = this.getOrCreate(authUserId);
+        if (cloudUser.isUploadLimitReached(realSizeBytes)) {
+            deleteOrphanedPresignedObjectQuietly(presignedTransferService, fileId);
+            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+            throw new UploadQuotaExceededException(
+                    authUserId, cloudUser.getCurrentUploadedBytes(), realSizeBytes, cloudUser.getMaxBytesToUpload());
+        }
+        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
+        if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
+
+        final Instant now = Instant.now();
+        final StoredFile storedFile = new StoredFile(
+                fileId, fileName, realSizeBytes, new FileChecksum(HashAlgorithm.SHA_256, checksumSha256Hex), now, now, fileId
+        );
+
+        try {
+            this.dataFactory.register(storedFile);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            deleteOrphanedPresignedObjectQuietly(presignedTransferService, fileId);
+            throw new RuntimeException("@CloudUserService.completePresignedUpload: failed to register '" + fileId + "'", e);
+        }
+
+        try {
+            this.dataFactory.register(StoredFileOwnership.of(authUserId, storedFile, folderId));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.completePresignedUpload: failed to track ownership of " + fileId + " for " + authUserId, e
+            );
+        }
+
+        this.updateCloudUserBytesUsage(authUserId, realSizeBytes);
+        recordMetric(MetricsRecorder::recordUploadSuccess);
+
+        return new StoredFileSummary(fileId, fileName, storedFile.contentType(), realSizeBytes,
+                now.toEpochMilli(), now.toEpochMilli(), folderId);
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PresignedDownload beginPresignedDownload(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        final PresignedTransferService presignedTransferService = requirePresignedTransferService();
+
+        final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
+                .orElseGet(() -> this.requireSharedFileAccess(authUserId, storedFileId));
+        if (ownership.isDeleted()) {
+            throw new IllegalArgumentException("@CloudUserService.beginPresignedDownload: " + authUserId + " does not own or have shared access to " + storedFileId);
+        }
+
+        final StoredFile file;
+        try {
+            file = this.dataFactory.findById(storedFileId, StoredFile.class)
+                    .orElseThrow(() -> new IllegalStateException("@CloudUserService.beginPresignedDownload: owned file not found: " + storedFileId));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.beginPresignedDownload: failed to look up " + storedFileId, e);
+        }
+
+        // Only a direct-transfer file's content is plaintext-in-S3 and safe to hand a client a raw
+        // link to - an inline or app-encrypted-S3 file's bytes would be ciphertext the client has
+        // no DEK/KEK access to decrypt, so this reuses the same "not available, fall back" signal
+        // beginPresignedUpload/completePresignedUpload use when nothing is configured at all; the
+        // caller doesn't need to distinguish why, only that GET /files/{id}/content is the right
+        // route for this particular file instead.
+        if (!file.isDirectTransfer()) {
+            throw new PresignedTransferUnavailableException();
+        }
+
+        return presignedTransferService.presignDownload(file.objectStorageKey(), PRESIGNED_URL_EXPIRY);
+    }
+
+    /**
+     * @throws PresignedTransferUnavailableException if {@link #presignedTransferService} is {@code null}
+     */
+    private PresignedTransferService requirePresignedTransferService() {
+        if (this.presignedTransferService == null) {
+            throw new PresignedTransferUnavailableException();
+        }
+        return this.presignedTransferService;
+    }
+
+    /**
+     * Best-effort delete of a presigned-upload object that turned out to violate a constraint only
+     * checkable at completion time (the account's quota) - a failure here is logged, not thrown,
+     * so it never masks the real {@link UploadQuotaExceededException}/database failure the caller
+     * is already about to throw.
+     */
+    private static void deleteOrphanedPresignedObjectQuietly(final PresignedTransferService presignedTransferService, final String fileId) {
+        try {
+            presignedTransferService.deleteObject(fileId);
+        } catch (final ObjectStorageException cleanupFailed) {
+            CloudDriver.getInstance().getLogger().log(
+                    Level.WARNING,
+                    "@CloudUserService: failed to delete orphaned presigned-upload object for file '" + fileId + "'", cleanupFailed
+            );
+        }
     }
 
     /**

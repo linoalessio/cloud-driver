@@ -1,33 +1,29 @@
 import SwiftUI
 
-/// A file or folder being shared (owner side) via `ShareSheet`.
-enum ShareTarget: Identifiable {
-    case file(StoredFileSummaryResponse)
-    case folder(FolderResponse)
-
-    var id: String {
-        switch self {
-        case .file(let file): return "share-file-\(file.fileId)"
-        case .folder(let folder): return "share-folder-\(folder.folderId)"
-        }
-    }
+/// A batch of files/folders being shared (owner side) via `ShareSheet` - wraps `[SelectableEntry]`
+/// so it can drive a SwiftUI `.sheet(item:)`; a single-item share (from a row's own "..." menu) is
+/// just a one-element `entries` array, which keeps that case's existing "who is this shared with,
+/// with revoke" behavior (see `ShareSheet.loadShares`/`revoke` below - only meaningful for exactly
+/// one item).
+struct ShareTargets: Identifiable {
+    let entries: [SelectableEntry]
+    var id: String { entries.map(\.id).joined(separator: ",") }
 
     var displayName: String {
-        switch self {
-        case .file(let file): return file.fileName
-        case .folder(let folder): return folder.name
-        }
+        entries.count == 1 ? entries[0].displayName : "\(entries.count) items"
     }
 }
 
-/// Owner-side sharing: grant/revoke another account's read-only access to a file or folder, and
-/// see who it's currently shared with. Fully self-contained (its own local loading/error/list
-/// state) rather than routed through `AppViewModel`'s global `busy` guard - the same reasoning
+/// Owner-side sharing: grant another account's read-only access to one or more files/folders at
+/// once, and - only when exactly one item is targeted, since a revoke list has no single meaning
+/// across multiple items with potentially different grantee sets - see who it's currently shared
+/// with and revoke that access. Fully self-contained (its own local loading/error/list state)
+/// rather than routed through `AppViewModel`'s global `busy` guard - the same reasoning
 /// cloud-driver-platforms-desktop's own `ShareDialog` documents: tying a modal's own actions to a
 /// screen-wide busy flag would disable the rest of the app for no reason while it's simply open.
 struct ShareSheet: View {
     @ObservedObject var viewModel: AppViewModel
-    let target: ShareTarget
+    let targets: ShareTargets
     @Environment(\.dismiss) private var dismiss
 
     @State private var email = ""
@@ -47,7 +43,7 @@ struct ShareSheet: View {
                             icon: "person.badge.plus",
                             iconColor: CloudTheme.iconAccount,
                             title: "Share",
-                            subtitle: target.displayName
+                            subtitle: targets.displayName
                         ) {
                             HStack(spacing: 10) {
                                 GlassField {
@@ -76,26 +72,30 @@ struct ShareSheet: View {
                             .padding(.bottom, 16)
                         }
 
-                        CloudCard(
-                            icon: "person.2.fill",
-                            iconColor: CloudTheme.iconStorage,
-                            title: "Shared With",
-                            subtitle: grantees.isEmpty ? "No one yet" : "\(grantees.count) \(grantees.count == 1 ? "person" : "people")"
-                        ) {
-                            VStack(spacing: 0) {
-                                ForEach(grantees.indices, id: \.self) { index in
-                                    let granteeEmail = grantees[index]
-                                    CloudRow(
-                                        icon: "person.fill",
-                                        iconColor: CloudTheme.iconAccount,
-                                        title: granteeEmail,
-                                        showDivider: index != grantees.count - 1
-                                    ) {
-                                        Button {
-                                            revoke(granteeEmail)
-                                        } label: {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .foregroundStyle(Color.red.opacity(0.85))
+                        // A revoke list has no single meaning across multiple items with
+                        // potentially different grantee sets - only shown for a single target.
+                        if targets.entries.count == 1 {
+                            CloudCard(
+                                icon: "person.2.fill",
+                                iconColor: CloudTheme.iconStorage,
+                                title: "Shared With",
+                                subtitle: grantees.isEmpty ? "No one yet" : "\(grantees.count) \(grantees.count == 1 ? "person" : "people")"
+                            ) {
+                                VStack(spacing: 0) {
+                                    ForEach(grantees.indices, id: \.self) { index in
+                                        let granteeEmail = grantees[index]
+                                        CloudRow(
+                                            icon: "person.fill",
+                                            iconColor: CloudTheme.iconAccount,
+                                            title: granteeEmail,
+                                            showDivider: index != grantees.count - 1
+                                        ) {
+                                            Button {
+                                                revoke(granteeEmail)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .foregroundStyle(Color.red.opacity(0.85))
+                                            }
                                         }
                                     }
                                 }
@@ -134,11 +134,13 @@ struct ShareSheet: View {
         }
     }
 
+    /// Only meaningful for a single target - see the "Shared With" card's own `targets.entries.count == 1` guard.
     private func loadShares() async {
+        guard targets.entries.count == 1 else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            switch target {
+            switch targets.entries[0] {
             case .file(let file):
                 grantees = try await viewModel.client.listFileShares(fileId: file.fileId)
             case .folder(let folder):
@@ -158,12 +160,7 @@ struct ShareSheet: View {
         Task {
             defer { isSubmitting = false }
             do {
-                switch target {
-                case .file(let file):
-                    try await viewModel.client.shareFile(fileId: file.fileId, granteeEmail: trimmed)
-                case .folder(let folder):
-                    try await viewModel.client.shareFolder(folderId: folder.folderId, granteeEmail: trimmed)
-                }
+                try await viewModel.shareEntries(targets.entries, granteeEmail: trimmed)
                 email = ""
                 await loadShares()
             } catch let error as APIError {
@@ -175,9 +172,10 @@ struct ShareSheet: View {
     }
 
     private func revoke(_ granteeEmail: String) {
+        guard targets.entries.count == 1 else { return }
         Task {
             do {
-                switch target {
+                switch targets.entries[0] {
                 case .file(let file):
                     try await viewModel.client.revokeFileShare(fileId: file.fileId, granteeEmail: granteeEmail)
                 case .folder(let folder):

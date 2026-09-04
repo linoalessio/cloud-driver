@@ -4,6 +4,7 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.List;
@@ -59,6 +60,17 @@ public interface ICloudUser {
 
     /** Backs {@code CloudUserService#updateCloudUserBytesUsage} - not meant to be called directly by other callers. */
     void setCurrentUploadedBytes(final long currentUploadedBytes);
+
+    /**
+     * @return this account's stored light/dark theme preference (e.g. {@code "LIGHT"}/{@code
+     *     "DARK"}), synced across every device signed into this account - {@code null} if never
+     *     explicitly set, in which case a client should fall back to its own local/system default
+     */
+    @Nullable
+    String getThemeMode();
+
+    /** Backs {@code CloudUserService#updateThemePreference} - not meant to be called directly by other callers. */
+    void setThemeMode(@Nullable final String themeMode);
 
     /**
      * Reports whether uploading {@code bytesToUpload} more bytes would meet or exceed this

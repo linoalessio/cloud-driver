@@ -141,6 +141,30 @@ public final class StoredFile extends Serialized {
     private final String objectStorageKey;
 
     /**
+     * Whether this file's content was uploaded directly by the client to {@link
+     * #objectStorageKey} via a presigned URL (see {@code PresignedTransferService}), rather than
+     * through this server or moved there afterward by {@code DefaultFileFactory#upload}. A
+     * direct-transfer file's content is never DEFLATE-compressed and never encrypted by this
+     * application's own {@code EnvelopeEncryptionService} - confidentiality at rest comes from the
+     * object store's own server-side encryption instead (see {@code S3PresignedTransferService}'s
+     * Javadoc) - so {@link #resolveContent()} for such a file, once hydrated via {@link
+     * #withResolvedContent(byte[])}, is exactly the bytes the object store returned, no
+     * decompression step involved (harmless either way, since {@link #contentCompressed} is always
+     * {@code false} on a direct-transfer instance). Always {@code false} when {@link
+     * #objectStorageKey} is {@code null}.
+     */
+    private final boolean directTransfer;
+
+    /**
+     * This file's size, as declared by the uploading client and verified against the object
+     * store's own real content length at upload-completion time - set only on a {@link
+     * #directTransfer} instance, {@code null} otherwise. {@link #sizeBytes()} returns this
+     * directly when present, since a direct-transfer file's content is never fetched by this
+     * server just to learn its size the way {@link #resolveContent()} would otherwise require.
+     */
+    private final Long declaredSizeBytes;
+
+    /**
      * Lazily-decoded (and decompressed) cache of {@link #contentBase64},
      * populated on first access. Transient so Gson never serializes it;
      * plain reads/writes are safe since resolving is a pure, deterministic
@@ -181,6 +205,8 @@ public final class StoredFile extends Serialized {
         this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
         this.deletedAtEpochMillis = null;
         this.objectStorageKey = null;
+        this.directTransfer = false;
+        this.declaredSizeBytes = null;
     }
 
     /**
@@ -201,6 +227,8 @@ public final class StoredFile extends Serialized {
         this.updatedAtEpochMilli = source.updatedAtEpochMilli;
         this.deletedAtEpochMillis = deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = source.declaredSizeBytes;
         this.decodedContent = source.decodedContent;
     }
 
@@ -209,7 +237,10 @@ public final class StoredFile extends Serialized {
      * from {@code source} except {@link #contentBase64} (nulled) and {@link #decodedContent}
      * (dropped, unhydrated): the resulting instance is a metadata-only reference to content that
      * now lives at {@code objectStorageKey} in an external object store, not this entity's own
-     * {@link #contentBase64} field.
+     * {@link #contentBase64} field. {@link #directTransfer} always stays {@code false} here - this
+     * constructor backs {@code DefaultFileFactory#upload}'s app-encrypted S3 path only; a
+     * direct-transfer instance is only ever built via {@link #StoredFile(String, String, long,
+     * FileChecksum, Instant, Instant, String)}.
      */
     private StoredFile(final StoredFile source, final String objectStorageKey) {
         this.fileId = source.fileId;
@@ -224,6 +255,8 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = Asserts.requireNonNull(
                 objectStorageKey, "@StoredFile: objectStorageKey cannot be null"
         );
+        this.directTransfer = false;
+        this.declaredSizeBytes = null;
         this.decodedContent = null;
     }
 
@@ -244,7 +277,42 @@ public final class StoredFile extends Serialized {
         this.updatedAtEpochMilli = source.updatedAtEpochMilli;
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = source.declaredSizeBytes;
         this.decodedContent = decodedContent;
+    }
+
+    /**
+     * Constructor for a file whose content was uploaded directly to an external object store by
+     * the client itself, via a presigned URL - never touched by this server at all, so there is no
+     * {@code content} argument here the way every other constructor has. Used only by {@code
+     * CloudUserService#completePresignedUpload}, once the object store has confirmed the upload
+     * actually landed.
+     *
+     * @param fileId this file's unique id, its {@link #primaryKey()}
+     * @param fileName the original file name; also the source of {@link #contentType()}
+     * @param sizeBytes the file's real size, as confirmed against the object store - see {@link #declaredSizeBytes}
+     * @param checksum the checksum the uploading client itself computed and reported - trusted, not
+     *     independently verified by this server (it never sees the content to verify it against)
+     * @param createdAt when this file was first uploaded
+     * @param updatedAt when this file's content was last changed
+     * @param objectStorageKey the key this file's content is stored under in the external object store
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    public StoredFile(final String fileId, final String fileName, final long sizeBytes, final FileChecksum checksum,
+                       final Instant createdAt, final Instant updatedAt, final String objectStorageKey) {
+        this.fileId = Asserts.requireNonNull(fileId, "@StoredFile: fileId cannot be null");
+        this.fileName = Asserts.requireNonNull(fileName, "@StoredFile: fileName cannot be null");
+        this.contentType = normalizeContentType(this.fileName);
+        this.contentBase64 = null;
+        this.contentCompressed = false;
+        this.checksum = Asserts.requireNonNull(checksum, "@StoredFile: checksum cannot be null");
+        this.createdAtEpochMilli = Asserts.requireNonNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
+        this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
+        this.deletedAtEpochMillis = null;
+        this.objectStorageKey = Asserts.requireNonNull(objectStorageKey, "@StoredFile: objectStorageKey cannot be null");
+        this.directTransfer = true;
+        this.declaredSizeBytes = sizeBytes;
     }
 
     /**
@@ -326,9 +394,14 @@ public final class StoredFile extends Serialized {
         return resolveContent().clone();
     }
 
-    /** The size, in bytes, of this file's original, uncompressed content. */
+    /**
+     * The size, in bytes, of this file's original, uncompressed content - {@link
+     * #declaredSizeBytes} directly for a {@link #isDirectTransfer()} instance (avoids fetching
+     * content this server never needs to touch just to learn its length), otherwise {@link
+     * #resolveContent()}'s length as before.
+     */
     public long sizeBytes() {
-        return resolveContent().length;
+        return declaredSizeBytes != null ? declaredSizeBytes : resolveContent().length;
     }
 
     /** The plaintext checksum this file's content must match on every future download. */
@@ -344,6 +417,16 @@ public final class StoredFile extends Serialized {
     /** @return {@code true} if this file's content lives in an external object store (S3) rather than inline in {@link #contentBase64} */
     public boolean isS3Backed() {
         return objectStorageKey != null;
+    }
+
+    /**
+     * @return {@code true} if this file's content was uploaded directly by the client to {@link
+     *     #objectStorageKey} via a presigned URL - never DEFLATE-compressed, never encrypted by
+     *     this application's own {@code EnvelopeEncryptionService}. Always {@code false} if {@link
+     *     #isS3Backed()} is {@code false}.
+     */
+    public boolean isDirectTransfer() {
+        return directTransfer;
     }
 
     /** The key this file's content is stored under in an external object store, or {@code null} if {@link #isS3Backed()} is {@code false}. */
