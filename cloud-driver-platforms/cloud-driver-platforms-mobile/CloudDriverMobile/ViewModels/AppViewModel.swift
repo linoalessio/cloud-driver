@@ -391,6 +391,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Resets the file browser straight back to the root ("Home") folder - called by `RootView`
+    /// whenever the "Home" tab item is tapped (added 2026-09-05, per Lino's own request: tapping
+    /// "Home" on the tab bar should always go directly back to the home path, not wherever folder
+    /// navigation was last left inside it). A no-op if already at the root, so tapping "Home"
+    /// while already there doesn't trigger a redundant reload.
+    func goToHomeRoot() {
+        guard currentFolderId != nil, let root = breadcrumbs.first else { return }
+        navigateToBreadcrumb(root)
+    }
+
     func createFolder(name: String) {
         run {
             _ = try await self.client.createFolder(name: name, parentFolderId: self.currentFolderId)

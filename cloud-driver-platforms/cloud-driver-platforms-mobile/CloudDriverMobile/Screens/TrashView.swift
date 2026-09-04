@@ -128,7 +128,13 @@ struct TrashView: View {
         .task {
             viewModel.loadTrash()
         }
-        .confirmationDialog("Empty Trash?", isPresented: $showingEmptyTrashConfirmation, titleVisibility: .visible) {
+        // `.alert`, not `.confirmationDialog` - a confirmation dialog is iOS's action-sheet style,
+        // which always slides up from the *bottom* of the screen with no way to anchor it near
+        // whatever triggered it. Since the "Empty Trash" button lives in a fixed header at the
+        // *top* of this screen (see above), an action sheet at the opposite end read as
+        // disconnected from it - an alert, centered near the top of the screen, sits much closer
+        // to the button that opened it (per Lino's own request).
+        .alert("Empty Trash?", isPresented: $showingEmptyTrashConfirmation) {
             Button("Empty Trash", role: .destructive) {
                 viewModel.emptyTrash()
             }

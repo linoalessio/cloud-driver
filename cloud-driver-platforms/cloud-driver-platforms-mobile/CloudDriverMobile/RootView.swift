@@ -1,9 +1,42 @@
 import SwiftUI
 
+/// Which of the four signed-in tabs is currently selected - see `RootView.tabSelectionBinding`
+/// for why this is tracked explicitly rather than an inline `.tag` with no backing state at all.
+private enum Tab: Hashable {
+    case home
+    case trash
+    case shared
+    case dashboard
+}
+
 /// Switches between the auth flow and the signed-in file browser based on `AppViewModel.screen` -
 /// the mobile counterpart to cloud-driver-platforms-desktop's `App.kt`/`Screen.kt` dispatch.
 struct RootView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var selectedTab: Tab = .home
+
+    /// A manually-constructed `Binding` (passed to `TabView(selection:)` instead of `$selectedTab`
+    /// directly) so its `set` closure runs on **every** tap of a tab item - including re-tapping
+    /// "Home" while it's already selected, which a plain `@State`/`$selectedTab` binding wouldn't
+    /// distinguish from "nothing changed" and therefore wouldn't fire an `.onChange` for.
+    /// `TabView` itself always calls through to a bound selection's setter on every tap, regardless
+    /// of whether the new value differs from the old one - it's only downstream state-diffing
+    /// (`@State`'s own invalidation, or `.onChange`) that would skip a no-op write, so intercepting
+    /// the tap here, before that write ever happens, is what actually lets "tap Home again while
+    /// already on Home" reset navigation the same way switching back from another tab does. Added
+    /// 2026-09-05, per Lino's own request: tapping "Home" on the tab bar should always go straight
+    /// back to the root folder, not wherever folder navigation was last left inside it.
+    private var tabSelectionBinding: Binding<Tab> {
+        Binding(
+            get: { selectedTab },
+            set: { newValue in
+                if newValue == .home {
+                    viewModel.goToHomeRoot()
+                }
+                selectedTab = newValue
+            }
+        )
+    }
 
     var body: some View {
         Group {
@@ -19,15 +52,19 @@ struct RootView: View {
             case .resetPasswordConfirm(let email):
                 ResetPasswordConfirmView(viewModel: viewModel, email: email)
             case .browser:
-                TabView {
+                TabView(selection: tabSelectionBinding) {
                     FileBrowserView(viewModel: viewModel)
                         .tabItem { Label("Home", systemImage: "house.fill") }
+                        .tag(Tab.home)
                     TrashView(viewModel: viewModel)
                         .tabItem { Label("Trash", systemImage: "trash.fill") }
+                        .tag(Tab.trash)
                     SharedWithMeView(viewModel: viewModel)
                         .tabItem { Label("Shared", systemImage: "person.2.fill") }
+                        .tag(Tab.shared)
                     DashboardView(viewModel: viewModel)
                         .tabItem { Label("Dashboard", systemImage: "person.crop.circle") }
+                        .tag(Tab.dashboard)
                 }
                 .tint(CloudTheme.accent)
                 .toolbarColorScheme(.dark, for: .tabBar)
