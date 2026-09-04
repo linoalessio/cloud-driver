@@ -181,6 +181,8 @@ struct FileBrowserView: View {
                                         Button {
                                             if viewModel.isSelecting {
                                                 viewModel.toggleSelection(entry)
+                                            } else {
+                                                viewModel.previewFile(file)
                                             }
                                         } label: {
                                             HStack(spacing: 8) {

@@ -36,10 +36,18 @@ struct RootView: View {
         // Owned here, same reasoning as the alert/sheet below - visible regardless of which tab
         // is currently selected, since AppViewModel.transferProgress is shared state an upload/
         // download/extraction triggered from Home should still be visible to from Trash/Shared/
-        // Dashboard.
+        // Dashboard. `.emptyTrash` gets its own centered overlay (`EmptyingTrashOverlay`, below)
+        // instead of this bottom bar - a deliberately more prominent treatment for an action that
+        // blocks interacting with the trash it's clearing, rather than a background transfer the
+        // user can keep browsing around.
         .safeAreaInset(edge: .bottom) {
-            if let progress = viewModel.transferProgress {
+            if let progress = viewModel.transferProgress, progress.kind != .emptyTrash {
                 TransferProgressBar(progress: progress)
+            }
+        }
+        .overlay {
+            if let progress = viewModel.transferProgress, progress.kind == .emptyTrash {
+                EmptyingTrashOverlay()
             }
         }
         // Both owned here (not per-screen) so they keep working regardless of which tab is
@@ -59,13 +67,19 @@ struct RootView: View {
         .sheet(item: $viewModel.fileToShare) { item in
             ActivityView(activityItems: [item.url])
         }
+        .sheet(item: $viewModel.previewURL) { item in
+            FilePreviewView(url: item.url) { viewModel.previewURL = nil }
+        }
     }
 }
 
 /// Real, byte-level progress for an in-flight upload/download/extraction - the mobile counterpart
 /// to cloud-driver-platforms-desktop's own `TransferProgressBar` (`Sidebar.kt`). Pinned to the
 /// bottom of the screen via `RootView`'s `.safeAreaInset(edge: .bottom)`, so it never overlaps
-/// scrollable content and stays visible across every tab.
+/// scrollable content and stays visible across every tab. **Never actually shown for
+/// `.emptyTrash`** - `RootView` routes that kind to `EmptyingTrashOverlay` instead (below); the
+/// `.emptyTrash` case still has to exist in `verb`'s `switch` for exhaustiveness, but nothing in
+/// this view ever renders with it.
 private struct TransferProgressBar: View {
     let progress: TransferProgress
 
@@ -79,9 +93,6 @@ private struct TransferProgressBar: View {
     }
 
     private var label: String {
-        // `.emptyTrash` is a single request/response with no byte-level signal of its own (unlike
-        // upload/download/extract, which stream) - just the verb, no byte counts to show.
-        guard progress.kind != .emptyTrash else { return "\(verb)…" }
         let byteText = "\(formatBytes(progress.transferredBytes)) / \(formatBytes(progress.totalBytes))"
         guard progress.totalItems > 1 else {
             return "\(verb) - \(byteText)"
@@ -98,20 +109,53 @@ private struct TransferProgressBar: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(CloudTheme.textSecondary)
-                // `.emptyTrash` has no fraction to report (a single request/response, not a
-                // stream) - an indeterminate bar communicates "in progress" without implying a
-                // real percentage it doesn't actually have.
-                if progress.kind == .emptyTrash {
-                    ProgressView()
-                        .tint(CloudTheme.accent)
-                } else {
-                    ProgressView(value: progress.fraction)
-                        .tint(CloudTheme.accent)
-                }
+                ProgressView(value: progress.fraction)
+                    .tint(CloudTheme.accent)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
         }
+    }
+}
+
+/// The dedicated, centered treatment for `.emptyTrash` (added 2026-09-05, per Lino's own request -
+/// "displayed in the middle of the screen with a rotating gear") - a dimmed scrim over the whole
+/// screen plus a floating card with a continuously spinning `gearshape.fill` glyph and a short
+/// label, rather than routing this kind through the bottom-pinned `TransferProgressBar` every
+/// other transfer uses. Deliberately more prominent than that bar: emptying the trash is a single,
+/// short-lived, blocking action (one request/response, no incremental byte progress to show at
+/// all - unlike upload/download/extract, which stream and can run alongside continued browsing),
+/// so a full-screen, attention-holding indicator reads better here than a quiet bottom strip would.
+///
+/// The rotation itself is driven by a plain `@State` boolean flipped once in `.onAppear` - SwiftUI
+/// animates from the *current* value to the *new* value over the given duration and, because
+/// `.repeatForever` loops that same interpolation indefinitely, the gear reads as spinning
+/// continuously for as long as this view stays on screen (i.e., for as long as `emptyTrash` is
+/// still in flight - `RootView` only shows this overlay while `AppViewModel.transferProgress`'s
+/// kind is `.emptyTrash`, so it disappears the instant that call finishes).
+private struct EmptyingTrashOverlay: View {
+    @State private var isRotating = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(CloudTheme.accent)
+                    .rotationEffect(.degrees(isRotating ? 360 : 0))
+                    .animation(.linear(duration: 1.4).repeatForever(autoreverses: false), value: isRotating)
+
+                Text("Emptying Trash…")
+                    .font(.callout)
+                    .foregroundStyle(CloudTheme.textPrimary)
+            }
+            .padding(28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .onAppear { isRotating = true }
     }
 }
