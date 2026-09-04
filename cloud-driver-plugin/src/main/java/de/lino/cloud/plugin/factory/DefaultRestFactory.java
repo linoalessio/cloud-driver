@@ -1007,6 +1007,20 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@link #handleDownloadFile}, so a freshly uploaded or individually-fetched file's response
      * reflects its folder exactly like every other route does. {@link #handleListFiles} does not
      * need this - its {@link StoredFileSummary} entries already carry their own {@code folderId}.
+     *
+     * <p><b>S3-backed content correction (architecture/AWS_S3_IMPL.md):</b> {@code
+     * this.gson.toJsonTree(file)} reflects {@code file}'s own fields, so for an {@link
+     * StoredFile#isS3Backed()} file this would otherwise emit a {@code "contentBase64": null} -
+     * that field only ever carries content for an <em>inline</em> file; an S3-backed one has it
+     * resolved onto the transient, Gson-excluded {@code decodedContent} field instead (see {@code
+     * FileFactory#download}/{@code #findById}, which the caller of this method already routed
+     * {@code file} through). Overriding {@code "contentBase64"} with {@link StoredFile#content()}'s
+     * own base64 encoding - and {@code "contentCompressed"} with {@code false}, since {@link
+     * StoredFile#content()} is always already-decompressed plaintext, unlike the
+     * possibly-still-compressed bytes an inline file's real {@code contentBase64} carries - keeps
+     * this route's wire shape identical for a client regardless of which backend a file's content
+     * actually lives in. A no-op for an inline file, whose real {@code contentBase64}/{@code
+     * contentCompressed} fields are already correct as Gson wrote them.
      */
     private JsonObject toJsonObject(final StoredFile file, @Nullable final String folderId) {
         final JsonObject json = this.gson.toJsonTree(file).getAsJsonObject();
@@ -1014,6 +1028,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             json.addProperty(FOLDER_ID_FIELD, folderId);
         } else {
             json.add(FOLDER_ID_FIELD, JsonNull.INSTANCE);
+        }
+        if (file.isS3Backed()) {
+            json.addProperty("contentBase64", Base64.getEncoder().encodeToString(file.content()));
+            json.addProperty("contentCompressed", false);
         }
         return json;
     }

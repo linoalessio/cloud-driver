@@ -65,10 +65,14 @@ public static void main(String[] args) throws IOException {
   `"aws-kms-region"`/`"aws-kms-key-id"` from a sibling `configuration.json` - KEK material never
   leaves AWS's own KMS/HSMs; the older `DatabaseKeyEncryptionService` line is left in as a
   commented-out `// TODO: remove` in case of rollback, not actually used) wrapped in an
-  `EnvelopeEncryptionService`, and installs the `CloudDriver` singleton via
+  `EnvelopeEncryptionService`, resolves an optional `ObjectStorageService` via
+  `resolveObjectStorageService(configuration)` (`architecture/AWS_S3_IMPL.md` - a
+  `S3ObjectStorageService` if `"aws-s3-bucket"`/`"aws-s3-region"` are both set in the same
+  `configuration.json`, `null` otherwise, keeping every `StoredFile`'s content inline exactly as
+  before this feature existed), and installs the `CloudDriver` singleton via
   `DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService,
-  ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER)`. That third argument is this module's own
-  `ConnectivityChecker` - a fixed `() -> true`, deliberately replacing the default
+  ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER, objectStorageService)`. That third argument is this
+  module's own `ConnectivityChecker` - a fixed `() -> true`, deliberately replacing the default
   `InternetConnectivityChecker` (which probes public DNS resolvers to answer "is there a network
   connection at all"). This deployment's Postgres instance runs on the same machine as this
   process, so that question is irrelevant here and, per a real incident, actively harmful: under a
@@ -198,6 +202,19 @@ uploads at startup (see above) - everything else it persists (`AuthUser`, `Pendi
   same Postgres instance - contrast `cloud-driver-plugin`'s `FileKeyEncryptionService`/
   `InMemoryKeyEncryptionService`, neither of which this module uses either) is left commented out
   in source (`// TODO: remove`) in case of rollback, but is not the active code path.
+- **S3-backed `StoredFile` content is opt-in, resolved the same "never a default, operator sets it
+  deliberately" way as the KMS-backed KEK above** (`architecture/AWS_S3_IMPL.md`).
+  `resolveObjectStorageService(configuration)` reads three new, optional `configuration.json` keys:
+  `"aws-s3-bucket"` and `"aws-s3-region"` (both required together - a bucket with no region, or a
+  region with no bucket, is treated as "not configured" and logged as a warning) and
+  `"aws-s3-key-prefix"` (optional even once the other two are set, defaults to `""` - no prefix).
+  Credentials are resolved the same way as `AwsKmsKeyEncryptionService`'s - the AWS SDK's own
+  default credential provider chain, never read from `configuration.json` itself. Leaving
+  `"aws-s3-bucket"` unset (including on a `configuration.json` that predates this feature) keeps
+  every file's content inline in Postgres exactly as before - this is the only optional key in this
+  module whose absence is a completely safe, fully-supported default, unlike e.g.
+  `"cloud-user-max-bytes-to-upload"` elsewhere in this codebase (see `cloud-driver-plugin`'s own
+  README/CLAUDE.md for that one's own, much stricter unset-default).
 - **`initDefaultFile()` runs before any extension starts**, specifically so the
   `storedfile` table is guaranteed to exist by the time an extension that watches it for change
   notifications (e.g. `cloud-driver-extensions-watcher`'s `CloudWatcherExtension`) installs its

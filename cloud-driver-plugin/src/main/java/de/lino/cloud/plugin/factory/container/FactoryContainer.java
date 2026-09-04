@@ -3,6 +3,7 @@ package de.lino.cloud.plugin.factory.container;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.storage.object.ObjectStorageService;
 import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
@@ -11,6 +12,7 @@ import de.lino.database.database.DatabaseProvider;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.SneakyThrows;
+import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
 
@@ -55,26 +57,53 @@ public class FactoryContainer implements IFactoryContainer {
     /** Mounts entities reachable through {@link #dataFactory} onto an unauthenticated HTTP API. */
     private final RestFactory restFactory;
 
+    /** Backs {@link #fileFactory}'s optional S3-backed {@code StoredFile} content path, or {@code null} if this deployment hasn't opted into it. */
+    private final ObjectStorageService objectStorageService;
+
     /**
-     * Builds every facet from {@code databaseProvider}/{@code envelopeEncryptionService}/{@code
-     * connectivityChecker}. Annotated {@link SneakyThrows} because {@link DefaultExtensionFactory}'s
-     * no-arg constructor declares a checked {@link java.io.IOException} (if {@code
-     * Constraints#EXTENSIONS_PATH} cannot be created) that this constructor has no meaningful way to
-     * recover from - it is rethrown unchecked rather than wrapped.
+     * Same as {@link #FactoryContainer(DatabaseProvider, EnvelopeEncryptionService,
+     * ConnectivityChecker, ObjectStorageService)} with {@code objectStorageService} defaulted to
+     * {@code null} - S3-backed content not configured, every file stays inline (this deployment's
+     * default).
      *
      * @param databaseProvider the backing {@code database-driver-plugin} provider every entity/file is persisted through
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence
      * @param connectivityChecker backs {@link #fileFactory}'s offline-safe upload deferral
      * @throws NullPointerException if any argument is {@code null}
      */
-    @SneakyThrows
     public FactoryContainer(@NonNull final DatabaseProvider databaseProvider, @NonNull final EnvelopeEncryptionService envelopeEncryptionService, @NonNull final ConnectivityChecker connectivityChecker) {
+        this(databaseProvider, envelopeEncryptionService, connectivityChecker, null);
+    }
+
+    /**
+     * Builds every facet from {@code databaseProvider}/{@code envelopeEncryptionService}/{@code
+     * connectivityChecker}/{@code objectStorageService}. Annotated {@link SneakyThrows} because
+     * {@link DefaultExtensionFactory}'s no-arg constructor declares a checked {@link
+     * java.io.IOException} (if {@code Constraints#EXTENSIONS_PATH} cannot be created) that this
+     * constructor has no meaningful way to recover from - it is rethrown unchecked rather than
+     * wrapped.
+     *
+     * @param databaseProvider the backing {@code database-driver-plugin} provider every entity/file is persisted through
+     * @param envelopeEncryptionService encrypts/decrypts entities before persistence - also what
+     *     {@link #fileFactory} uses to encrypt a file's content independently before handing it to
+     *     {@code objectStorageService}, if configured (see {@code architecture/AWS_S3_IMPL.md})
+     * @param connectivityChecker backs {@link #fileFactory}'s offline-safe upload deferral
+     * @param objectStorageService backs {@link #fileFactory}'s optional S3-backed content path, or
+     *     {@code null} to keep every file inline
+     * @throws NullPointerException if {@code databaseProvider}/{@code envelopeEncryptionService}/{@code connectivityChecker} is {@code null}
+     */
+    @SneakyThrows
+    public FactoryContainer(@NonNull final DatabaseProvider databaseProvider, @NonNull final EnvelopeEncryptionService envelopeEncryptionService,
+                             @NonNull final ConnectivityChecker connectivityChecker, @Nullable final ObjectStorageService objectStorageService) {
 
         this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(
                 databaseProvider, envelopeEncryptionService,
                 EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL
         ));
-        this.fileFactory = new DefaultFileFactory(this.dataFactory, new InMemoryPendingUploadCache(), connectivityChecker);
+        this.objectStorageService = objectStorageService;
+        this.fileFactory = new DefaultFileFactory(
+                this.dataFactory, new InMemoryPendingUploadCache(), connectivityChecker, objectStorageService, envelopeEncryptionService
+        );
         this.extensionFactory = new DefaultExtensionFactory();
         this.eventFactory = new DefaultEventFactory();
         this.restFactory = new DefaultRestFactory(this.dataFactory);

@@ -17,6 +17,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.storage.object.ObjectStorageService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
@@ -27,6 +28,7 @@ import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
+import de.lino.cloud.plugin.storage.object.S3ObjectStorageService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
@@ -44,6 +46,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.logging.Logger;
 
 /**
  * Real entry point: boots a Postgres-backed {@link CloudDriver} and starts every subsystem
@@ -142,9 +145,44 @@ public final class CloudBootstrap {
         // TODO: remove --> final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
 
-        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER);
+        final ObjectStorageService objectStorageService = resolveObjectStorageService(configuration);
+
+        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER, objectStorageService);
 
         return Optional.of(CloudDriver.getInstance());
+    }
+
+    /**
+     * Resolves an optional {@link S3ObjectStorageService} from {@code configuration.json}'s {@code
+     * "aws-s3-region"}/{@code "aws-s3-bucket"}/{@code "aws-s3-key-prefix"} keys - see {@code
+     * architecture/AWS_S3_IMPL.md}. <b>Not wired in by default</b>: this deployment's S3-backed
+     * {@code StoredFile} content path is opt-in, the same "operator explicitly provisions a bucket
+     * and IAM credentials before this activates" convention {@link AwsKmsKeyEncryptionService}
+     * already established for KMS - a missing/blank {@code "aws-s3-bucket"} (including on a {@code
+     * configuration.json} that predates this feature and simply doesn't have the key yet) returns
+     * {@code null}, keeping every file's content inline exactly as before. {@code
+     * "aws-s3-key-prefix"} is itself optional even once the other two are set, defaulting to
+     * {@code ""} (no prefix).
+     *
+     * @param configuration this deployment's loaded {@code configuration.json}
+     * @return a configured {@link S3ObjectStorageService}, or {@code null} if S3-backed storage isn't configured
+     */
+    private static ObjectStorageService resolveObjectStorageService(final JsonDocument configuration) {
+        if (!configuration.contains("aws-s3-bucket") || configuration.getString("aws-s3-bucket").isBlank()) {
+            return null;
+        }
+        if (!configuration.contains("aws-s3-region") || configuration.getString("aws-s3-region").isBlank()) {
+            Logger.getLogger(CloudBootstrap.class.getSimpleName()).warning(
+                    "@CloudBootstrap.resolveObjectStorageService: 'aws-s3-bucket' is set but 'aws-s3-region' is "
+                            + "missing/blank in configuration.json - S3-backed StoredFile content stays disabled.");
+            return null;
+        }
+
+        final String bucket = configuration.getString("aws-s3-bucket");
+        final Region s3Region = Region.of(configuration.getString("aws-s3-region"));
+        final String keyPrefix = configuration.contains("aws-s3-key-prefix") ? configuration.getString("aws-s3-key-prefix") : "";
+
+        return new S3ObjectStorageService(s3Region, bucket, keyPrefix);
     }
 
     /**
@@ -204,7 +242,10 @@ public final class CloudBootstrap {
     }
 
     /**
-     * Starts a {@link PendingUploadScheduler} on its own ticker thread.
+     * Starts a {@link PendingUploadScheduler} on its own ticker thread - passing this process's
+     * own {@link DefaultFileFactory} so a retried upload also applies the S3-then-metadata
+     * sequence {@link DefaultFileFactory#upload} itself uses, if S3-backed storage is configured
+     * (see {@code architecture/AWS_S3_IMPL.md}).
      *
      * @return the scheduler's shutdown action
      */
@@ -214,7 +255,8 @@ public final class CloudBootstrap {
         final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
 
         final PendingUploadScheduler pendingUploadScheduler = new PendingUploadScheduler(
-                dataFactory, ((DefaultFileFactory) fileFactory).getPendingUploadCache(), CLOUD_DRIVER.getConnectivityChecker()
+                dataFactory, ((DefaultFileFactory) fileFactory).getPendingUploadCache(), CLOUD_DRIVER.getConnectivityChecker(),
+                (DefaultFileFactory) fileFactory
         );
         pendingUploadScheduler.start(Duration.ofMinutes(1));
 

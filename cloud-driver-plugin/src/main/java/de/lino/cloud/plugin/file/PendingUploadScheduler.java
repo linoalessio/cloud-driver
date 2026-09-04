@@ -6,14 +6,18 @@ import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
+import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -32,6 +36,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * DefaultFileFactory#upload} - {@code upload} would silently re-queue a
  * still-failing file into the very cache this scheduler is draining;
  * {@code register} either persists or throws.
+ *
+ * <p><b>S3-backed content (architecture/AWS_S3_IMPL.md).</b> If constructed with a non-{@code
+ * null} {@link #fileFactory}, every retry first runs {@code file} through {@link
+ * DefaultFileFactory#prepareForPersistence} - the same S3-then-metadata sequence {@code
+ * DefaultFileFactory#upload} itself applies - before handing the (possibly now metadata-only)
+ * result to {@link #dataFactory}'s {@code registerAsync}; a {@code null} {@code fileFactory}
+ * (the three-argument constructor) skips this and registers the original, still content-carrying
+ * {@code file} unchanged, exactly as before this feature existed.
  */
 public final class PendingUploadScheduler {
 
@@ -41,6 +53,8 @@ public final class PendingUploadScheduler {
     private final PendingUploadCache pendingUploadCache;
     /** Reports whether connectivity is currently available. */
     private final ConnectivityChecker connectivityChecker;
+    /** Applies {@link DefaultFileFactory#prepareForPersistence} to a retried file before registering it, or {@code null} to skip that step (S3-backed storage not configured). */
+    private final DefaultFileFactory fileFactory;
     /** Single-thread, daemon-backed executor driving the tick schedule. */
     private final ScheduledExecutorService scheduledExecutorService;
 
@@ -51,6 +65,10 @@ public final class PendingUploadScheduler {
     private volatile ScheduledFuture<?> scheduledFuture;
 
     /**
+     * Same as {@link #PendingUploadScheduler(DataFactory, PendingUploadCache, ConnectivityChecker,
+     * DefaultFileFactory)} with {@link #fileFactory} defaulted to {@code null} - a retry is
+     * registered as-is, with no S3-then-metadata step applied first.
+     *
      * @param dataFactory the factory retried uploads are attempted against, via {@code registerAsync}
      * @param pendingUploadCache the cache polled and drained on every tick
      * @param connectivityChecker reports whether connectivity is currently available
@@ -58,9 +76,23 @@ public final class PendingUploadScheduler {
      */
     public PendingUploadScheduler(@NotNull final DataFactory dataFactory, @NotNull final PendingUploadCache pendingUploadCache,
                                    @NotNull final ConnectivityChecker connectivityChecker) {
+        this(dataFactory, pendingUploadCache, connectivityChecker, null);
+    }
+
+    /**
+     * @param dataFactory the factory retried uploads are attempted against, via {@code registerAsync}
+     * @param pendingUploadCache the cache polled and drained on every tick
+     * @param connectivityChecker reports whether connectivity is currently available
+     * @param fileFactory applies {@code prepareForPersistence} to a retried file before
+     *     registering it (see this class's own Javadoc), or {@code null} to skip that step
+     * @throws NullPointerException if {@code dataFactory}/{@code pendingUploadCache}/{@code connectivityChecker} is {@code null}
+     */
+    public PendingUploadScheduler(@NotNull final DataFactory dataFactory, @NotNull final PendingUploadCache pendingUploadCache,
+                                   @NotNull final ConnectivityChecker connectivityChecker, @Nullable final DefaultFileFactory fileFactory) {
         this.dataFactory = Asserts.requireNonNull(dataFactory, "@PendingUploadScheduler: dataFactory cannot be null");
         this.pendingUploadCache = Asserts.requireNonNull(pendingUploadCache, "@PendingUploadScheduler: pendingUploadCache cannot be null");
         this.connectivityChecker = Asserts.requireNonNull(connectivityChecker, "@PendingUploadScheduler: connectivityChecker cannot be null");
+        this.fileFactory = fileFactory;
         this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
     }
 
@@ -132,22 +164,44 @@ public final class PendingUploadScheduler {
     }
 
     /**
-     * Retries {@code file} via {@link DataFactory#registerAsync}, removing it from {@link
-     * #pendingUploadCache} and dispatching a {@link PendingUploadEvent} through the {@link
-     * CloudDriver#getInstance()}'s {@code EventFactory} on success. Failures are swallowed
-     * (the returned future still completes normally) so one failing retry doesn't abort the
-     * whole flush - the file is simply left queued for the next tick.
+     * Retries {@code file} - via {@link #fileFactory}'s {@code prepareForPersistence} first, if
+     * configured (see this class's own Javadoc), then {@link DataFactory#registerAsync} -
+     * removing it from {@link #pendingUploadCache} and dispatching a {@link PendingUploadEvent}
+     * through the {@link CloudDriver#getInstance()}'s {@code EventFactory} on success. Failures
+     * are swallowed (the returned future still completes normally) so one failing retry doesn't
+     * abort the whole flush - the file is simply left queued for the next tick.
      *
      * @param file the file to retry
      * @return a future that completes once this file's retry has finished, success or failure
      */
     private CompletableFuture<Void> retryUpload(final StoredFile file) {
-        return this.dataFactory.registerAsync(file)
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> prepareForRegistrationUnchecked(file))
+                .thenCompose(this.dataFactory::registerAsync)
                 .thenRun(() -> {
                     this.pendingUploadCache.remove(file.fileId());
                     CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(PendingUploadEvent.class, new JsonDocument().append("fileId", file.fileId()));
                 })
                 .exceptionally(stillFailing -> null);
+    }
+
+    /**
+     * Applies {@link #fileFactory}'s {@code prepareForPersistence} to {@code file}, or returns it
+     * unchanged if {@link #fileFactory} is {@code null} - the checked-exception-wrapping form
+     * {@link #retryUpload} needs to run this inside a {@link java.util.function.Supplier}. An
+     * unchecked {@code ObjectStorageException} from {@code prepareForPersistence} itself needs no
+     * wrapping here - it already propagates out of the {@link java.util.function.Supplier} as-is.
+     *
+     * @throws CompletionException wrapping a {@link KeyWrapException} on failure
+     */
+    private StoredFile prepareForRegistrationUnchecked(final StoredFile file) {
+        if (this.fileFactory == null) {
+            return file;
+        }
+        try {
+            return this.fileFactory.prepareForPersistence(file);
+        } catch (final KeyWrapException e) {
+            throw new CompletionException(e);
+        }
     }
 
     /**

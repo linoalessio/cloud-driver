@@ -13,6 +13,7 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.security.rest.ApiKey;
+import de.lino.cloud.api.storage.object.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
 import de.lino.cloud.api.utility.Asserts;
@@ -31,6 +32,7 @@ import de.lino.database.json.JsonDocument;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Optional;
@@ -99,7 +101,9 @@ public final class DefaultCloudDriver extends CloudDriver {
 
     /**
      * Same as {@link #setInstance(DatabaseProvider, EnvelopeEncryptionService)}, but with an
-     * explicit {@link ConnectivityChecker} backing {@link #getConnectivityChecker()}.
+     * explicit {@link ConnectivityChecker} backing {@link #getConnectivityChecker()}. S3-backed
+     * {@code StoredFile} content is not configured - see {@link #setInstance(DatabaseProvider,
+     * EnvelopeEncryptionService, ConnectivityChecker, ObjectStorageService)} to opt into it.
      *
      * @param databaseProvider the backing {@code database-driver-plugin} provider
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence
@@ -107,17 +111,42 @@ public final class DefaultCloudDriver extends CloudDriver {
      * @return the installed instance
      */
     @NotNull
-    public static synchronized CloudDriver setInstance(
+    public static CloudDriver setInstance(
             @NotNull final DatabaseProvider databaseProvider,
             @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
             @NotNull final ConnectivityChecker connectivityChecker
+    ) {
+        return setInstance(databaseProvider, envelopeEncryptionService, connectivityChecker, null);
+    }
+
+    /**
+     * Same as {@link #setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)},
+     * with an explicit {@link ObjectStorageService} backing {@link DefaultFileFactory}'s optional
+     * S3-backed {@code StoredFile} content path (see {@code architecture/AWS_S3_IMPL.md}) - {@code
+     * null} keeps every file's content inline, exactly as the three-argument overload does.
+     *
+     * @param databaseProvider the backing {@code database-driver-plugin} provider
+     * @param envelopeEncryptionService encrypts/decrypts entities before persistence, and - if
+     *     {@code objectStorageService} is non-{@code null} - a file's content independently before
+     *     it's handed to that object store
+     * @param connectivityChecker backs {@link #getConnectivityChecker()} and {@link DefaultFileFactory}
+     * @param objectStorageService backs {@link DefaultFileFactory}'s optional S3-backed content
+     *     path, or {@code null} to keep every file inline (this deployment's default)
+     * @return the installed instance
+     */
+    @NotNull
+    public static synchronized CloudDriver setInstance(
+            @NotNull final DatabaseProvider databaseProvider,
+            @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
+            @NotNull final ConnectivityChecker connectivityChecker,
+            @Nullable final ObjectStorageService objectStorageService
     ) {
 
         final Terminal terminal = new Terminal(new DefaultPromptProvider());
         final Logger logger = Logger.getLogger(CloudDriver.class.getSimpleName());
         terminal.attachLogging(logger);
 
-        final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker);
+        final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker, objectStorageService);
         final IServiceContainer serviceContainer = new ServiceContainer();
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(

@@ -43,6 +43,16 @@ import java.util.zip.Inflater;
  * caching the result in {@link #decodedContent}. The constructor also
  * attempts DEFLATE compression before encoding, keeping the compressed form
  * only if it is smaller - see {@link #isCompressed()}.
+ *
+ * <p><b>Content can instead live in an external object store (S3) - see {@link #objectStorageKey}.</b>
+ * A file is either inline ({@link #contentBase64} set, {@link #objectStorageKey} {@code null} -
+ * every file ever uploaded before this field existed, and every file on a deployment that hasn't
+ * opted into S3-backed storage at all) or S3-backed ({@link #objectStorageKey} set, {@link
+ * #contentBase64} {@code null}) - never both. {@code DefaultFileFactory} (the only production
+ * caller that constructs either shape) resolves an S3-backed file's content by fetching/decrypting
+ * it from the configured {@code ObjectStorageService} and calling {@link
+ * #withResolvedContent(byte[])} to hydrate a copy - every accessor below throws {@link
+ * IllegalStateException} on an S3-backed instance until that hydration has happened.
  */
 // content is excluded from toString(): dumping it - even base64-encoded -
 // would still put a file's entire content into any log line or console
@@ -121,10 +131,22 @@ public final class StoredFile extends Serialized {
     private final Long deletedAtEpochMillis;
 
     /**
+     * The key this file's content is stored under in an external object store (S3), or {@code
+     * null} for a file whose content still lives inline in {@link #contentBase64} - see this
+     * class's own Javadoc. Mutually exclusive with {@link #contentBase64}: exactly one of the two
+     * is non-null on any given instance. Set via {@link #withObjectStorageKey(String)}, never by a
+     * constructor a caller invokes directly with content in hand - a freshly uploaded file always
+     * starts inline; only {@code DefaultFileFactory#upload} decides to move it to S3.
+     */
+    private final String objectStorageKey;
+
+    /**
      * Lazily-decoded (and decompressed) cache of {@link #contentBase64},
      * populated on first access. Transient so Gson never serializes it;
      * plain reads/writes are safe since resolving is a pure, deterministic
-     * function of the base64 content.
+     * function of the base64 content. For an {@link #isS3Backed()} instance, this is instead
+     * primed directly by {@link #withResolvedContent(byte[])} - there is no {@link #contentBase64}
+     * to decode it from.
      */
     private transient volatile byte[] decodedContent;
 
@@ -158,13 +180,15 @@ public final class StoredFile extends Serialized {
         this.createdAtEpochMilli = Asserts.requireNonNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
         this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
         this.deletedAtEpochMillis = null;
+        this.objectStorageKey = null;
     }
 
     /**
      * Copy constructor backing {@link #markedDeleted()}/{@link #restored()} - carries every field
      * over from {@code source} unchanged except {@link #deletedAtEpochMillis}, reusing {@code
-     * source}'s already-resolved {@link #contentBase64}/{@link #decodedContent} directly rather
-     * than decompressing and recompressing content just to flip one flag.
+     * source}'s already-resolved {@link #contentBase64}/{@link #decodedContent}/{@link
+     * #objectStorageKey} directly rather than decompressing and recompressing content just to flip
+     * one flag.
      */
     private StoredFile(final StoredFile source, final Long deletedAtEpochMillis) {
         this.fileId = source.fileId;
@@ -176,7 +200,51 @@ public final class StoredFile extends Serialized {
         this.createdAtEpochMilli = source.createdAtEpochMilli;
         this.updatedAtEpochMilli = source.updatedAtEpochMilli;
         this.deletedAtEpochMillis = deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
         this.decodedContent = source.decodedContent;
+    }
+
+    /**
+     * Copy constructor backing {@link #withObjectStorageKey(String)} - carries every field over
+     * from {@code source} except {@link #contentBase64} (nulled) and {@link #decodedContent}
+     * (dropped, unhydrated): the resulting instance is a metadata-only reference to content that
+     * now lives at {@code objectStorageKey} in an external object store, not this entity's own
+     * {@link #contentBase64} field.
+     */
+    private StoredFile(final StoredFile source, final String objectStorageKey) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = null;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = Asserts.requireNonNull(
+                objectStorageKey, "@StoredFile: objectStorageKey cannot be null"
+        );
+        this.decodedContent = null;
+    }
+
+    /**
+     * Copy constructor backing {@link #withResolvedContent(byte[])} - carries every field over
+     * from {@code source} unchanged (including {@link #objectStorageKey}, which stays set: this
+     * hydrates an S3-backed reference with fetched content, it does not turn it back into an
+     * inline file) except {@link #decodedContent}, primed with the given, already-resolved bytes.
+     */
+    private StoredFile(final StoredFile source, final byte[] decodedContent) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
+        this.decodedContent = decodedContent;
     }
 
     /**
@@ -273,6 +341,82 @@ public final class StoredFile extends Serialized {
         return contentCompressed;
     }
 
+    /** @return {@code true} if this file's content lives in an external object store (S3) rather than inline in {@link #contentBase64} */
+    public boolean isS3Backed() {
+        return objectStorageKey != null;
+    }
+
+    /** The key this file's content is stored under in an external object store, or {@code null} if {@link #isS3Backed()} is {@code false}. */
+    public String objectStorageKey() {
+        return objectStorageKey;
+    }
+
+    /**
+     * The raw bytes {@link #contentBase64} decodes to - DEFLATE-compressed if {@link
+     * #isCompressed()}, otherwise the original plaintext - without the additional decompression
+     * step {@link #resolveContent()} performs. Used by {@code DefaultFileFactory#upload} to obtain
+     * the exact bytes to encrypt and hand to an external object store (S3), rather than letting
+     * them reach this entity's own serialized JSON as {@link #contentBase64}.
+     *
+     * @return the raw, base64-decoded (but not decompressed) content bytes
+     * @throws IllegalStateException if this file is already {@link #isS3Backed()} and carries no {@link #contentBase64} to decode
+     */
+    public byte[] rawStorableBytes() {
+        if (contentBase64 == null) {
+            throw new IllegalStateException(
+                    "@StoredFile.rawStorableBytes: file '" + fileId + "' has no inline content to read - "
+                            + "it is already S3-backed (objectStorageKey '" + objectStorageKey + "')"
+            );
+        }
+        return Base64.getDecoder().decode(contentBase64);
+    }
+
+    /**
+     * Decompresses {@code rawBytes} if this file is stored {@link #isCompressed() compressed},
+     * otherwise returns a defensive copy unchanged - the decompression half of what {@link
+     * #resolveContent()} does for {@link #contentBase64}-sourced bytes, exposed so {@code
+     * DefaultFileFactory} can apply the same step to bytes it decrypted from an external object
+     * store instead.
+     *
+     * @param rawBytes the raw (compressed-if-{@link #isCompressed()}) bytes to resolve
+     * @return the original, uncompressed plaintext bytes
+     * @throws NullPointerException if {@code rawBytes} is {@code null}
+     * @throws IllegalStateException if {@link #isCompressed()} is {@code true} and {@code rawBytes} is not valid DEFLATE data
+     */
+    public byte[] decompressIfNeeded(final byte[] rawBytes) {
+        Asserts.requireNonNull(rawBytes, "@StoredFile.decompressIfNeeded: rawBytes cannot be null");
+        return contentCompressed ? inflate(rawBytes) : rawBytes.clone();
+    }
+
+    /**
+     * @return a copy of this file with content moved out of {@link #contentBase64} - {@link
+     *     #objectStorageKey} set to {@code objectStorageKey}, {@link #contentBase64} nulled, and no
+     *     cached {@link #decodedContent} carried over. A metadata-only reference: {@link #content()}
+     *     and every method built on {@link #resolveContent()} throw {@link IllegalStateException}
+     *     on the result until {@link #withResolvedContent(byte[])} hydrates a fetched copy. Used by
+     *     {@code DefaultFileFactory#upload} once this file's content has already been written to
+     *     external object storage separately.
+     * @throws NullPointerException if {@code objectStorageKey} is {@code null}
+     */
+    public StoredFile withObjectStorageKey(final String objectStorageKey) {
+        return new StoredFile(this, objectStorageKey);
+    }
+
+    /**
+     * @return a copy of this {@link #isS3Backed()} file with {@code content} primed as its
+     *     resolved, uncompressed plaintext - so {@link #content()}/{@link #sizeBytes()}/{@link
+     *     #verifyChecksum()}/{@link #downloadToDevice()} work exactly as they already do on an
+     *     inline file. Called by {@code DefaultFileFactory#download}/{@code #findById}/{@code
+     *     #getEntities} once content has been fetched from the configured {@code
+     *     ObjectStorageService} and decrypted/decompressed.
+     * @param content this file's resolved, uncompressed plaintext bytes; defensively copied
+     * @throws NullPointerException if {@code content} is {@code null}
+     */
+    public StoredFile withResolvedContent(final byte[] content) {
+        Asserts.requireNonNull(content, "@StoredFile.withResolvedContent: content cannot be null");
+        return new StoredFile(this, content.clone());
+    }
+
     /** When this file was first uploaded. */
     public Instant createdAt() {
         return Instant.ofEpochMilli(createdAtEpochMilli);
@@ -300,7 +444,7 @@ public final class StoredFile extends Serialized {
 
     /** @return a copy of this file, restored out of the trash */
     public StoredFile restored() {
-        return new StoredFile(this, null);
+        return new StoredFile(this, (Long) null);
     }
 
     /** This file's descriptive attributes without its content - see {@link FileMetadata}. */
@@ -368,10 +512,20 @@ public final class StoredFile extends Serialized {
      * Decodes (and decompresses, if needed) {@link #contentBase64} into {@link #decodedContent}, caching the result.
      *
      * @return this file's original, uncompressed plaintext bytes - the live cached array, not a defensive copy
+     * @throws IllegalStateException if this file is {@link #isS3Backed()} and no content has been
+     *     supplied yet via {@link #withResolvedContent(byte[])} - {@code DefaultFileFactory} must
+     *     fetch it from the configured {@code ObjectStorageService} first
      */
     private byte[] resolveContent() {
         byte[] resolved = decodedContent;
         if (resolved == null) {
+            if (objectStorageKey != null) {
+                throw new IllegalStateException(
+                        "@StoredFile.resolveContent: file '" + fileId + "'s content lives in external object "
+                                + "storage (key '" + objectStorageKey + "') and has not been resolved yet - "
+                                + "DefaultFileFactory must fetch it and call withResolvedContent() first"
+                );
+            }
             final byte[] stored = Base64.getDecoder().decode(contentBase64);
             resolved = contentCompressed ? inflate(stored) : stored;
             decodedContent = resolved;
