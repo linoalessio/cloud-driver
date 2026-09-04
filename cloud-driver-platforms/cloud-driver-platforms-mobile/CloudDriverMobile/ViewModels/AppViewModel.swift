@@ -644,10 +644,58 @@ final class AppViewModel: ObservableObject {
     /// class of bug already produced once.
     ///
     /// This second fix walks the tree itself, coordinating **every** descendant individually (not
-    /// just the root) and explicitly waiting for any not-yet-downloaded `.isUbiquitousItem`
-    /// (iCloud/cloud-provider) file to finish downloading via `startDownloadingUbiquitousItem`
-    /// before copying it - so by the time ZIPFoundation ever sees the local copy, every item in it
-    /// is guaranteed to be real, fully-materialized content, not a placeholder.
+    /// just the root) - `NSFileCoordinator` forces a file provider to materialize/download an item
+    /// as part of coordinating read access to it, so per-item coordination alone (not a manual
+    /// "wait for iCloud download" loop, which an earlier revision of this fix added and which
+    /// turned out to be the wrong tool) is what actually guarantees every item is real, readable
+    /// content by the time this app touches it.
+    ///
+    /// **A third, genuinely root-causing fix (2026-09-05, same day): switched the directory/file
+    /// check itself from `URL.resourceValues(forKeys: [.isDirectoryKey])` to
+    /// `FileManager.fileExists(atPath:isDirectory:)`.** The second fix above (per-item coordination)
+    /// was the right idea but still didn't fully hold up - the *type check* it used to decide
+    /// "recurse into this as a directory" vs. "copy this as a file" was itself unreliable:
+    /// `.isDirectoryKey` is a `URLResourceValues` property the file provider itself has to populate,
+    /// and several real-world providers (and even some iCloud Drive items reached through a
+    /// `.fileImporter` folder pick) don't reliably report it for a nested item, coming back `nil`
+    /// rather than `true`/`false`. Since the check only matched `== true`, a `nil` silently fell
+    /// through to the **file** branch - meaning an actual subdirectory got a single, non-recursive
+    /// `FileManager.copyItem` call instead of being recursed into, so *its own* children were only
+    /// ever read via `copyItem`'s internal, uncoordinated traversal - the exact same
+    /// under-materialized-nested-content gap the very first fix already failed to close, just one
+    /// level deeper in the tree. `FileManager.fileExists(atPath:isDirectory:)` performs a plain
+    /// POSIX `stat()` on the coordinated (and therefore already-materialized) path instead of
+    /// asking the provider for a resource-value property - reliable regardless of what any given
+    /// provider does or doesn't populate.
+    /// **Diagnostic instrumentation (2026-09-05), added after three straight fix attempts all
+    /// failed to actually resolve the recurring `"Is a directory"` error - each one was a
+    /// plausible-sounding theory about *why* it might happen, but none was confirmed against the
+    /// real folder that actually triggers it (not reproducible in this environment - no device/
+    /// simulator UI interaction available here). Rather than guess a fourth mechanism blindly,
+    /// every throw site in `copyItemRecursively`/`copyCoordinated` now wraps its error with the
+    /// exact item path and phase ("Reading"/"Creating directory for"/"Listing"/"Coordinating
+    /// access to"/"Copying") involved, and `zipAndUploadFolder` does the same around the `zipItem`
+    /// call itself - so the *next* on-device attempt surfaces, in the error alert itself, exactly
+    /// which item and which step actually failed, instead of the generic "Is a directory" message
+    /// that could mean almost anything. Once that's known, apply the real, targeted fix instead of
+    /// another guess.
+    private struct FolderCopyDiagnosticError: Error, LocalizedError {
+        let phase: String
+        let path: String?
+        let underlying: Error
+
+        var errorDescription: String? {
+            let nsError = underlying as NSError
+            let failingPath = path ?? (nsError.userInfo[NSFilePathErrorKey] as? String)
+            var description = "\(phase) failed"
+            if let failingPath {
+                description += " on \"\(failingPath)\""
+            }
+            description += ": [\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
+            return description
+        }
+    }
+
     private nonisolated static func copyCoordinated(from sourceURL: URL, to destinationURL: URL) throws {
         var coordinatorError: NSError?
         var thrown: Error?
@@ -669,17 +717,34 @@ final class AppViewModel: ObservableObject {
     /// The actual per-item recursive walk `copyCoordinated` drives - a directory is recreated and
     /// then recursed into, with each child individually re-coordinated (`NSFileCoordinator` doesn't
     /// recursively coordinate a directory's descendants just because the directory itself was
-    /// coordinated); a file is downloaded first if it's a not-yet-materialized cloud placeholder,
-    /// then copied.
+    /// coordinated, and coordinating each item is also what forces its own materialization); a
+    /// file is copied directly. See `copyCoordinated`'s own doc comment for why the type check is
+    /// `FileManager.fileExists(atPath:isDirectory:)`, not a `URLResourceValues` lookup.
     private nonisolated static func copyItemRecursively(from sourceURL: URL, to destinationURL: URL) throws {
-        let resourceValues = try sourceURL.resourceValues(forKeys: [.isDirectoryKey, .isUbiquitousItemKey])
-        if resourceValues.isDirectory == true {
-            try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-            let children = try FileManager.default.contentsOfDirectory(
-                at: sourceURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
+        var isDirectoryObjC: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectoryObjC) else {
+            throw FolderCopyDiagnosticError(
+                phase: "Reading",
+                path: sourceURL.path,
+                underlying: CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
             )
+        }
+        if isDirectoryObjC.boolValue {
+            do {
+                try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            } catch {
+                throw FolderCopyDiagnosticError(phase: "Creating directory for", path: sourceURL.path, underlying: error)
+            }
+            let children: [URL]
+            do {
+                children = try FileManager.default.contentsOfDirectory(
+                    at: sourceURL,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                throw FolderCopyDiagnosticError(phase: "Listing", path: sourceURL.path, underlying: error)
+            }
             for child in children {
                 var childCoordinatorError: NSError?
                 var childThrown: Error?
@@ -691,43 +756,22 @@ final class AppViewModel: ObservableObject {
                     }
                 }
                 if let childCoordinatorError {
-                    throw childCoordinatorError
+                    throw FolderCopyDiagnosticError(phase: "Coordinating access to", path: child.path, underlying: childCoordinatorError)
                 }
                 if let childThrown {
+                    // Already a `FolderCopyDiagnosticError` from the deepest throw site that
+                    // actually failed - rethrown as-is, not re-wrapped, so the reported path stays
+                    // the real failing item, not this ancestor directory.
                     throw childThrown
                 }
             }
         } else {
-            if resourceValues.isUbiquitousItem == true {
-                try waitForUbiquitousItemDownload(at: sourceURL)
+            do {
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            } catch {
+                throw FolderCopyDiagnosticError(phase: "Copying", path: sourceURL.path, underlying: error)
             }
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
         }
-    }
-
-    /// Forces a not-yet-downloaded iCloud/cloud-provider placeholder file to actually materialize
-    /// locally before this app tries to read its content - `startDownloadingUbiquitousItem` only
-    /// *starts* the download, so this polls `.ubiquitousItemDownloadingStatusKey` until it reports
-    /// the file is actually available (`.current` or `.downloaded` - either is real, readable
-    /// content; only `.notDownloaded` means "still just a placeholder"). A no-op (returns
-    /// immediately) if the file is already downloaded, the common case for anything opened/edited
-    /// recently. Bounded by `timeout` (60s) so one stuck download can't hang the whole folder
-    /// upload forever - a real timeout is reported as an ordinary file-read error, surfaced to the
-    /// user the same way any other upload failure is.
-    private nonisolated static func waitForUbiquitousItemDownload(at url: URL, timeout: TimeInterval = 60) throws {
-        func downloadingStatus() throws -> URLUbiquitousItemDownloadingStatus? {
-            try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus
-        }
-        guard try downloadingStatus() == .notDownloaded else { return }
-        try FileManager.default.startDownloadingUbiquitousItem(at: url)
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if try downloadingStatus() != .notDownloaded {
-                return
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
     }
 
     /// Reads `url`'s file size, bracketed by security-scoped access the same way every other
@@ -776,8 +820,20 @@ final class AppViewModel: ObservableObject {
         }
 
         try await Task.detached(priority: .userInitiated) {
+            // Deliberately not re-wrapped here - `copyCoordinated`'s own throw sites already
+            // attach the exact failing item's path via `FolderCopyDiagnosticError`; wrapping
+            // again at this level would just lose that detail behind a generic "Copying" label
+            // with no specific path of its own.
             try Self.copyCoordinated(from: sourceURL, to: localCopyURL)
-            try FileManager().zipItem(at: localCopyURL, to: zipURL, shouldKeepParent: false, compressionMethod: .deflate)
+            do {
+                try FileManager().zipItem(at: localCopyURL, to: zipURL, shouldKeepParent: false, compressionMethod: .deflate)
+            } catch {
+                // ZIPFoundation's own thrown errors already carry the failing item's path via
+                // `NSFilePathErrorKey` (see `POSIXError(_:path:)` in its source) - `path: nil`
+                // lets `FolderCopyDiagnosticError` fall back to reading that straight off the
+                // underlying error instead of this app having to know it independently.
+                throw FolderCopyDiagnosticError(phase: "Zipping", path: nil, underlying: error)
+            }
         }.value
 
         let totalBytes = fileSize(at: zipURL)

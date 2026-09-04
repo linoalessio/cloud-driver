@@ -19,9 +19,42 @@ struct FileBrowserView: View {
     /// one's sheet actually shows), confirmed here directly - "Upload file" stopped working the
     /// moment a second `.fileImporter` (for "Upload folder") was added alongside it. One importer
     /// whose `allowedContentTypes` switches on `pendingImport` avoids the conflict entirely.
+    ///
+    /// **Only ever read at presentation time (`allowedContentTypes` above) - never at completion
+    /// time anymore.** It used to also be captured inside the `.fileImporter` completion closure
+    /// (`let kind = pendingImport`) to decide `uploadPickedFolder` vs. `uploadPickedFile` - see
+    /// `Self.isDirectory(_:)`'s own doc comment below for the real, confirmed bug that reliance on
+    /// produced, and why the completion closure now determines the kind from the picked URL itself
+    /// instead.
     private enum PendingImport: Equatable {
         case file
         case folder
+    }
+
+    /// **Fixed a real, confirmed bug (2026-09-05): every "Upload folder" pick silently uploaded
+    /// the folder as if it were a single plain file, throwing `"The operation couldn't be
+    /// completed. Is a directory"` straight out of the network layer (`URLSession.upload(for:
+    /// fromFile:)` trying to read a directory's bytes) - not from anywhere in the zip/copy pipeline
+    /// at all, which is why three straight attempts to fix that pipeline never changed the observed
+    /// error one bit; each one added diagnostics/fixes to code that was never actually being
+    /// reached.** Root cause: the `.fileImporter` completion closure used to read `pendingImport`
+    /// (a `@State` cleared by the *same* `isPresented` binding's `set` closure that fires as the
+    /// picker sheet dismisses) to decide which upload method to call - a real race between "the
+    /// completion handler runs with the result" and "the sheet finishes dismissing, clearing
+    /// `pendingImport` back to `nil`" that SwiftUI's public API makes no ordering guarantee about.
+    /// Confirmed by adding path/phase-specific diagnostics throughout `AppViewModel`'s entire
+    /// folder-copy/zip pipeline (`copyItemRecursively`/`copyCoordinated`/`zipAndUploadFolder`) and
+    /// observing the on-screen error stay the exact same generic, unprefixed message on every
+    /// retry, byte-for-byte, even after a clean rebuild - proof that code path was never running.
+    /// Fixed by determining folder-vs-file **from the picked URL's own type** instead of from
+    /// `pendingImport`'s value at completion time, which sidesteps the race entirely regardless of
+    /// whatever the real internal completion-vs-dismissal ordering turns out to be.
+    private static func isDirectory(_ url: URL) -> Bool {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        var isDirectoryObjC: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectoryObjC)
+        return exists && isDirectoryObjC.boolValue
     }
 
     /// A `QuickActionMenu` currently being shown, plus where (in `Self.menuCoordinateSpace`) it
@@ -326,11 +359,10 @@ struct FileBrowserView: View {
             allowedContentTypes: pendingImport == .folder ? [.folder] : [.item],
             allowsMultipleSelection: false
         ) { result in
-            let kind = pendingImport
             switch result {
             case .success(let urls):
                 if let url = urls.first {
-                    if kind == .folder {
+                    if Self.isDirectory(url) {
                         viewModel.uploadPickedFolder(url: url)
                     } else {
                         viewModel.uploadPickedFile(url: url)

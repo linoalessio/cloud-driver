@@ -2,7 +2,7 @@
 
 A Maven multi-module Java 21 library that envelope-encrypts application entities (AES-256-GCM,
 KMS/HSM-style key wrapping with rotation) before persisting them through the `de.lino.database`
-driver stack (an external artifact group, pinned to `1.3.11`), plus a lightweight extension
+driver stack (an external artifact group, pinned to `1.3.12`), plus a lightweight extension
 framework, an interactive `jline` terminal, a JWT/API-key-authenticated REST API, and the
 operator-facing tooling (backup, Postgres change notifications, deployment scripts) built on top
 of it.
