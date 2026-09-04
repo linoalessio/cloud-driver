@@ -21,12 +21,14 @@ import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.IcloudImportStatusResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
@@ -77,6 +79,9 @@ data class TransferProgress(
 
 /** Page size [AppViewModel.refreshCurrentFolder]/[AppViewModel.loadMoreEntries] request per [CloudDriverClient.listFilesPage]/[listFoldersPage] call. */
 private const val FOLDER_VIEW_PAGE_SIZE = 200
+
+/** How often [AppViewModel.pollIcloudImportStatus] re-checks an in-flight iCloud import job's status. */
+private const val ICLOUD_IMPORT_POLL_INTERVAL_MILLIS = 1500L
 
 class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, initialThemeMode: ThemeMode) {
 
@@ -1169,6 +1174,91 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.currentUserEmail = this.pendingEmailChangeAddress
         this.pendingEmailChangeAddress = null
     }
+
+    // --- iCloud import (Dashboard "Sync from iCloud") ----------------------
+
+    /**
+     * Snapshot of the currently in-flight (or most recently finished) on-demand iCloud import job,
+     * mirroring [IcloudImportStatusResponse] - drives the Dashboard's "Sync from iCloud" dialog.
+     */
+    data class IcloudImportUiState(
+        val jobId: String,
+        val status: String,
+        val filesImported: Int,
+        val totalFiles: Int,
+        val errorMessage: String?,
+    )
+
+    /**
+     * The current/most-recent iCloud import job, or `null` if none has been started this session.
+     * Drives the Dashboard's "Sync from iCloud" dialog from step one (Apple ID/password) through an
+     * optional two-factor step, a progress step, and a final success/failure state - the same
+     * nullable-field-driven-dialog shape [pendingEmailChangeAddress] uses, just carrying richer
+     * state than a bare address.
+     */
+    var icloudImportState: IcloudImportUiState? by mutableStateOf(null)
+        private set
+
+    /** Step one - attempts to log in to [appleId] and starts walking/importing its iCloud Drive tree once authenticated; begins polling [pollIcloudImportStatus] immediately. */
+    fun startIcloudImport(appleId: String, password: String) = run {
+        val response = this.client.startIcloudImport(appleId, password)
+        this.icloudImportState = response.toIcloudImportUiState()
+        this.pollIcloudImportStatus(response.jobId())
+    }
+
+    /** Completes an import left waiting on Apple's two-factor challenge - submits [code] and resumes polling. */
+    fun confirmIcloudImportTwoFactor(code: String) = run {
+        val jobId = this.icloudImportState?.jobId ?: return@run
+        val response = this.client.confirmIcloudImportTwoFactor(jobId, code)
+        this.icloudImportState = response.toIcloudImportUiState()
+        this.pollIcloudImportStatus(jobId)
+    }
+
+    /** Closes the "Sync from iCloud" dialog - safe to call at any point in the flow, including while a job is still running (polling simply stops updating a dialog nobody is looking at). */
+    fun dismissIcloudImport() {
+        this.icloudImportState = null
+    }
+
+    /**
+     * Polls `GET /icloud/import/{jobId}/status` on a fixed delay until [jobId] reaches a terminal
+     * state (or the dialog is dismissed/a different job starts, detected by [icloudImportState] no
+     * longer referencing this [jobId]). Deliberately polling, not the WebSocket live-update channel -
+     * that channel's payload carries no room for byte/file-count progress, and every other progress
+     * indicator in this app ([runTransfer]) is already driven the same synchronous/polling way.
+     * Runs on [scope] directly (not wrapped in [run]) so it doesn't hold the screen-wide [busy] guard
+     * for the whole, potentially long, duration of an import - mirroring [startLiveUpdates]'s own
+     * "launch on scope, call the public run-guarded reload" shape.
+     */
+    private fun pollIcloudImportStatus(jobId: String) {
+        this.scope.launch {
+            while (this@AppViewModel.icloudImportState?.jobId == jobId) {
+                delay(ICLOUD_IMPORT_POLL_INTERVAL_MILLIS)
+                val response = try {
+                    this@AppViewModel.client.getIcloudImportStatus(jobId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    break
+                }
+                if (this@AppViewModel.icloudImportState?.jobId != jobId) break
+                this@AppViewModel.icloudImportState = response.toIcloudImportUiState()
+                when (response.status()) {
+                    "SUCCEEDED" -> {
+                        when (this@AppViewModel.screen) {
+                            Screen.Browser -> this@AppViewModel.loadCurrentFolder()
+                            Screen.Dashboard -> this@AppViewModel.loadDashboardStats()
+                            else -> {}
+                        }
+                        break
+                    }
+                    "FAILED", "AWAITING_TWO_FACTOR" -> break
+                }
+            }
+        }
+    }
+
+    private fun IcloudImportStatusResponse.toIcloudImportUiState() =
+        IcloudImportUiState(this.jobId(), this.status(), this.filesImported(), this.totalFiles(), this.errorMessage())
 
     // --- account: two-factor authentication (item 12, see architecture/SERVICES.md) --------
 

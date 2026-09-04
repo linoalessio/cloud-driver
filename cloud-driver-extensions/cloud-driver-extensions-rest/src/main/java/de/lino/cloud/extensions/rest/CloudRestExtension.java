@@ -5,6 +5,8 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.RestFactory;
+import de.lino.cloud.api.icloud.IcloudBridgeException;
+import de.lino.cloud.api.icloud.IcloudImportService;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
@@ -16,6 +18,8 @@ import de.lino.cloud.auth.jwt.JjwtSigner;
 import de.lino.cloud.auth.mail.LoggingEmailSender;
 import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
+import de.lino.cloud.plugin.icloud.DefaultIcloudImportService;
+import de.lino.cloud.plugin.icloud.PythonIcloudBridge;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
 import de.lino.cloud.plugin.security.secrets.SecretRedactor;
 import de.lino.database.json.JsonDocument;
@@ -141,7 +145,16 @@ public class CloudRestExtension extends Extension {
         this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
         this.cloudDriver().getServiceContainer().setAuditLogService(auditLogService);
 
-        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService);
+        // On-demand "Sync from iCloud" import: null (feature disabled) unless python3/pyicloud is
+        // actually available on this host - see buildIcloudImportService's own Javadoc for why a
+        // missing dependency here must never crash the whole extension the way an earlier,
+        // unrelated incident with cloud-driver-extensions-metrics's Micrometer dependency once did.
+        final IcloudImportService icloudImportService = this.buildIcloudImportService(cloudUserService);
+        if (icloudImportService != null) {
+            this.cloudDriver().getServiceContainer().setIcloudImportService(icloudImportService);
+        }
+
+        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService, icloudImportService);
         REST_FACTORY = restFactory;
 
         // Item 10 (live push via WebSocket, see architecture/SERVICES.md): DefaultRestFactory
@@ -225,6 +238,29 @@ public class CloudRestExtension extends Extension {
         }
 
         return new SmtpEmailSender(host, configuration.getInteger("smtp-port"), username, password, fromAddress);
+    }
+
+    /**
+     * Builds the {@link IcloudImportService} backing {@code POST /icloud/import} - tries to
+     * construct a {@link PythonIcloudBridge} (which itself checks that {@code python3}/{@code
+     * pyicloud} are actually available on this host); if that fails, logs a clear warning and
+     * returns {@code null} instead of throwing, so the {@code /icloud/import} routes simply aren't
+     * mounted rather than the whole REST API (or the JVM) failing to start. Unlike {@link
+     * #buildEmailSender()}, there is no degraded fallback implementation for this one - a bridge
+     * that can't actually reach Apple isn't worth having.
+     *
+     * @param cloudUserService the service the import job uploads recreated folders/files through
+     * @return the {@link IcloudImportService}, or {@code null} if the {@code python3}/{@code pyicloud} dependency isn't available
+     */
+    private IcloudImportService buildIcloudImportService(final CloudUserService cloudUserService) {
+        try {
+            return new DefaultIcloudImportService(cloudUserService, new PythonIcloudBridge());
+        } catch (final IcloudBridgeException e) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.buildIcloudImportService: " + e.getMessage()
+                            + " - the 'Sync from iCloud' import feature will not be available on this deployment.");
+            return null;
+        }
     }
 
     /**

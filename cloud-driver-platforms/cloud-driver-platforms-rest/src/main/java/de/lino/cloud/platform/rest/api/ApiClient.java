@@ -10,6 +10,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmIcloudImportRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmTwoFactorSetupRequest;
@@ -18,6 +19,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.DisableTwoFactorRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.EmailExistsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.IcloudImportStatusResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse;
@@ -30,6 +32,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ShareRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.StartIcloudImportRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse;
@@ -1817,6 +1820,84 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the {@code GET /cloudUsers/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest getCloudUserRequest(final String authUserId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/" + authUserId), true).GET().build();
+    }
+
+    // --- iCloud import -------------------------------------------------------
+
+    /**
+     * {@code POST /icloud/import} on the main REST API - starts an on-demand "Sync from iCloud"
+     * import job (not a persistent link/sync - every call is a fresh login and a fresh full walk of
+     * the account's iCloud Drive tree; see the server's {@code IcloudImportService} for the full
+     * reasoning). Returns immediately with the job's initial state; poll {@link
+     * #getIcloudImportStatus(String)} for progress. If Apple challenges the login with a two-factor
+     * code, the job's status settles on {@code "AWAITING_TWO_FACTOR"} - call {@link
+     * #confirmIcloudImportTwoFactor(String, String)} with the code from the account's trusted
+     * device to proceed.
+     *
+     * @param appleId the Apple ID (email address) to import from
+     * @param password the Apple ID's plaintext password - never persisted server-side beyond the login call
+     * @return the newly created job's initial state
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other transport/HTTP failure
+     */
+    public IcloudImportStatusResponse startIcloudImport(final String appleId, final String password) throws ApiException {
+        return this.send(this.startIcloudImportRequest(appleId, password), IcloudImportStatusResponse.class);
+    }
+
+    /** Async form of {@link #startIcloudImport} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<IcloudImportStatusResponse> startIcloudImportAsync(final String appleId, final String password) {
+        return this.sendAsync(this.startIcloudImportRequest(appleId, password), IcloudImportStatusResponse.class);
+    }
+
+    /** Builds the bearer-gated {@code POST /icloud/import} request against {@link #apiBaseUrl}. */
+    private HttpRequest startIcloudImportRequest(final String appleId, final String password) {
+        return this.postRequest(this.apiBaseUrl.resolve("/icloud/import"), new StartIcloudImportRequest(appleId, password), true);
+    }
+
+    /**
+     * {@code POST /icloud/import/{jobId}/confirm} on the main REST API - completes an import job
+     * left waiting on Apple's two-factor challenge by {@link #startIcloudImport}, then proceeds
+     * into the tree-walk-and-upload phase.
+     *
+     * @param jobId the job id returned by {@link #startIcloudImport}
+     * @param code the six-digit code from the Apple ID's trusted device/authenticator
+     * @return the job's state immediately after this call
+     * @throws ApiException {@code 401} if the code was rejected by Apple, {@code 404} if {@code jobId} is unknown/not awaiting a code, or any other transport/HTTP failure
+     */
+    public IcloudImportStatusResponse confirmIcloudImportTwoFactor(final String jobId, final String code) throws ApiException {
+        return this.send(this.confirmIcloudImportTwoFactorRequest(jobId, code), IcloudImportStatusResponse.class);
+    }
+
+    /** Async form of {@link #confirmIcloudImportTwoFactor} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<IcloudImportStatusResponse> confirmIcloudImportTwoFactorAsync(final String jobId, final String code) {
+        return this.sendAsync(this.confirmIcloudImportTwoFactorRequest(jobId, code), IcloudImportStatusResponse.class);
+    }
+
+    /** Builds the bearer-gated {@code POST /icloud/import/{jobId}/confirm} request against {@link #apiBaseUrl}. */
+    private HttpRequest confirmIcloudImportTwoFactorRequest(final String jobId, final String code) {
+        return this.postRequest(this.apiBaseUrl.resolve("/icloud/import/" + jobId + "/confirm"), new ConfirmIcloudImportRequest(code), true);
+    }
+
+    /**
+     * {@code GET /icloud/import/{jobId}/status} on the main REST API - a job's current state, for
+     * polling from a UI while {@link #startIcloudImport}/{@link #confirmIcloudImportTwoFactor} is
+     * still {@code "RUNNING"}.
+     *
+     * @param jobId the job id returned by {@link #startIcloudImport}
+     * @return the job's current state
+     * @throws ApiException {@code 404} if {@code jobId} is unknown, or any other transport/HTTP failure
+     */
+    public IcloudImportStatusResponse getIcloudImportStatus(final String jobId) throws ApiException {
+        return this.send(this.getIcloudImportStatusRequest(jobId), IcloudImportStatusResponse.class);
+    }
+
+    /** Async form of {@link #getIcloudImportStatus} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<IcloudImportStatusResponse> getIcloudImportStatusAsync(final String jobId) {
+        return this.sendAsync(this.getIcloudImportStatusRequest(jobId), IcloudImportStatusResponse.class);
+    }
+
+    /** Builds the bearer-gated {@code GET /icloud/import/{jobId}/status} request against {@link #apiBaseUrl}. */
+    private HttpRequest getIcloudImportStatusRequest(final String jobId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/icloud/import/" + jobId + "/status"), true).GET().build();
     }
 
     // --- me / admin --------------------------------------------------------

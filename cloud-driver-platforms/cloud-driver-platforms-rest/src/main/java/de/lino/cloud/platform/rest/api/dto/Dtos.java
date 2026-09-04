@@ -124,6 +124,26 @@ public final class Dtos {
     public record MessageResponse(String message) {
     }
 
+    /** Body for {@code POST /icloud/import} - starts an on-demand "Sync from iCloud" import job. */
+    public record StartIcloudImportRequest(String appleId, String password) {
+    }
+
+    /**
+     * Body for {@code POST /icloud/import/{jobId}/confirm} - submits the two-factor code Apple
+     * challenged {@code POST /icloud/import} with.
+     */
+    public record ConfirmIcloudImportRequest(String code) {
+    }
+
+    /**
+     * Response of {@code POST /icloud/import}, {@code POST /icloud/import/{jobId}/confirm}, and
+     * {@code GET /icloud/import/{jobId}/status} - a snapshot of one import job's current state.
+     * {@code status} is one of {@code "AWAITING_TWO_FACTOR"}/{@code "RUNNING"}/{@code
+     * "SUCCEEDED"}/{@code "FAILED"}, mirroring the server's {@code IcloudImportStatus} enum names.
+     */
+    public record IcloudImportStatusResponse(String jobId, String status, int filesImported, int totalFiles, String errorMessage) {
+    }
+
     /**
      * Shape of the object {@code POST /files} and {@code GET /files/{id}} return on success -
      * <b>not</b> {@code GET /files}'s own listing, which returns {@link StoredFileSummaryResponse}

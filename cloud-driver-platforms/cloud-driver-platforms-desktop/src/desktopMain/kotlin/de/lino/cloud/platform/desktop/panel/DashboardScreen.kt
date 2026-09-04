@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -38,7 +39,9 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.AccountStats
 import de.lino.cloud.platform.desktop.theme.CardShape
@@ -185,6 +189,7 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
     var settingsMenuExpanded by remember { mutableStateOf(false) }
     var showChangeEmailDialog by remember { mutableStateOf(false) }
     var showTwoFactorDialog by remember { mutableStateOf(false) }
+    var showIcloudImportDialog by remember { mutableStateOf(false) }
 
     Card(
         shape = CardShape,
@@ -236,6 +241,18 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
             InfoRow(Icons.Filled.Storage, "Storage", formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload))
             InfoRow(Icons.Filled.CalendarToday, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
             InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
+
+            // A real, visible action rather than a settings-menu entry - unlike "Reset Password"/
+            // "Change Email" (small account-security tweaks), this is a headline feature of its own.
+            OutlinedButton(
+                onClick = { showIcloudImportDialog = true },
+                enabled = !viewModel.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Filled.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Sync from iCloud")
+            }
         }
     }
 
@@ -248,6 +265,15 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
             onDismiss = {
                 viewModel.cancelTwoFactorSetup()
                 showTwoFactorDialog = false
+            },
+        )
+    }
+    if (showIcloudImportDialog) {
+        IcloudImportDialog(
+            viewModel = viewModel,
+            onDismiss = {
+                viewModel.dismissIcloudImport()
+                showIcloudImportDialog = false
             },
         )
     }
@@ -342,6 +368,140 @@ private fun ChangeEmailDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
             }) { Text("Cancel") }
         },
     )
+}
+
+/**
+ * The "Sync from iCloud" action - a one-shot, on-demand import of a real Apple iCloud Drive account
+ * into this account's own storage, mirrored server-side under one top-level "iCloud Import" folder.
+ * Deliberately not a persistent link/sync: nothing about the Apple account survives past one run -
+ * see the server's `IcloudImportService` for the full reasoning. Driven entirely by
+ * [AppViewModel.icloudImportState]'s `status` field, through up to four steps: credentials, an
+ * optional two-factor code (only if Apple challenges the login), a progress indicator while the
+ * import runs (polled, not pushed - see [AppViewModel.pollIcloudImportStatus]'s own Javadoc for
+ * why), and a final success/failure message. Unlike [ChangeEmailDialog], there is no local
+ * "entered next step" tracking needed to auto-close - this dialog never auto-closes on its own, the
+ * user dismisses it explicitly once it reaches "Import complete"/"Import failed".
+ */
+@Composable
+private fun IcloudImportDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    var appleId by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+
+    val state = viewModel.icloudImportState
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.Sync, contentDescription = null) },
+        title = { Text(icloudImportDialogTitle(state)) },
+        text = {
+            Column {
+                when (state?.status) {
+                    null -> {
+                        Text(
+                            "Enter your Apple ID to import every folder and file from your iCloud Drive into this account.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = appleId,
+                            onValueChange = { appleId = it },
+                            label = { Text("Apple ID") },
+                            singleLine = true,
+                            enabled = !viewModel.busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            enabled = !viewModel.busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    "AWAITING_TWO_FACTOR" -> {
+                        Text(
+                            "Apple requires a two-factor code. Enter the code shown on your trusted device.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it },
+                            label = { Text("Verification code") },
+                            singleLine = true,
+                            enabled = !viewModel.busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    "RUNNING" -> {
+                        val total = state.totalFiles
+                        if (total > 0) {
+                            val fraction = state.filesImported.toFloat() / total.toFloat()
+                            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(8.dp))
+                            Text("Imported ${state.filesImported} of $total files", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(8.dp))
+                            Text("Preparing import...", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    "SUCCEEDED" -> {
+                        Text(
+                            "Imported ${state.filesImported} file(s) into \"iCloud Import\".",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    "FAILED" -> {
+                        Text(
+                            state.errorMessage ?: "The import failed.",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                viewModel.errorMessage?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            when (state?.status) {
+                null -> Button(
+                    onClick = { viewModel.startIcloudImport(appleId, password) },
+                    enabled = !viewModel.busy && appleId.isNotBlank() && password.isNotBlank(),
+                ) { Text("Sync") }
+                "AWAITING_TWO_FACTOR" -> Button(
+                    onClick = { viewModel.confirmIcloudImportTwoFactor(code) },
+                    enabled = !viewModel.busy && code.isNotBlank(),
+                ) { Text("Verify") }
+                "SUCCEEDED", "FAILED" -> Button(onClick = onDismiss) { Text("Done") }
+                else -> {}
+            }
+        },
+        dismissButton = {
+            if (state?.status != "SUCCEEDED" && state?.status != "FAILED") {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
+/** The [IcloudImportDialog] title for [state]'s current step. */
+private fun icloudImportDialogTitle(state: AppViewModel.IcloudImportUiState?): String = when (state?.status) {
+    null -> "Sync from iCloud"
+    "AWAITING_TWO_FACTOR" -> "Two-factor code required"
+    "RUNNING" -> "Importing from iCloud..."
+    "SUCCEEDED" -> "Import complete"
+    "FAILED" -> "Import failed"
+    else -> "Sync from iCloud"
 }
 
 /**
