@@ -1,0 +1,42 @@
+# This workflow will build a Java project with Maven, and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-maven
+
+name: Java CI with Maven
+
+on:
+  push:
+    branches: [ "master" ]
+    paths-ignore:
+      - 'cloud-driver-platforms/cloud-driver-platforms-desktop/**'
+      - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - '**/*.md'
+      - '.github/workflows/swift.yml'
+  pull_request:
+    branches: [ "master" ]
+    paths-ignore:
+      - 'cloud-driver-platforms/cloud-driver-platforms-desktop/**'
+      - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - '**/*.md'
+      - '.github/workflows/swift.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+      - name: Build with Maven
+        # Root pom.xml is a multi-module reactor - this reaches every Java module
+        # (cloud-driver-api/-auth/-plugin/-bootstrap/-extensions*/-platforms-rest) in one
+        # dependency-ordered build. cloud-driver-platforms-desktop (Gradle/Kotlin) and
+        # cloud-driver-platforms-mobile (Xcode/Swift) are deliberately not Maven modules and are
+        # never touched here - see swift.yml for the mobile app's own CI build.
+        run: mvn -B package --file pom.xml

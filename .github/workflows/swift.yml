@@ -1,0 +1,71 @@
+# This workflow will build a Swift project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
+
+name: Swift
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - '.github/workflows/swift.yml'
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - '.github/workflows/swift.yml'
+  workflow_dispatch:
+
+# cloud-driver-platforms-mobile is a native iOS (iPhone) app - plain Swift/SwiftUI, not a Swift
+# Package Manager executable/library - so this builds it with xcodebuild against a generated
+# Xcode project rather than `swift build`/`swift test`. See that module's own README/the root
+# CLAUDE.md ("cloud-driver-platforms-mobile") for the full picture.
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: cloud-driver-platforms/cloud-driver-platforms-mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        # CloudDriverMobile.xcodeproj is committed for convenience but is generated from
+        # project.yml - regenerate it here so CI never depends on a stale or user-local
+        # (xcuserdata-only) scheme committed by whichever machine last opened it in Xcode.
+        run: xcodegen generate
+
+      - name: Cache Swift Package Manager dependencies
+        uses: actions/cache@v4
+        with:
+          path: cloud-driver-platforms/cloud-driver-platforms-mobile/CloudDriverMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          key: ${{ runner.os }}-spm-${{ hashFiles('cloud-driver-platforms/cloud-driver-platforms-mobile/project.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Resolve Swift package dependencies
+        run: >
+          xcodebuild -resolvePackageDependencies
+          -project CloudDriverMobile.xcodeproj
+          -scheme CloudDriverMobile
+
+      - name: Build
+        run: >
+          xcodebuild build
+          -project CloudDriverMobile.xcodeproj
+          -scheme CloudDriverMobile
+          -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
