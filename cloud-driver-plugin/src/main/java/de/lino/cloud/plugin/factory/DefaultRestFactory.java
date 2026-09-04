@@ -11,9 +11,6 @@ import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
-import de.lino.cloud.api.icloud.IcloudAuthenticationException;
-import de.lino.cloud.api.icloud.IcloudImportHandle;
-import de.lino.cloud.api.icloud.IcloudImportService;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
 import de.lino.cloud.api.jwt.InvalidJwtException;
@@ -195,8 +192,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * than moved for cosmetic consistency with the fix above.
      */
     private static final String FOLDERS_SHARED_WITH_ME_PATH = FOLDERS_PATH + "/shared-with-me";
-    /** Path mounted by {@link #start} for {@link #handleStartIcloudImport}. */
-    private static final String ICLOUD_IMPORT_PATH = "/icloud/import";
     /**
      * Path mounted by {@link #start} for {@link #handleCheckCloudUserExists} (added 2026-09-02,
      * backing the desktop app's live grantee-email check in its Share dialog) - a static segment on
@@ -350,10 +345,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     @Getter
     private final CloudUserService cloudUserService;
 
-    /** Backs the {@code /icloud/import} routes, or {@code null} if they aren't mounted (e.g. {@code python3}/{@code pyicloud} isn't available on this host). */
-    @Getter
-    private final IcloudImportService icloudImportService;
-
     /** Paths with a {@code POST} handler registered via {@link #register}. */
     private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
     /** Paths with a {@code GET} handler registered via {@link #fetch}. */
@@ -428,7 +419,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         this.apiKey = apiKey;
         this.authService = null;
         this.cloudUserService = null;
-        this.icloudImportService = null;
     }
 
     /**
@@ -479,27 +469,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
                                @Nullable final CloudUserService cloudUserService) {
-        this(dataFactory, authService, cloudUserService, null);
-    }
-
-    /**
-     * Same as {@link #DefaultRestFactory(DataFactory, AuthService, CloudUserService)}, additionally
-     * mounting {@code POST /icloud/import}/{@code POST /icloud/import/{jobId}/confirm}/{@code GET
-     * /icloud/import/{jobId}/status} - the on-demand "Sync from iCloud" import (see {@link
-     * IcloudImportService}'s own Javadoc for why this is a one-shot import, not a persistent sync).
-     *
-     * @param dataFactory the {@link DataFactory} every registered resource is backed by
-     * @param authService verifies login and issued JWTs; must not be {@code null}
-     * @param cloudUserService backs the {@code /files} routes, or {@code null} to leave them unmounted
-     * @param icloudImportService backs the {@code /icloud/import} routes, or {@code null} to leave them unmounted (e.g. no {@code python3}/{@code pyicloud} on this host - see {@code PythonIcloudBridge})
-     */
-    public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
-                               @Nullable final CloudUserService cloudUserService, @Nullable final IcloudImportService icloudImportService) {
         this.dataFactory = dataFactory;
         this.apiKey = null;
         this.authService = Objects.requireNonNull(authService, "@DefaultRestFactory.init: authService cannot be null");
         this.cloudUserService = cloudUserService;
-        this.icloudImportService = icloudImportService;
     }
 
     /** Registers a {@code POST} handler for {@code path}, via {@link #registerOperation}. */
@@ -666,12 +639,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FOLDERS_PATH + "/{id}/share", this::handleListFolderShares);
                 config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
                 config.routes.get(FOLDERS_PATH + "/{id}/shared-contents", this::handleListSharedFolderContents);
-            }
-
-            if (this.icloudImportService != null) {
-                config.routes.post(ICLOUD_IMPORT_PATH, this::handleStartIcloudImport);
-                config.routes.post(ICLOUD_IMPORT_PATH + "/{jobId}/confirm", this::handleConfirmIcloudImportTwoFactor);
-                config.routes.get(ICLOUD_IMPORT_PATH + "/{jobId}/status", this::handleGetIcloudImportStatus);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -2434,79 +2401,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 }));
     }
 
-    /** The {@code {"appleId", "password"}} JSON body shape read by {@code POST /icloud/import}. */
-    private record StartIcloudImportRequest(String appleId, String password) {
-    }
-
-    /** The {@code {"code"}} JSON body shape read by {@code POST /icloud/import/{jobId}/confirm}. */
-    private record ConfirmIcloudImportRequest(String code) {
-    }
-
-    /** The {@code {"jobId", "status", "filesImported", "totalFiles", "errorMessage"}} JSON shape mirroring {@link IcloudImportHandle}. */
-    private record IcloudImportStatusResponse(String jobId, String status, int filesImported, int totalFiles, String errorMessage) {
-        private static IcloudImportStatusResponse of(final IcloudImportHandle handle) {
-            return new IcloudImportStatusResponse(handle.jobId(), handle.status().name(), handle.filesImported(), handle.totalFiles(), handle.errorMessage());
-        }
-    }
-
-    /**
-     * {@code POST /icloud/import}: starts a new on-demand iCloud import job via {@link
-     * IcloudImportService#startImport} - see that interface's own Javadoc for why this is a
-     * one-shot import, not a persistent sync. Returns immediately with the job's initial state;
-     * the caller polls {@code GET /icloud/import/{jobId}/status} for progress.
-     */
-    private void handleStartIcloudImport(@NotNull final Context ctx) {
-        final StartIcloudImportRequest request = this.gson.fromJson(ctx.body(), StartIcloudImportRequest.class);
-        final String userId = requireUserId(ctx);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.icloudImportService.startImport(userId, request.appleId(), request.password().toCharArray()))
-                .handle((handle, failure) -> {
-                    if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(IcloudImportStatusResponse.of(handle)));
-                        return null;
-                    }
-                    throw folderFailureOrPropagate(failure, IcloudImportHandle.class, request.appleId());
-                }));
-    }
-
-    /**
-     * {@code POST /icloud/import/{jobId}/confirm}: completes a job left waiting on Apple's
-     * two-factor challenge via {@link IcloudImportService#confirmTwoFactor}, then proceeds into the
-     * tree-walk-and-upload phase.
-     */
-    private void handleConfirmIcloudImportTwoFactor(@NotNull final Context ctx) {
-        final String jobId = ctx.pathParam("jobId");
-        final ConfirmIcloudImportRequest request = this.gson.fromJson(ctx.body(), ConfirmIcloudImportRequest.class);
-        final String userId = requireUserId(ctx);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.icloudImportService.confirmTwoFactor(userId, jobId, request.code()))
-                .handle((handle, failure) -> {
-                    if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(IcloudImportStatusResponse.of(handle)));
-                        return null;
-                    }
-                    throw folderFailureOrPropagate(failure, IcloudImportHandle.class, jobId);
-                }));
-    }
-
-    /**
-     * {@code GET /icloud/import/{jobId}/status}: returns a job's current state via {@link
-     * IcloudImportService#getStatus}, for the desktop app's polling loop.
-     */
-    private void handleGetIcloudImportStatus(@NotNull final Context ctx) {
-        final String jobId = ctx.pathParam("jobId");
-        final String userId = requireUserId(ctx);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.icloudImportService.getStatus(userId, jobId))
-                .handle((handle, failure) -> {
-                    if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(IcloudImportStatusResponse.of(handle)));
-                        return null;
-                    }
-                    throw folderFailureOrPropagate(failure, IcloudImportHandle.class, jobId);
-                }));
-    }
-
     /** The {@code {"exists"}} JSON response body returned by {@code GET /cloudUsers/exists}. */
     private record EmailExistsResponse(boolean exists) {
     }
@@ -2749,12 +2643,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             // misleadingly imply the file/folder itself is missing rather than the grantee address
             // being wrong (a real, confirmed bug - see this exception's own Javadoc).
             return new NotFoundResponse(granteeNotFound.getMessage());
-        }
-        if (cause instanceof IcloudAuthenticationException icloudAuthentication) {
-            // Checked ahead of the plain IllegalArgumentException case below for the same reason as
-            // GranteeAccountNotFoundException above - Apple rejecting the presented credentials/code
-            // is a distinct, more specific failure than "no such job", not a 404.
-            return new UnauthorizedResponse(icloudAuthentication.getMessage());
         }
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);

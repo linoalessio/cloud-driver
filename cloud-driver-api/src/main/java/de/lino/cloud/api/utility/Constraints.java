@@ -44,17 +44,6 @@ public final class Constraints {
      */
     public static final Path UPLOAD_SCRATCH_PATH = WORKING_DIRECTORY.resolve("upload-scratch");
 
-    /**
-     * Scratch directory {@code cloud-driver-plugin}'s {@code PythonIcloudBridge}/{@code
-     * DefaultIcloudImportService} use for one on-demand iCloud import job's transient state - a
-     * per-job subdirectory (named by job id) holds the Apple session cookie file the bridge writes
-     * and each file's plaintext bytes briefly in flight, deleted wholesale once that job reaches a
-     * terminal state. A top-level {@code icloud-import-scratch} subdirectory, sibling to {@link
-     * #CONFIGURATION_PATH}, following the same "operator-visible named path, not the OS-global temp
-     * directory" reasoning as {@link #UPLOAD_SCRATCH_PATH}.
-     */
-    public static final Path ICLOUD_IMPORT_SCRATCH_PATH = WORKING_DIRECTORY.resolve("icloud-import-scratch");
-
     /** Timestamp the process started at, set once during bootstrap. */
     public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 

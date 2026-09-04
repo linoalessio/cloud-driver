@@ -2,7 +2,6 @@ package de.lino.cloud.plugin.factory.container;
 
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
-import de.lino.cloud.api.icloud.IcloudImportService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
@@ -33,8 +32,6 @@ public class ServiceContainer implements IServiceContainer {
     private volatile MetricsRecorder metricsRecorder;
     /** The metrics read side, {@code null} until {@link #setMetricsSnapshotProvider} publishes one. */
     private volatile MetricsSnapshotProvider metricsSnapshotProvider;
-    /** The on-demand iCloud import service, {@code null} until {@link #setIcloudImportService} publishes one. */
-    private volatile IcloudImportService icloudImportService;
 
     /** {@inheritDoc} */
     @Override
@@ -106,18 +103,6 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setMetricsSnapshotProvider(@NonNull final MetricsSnapshotProvider metricsSnapshotProvider) {
         this.metricsSnapshotProvider = metricsSnapshotProvider;
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public IcloudImportService getIcloudImportService() {
-        return this.icloudImportService;
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void setIcloudImportService(@NonNull final IcloudImportService icloudImportService) {
-        this.icloudImportService = icloudImportService;
     }
 
 }

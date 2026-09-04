@@ -1,7 +1,6 @@
 package de.lino.cloud.api.factory.service;
 
 import de.lino.cloud.api.audit.AuditLogService;
-import de.lino.cloud.api.icloud.IcloudImportService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
@@ -138,25 +137,5 @@ public interface IServiceContainer {
      * @param metricsSnapshotProvider the instance backing {@code GET /admin/metrics}
      */
     void setMetricsSnapshotProvider(@NonNull MetricsSnapshotProvider metricsSnapshotProvider);
-
-    /**
-     * Returns the on-demand "Sync from iCloud" import service, or {@code null} if {@code
-     * CloudRestExtension} hasn't published one yet (not started, the REST API is disabled for this
-     * deployment, or the host running this process has no {@code python3}/{@code pyicloud}
-     * available - see {@code PythonIcloudBridge}'s own Javadoc, this feature disables itself rather
-     * than failing to boot when that dependency is missing). {@code DefaultRestFactory}'s {@code
-     * /icloud/import} routes must null-check this the same way they already do for {@link
-     * #getCloudUserService()}.
-     *
-     * @return the {@link IcloudImportService}, or {@code null}
-     */
-    IcloudImportService getIcloudImportService();
-
-    /**
-     * Publishes the real {@link IcloudImportService}, once built.
-     *
-     * @param icloudImportService the instance backing the JWT-authenticated REST API's {@code /icloud/import} routes
-     */
-    void setIcloudImportService(@NonNull IcloudImportService icloudImportService);
 
 }

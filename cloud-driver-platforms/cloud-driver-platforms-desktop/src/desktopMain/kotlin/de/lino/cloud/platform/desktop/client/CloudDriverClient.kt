@@ -6,7 +6,6 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
-import de.lino.cloud.platform.rest.api.dto.Dtos.IcloudImportStatusResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
@@ -167,24 +166,6 @@ class CloudDriverClient(
     /** Step two - submits the e-mailed [code], which actually changes the signed-in account's e-mail address server-side. No fresh token is issued - a JWT's subject is the account id, never its e-mail address. */
     suspend fun confirmEmailChange(code: String): MessageResponse =
         this.apiClient.confirmEmailChangeAsync(code).await()
-
-    /**
-     * Starts an on-demand "Sync from iCloud" import job - not a persistent link/sync, see the
-     * server's `IcloudImportService` for the full reasoning. Returns immediately with the job's
-     * initial state; the caller polls [getIcloudImportStatus] for progress and, if Apple challenges
-     * the login with a two-factor code, calls [confirmIcloudImportTwoFactor] once the job settles on
-     * `"AWAITING_TWO_FACTOR"`.
-     */
-    suspend fun startIcloudImport(appleId: String, password: String): IcloudImportStatusResponse =
-        this.apiClient.startIcloudImportAsync(appleId, password).await()
-
-    /** Completes an import job left waiting on Apple's two-factor challenge by [startIcloudImport]. */
-    suspend fun confirmIcloudImportTwoFactor(jobId: String, code: String): IcloudImportStatusResponse =
-        this.apiClient.confirmIcloudImportTwoFactorAsync(jobId, code).await()
-
-    /** A job's current state, for polling from a UI while [startIcloudImport]/[confirmIcloudImportTwoFactor] is still `"RUNNING"`. */
-    suspend fun getIcloudImportStatus(jobId: String): IcloudImportStatusResponse =
-        this.apiClient.getIcloudImportStatusAsync(jobId).await()
 
     /**
      * Uploads [content] as [fileName], optionally directly into [folderId] (`null` = root).
