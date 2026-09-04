@@ -622,31 +622,112 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Copies `sourceURL` (a file or directory, possibly security-scoped) to `destinationURL` via
-    /// `NSFileCoordinator`, not a bare `FileManager.copyItem` - reading a security-scoped picker
-    /// URL's contents (especially nested items inside a picked *folder*) through the coordinator is
-    /// what actually guarantees the OS has made everything beneath it available before this app's
-    /// own code touches it; see `zipAndUploadFolder`'s own "Fixed a real bug" note for why skipping
-    /// this step corrupts ZIPFoundation's file/directory type detection for nested items. `static`
-    /// `nonisolated` (not just `static`) - `AppViewModel` is `@MainActor`, so a plain `static func`
-    /// on it would still be main-actor-isolated by default, defeating the point of calling it from
-    /// inside `Task.detached`'s own off-main-actor closure.
+    /// Copies `sourceURL` (a directory, possibly security-scoped and/or backed by a cloud file
+    /// provider - iCloud Drive, Google Drive, Dropbox, etc., all reachable via the `.fileImporter`
+    /// folder picker) to `destinationURL`. `static` `nonisolated` (not just `static`) - `AppViewModel`
+    /// is `@MainActor`, so a plain `static func` on it would still be main-actor-isolated by
+    /// default, defeating the point of calling it from inside `Task.detached`'s own off-main-actor
+    /// closure.
+    ///
+    /// **Fixed a real bug (2026-09-04), then fixed again more thoroughly (2026-09-05) after it
+    /// recurred: zipping a picked folder failed with `"The operation couldn't be completed. Is a
+    /// directory"`.** The first fix wrapped one single, top-level `FileManager.copyItem` call in
+    /// `NSFileCoordinator.coordinate(readingItemAt:options:)` - correct for a folder that lives
+    /// entirely on-device ("On My iPhone"), but not sufficient for a folder from a cloud-backed
+    /// provider: a single coordinated read at the *root* only guarantees the OS has resolved the
+    /// top-level item, not that every nested file several levels down is actually downloaded
+    /// locally yet - a not-yet-downloaded nested item is still a scheme-valid but content-less
+    /// placeholder, and `copyItem`'s own recursive walk can copy that placeholder as if it were a
+    /// real, small file. ZIPFoundation later re-derives each entry's type from a fresh `lstat` on
+    /// the *already-copied local* path - if a nested directory's placeholder didn't materialize as
+    /// a real directory, this can still resurface the exact same `EISDIR`/`fopen` failure this
+    /// class of bug already produced once.
+    ///
+    /// This second fix walks the tree itself, coordinating **every** descendant individually (not
+    /// just the root) and explicitly waiting for any not-yet-downloaded `.isUbiquitousItem`
+    /// (iCloud/cloud-provider) file to finish downloading via `startDownloadingUbiquitousItem`
+    /// before copying it - so by the time ZIPFoundation ever sees the local copy, every item in it
+    /// is guaranteed to be real, fully-materialized content, not a placeholder.
     private nonisolated static func copyCoordinated(from sourceURL: URL, to destinationURL: URL) throws {
         var coordinatorError: NSError?
-        var copyError: Error?
+        var thrown: Error?
         NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [], error: &coordinatorError) { coordinatedURL in
             do {
-                try FileManager.default.copyItem(at: coordinatedURL, to: destinationURL)
+                try copyItemRecursively(from: coordinatedURL, to: destinationURL)
             } catch {
-                copyError = error
+                thrown = error
             }
         }
         if let coordinatorError {
             throw coordinatorError
         }
-        if let copyError {
-            throw copyError
+        if let thrown {
+            throw thrown
         }
+    }
+
+    /// The actual per-item recursive walk `copyCoordinated` drives - a directory is recreated and
+    /// then recursed into, with each child individually re-coordinated (`NSFileCoordinator` doesn't
+    /// recursively coordinate a directory's descendants just because the directory itself was
+    /// coordinated); a file is downloaded first if it's a not-yet-materialized cloud placeholder,
+    /// then copied.
+    private nonisolated static func copyItemRecursively(from sourceURL: URL, to destinationURL: URL) throws {
+        let resourceValues = try sourceURL.resourceValues(forKeys: [.isDirectoryKey, .isUbiquitousItemKey])
+        if resourceValues.isDirectory == true {
+            try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            let children = try FileManager.default.contentsOfDirectory(
+                at: sourceURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            for child in children {
+                var childCoordinatorError: NSError?
+                var childThrown: Error?
+                NSFileCoordinator().coordinate(readingItemAt: child, options: [], error: &childCoordinatorError) { coordinatedChild in
+                    do {
+                        try copyItemRecursively(from: coordinatedChild, to: destinationURL.appendingPathComponent(child.lastPathComponent))
+                    } catch {
+                        childThrown = error
+                    }
+                }
+                if let childCoordinatorError {
+                    throw childCoordinatorError
+                }
+                if let childThrown {
+                    throw childThrown
+                }
+            }
+        } else {
+            if resourceValues.isUbiquitousItem == true {
+                try waitForUbiquitousItemDownload(at: sourceURL)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        }
+    }
+
+    /// Forces a not-yet-downloaded iCloud/cloud-provider placeholder file to actually materialize
+    /// locally before this app tries to read its content - `startDownloadingUbiquitousItem` only
+    /// *starts* the download, so this polls `.ubiquitousItemDownloadingStatusKey` until it reports
+    /// the file is actually available (`.current` or `.downloaded` - either is real, readable
+    /// content; only `.notDownloaded` means "still just a placeholder"). A no-op (returns
+    /// immediately) if the file is already downloaded, the common case for anything opened/edited
+    /// recently. Bounded by `timeout` (60s) so one stuck download can't hang the whole folder
+    /// upload forever - a real timeout is reported as an ordinary file-read error, surfaced to the
+    /// user the same way any other upload failure is.
+    private nonisolated static func waitForUbiquitousItemDownload(at url: URL, timeout: TimeInterval = 60) throws {
+        func downloadingStatus() throws -> URLUbiquitousItemDownloadingStatus? {
+            try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus
+        }
+        guard try downloadingStatus() == .notDownloaded else { return }
+        try FileManager.default.startDownloadingUbiquitousItem(at: url)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if try downloadingStatus() != .notDownloaded {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
     }
 
     /// Reads `url`'s file size, bracketed by security-scoped access the same way every other

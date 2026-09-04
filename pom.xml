@@ -37,4 +37,21 @@
         </repository>
     </distributionManagement>
 
+    <!-- de.lino.database:database-driver-api/-plugin (every module below depends on one or both)
+         is an external artifact group, not part of this repo - it's published to its own GitHub
+         Packages registry under linoalessio/database-driver-v2, not Maven Central, so it must be
+         declared explicitly here or dependency resolution 404s against central for anyone (CI
+         included) whose local Maven cache doesn't already happen to have it. The "database-driver-github"
+         id must match .github/workflows/maven.yml's/maven-publish.yml's second setup-java
+         `server-id` exactly, the same join-key reasoning as the "github" id above. Reading from
+         GitHub Packages always requires authentication, even for a public package - see those
+         workflow files for the read-side credentials this repository's CI supplies. -->
+    <repositories>
+        <repository>
+            <id>database-driver-github</id>
+            <name>GitHub Packages - database-driver-v2 (linoalessio)</name>
+            <url>https://maven.pkg.github.com/linoalessio/database-driver-v2</url>
+        </repository>
+    </repositories>
+
 </project>
