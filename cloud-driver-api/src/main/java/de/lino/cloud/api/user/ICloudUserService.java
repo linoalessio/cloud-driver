@@ -10,8 +10,8 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.file.TrashedFolderSummary;
-import de.lino.cloud.api.storage.object.PresignedDownload;
-import de.lino.cloud.api.storage.object.PresignedTransferUnavailableException;
+import de.lino.cloud.api.s3storage.PresignedDownload;
+import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
 import de.lino.cloud.api.utility.CursorPage;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -205,7 +205,7 @@ public interface ICloudUserService {
      * @return a ticket pairing the new file's id with where to upload its content
      * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}
      * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the declared size would exceed {@code authUserId}'s quota
-     * @throws de.lino.cloud.api.storage.object.PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
+     * @throws PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
      */
     @NotNull
     PresignedUploadTicket beginPresignedUpload(@NotNull String authUserId, @NotNull String fileName, long sizeBytes, @Nullable String folderId);
@@ -226,7 +226,7 @@ public interface ICloudUserService {
      * @return a summary of the newly created file
      * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}, or if no object exists yet under {@code fileId}
      * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the object's real size exceeds {@code authUserId}'s quota - the uploaded object is deleted before this is thrown
-     * @throws de.lino.cloud.api.storage.object.PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
+     * @throws PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
      */
     @NotNull
     StoredFileSummary completePresignedUpload(@NotNull String authUserId, @NotNull String fileId, @NotNull String fileName,

@@ -7,8 +7,8 @@ also offers. Login is verified against an `AuthUser` entity persisted through a 
 any other entity - Postgres credentials never leave the server, and the client never sees them.
 
 This module is deliberately **framework-agnostic**: it has no Javalin dependency of its own, so
-the whole engine (account storage, password hashing delegation, JWT signing/verification, TOTP
-two-factor auth, email verification/notification, file/folder ownership and sharing) stays usable
+the whole engine (account storage, password hashing delegation, JWT signing/verification,
+email verification/notification, file/folder ownership and sharing) stays usable
 independently of whatever HTTP layer happens to front it. Today that's `cloud-driver-plugin`'s
 `DefaultRestFactory` (the JWT-gated constructor) and `cloud-driver-extensions-rest`'s
 `CloudRestExtension`, both of which depend on this module directly - this module never depends
@@ -34,8 +34,7 @@ picture). This module depends **only** on `cloud-driver-api` (contracts: `DataFa
 `StoredFileSummary`/`SharedFileSummary`/`SharedFolderSummary`/`SharedFolderContents`/
 `TrashedFileSummary`/`TrashedFolderSummary`, ...), plus `database-driver-api`, `jjwt-api` (+
 `jjwt-impl`/`jjwt-jackson` at runtime), `jakarta.mail-api` (+ `angus-mail` at runtime, backing
-`SmtpEmailSender`), [`dev.samstevens.totp:totp`](https://github.com/samdjstevens/java-totp) (TOTP
-two-factor codes), and `org.jetbrains:annotations`/Lombok. **Never** depends on
+`SmtpEmailSender`), and `org.jetbrains:annotations`/Lombok. **Never** depends on
 `cloud-driver-plugin` - a caller supplies a concrete `DataFactory`/`FileFactory`/`PasswordHasher`
 (e.g. `cloud-driver-plugin`'s `EntityDatabaseClient`-backed `DefaultDataFactory`/`DefaultFileFactory`
 and `Argon2idPasswordHasher`) from the outside.
@@ -46,7 +45,7 @@ Package layout (`src/main/java/de/lino/cloud/auth/`):
 |---|---|
 | `de.lino.cloud.auth` | `AuthService`, `CloudUserService` - the two service implementations |
 | `de.lino.cloud.auth.entity` | `CloudUser`, `StoredFileOwnership`, `SharedFileGrant`, `SharedFolderGrant`, `RefreshToken` |
-| `de.lino.cloud.auth.pending` | `PendingRegistration`, `PendingPasswordReset`, `PendingEmailChange`, `PendingTwoFactorSetup`, `PendingTwoFactorLogin` - short-lived, not-yet-committed state for every two-step verification flow |
+| `de.lino.cloud.auth.pending` | `PendingRegistration`, `PendingPasswordReset`, `PendingEmailChange` - short-lived, not-yet-committed state for every two-step verification flow |
 | `de.lino.cloud.auth.jwt` | `JjwtSigner` - the one `JwtSigner` implementation |
 | `de.lino.cloud.auth.mail` | `SmtpEmailSender`, `LoggingEmailSender`, `EmailTemplates` |
 | `de.lino.cloud.auth.audit` | `AuditLogServiceImpl` - the one `AuditLogService` implementation |
@@ -66,8 +65,7 @@ authenticates by **email address**, not an arbitrary username; `AuthService#regi
 live MX-record lookup against the address's domain before persisting anything, see "Safety &
 security" below), `passwordHash` (a PHC-style Argon2id string - never the raw password), `isAdmin`
 (a single boolean admin flag, settable only via `AuthService#setAdmin` - never through any REST
-route, see "Safety & security"), and `totpSecretBase32` (nullable - non-null once two-factor
-authentication is enabled for that account).
+route, see "Safety & security").
 
 Named `AuthUser` rather than plain `User` deliberately: `EntityDatabaseClient` derives the SQL
 table name from `getSimpleName()`, and `USER` is a reserved keyword in PostgreSQL/standard SQL. An
@@ -106,7 +104,7 @@ AuthService authService = new AuthService(
 
 authService.register("jane@example.com", rawPassword); // format check + syntax/MX-record check, then e-mails a verification code
 AuthTokens tokens = authService.confirmRegistration("jane@example.com", code); // persists the real AuthUser + a CloudUser row, returns {accessToken, refreshToken}
-LoginResult result = authService.login("jane@example.com", rawPassword); // completed tokens, or a pending 2FA token
+AuthTokens loginTokens = authService.login("jane@example.com", rawPassword); // {accessToken, refreshToken}
 String userId = authService.validate(tokens.accessToken()); // throws InvalidJwtException
 ```
 
@@ -119,13 +117,8 @@ so a caller can never distinguish which). `confirmRegistration` also eagerly cre
 account's `CloudUser` row via the injected `ICloudUserService#getOrCreate`, so `stats`/`cu list`-style
 tooling never sees a JWT-holding account with no `CloudUser` record.
 
-`login` verifies the password via `PasswordHasher#verify` and branches on whether the matched
-account has two-factor authentication enabled: a disabled account gets a completed `LoginResult`
-(real `AuthTokens`) immediately; an enabled one gets a `LoginResult` carrying only a pending token,
-which the caller must present, together with a current TOTP code, to `completeTwoFactorLogin`.
-`beginTwoFactorSetup`/`confirmTwoFactorSetup`/`disableTwoFactor` manage enabling/disabling 2FA
-itself (`disableTwoFactor` re-verifies the account's password first - a stolen bearer token alone
-must not be enough to turn off a second factor). `refresh`/`revokeRefreshToken` exchange/invalidate
+`login` verifies the password via `PasswordHasher#verify` and, on success, issues a fresh
+`AuthTokens` pair immediately. `refresh`/`revokeRefreshToken` exchange/invalidate
 the longer-lived, single-use, rotate-on-every-use `RefreshToken` every token-issuing call also
 returns, so a long-running client can stay signed in past the 12-hour access-token lifetime without
 asking for the password again. `setAdmin` is the only writer of `AuthUser#isAdmin` anywhere in this
@@ -206,7 +199,7 @@ file content transfer) is paid by whatever `DataFactory`/`FileFactory` the calle
 `AuthService`/`CloudUserService` are thin orchestration on top. Worth knowing:
 
 - **Argon2id is deliberately slow**, and that cost is paid synchronously on whatever thread calls
-  `AuthService#register`/`#login`/`#confirmPasswordReset`/`#disableTwoFactor` - there is no async
+  `AuthService#register`/`#login`/`#confirmPasswordReset` - there is no async
   variant on `IAuthService`. A caller wiring this behind an HTTP endpoint must dispatch the call
   itself (e.g. `DefaultRestFactory`'s handlers dispatch through `MultiTaskingFactory` so a Jetty
   worker thread is never blocked on it). Dispatching onto a virtual thread does **not** turn
@@ -231,10 +224,10 @@ file content transfer) is paid by whatever `DataFactory`/`FileFactory` the calle
 
 - **Never persisted:** the raw password (`AuthUser` has no field for it, only `passwordHash`); a
   raw refresh/verification-code value never sits anywhere longer than its own `Pending*` row's
-  short TTL (10 minutes for e-mail codes, 5 for a pending two-factor login); the raw JWT signing
+  short TTL (10 minutes for e-mail codes); the raw JWT signing
   key (only ever held in memory as a `SecretKey` inside `JjwtSigner`).
 - **Persisted, envelope-encrypted like any other entity, all via the injected `DataFactory`:**
-  `AuthUser` (`id`, `emailAddress`, Argon2id `passwordHash`, `isAdmin`, `totpSecretBase32`),
+  `AuthUser` (`id`, `emailAddress`, Argon2id `passwordHash`, `isAdmin`),
   `CloudUser`, `StoredFileOwnership`, `SharedFileGrant`/`SharedFolderGrant`, `RefreshToken`, and
   every `Pending*` row (each carrying a plaintext verification code for up to its own short TTL -
   protected at rest by the same AES-256-GCM envelope encryption every other entity gets, per
@@ -242,8 +235,7 @@ file content transfer) is paid by whatever `DataFactory`/`FileFactory` the calle
   persistence path of their own.
 - A JWT access token carries only the subject (`AuthUser#getId()`) plus standard `iat`/`exp`
   claims - no email address, password hash, or other PII embedded in the token. A refresh token
-  and a pending-two-factor-login token are both opaque, random, `DataFactory`-backed values, never
-  JWTs themselves.
+  is an opaque, random, `DataFactory`-backed value, never a JWT itself.
 
 ## Safety & security
 
@@ -258,11 +250,6 @@ file content transfer) is paid by whatever `DataFactory`/`FileFactory` the calle
 - **Password format is validated before any hashing/DB work**: at least 8 characters, a digit, a
   lowercase letter, an uppercase letter, a symbol, and none of `; , : \`` (which could collide with
   delimiter/quoting conventions elsewhere in the system).
-- **Two-factor authentication (TOTP, RFC 6238)** is opt-in per account (`totpSecretBase32`,
-  null = disabled). The pending-setup secret is never committed to the live account until a real
-  code from it is confirmed. A completed second-factor login uses its own opaque, single-use,
-  short-TTL `PendingTwoFactorLogin` token rather than a distinguishing JWT claim - it isn't a JWT
-  at all, so `JjwtSigner#verify` rejects it immediately if presented as a bearer token.
 - **`AuthUser#isAdmin` is written *only* by `AuthService#setAdmin`**, and that method is never
   reachable from any REST route in this codebase - only from an operator-run terminal command
   (`cloud-driver-extensions-terminal`) - specifically to avoid a privilege-escalation hole.
@@ -308,13 +295,13 @@ file content transfer) is paid by whatever `DataFactory`/`FileFactory` the calle
 
 | Class | Package | Role |
 |---|---|---|
-| `AuthService` | `de.lino.cloud.auth` | The only `IAuthService` implementation - registration, login, 2FA, password/email reset, refresh tokens, admin flag |
+| `AuthService` | `de.lino.cloud.auth` | The only `IAuthService` implementation - registration, login, password/email reset, refresh tokens, admin flag |
 | `CloudUserService` | `de.lino.cloud.auth` | The only `ICloudUserService` implementation - file/folder ownership, sharing, trash |
 | `CloudUser` | `de.lino.cloud.auth.entity` | One end user's identifying record (`ICloudUser`, `Owned`) |
 | `StoredFileOwnership` | `de.lino.cloud.auth.entity` | One (user, file) ownership row, including folder placement and trash state |
 | `SharedFileGrant`/`SharedFolderGrant` | `de.lino.cloud.auth.entity` | One read-only sharing grant each |
 | `RefreshToken` | `de.lino.cloud.auth.entity` | One long-lived, single-use, rotate-on-use refresh token |
-| `PendingRegistration`/`PendingPasswordReset`/`PendingEmailChange`/`PendingTwoFactorSetup`/`PendingTwoFactorLogin` | `de.lino.cloud.auth.pending` | Short-lived state for each two-step verification flow |
+| `PendingRegistration`/`PendingPasswordReset`/`PendingEmailChange` | `de.lino.cloud.auth.pending` | Short-lived state for each two-step verification flow |
 | `JjwtSigner` | `de.lino.cloud.auth.jwt` | The only `JwtSigner` implementation, HMAC-SHA256 via jjwt |
 | `SmtpEmailSender` | `de.lino.cloud.auth.mail` | The only production `EmailSender`: SMTP+STARTTLS via Jakarta Mail/Angus Mail |
 | `LoggingEmailSender` | `de.lino.cloud.auth.mail` | Dev-only `EmailSender` fallback: logs instead of actually sending |
@@ -344,8 +331,8 @@ authService.register("jane@example.com", "Str0ng!Pass".toCharArray());
 AuthTokens tokens = authService.confirmRegistration("jane@example.com", codeFromEmail);
 
 // Everyday use:
-LoginResult result = authService.login("jane@example.com", "Str0ng!Pass".toCharArray());
-String userId = authService.validate(result.tokens().accessToken());
+AuthTokens loginTokens = authService.login("jane@example.com", "Str0ng!Pass".toCharArray());
+String userId = authService.validate(loginTokens.accessToken());
 
 StoredFile uploaded = cloudUserService.uploadFile(userId, "report.pdf", bytes, null);
 cloudUserService.shareFile(userId, uploaded.fileId(), "colleague@example.com");

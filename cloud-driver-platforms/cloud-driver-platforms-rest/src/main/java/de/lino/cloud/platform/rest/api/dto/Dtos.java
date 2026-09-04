@@ -33,53 +33,13 @@ public final class Dtos {
 
     /**
      * Response of {@code POST /auth/login}, {@code POST /auth/register/confirm}, {@code
-     * POST /auth/reset-password/confirm}, {@code POST /auth/2fa/login}, and {@code
-     * POST /auth/refresh} - every one of the server's token-issuing routes returns this same
-     * shape. {@code refreshToken} is a longer-lived, opaque, single-use token (rotated on every
-     * {@code POST /auth/refresh} call) a client can exchange for a fresh pair once {@code token}
-     * expires, without asking the user to log in again - see {@link ApiClient#refresh}.
+     * POST /auth/reset-password/confirm}, and {@code POST /auth/refresh} - every one of the
+     * server's token-issuing routes returns this same shape. {@code refreshToken} is a
+     * longer-lived, opaque, single-use token (rotated on every {@code POST /auth/refresh} call) a
+     * client can exchange for a fresh pair once {@code token} expires, without asking the user to
+     * log in again - see {@link ApiClient#refresh}.
      */
     public record AuthResponse(String token, String refreshToken) {
-    }
-
-    /**
-     * Response of {@code POST /auth/login} - a superset of the fields {@link AuthResponse} and the
-     * server's two-factor-required shape can each carry, deserialized as one record since Gson
-     * simply leaves an absent JSON property at its type's default rather than failing (see {@link
-     * ApiClient#login}, which branches on {@link #twoFactorRequired()} rather than assuming
-     * {@code token}/{@code refreshToken} are always present the way every other token-issuing
-     * route's response is). {@code twoFactorRequired} is {@code false} and {@code pendingToken} is
-     * {@code null} for a completed, non-2FA login; {@code token}/{@code refreshToken} are both
-     * {@code null} when {@code twoFactorRequired} is {@code true}.
-     *
-     * @param token the freshly issued access JWT, or {@code null} if {@link #twoFactorRequired()}
-     * @param refreshToken the freshly issued refresh token, or {@code null} if {@link #twoFactorRequired()}
-     * @param twoFactorRequired whether the matched account has two-factor authentication enabled
-     * @param pendingToken the token to present, together with a TOTP code, to {@link
-     *     ApiClient#completeTwoFactorLogin} - {@code null} unless {@link #twoFactorRequired()}
-     */
-    public record LoginOutcome(String token, String refreshToken, boolean twoFactorRequired, String pendingToken) {
-    }
-
-    /** Body for {@code POST /auth/2fa/login} - the pending token from {@link LoginOutcome#pendingToken()} plus a current TOTP code. */
-    public record TwoFactorLoginRequest(String pendingToken, String code) {
-    }
-
-    /**
-     * Response of {@code POST /auth/2fa/setup} (bearer-gated) - a freshly generated TOTP secret,
-     * not yet live on the account, plus a ready-to-render {@code otpauth://} URI. Submit a code
-     * produced from {@code secretBase32} to {@link ApiClient#confirmTwoFactorSetup} to actually
-     * enable two-factor authentication.
-     */
-    public record TwoFactorSetupResponse(String secretBase32, String otpauthUri) {
-    }
-
-    /** Body for {@code POST /auth/2fa/confirm} (bearer-gated) - the current TOTP code produced from a pending {@link TwoFactorSetupResponse#secretBase32()}. */
-    public record ConfirmTwoFactorSetupRequest(String code) {
-    }
-
-    /** Body for {@code POST /auth/2fa/disable} (bearer-gated) - the account's current password, re-verified server-side before disabling. */
-    public record DisableTwoFactorRequest(String password) {
     }
 
     /**
@@ -197,6 +157,16 @@ public final class Dtos {
     }
 
     /**
+     * Body for {@code PUT /cloudUsers/theme} (added 2026-09-04) - syncs the caller's light/dark
+     * theme choice to their account so it follows them across devices, replacing what used to be
+     * a per-device local setting. {@code themeMode} is treated as an opaque string server-side
+     * (e.g. {@code "LIGHT"}/{@code "DARK"} - the actual enum lives client-side); {@code null}
+     * clears the stored preference back to "unset".
+     */
+    public record UpdateThemeRequest(String themeMode) {
+    }
+
+    /**
      * Body for {@code POST /files/upload-url} - the first step of a presigned, direct-to-client
      * upload (see {@code architecture/AWS_S3_IMPL.md}). {@code sizeBytes} is checked against
      * quota now and again (against the real uploaded size) at {@link CompleteUploadRequest}.
@@ -248,9 +218,12 @@ public final class Dtos {
      * timestamp - see {@code CloudUser}'s own Javadoc server-side. {@code maxBytesToUpload}/{@code
      * currentUploadedBytes} back the Dashboard's storage-quota display - see {@code
      * ICloudUser#getMaxBytesToUpload()}/{@code #getCurrentUploadedBytes()} server-side for what
-     * each actually tracks.
+     * each actually tracks. {@code themeMode} (added 2026-09-04) is this account's synced
+     * light/dark theme preference - {@code null} if never explicitly set, in which case a client
+     * falls back to its own default; update it via {@code PUT /cloudUsers/theme} (see {@link
+     * de.lino.cloud.platform.rest.api.ApiClient#updateThemePreference}).
      */
-    public record CloudUserResponse(String authUserId, long timeStamp, long maxBytesToUpload, long currentUploadedBytes) {
+    public record CloudUserResponse(String authUserId, long timeStamp, long maxBytesToUpload, long currentUploadedBytes, String themeMode) {
     }
 
     /**

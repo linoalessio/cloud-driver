@@ -106,9 +106,9 @@ public final class Asserts {
         final long systemEndTime = System.currentTimeMillis();
 
         final String[] results = {
-                "CPU-process-time: " + (cpuTimeSupported ? Constraints.resolveMilliSecondsToUnit((cpuProcessEndTime - cpuProcessStartTime) / 1_000_000) : "unsupported on this JVM")
-                , "Mem-process-time: " + Constraints.resolveBytesToUnit(memProcessEndTime - memProcessStartTime)
-                , "System-process-time: " + Constraints.resolveMilliSecondsToUnit(systemEndTime - systemStartTime)
+                "CPU-process-time: " + (cpuTimeSupported ? UnitParser.parseTimeUnit((cpuProcessEndTime - cpuProcessStartTime) / 1_000_000) : "unsupported on this JVM")
+                , "Mem-process-time: " + UnitParser.parseByteUnit(memProcessEndTime - memProcessStartTime)
+                , "System-process-time: " + UnitParser.parseTimeUnit(systemEndTime - systemStartTime)
         };
 
         System.out.println(" ");

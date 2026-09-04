@@ -1,7 +1,7 @@
 package de.lino.cloud.extensions;
 
 import de.lino.cloud.api.CloudDriver;
-import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.UnitParser;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.sql.SQLExecution;
@@ -257,7 +257,7 @@ public final class DatabaseBackupScheduler {
 
             CloudDriver.getInstance().getTerminal().displayApproved("Export data finished. Archiving data...");
             archiveDumpDirectory(dumpDirectory, finalArchive);
-            CloudDriver.getInstance().getTerminal().displayApproved("Backup stored under '&b%s&7' (&b%s&7)", finalArchive, Constraints.resolveBytesToUnit(Files.size(finalArchive)));
+            CloudDriver.getInstance().getTerminal().displayApproved("Backup stored under '&b%s&7' (&b%s&7)", finalArchive, UnitParser.parseByteUnit(Files.size(finalArchive)));
 
             enforceRetention();
 

@@ -1,9 +1,10 @@
 package de.lino.cloud.plugin.storage.object;
 
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.security.crypto.EncryptedPayload;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.WrappedKey;
-import de.lino.cloud.api.storage.object.ObjectStorageException;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.ByteArrayInputStream;
@@ -16,7 +17,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * (De)serializes an {@link EnvelopeEncryptedPayload} to/from a compact binary layout, so it can be
- * written to/read from an {@link de.lino.cloud.api.storage.object.ObjectStorageService} object.
+ * written to/read from an {@link ObjectStorageService} object.
  *
  * <p><b>Why this exists at all - a real deviation from {@code architecture/AWS_S3_IMPL.md}'s own
  * assumption.</b> That handoff document assumed the same ciphertext bytes a {@code StoredFile}'s

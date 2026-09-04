@@ -30,9 +30,9 @@ fun isThumbnailable(entry: Entry): Boolean =
 /**
  * Process-wide, in-memory thumbnail cache keyed by file id - a Compose snapshot-state map, so a
  * row observing it recomposes the moment its own thumbnail finishes loading. Never evicted
- * (bounded by however many distinct image files were actually viewed this session), same
- * not-for-huge-scale trade-off [de.lino.cloud.platform.desktop.utils.AppSettingsStore] makes for a
- * different reason. [failed] remembers a decode/download failure so a broken image isn't
+ * (bounded by however many distinct image files were actually viewed this session) - a deliberate
+ * not-for-huge-scale trade-off, the same one this app accepts elsewhere for session-lifetime,
+ * in-memory-only state. [failed] remembers a decode/download failure so a broken image isn't
  * re-fetched on every recomposition/re-visit.
  */
 private object ThumbnailCache {

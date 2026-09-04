@@ -11,8 +11,21 @@ import UniformTypeIdentifiers
 /// first pass - no drag-and-drop, thumbnails, or previews yet.
 /// Styled after Apple's own iCloud.com dashboard (see `Theme.swift`), not default iOS list chrome.
 struct FileBrowserView: View {
+    /// Which kind of item `.fileImporter` below is currently being asked to pick - `nil` means the
+    /// picker isn't showing. **Deliberately one `.fileImporter` modifier driven by one piece of
+    /// state, not two separate `.fileImporter` modifiers (one per kind)** - fixed a real bug: two
+    /// simultaneous `.fileImporter` modifiers attached to the same view is a well-known SwiftUI
+    /// gotcha where the second one silently stops presenting (or both start fighting over which
+    /// one's sheet actually shows), confirmed here directly - "Upload file" stopped working the
+    /// moment a second `.fileImporter` (for "Upload folder") was added alongside it. One importer
+    /// whose `allowedContentTypes` switches on `pendingImport` avoids the conflict entirely.
+    private enum PendingImport: Equatable {
+        case file
+        case folder
+    }
+
     @ObservedObject var viewModel: AppViewModel
-    @State private var showingFileImporter = false
+    @State private var pendingImport: PendingImport?
     @State private var showingNewFolderAlert = false
     @State private var newFolderName = ""
     @State private var movingTargets: MoveTargets?
@@ -66,21 +79,7 @@ struct FileBrowserView: View {
                                                 ) {
                                                     if !viewModel.isSelecting {
                                                         Menu {
-                                                            Button {
-                                                                movingTargets = MoveTargets(entries: [entry])
-                                                            } label: {
-                                                                Label("Move to...", systemImage: "folder")
-                                                            }
-                                                            Button {
-                                                                sharingTargets = ShareTargets(entries: [entry])
-                                                            } label: {
-                                                                Label("Share", systemImage: "person.badge.plus")
-                                                            }
-                                                            Button(role: .destructive) {
-                                                                viewModel.deleteFolder(folder)
-                                                            } label: {
-                                                                Label("Delete", systemImage: "trash")
-                                                            }
+                                                            folderMenuItems(folder, entry: entry)
                                                         } label: {
                                                             Image(systemName: "ellipsis")
                                                                 .foregroundStyle(CloudTheme.textSecondary)
@@ -94,6 +93,16 @@ struct FileBrowserView: View {
                                             }
                                         }
                                         .buttonStyle(.plain)
+                                        // Long-pressing a row opens the exact same actions as
+                                        // tapping its "..." menu, via `folderMenuItems` - native
+                                        // SwiftUI `.contextMenu` already recognizes a long press,
+                                        // no custom gesture needed. Suppressed while multi-selecting,
+                                        // matching the "..." menu's own visibility.
+                                        .contextMenu {
+                                            if !viewModel.isSelecting {
+                                                folderMenuItems(folder, entry: entry)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -127,26 +136,7 @@ struct FileBrowserView: View {
                                                 ) {
                                                     if !viewModel.isSelecting {
                                                         Menu {
-                                                            Button {
-                                                                viewModel.download(file)
-                                                            } label: {
-                                                                Label("Download", systemImage: "arrow.down.circle")
-                                                            }
-                                                            Button {
-                                                                movingTargets = MoveTargets(entries: [entry])
-                                                            } label: {
-                                                                Label("Move to...", systemImage: "folder")
-                                                            }
-                                                            Button {
-                                                                sharingTargets = ShareTargets(entries: [entry])
-                                                            } label: {
-                                                                Label("Share", systemImage: "person.badge.plus")
-                                                            }
-                                                            Button(role: .destructive) {
-                                                                viewModel.deleteFile(file)
-                                                            } label: {
-                                                                Label("Delete", systemImage: "trash")
-                                                            }
+                                                            fileMenuItems(file, entry: entry)
                                                         } label: {
                                                             Image(systemName: "ellipsis.circle")
                                                                 .foregroundStyle(CloudTheme.textSecondary)
@@ -156,6 +146,13 @@ struct FileBrowserView: View {
                                             }
                                         }
                                         .buttonStyle(.plain)
+                                        // Same long-press-opens-the-"..."-menu affordance the
+                                        // folder rows above get - see that comment.
+                                        .contextMenu {
+                                            if !viewModel.isSelecting {
+                                                fileMenuItems(file, entry: entry)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -231,24 +228,7 @@ struct FileBrowserView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button {
-                                showingFileImporter = true
-                            } label: {
-                                Label("Upload file", systemImage: "square.and.arrow.up")
-                            }
-                            Button {
-                                newFolderName = ""
-                                showingNewFolderAlert = true
-                            } label: {
-                                Label("New folder", systemImage: "folder.badge.plus")
-                            }
-                            if !viewModel.folders.isEmpty || !viewModel.files.isEmpty {
-                                Button {
-                                    viewModel.enterSelectionMode()
-                                } label: {
-                                    Label("Select items", systemImage: "checkmark.circle")
-                                }
-                            }
+                            addMenuItems()
                         } label: {
                             Image(systemName: "plus.circle.fill")
                                 .foregroundStyle(CloudTheme.accent)
@@ -271,11 +251,23 @@ struct FileBrowserView: View {
         .task {
             viewModel.loadCurrentFolder()
         }
-        .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+        .fileImporter(
+            isPresented: Binding(
+                get: { pendingImport != nil },
+                set: { isPresented in if !isPresented { pendingImport = nil } }
+            ),
+            allowedContentTypes: pendingImport == .folder ? [.folder] : [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            let kind = pendingImport
             switch result {
             case .success(let urls):
                 if let url = urls.first {
-                    viewModel.uploadPickedFile(url: url)
+                    if kind == .folder {
+                        viewModel.uploadPickedFolder(url: url)
+                    } else {
+                        viewModel.uploadPickedFile(url: url)
+                    }
                 }
             case .failure(let error):
                 viewModel.errorMessage = error.localizedDescription
@@ -315,6 +307,61 @@ struct FileBrowserView: View {
     private var isEverythingSelected: Bool {
         let everything = Set(viewModel.folders.map(SelectableEntry.folder) + viewModel.files.map(SelectableEntry.file))
         return !everything.isEmpty && viewModel.selectedEntries == everything
+    }
+
+    /// The actions available on one folder - shared between the row's tap-to-open "..." `Menu` and
+    /// its long-press `.contextMenu`, so the two affordances can never drift out of sync with each
+    /// other.
+    @ViewBuilder
+    private func folderMenuItems(_ folder: FolderResponse, entry: SelectableEntry) -> some View {
+        Button {
+            movingTargets = MoveTargets(entries: [entry])
+        } label: {
+            Label("Move to...", systemImage: "folder")
+        }
+        Button {
+            sharingTargets = ShareTargets(entries: [entry])
+        } label: {
+            Label("Share", systemImage: "person.badge.plus")
+        }
+        Button(role: .destructive) {
+            viewModel.deleteFolder(folder)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    /// The actions available on one file - same "shared between tap-to-open and long-press" shape
+    /// as `folderMenuItems`.
+    @ViewBuilder
+    private func fileMenuItems(_ file: StoredFileSummaryResponse, entry: SelectableEntry) -> some View {
+        Button {
+            viewModel.download(file)
+        } label: {
+            Label("Download", systemImage: "arrow.down.circle")
+        }
+        if isZipArchive(file.contentType) {
+            Button {
+                viewModel.extractArchive(file)
+            } label: {
+                Label("Extract", systemImage: "doc.zipper")
+            }
+        }
+        Button {
+            movingTargets = MoveTargets(entries: [entry])
+        } label: {
+            Label("Move to...", systemImage: "folder")
+        }
+        Button {
+            sharingTargets = ShareTargets(entries: [entry])
+        } label: {
+            Label("Share", systemImage: "person.badge.plus")
+        }
+        Button(role: .destructive) {
+            viewModel.deleteFile(file)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
     }
 
     @ViewBuilder

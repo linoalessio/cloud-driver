@@ -6,7 +6,6 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
-import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
@@ -14,7 +13,6 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
-import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import de.lino.cloud.platform.rest.api.push.LiveUpdateClient
 import de.lino.cloud.platform.rest.api.session.TokenStoreFactory
 import kotlinx.coroutines.future.await
@@ -100,36 +98,13 @@ class CloudDriverClient(
     }
 
     /**
-     * @return the [LoginOutcome] - real tokens (already stored on [apiClient] and persisted via
-     * [sessionManager], so the session survives a restart) if the matched account has two-factor
-     * authentication disabled, or a pending token (see [LoginOutcome.twoFactorRequired]) the
-     * caller must present, together with a TOTP code, to [completeTwoFactorLogin] otherwise -
-     * nothing is persisted yet in that case.
+     * @return the freshly issued JWT - already stored on [apiClient] and persisted via
+     * [sessionManager], so the session survives a restart.
      */
-    suspend fun login(emailAddress: String, password: String): LoginOutcome =
+    suspend fun login(emailAddress: String, password: String): String {
         this.sessionManager.loginAsync(emailAddress, password).await()
-
-    /**
-     * Completes a login left pending by [login] returning [LoginOutcome.twoFactorRequired] -
-     * verifies [code] against the account's TOTP secret and, on success, returns a fresh JWT,
-     * persisted via [sessionManager] so it survives a restart exactly like a non-2FA [login].
-     */
-    suspend fun completeTwoFactorLogin(pendingToken: String, code: String): String {
-        this.sessionManager.completeTwoFactorLoginAsync(pendingToken, code).await()
         return this.apiClient.currentToken().orElseThrow()
     }
-
-    /** Starts enabling two-factor authentication for the signed-in account - returns a freshly generated secret, not yet live. */
-    suspend fun beginTwoFactorSetup(): TwoFactorSetupResponse =
-        this.apiClient.beginTwoFactorSetupAsync().await()
-
-    /** Completes a setup started by [beginTwoFactorSetup] - from this point on, [login] returns a pending token instead of tokens directly. */
-    suspend fun confirmTwoFactorSetup(code: String): MessageResponse =
-        this.apiClient.confirmTwoFactorSetupAsync(code).await()
-
-    /** Disables two-factor authentication for the signed-in account - the server re-verifies [password] before disabling. */
-    suspend fun disableTwoFactor(password: String): MessageResponse =
-        this.apiClient.disableTwoFactorAsync(password).await()
 
     /** Step one of registration - e-mails a verification code, does not yet create the account. */
     suspend fun register(emailAddress: String, password: String): MessageResponse =
@@ -310,6 +285,11 @@ class CloudDriverClient(
     /** The caller's own [CloudUserResponse] - its `timeStamp` is the account's creation time (see that DTO's own Javadoc). */
     suspend fun getCloudUser(authUserId: String): CloudUserResponse =
         this.apiClient.getCloudUserAsync(authUserId).await()
+
+    /** Syncs the caller's light/dark theme choice to their account, so it follows them across every device signed into it. */
+    suspend fun updateThemePreference(themeMode: String?) {
+        this.apiClient.updateThemePreferenceAsync(themeMode).await()
+    }
 
     /** The signed-in account's own id/email/admin flag - used to decide whether to show admin-only UI. */
     suspend fun getMe(): MeResponse = this.apiClient.getMeAsync().await()

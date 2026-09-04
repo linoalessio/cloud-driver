@@ -7,6 +7,7 @@ import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
+import lombok.Getter;
 import lombok.ToString;
 
 import java.io.ByteArrayOutputStream;
@@ -152,7 +153,15 @@ public final class StoredFile extends Serialized {
      * decompression step involved (harmless either way, since {@link #contentCompressed} is always
      * {@code false} on a direct-transfer instance). Always {@code false} when {@link
      * #objectStorageKey} is {@code null}.
+     * -- GETTER --
+     *
+     * @return {@code true} if this file's content was uploaded directly by the client to {@link
+     *     #objectStorageKey} via a presigned URL - never DEFLATE-compressed, never encrypted by
+     *     this application's own {@code EnvelopeEncryptionService}. Always {@code false} if {@link
+     *     #isS3Backed()} is {@code false}.
+
      */
+    @Getter
     private final boolean directTransfer;
 
     /**
@@ -417,16 +426,6 @@ public final class StoredFile extends Serialized {
     /** @return {@code true} if this file's content lives in an external object store (S3) rather than inline in {@link #contentBase64} */
     public boolean isS3Backed() {
         return objectStorageKey != null;
-    }
-
-    /**
-     * @return {@code true} if this file's content was uploaded directly by the client to {@link
-     *     #objectStorageKey} via a presigned URL - never DEFLATE-compressed, never encrypted by
-     *     this application's own {@code EnvelopeEncryptionService}. Always {@code false} if {@link
-     *     #isS3Backed()} is {@code false}.
-     */
-    public boolean isDirectTransfer() {
-        return directTransfer;
     }
 
     /** The key this file's content is stored under in an external object store, or {@code null} if {@link #isS3Backed()} is {@code false}. */

@@ -3,7 +3,7 @@ package de.lino.cloud.plugin.factory.container;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
-import de.lino.cloud.api.storage.object.ObjectStorageService;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;

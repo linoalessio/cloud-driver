@@ -5,7 +5,7 @@ import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
-import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.UnitParser;
 import de.lino.cloud.extensions.terminal.command.system.HardResetCommand;
 import org.jetbrains.annotations.NotNull;
 
@@ -60,7 +60,7 @@ public class RecomputeStorageCommand implements Command {
             terminal.displayApproved("Recomputing storage usage for &b%s&7 account(s)...", cloudUsers.size());
             for (final ICloudUser cloudUser : cloudUsers) {
                 final long total = cloudUserService.recomputeUploadedBytes(cloudUser.getAuthUserId());
-                terminal.displayApproved("&8- &7%s: &b%s", cloudUser.getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(total));
+                terminal.displayApproved("&8- &7%s: &b%s", cloudUser.getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(total));
             }
             terminal.emptyLine();
             return;
@@ -76,7 +76,7 @@ public class RecomputeStorageCommand implements Command {
 
         final long total = cloudUserService.recomputeUploadedBytes(cloudUser.get().getAuthUserId());
         terminal.displayApproved("Cloud user '&b%s&7' storage usage recomputed: &b%s",
-                cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(total));
+                cloudUser.get().getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(total));
     }
 
     private void sendHelp() {

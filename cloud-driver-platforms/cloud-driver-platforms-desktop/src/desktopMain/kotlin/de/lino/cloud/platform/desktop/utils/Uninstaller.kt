@@ -19,8 +19,10 @@ private const val APP_NAME = "CloudDriver"
  *             that was never installed to is a no-op), plus both desktop-entry files.
  *  - Windows: `%LOCALAPPDATA%\Programs\CloudDriver` plus the Desktop/Start Menu `.lnk` shortcuts.
  *
- * Also deletes [AppSettingsStore]'s own local settings directory (`~/.cloud-driver-desktop`) on
- * every platform, per this action's "including the settings" contract.
+ * Also deletes `~/.cloud-driver-desktop` on every platform, per this action's "including the
+ * settings" contract - a legacy local settings directory (light/dark theme used to be persisted
+ * there per-device before it was synced to the account instead; deleted here purely for cleanup
+ * on an install that predates that change).
  *
  * Every individual removal is isolated (its own try/catch) so one missing/permission-denied path
  * never aborts the rest - the same "one failure shouldn't block the others" convention this

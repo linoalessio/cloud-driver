@@ -1,7 +1,7 @@
 package de.lino.cloud.plugin.storage.object;
 
-import de.lino.cloud.api.storage.object.ObjectStorageException;
-import de.lino.cloud.api.storage.object.ObjectStorageService;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import org.jetbrains.annotations.NotNull;

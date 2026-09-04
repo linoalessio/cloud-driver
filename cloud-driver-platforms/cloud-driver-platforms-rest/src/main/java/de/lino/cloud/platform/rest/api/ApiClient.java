@@ -16,13 +16,10 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
-import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmTwoFactorSetupRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
-import de.lino.cloud.platform.rest.api.dto.Dtos.DisableTwoFactorRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.EmailExistsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
-import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
@@ -38,10 +35,9 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFolderSummaryResponse;
-import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorLoginRequest;
-import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateThemeRequest;
 
 import java.io.Closeable;
 import java.io.FileNotFoundException;
@@ -339,129 +335,27 @@ public final class ApiClient implements AutoCloseable {
      *
      * @param emailAddress the account's e-mail address, sent as the request's {@code username} field
      * @param password     the account's plaintext password
-     * @return a {@link LoginOutcome} - real tokens (already stored for subsequent calls) if the
-     *         matched account has two-factor authentication disabled, or a pending token (see
-     *         {@link LoginOutcome#twoFactorRequired()}) to present, together with a TOTP code, to
-     *         {@link #completeTwoFactorLogin} otherwise
+     * @return the freshly issued JWT, already stored for subsequent calls
      * @throws ApiException {@code 401} on wrong credentials, or any other transport/HTTP failure
      */
-    public LoginOutcome login(final String emailAddress, final String password) throws ApiException {
-        final LoginOutcome outcome = this.send(this.loginRequest(emailAddress, password), LoginOutcome.class);
-        this.applyTokensIfPresent(outcome);
-        return outcome;
-    }
-
-    /** Async form of {@link #login} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<LoginOutcome> loginAsync(final String emailAddress, final String password) {
-        return this.sendAsync(this.loginRequest(emailAddress, password), LoginOutcome.class)
-                .thenApply(outcome -> {
-                    this.applyTokensIfPresent(outcome);
-                    return outcome;
-                });
-    }
-
-    /** Builds the {@code POST /auth/login} request against {@link #authPanelBaseUrl}, unauthenticated. */
-    private HttpRequest loginRequest(final String emailAddress, final String password) {
-        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/login"), new AuthRequest(emailAddress, password), false);
-    }
-
-    /** Applies {@code outcome}'s tokens if it's a completed (non-2FA) login - a no-op if {@link LoginOutcome#twoFactorRequired()}. */
-    private void applyTokensIfPresent(final LoginOutcome outcome) {
-        if (!outcome.twoFactorRequired()) {
-            this.token.set(outcome.token());
-            this.refreshToken.set(outcome.refreshToken());
-        }
-    }
-
-    /**
-     * {@code POST /auth/2fa/login} on the auth-panel host - completes a login left pending by
-     * {@link #login} returning {@link LoginOutcome#twoFactorRequired()}. Not bearer-gated - the
-     * caller has no real access token yet by definition.
-     *
-     * @param pendingToken the token from {@link LoginOutcome#pendingToken()}
-     * @param code the current TOTP code, produced by the caller's authenticator app
-     * @return the freshly issued JWT, already stored for subsequent calls
-     * @throws ApiException {@code 400} if {@code pendingToken}/{@code code} is invalid or expired,
-     *                       or any other transport/HTTP failure
-     */
-    public String completeTwoFactorLogin(final String pendingToken, final String code) throws ApiException {
-        final AuthResponse response = this.send(this.twoFactorLoginRequest(pendingToken, code), AuthResponse.class);
+    public String login(final String emailAddress, final String password) throws ApiException {
+        final AuthResponse response = this.send(this.loginRequest(emailAddress, password), AuthResponse.class);
         this.applyTokens(response);
         return response.token();
     }
 
-    /** Async form of {@link #completeTwoFactorLogin} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<String> completeTwoFactorLoginAsync(final String pendingToken, final String code) {
-        return this.sendAsync(this.twoFactorLoginRequest(pendingToken, code), AuthResponse.class)
+    /** Async form of {@link #login} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<String> loginAsync(final String emailAddress, final String password) {
+        return this.sendAsync(this.loginRequest(emailAddress, password), AuthResponse.class)
                 .thenApply(response -> {
                     this.applyTokens(response);
                     return response.token();
                 });
     }
 
-    private HttpRequest twoFactorLoginRequest(final String pendingToken, final String code) {
-        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/2fa/login"), new TwoFactorLoginRequest(pendingToken, code), false);
-    }
-
-    /**
-     * {@code POST /auth/2fa/setup} on the API host - bearer-gated, starts enabling two-factor
-     * authentication for the currently signed-in account. Returns a freshly generated secret, not
-     * yet live - call {@link #confirmTwoFactorSetup} with a code produced from it to actually
-     * enable two-factor authentication.
-     *
-     * @return the freshly generated secret plus a ready-to-render {@code otpauth://} URI
-     * @throws ApiException {@code 401} if not logged in / token expired, or any other transport/HTTP failure
-     */
-    public TwoFactorSetupResponse beginTwoFactorSetup() throws ApiException {
-        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/setup"), null, true), TwoFactorSetupResponse.class);
-    }
-
-    /** Async form of {@link #beginTwoFactorSetup} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<TwoFactorSetupResponse> beginTwoFactorSetupAsync() {
-        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/setup"), null, true), TwoFactorSetupResponse.class);
-    }
-
-    /**
-     * {@code POST /auth/2fa/confirm} on the API host - bearer-gated, completes a setup previously
-     * started by {@link #beginTwoFactorSetup}. From this point on, {@link #login} for this account
-     * returns {@link LoginOutcome#twoFactorRequired()} instead of tokens directly.
-     *
-     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
-     * @return the server's acknowledgement message
-     * @throws ApiException {@code 400} if the code is missing, expired, or does not match, {@code
-     *                       401} if not logged in / token expired, or any other transport/HTTP failure
-     */
-    public MessageResponse confirmTwoFactorSetup(final String code) throws ApiException {
-        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/confirm"), new ConfirmTwoFactorSetupRequest(code), true),
-                MessageResponse.class);
-    }
-
-    /** Async form of {@link #confirmTwoFactorSetup} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<MessageResponse> confirmTwoFactorSetupAsync(final String code) {
-        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/confirm"), new ConfirmTwoFactorSetupRequest(code), true),
-                MessageResponse.class);
-    }
-
-    /**
-     * {@code POST /auth/2fa/disable} on the API host - bearer-gated, disables two-factor
-     * authentication for the currently signed-in account. Re-verifies {@code password}
-     * server-side before disabling, since a stolen-but-still-valid bearer token alone should not
-     * be enough to turn off an account's second factor.
-     *
-     * @param password the account's current password, re-verified server-side
-     * @return the server's acknowledgement message
-     * @throws ApiException {@code 401} if not logged in / token expired, or if {@code password}
-     *                       does not match, or any other transport/HTTP failure
-     */
-    public MessageResponse disableTwoFactor(final String password) throws ApiException {
-        return this.send(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/disable"), new DisableTwoFactorRequest(password), true),
-                MessageResponse.class);
-    }
-
-    /** Async form of {@link #disableTwoFactor} - see the class Javadoc for the threading/executor contract. */
-    public CompletableFuture<MessageResponse> disableTwoFactorAsync(final String password) {
-        return this.sendAsync(this.postRequest(this.apiBaseUrl.resolve("/auth/2fa/disable"), new DisableTwoFactorRequest(password), true),
-                MessageResponse.class);
+    /** Builds the {@code POST /auth/login} request against {@link #authPanelBaseUrl}, unauthenticated. */
+    private HttpRequest loginRequest(final String emailAddress, final String password) {
+        return this.postRequest(this.authPanelBaseUrl.resolve("/auth/login"), new AuthRequest(emailAddress, password), false);
     }
 
     /**
@@ -2031,6 +1925,32 @@ public final class ApiClient implements AutoCloseable {
     /** Builds the {@code GET /cloudUsers/{id}} request against {@link #apiBaseUrl}. */
     private HttpRequest getCloudUserRequest(final String authUserId) {
         return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/" + authUserId), true).GET().build();
+    }
+
+    /**
+     * {@code PUT /cloudUsers/theme} (added 2026-09-04): syncs the caller's light/dark theme
+     * choice to their account, so it follows them to every other device signed into the same
+     * account instead of staying a local, per-device setting.
+     *
+     * @param themeMode the new theme preference (e.g. {@code "LIGHT"}/{@code "DARK"}), or {@code
+     *                   null} to clear the stored preference
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public void updateThemePreference(final String themeMode) throws ApiException {
+        this.send(this.updateThemePreferenceRequest(themeMode), Void.class);
+    }
+
+    /** Async form of {@link #updateThemePreference(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> updateThemePreferenceAsync(final String themeMode) {
+        return this.sendAsync(this.updateThemePreferenceRequest(themeMode), Void.class);
+    }
+
+    /** Builds the {@code PUT /cloudUsers/theme} request against {@link #apiBaseUrl}, with a JSON {@link UpdateThemeRequest} body. */
+    private HttpRequest updateThemePreferenceRequest(final String themeMode) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/theme"), true)
+                .header("Content-Type", "application/json")
+                .method("PUT", BodyPublishers.ofString(GSON.toJson(new UpdateThemeRequest(themeMode))))
+                .build();
     }
 
     // --- me / admin --------------------------------------------------------

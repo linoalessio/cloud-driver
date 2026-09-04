@@ -9,7 +9,6 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import de.lino.cloud.platform.desktop.theme.CloudDriverTheme
-import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import de.lino.cloud.platforms.desktop.cloud_driver_platforms_desktop.generated.resources.Res
 import de.lino.cloud.platforms.desktop.cloud_driver_platforms_desktop.generated.resources.app_icon
@@ -49,8 +48,11 @@ private val MINIMUM_WINDOW_SIZE = DpSize(1200.dp, 800.dp)
 
 fun main() = application {
     val scope = rememberCoroutineScope()
-    // Loaded synchronously - see AppSettingsStore#loadThemeMode's own Javadoc for why that's fine here.
-    val viewModel = remember { AppViewModel(scope, DEFAULT_SERVER_URL, AppSettingsStore.loadThemeMode()) }
+    // Starts at AppViewModel.themeMode's own default (ThemeMode.LIGHT) - the account's real,
+    // synced preference (see CloudUser.themeMode server-side) is only fetched once a session is
+    // established (tryRestoreSession below, or an explicit login), since there is no account to
+    // ask before that point.
+    val viewModel = remember { AppViewModel(scope, DEFAULT_SERVER_URL) }
     val windowState = rememberWindowState(size = MINIMUM_WINDOW_SIZE)
 
     Window(

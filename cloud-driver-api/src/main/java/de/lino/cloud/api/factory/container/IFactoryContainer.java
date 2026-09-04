@@ -1,8 +1,7 @@
 package de.lino.cloud.api.factory.container;
 
 import de.lino.cloud.api.factory.*;
-import de.lino.cloud.api.storage.object.ObjectStorageService;
-import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import org.jetbrains.annotations.Nullable;
 
 /**

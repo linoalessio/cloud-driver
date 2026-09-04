@@ -4,10 +4,11 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
-import de.lino.cloud.api.storage.object.ObjectStorageService;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.UnitParser;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
 import de.lino.cloud.plugin.storage.object.StoredFileContentChannel;
@@ -178,7 +179,7 @@ public final class MigrateToS3Command implements Command {
 
             terminal.displayApproved(
                     "&8...&7 migrated &b%s&7, already S3-backed &b%s&7, failed &b%s&7 so far (&b%s&7 moved)",
-                    migrated, alreadyMigrated, failed, Constraints.resolveBytesToUnit(bytesMoved));
+                    migrated, alreadyMigrated, failed, UnitParser.parseByteUnit(bytesMoved));
 
             lastId = ids.get(ids.size() - 1);
             if (ids.size() < PAGE_SIZE) break; // last, not-full page - done
@@ -186,7 +187,7 @@ public final class MigrateToS3Command implements Command {
 
         terminal.displayApproved(
                 "S3 migration finished: &b%s&7 migrated, &b%s&7 already S3-backed, &b%s&7 failed (&b%s&7 moved)",
-                migrated, alreadyMigrated, failed, Constraints.resolveBytesToUnit(bytesMoved));
+                migrated, alreadyMigrated, failed, UnitParser.parseByteUnit(bytesMoved));
     }
 
     /**

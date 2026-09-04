@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.LockReset
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
@@ -184,7 +183,6 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
     // state" reasoning FileBrowserScreen.kt's own moveDialogEntry/showUninstallConfirmation use.
     var settingsMenuExpanded by remember { mutableStateOf(false) }
     var showChangeEmailDialog by remember { mutableStateOf(false) }
-    var showTwoFactorDialog by remember { mutableStateOf(false) }
 
     Card(
         shape = CardShape,
@@ -241,15 +239,6 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
 
     if (showChangeEmailDialog) {
         ChangeEmailDialog(viewModel = viewModel, onDismiss = { showChangeEmailDialog = false })
-    }
-    if (showTwoFactorDialog) {
-        TwoFactorAuthDialog(
-            viewModel = viewModel,
-            onDismiss = {
-                viewModel.cancelTwoFactorSetup()
-                showTwoFactorDialog = false
-            },
-        )
     }
 }
 
@@ -340,126 +329,6 @@ private fun ChangeEmailDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
                 if (pendingAddress != null) viewModel.cancelEmailChangeRequest()
                 onDismiss()
             }) { Text("Cancel") }
-        },
-    )
-}
-
-/**
- * The "Two-Factor Authentication" settings action (item 12, see `architecture/SERVICES.md`) - one
- * dialog covering both directions, since the client has no way to know up front whether the
- * account currently has two-factor authentication enabled (there is no `GET /me`-style field for
- * it, the same reasoning [AppViewModel.currentUserEmail] documents for itself): "Enable" starts
- * [AppViewModel.beginTwoFactorSetup]/[AppViewModel.confirmTwoFactorSetup]'s two-step flow (secret
- * display, then a code to confirm), driven by [AppViewModel.pendingTwoFactorSetup] the same way
- * [ChangeEmailDialog] is driven by [AppViewModel.pendingEmailChangeAddress]; "Disable" is a single
- * password field firing [AppViewModel.disableTwoFactor] and closing immediately (fire-and-forget,
- * matching the settings menu's own "Reset Password" entry) - a wrong password surfaces via this
- * screen's own general [AppViewModel.errorMessage] banner rather than keeping the dialog open.
- */
-@Composable
-private fun TwoFactorAuthDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
-    var disableMode by remember { mutableStateOf(false) }
-    var confirmCode by remember { mutableStateOf("") }
-    var disablePassword by remember { mutableStateOf("") }
-    var enteredSetupStep by remember { mutableStateOf(viewModel.pendingTwoFactorSetup != null) }
-
-    val pendingSetup = viewModel.pendingTwoFactorSetup
-
-    // Auto-close once a setup started in this dialog completes (pendingSetup goes back to null) -
-    // the same "notice the transition, don't just check for null" shape ChangeEmailDialog's own
-    // enteredCodeStep uses, needed since pendingSetup also starts out null before setup begins.
-    LaunchedEffect(pendingSetup) {
-        if (pendingSetup != null) enteredSetupStep = true
-        else if (enteredSetupStep) onDismiss()
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Filled.Security, contentDescription = null) },
-        title = {
-            Text(
-                when {
-                    pendingSetup != null -> "Confirm two-factor authentication"
-                    disableMode -> "Disable two-factor authentication"
-                    else -> "Two-factor authentication"
-                }
-            )
-        },
-        text = {
-            Column {
-                when {
-                    pendingSetup != null -> {
-                        Text(
-                            "Scan this into your authenticator app, or enter the secret manually, then enter the code it shows.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(pendingSetup.secretBase32(), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
-                            value = confirmCode,
-                            onValueChange = { confirmCode = it },
-                            label = { Text("Authentication code") },
-                            singleLine = true,
-                            enabled = !viewModel.busy,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    disableMode -> {
-                        Text(
-                            "Enter your password to disable two-factor authentication for this account.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
-                            value = disablePassword,
-                            onValueChange = { disablePassword = it },
-                            label = { Text("Password") },
-                            singleLine = true,
-                            enabled = !viewModel.busy,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    else -> {
-                        Text(
-                            "Enable two-factor authentication to require a code from an authenticator app on every sign-in, "
-                                + "or disable it if it's already on.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                viewModel.errorMessage?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        },
-        confirmButton = {
-            when {
-                pendingSetup != null -> Button(
-                    onClick = { viewModel.confirmTwoFactorSetup(confirmCode) },
-                    enabled = !viewModel.busy && confirmCode.isNotBlank(),
-                ) { Text("Confirm") }
-                disableMode -> Button(
-                    onClick = {
-                        viewModel.disableTwoFactor(disablePassword)
-                        onDismiss()
-                    },
-                    enabled = !viewModel.busy && disablePassword.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) { Text("Disable") }
-                else -> Button(onClick = { viewModel.beginTwoFactorSetup() }, enabled = !viewModel.busy) { Text("Enable") }
-            }
-        },
-        dismissButton = {
-            when {
-                pendingSetup != null -> TextButton(onClick = onDismiss) { Text("Cancel") }
-                disableMode -> TextButton(onClick = { disableMode = false }) { Text("Back") }
-                else -> TextButton(onClick = { disableMode = true }) { Text("Disable instead") }
-            }
         },
     )
 }

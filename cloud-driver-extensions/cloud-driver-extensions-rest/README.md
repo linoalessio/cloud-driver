@@ -4,7 +4,7 @@ Hosts `CloudRestExtension`, the extension that actually calls `RestFactory#start
 JWT-authenticated `DefaultRestFactory` - as of this writing, the only place in this repo that
 does so (not `CloudBootstrap`; that responsibility moved out of the bootstrap module a while
 back). Loading this extension is what turns a running `cloud-driver-bootstrap` process into a
-reachable end-user-facing HTTP API: login, self-registration, two-factor auth, per-account file/
+reachable end-user-facing HTTP API: login, self-registration, per-account file/
 folder management (including trash and cross-account sharing), an admin surface, and a live-push
 WebSocket - all gated by a validated JWT rather than the static `X-API-Key` mechanism
 `RestFactory`'s other constructor supports.
@@ -64,14 +64,14 @@ constructs and starts (`Argon2idPasswordHasher`, `JjwtSigner`, an `EmailSender`,
 `AuditLogServiceImpl`, `CloudUserService`, `AuthService`, `DefaultRestFactory`) is what actually
 moves `AuthUser`, `CloudUser`, `StoredFile`, `Folder`, `StoredFileOwnership`,
 `SharedFileGrant`/`SharedFolderGrant`, `RefreshToken`, `PendingRegistration`/
-`PendingPasswordReset`/`PendingEmailChange`/`PendingTwoFactorSetup`/`PendingTwoFactorLogin`, and
+`PendingPasswordReset`/`PendingEmailChange`, and
 `AuditEvent` rows (all defined in `cloud-driver-api`/`cloud-driver-auth`) between an HTTP request
 and the encrypted database, but every one of those types is owned by the module that declares it,
 not by this one. `startRestApi()` mounts exactly one *generic* route itself -
 `restFactory.fetch("/cloudUsers", CloudUser.class)`, `GET`-only - deliberately never `register`/
 `update`/`delete`, since `CloudUser`'s owner field serializes as `"authUserId"`, not `"ownerId"`,
 so `DefaultRestFactory`'s generic owner-spoof protection would be a no-op for it. Every other
-route this extension causes to exist (login/register/2FA, `/files`, `/folders`, sharing, trash,
+route this extension causes to exist (login/register, `/files`, `/folders`, sharing, trash,
 `/admin/*`, `/ws/updates`) is business logic mounted by `DefaultRestFactory`'s JWT-gated
 constructor itself, not by a `register`/`fetch`/`update`/`delete` call this extension makes.
 
@@ -111,7 +111,7 @@ constructor itself, not by a `register`/`fetch`/`update`/`delete` call this exte
   change notification to a connected client's WebSocket session purely through that interface,
   with no compile-time dependency in either direction.
 - The growing route surface `DefaultRestFactory`'s JWT-gated constructor mounts (self-registration,
-  password reset, e-mail change, TOTP two-factor auth, refresh-token rotation, an admin-gated
+  password reset, e-mail change, refresh-token rotation, an admin-gated
   `/admin/*` surface, file/folder sharing, trash/restore, and `GET /ws/updates`) is all secured
   through the one bearer-token gate and rate limiter this extension's `startRestApi()` call
   causes to be installed - the route-by-route mechanics live in `DefaultRestFactory` itself

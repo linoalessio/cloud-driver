@@ -1,4 +1,4 @@
-package de.lino.cloud.api.storage.object;
+package de.lino.cloud.api.s3storage;
 
 /**
  * Thrown by {@code CloudUserService#beginPresignedUpload}/{@code #completePresignedUpload}/{@code

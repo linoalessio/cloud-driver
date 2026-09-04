@@ -18,15 +18,14 @@ import de.lino.cloud.api.jwt.InvalidPasswordFormatException;
 import de.lino.cloud.api.jwt.InvalidRefreshTokenException;
 import de.lino.cloud.api.jwt.InvalidVerificationCodeException;
 import de.lino.cloud.api.jwt.auth.AuthTokens;
-import de.lino.cloud.api.jwt.auth.LoginResult;
-import de.lino.cloud.api.jwt.auth.TwoFactorSetupStart;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
-import de.lino.cloud.api.storage.object.PresignedUpload;
+import de.lino.cloud.api.s3storage.PresignedUpload;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
@@ -45,7 +44,6 @@ import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.event.Level;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -110,14 +108,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String CHANGE_EMAIL_PATH = "/auth/change-email";
     /** Path mounted by {@link #start} for {@link #handleConfirmEmailChange} - bearer-gated, same reasoning as {@link #CHANGE_EMAIL_PATH}. */
     private static final String CHANGE_EMAIL_CONFIRM_PATH = "/auth/change-email/confirm";
-    /** Path mounted by {@link #start} for {@link #handleBeginTwoFactorSetup} (item 12, see {@code architecture/SERVICES.md}) - bearer-gated, acts on the already-authenticated caller's own account. */
-    private static final String TWO_FACTOR_SETUP_PATH = "/auth/2fa/setup";
-    /** Path mounted by {@link #start} for {@link #handleConfirmTwoFactorSetup} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
-    private static final String TWO_FACTOR_CONFIRM_PATH = "/auth/2fa/confirm";
-    /** Path mounted by {@link #start} for {@link #handleDisableTwoFactor} - bearer-gated, same reasoning as {@link #TWO_FACTOR_SETUP_PATH}. */
-    private static final String TWO_FACTOR_DISABLE_PATH = "/auth/2fa/disable";
-    /** Path mounted by {@link #start} for {@link #handleTwoFactorLogin}, exempted from {@link #requireValidBearerToken} - the caller has no real access token yet, that's the whole point of this route. */
-    private static final String TWO_FACTOR_LOGIN_PATH = "/auth/2fa/login";
     /** Path mounted by {@link #start} for {@link #handleGetMe} - bearer-gated like every other {@code /auth/*} route not explicitly exempted, resolves the caller's own account from its own bearer token. */
     private static final String ME_PATH = "/auth/me";
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
@@ -214,6 +204,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * precedence - it's a first-match-in-registration-order linear scan).
      */
     private static final String CLOUD_USER_EXISTS_PATH = "/cloudUsers/exists";
+    /**
+     * Path mounted by {@link #start} for {@link #handleUpdateThemePreference} (added 2026-09-04,
+     * item: sync the light/dark theme choice across every device signed into an account instead
+     * of storing it locally per-device) - a static segment on the {@code /cloudUsers} resource,
+     * same shape as {@link #CLOUD_USER_EXISTS_PATH}. A {@code PUT}, unlike every other route on
+     * this resource, so there is no registration-order collision risk with the generic {@code GET
+     * /cloudUsers/{id}} route regardless of where this is registered - Javalin dispatches on HTTP
+     * method first.
+     */
+    private static final String CLOUD_USER_THEME_PATH = "/cloudUsers/theme";
     /** Query parameter {@link #handleCheckCloudUserExists} reads the email address to check from. */
     private static final String EMAIL_QUERY_PARAM = "email";
     /**
@@ -592,10 +592,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(CHANGE_EMAIL_CONFIRM_PATH, this::handleConfirmEmailChange);
                 config.routes.post(REFRESH_PATH, this::handleRefresh);
                 config.routes.post(LOGOUT_PATH, this::handleLogout);
-                config.routes.post(TWO_FACTOR_LOGIN_PATH, this::handleTwoFactorLogin);
-                config.routes.post(TWO_FACTOR_SETUP_PATH, this::handleBeginTwoFactorSetup);
-                config.routes.post(TWO_FACTOR_CONFIRM_PATH, this::handleConfirmTwoFactorSetup);
-                config.routes.post(TWO_FACTOR_DISABLE_PATH, this::handleDisableTwoFactor);
                 config.routes.get(ME_PATH, this::handleGetMe);
                 config.routes.before(this::requireValidBearerToken);
 
@@ -610,6 +606,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
             if (this.cloudUserService != null) {
                 config.routes.get(CLOUD_USER_EXISTS_PATH, this::handleCheckCloudUserExists);
+                config.routes.put(CLOUD_USER_THEME_PATH, this::handleUpdateThemePreference);
                 config.routes.post(TRASH_EMPTY_PATH, this::handleEmptyTrash);
                 config.routes.post(FILES_PATH, this::handleUploadFile);
                 config.routes.get(FILES_PATH, this::handleListFiles);
@@ -739,8 +736,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
                 || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())
-                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())
-                || TWO_FACTOR_LOGIN_PATH.equals(ctx.path())) {
+                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -1054,41 +1050,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@code POST /auth/login}: reads {@code {"username": ..., "password": ...}}
      * from the request body, dispatched off the Jetty worker thread since
      * {@link AuthService#login} runs Argon2id (deliberately slow) plus a
-     * {@code DataFactory} lookup. Branches on {@link LoginResult#requiresTwoFactor()} (item 12,
-     * see {@code architecture/SERVICES.md}): a normal completed login responds with the usual
-     * {@link LoginResponse}, while an account with two-factor authentication enabled instead
-     * responds {@code 200 OK} with a {@link TwoFactorRequiredResponse} carrying a pending token the
-     * caller must present, together with a TOTP code, to {@link #handleTwoFactorLogin}.
+     * {@code DataFactory} lookup. Responds with the usual {@link LoginResponse} on success.
      */
     private void handleLogin(@NotNull final Context ctx) {
         final LoginRequest request = this.gson.fromJson(ctx.body(), LoginRequest.class);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.authService.login(request.username(), request.password().toCharArray()))
-                .handle((result, failure) -> {
+                .handle((tokens, failure) -> {
                     if (failure == null) {
-                        if (result.requiresTwoFactor()) {
-                            ctx.contentType("application/json")
-                                    .result(this.gson.toJson(new TwoFactorRequiredResponse(true, result.pendingTwoFactorToken())));
-                        } else {
-                            ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(result.tokens())));
-                        }
+                        ctx.contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw unauthorizedOrPropagate(failure);
                 }));
-    }
-
-    /**
-     * The {@code {"twoFactorRequired", "pendingToken"}} JSON response body {@link #handleLogin}
-     * returns instead of a {@link LoginResponse} when the matched account has two-factor
-     * authentication enabled - {@code twoFactorRequired} is always {@code true} on this shape
-     * (present so a client can branch on one field rather than on the absence of {@code token}),
-     * and {@code pendingToken} is what {@link #handleTwoFactorLogin} expects back.
-     *
-     * @param twoFactorRequired always {@code true}
-     * @param pendingToken the token to present, together with a TOTP code, to {@code POST /auth/2fa/login}
-     */
-    private record TwoFactorRequiredResponse(boolean twoFactorRequired, String pendingToken) {
     }
 
     /**
@@ -1410,143 +1384,6 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     if (failure == null) {
                         ctx.status(200).contentType("application/json")
                                 .result(this.gson.toJson(new MessageResponse("E-mail address updated")));
-                        return null;
-                    }
-                    throw registrationFailureOrPropagate(failure);
-                }));
-    }
-
-    /**
-     * The {@code {"secretBase32", "otpauthUri"}} JSON response body returned by {@code
-     * POST /auth/2fa/setup}.
-     */
-    private record TwoFactorSetupResponse(String secretBase32, String otpauthUri) {
-        /** Builds a {@link TwoFactorSetupResponse} straight from a {@link TwoFactorSetupStart}. */
-        private static TwoFactorSetupResponse of(final TwoFactorSetupStart start) {
-            return new TwoFactorSetupResponse(start.secretBase32(), start.otpauthUri());
-        }
-    }
-
-    /**
-     * {@code POST /auth/2fa/setup} (item 12, see {@code architecture/SERVICES.md}): bearer-gated,
-     * acts on the caller's own account (from {@link #requireUserId}). Starts enabling two-factor
-     * authentication via {@link AuthService#beginTwoFactorSetup} - generates a fresh TOTP secret,
-     * not yet live on the account, and returns it plus a ready-to-render {@code otpauth://} URI.
-     * The caller must follow up with {@link #handleConfirmTwoFactorSetup} once it has a code from
-     * its authenticator app. Dispatched off the Jetty worker thread since this runs database I/O.
-     */
-    private void handleBeginTwoFactorSetup(@NotNull final Context ctx) {
-        final String userId = requireUserId(ctx);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.authService.beginTwoFactorSetup(userId))
-                .handle((start, failure) -> {
-                    if (failure == null) {
-                        ctx.contentType("application/json").result(this.gson.toJson(TwoFactorSetupResponse.of(start)));
-                        return null;
-                    }
-                    throw registrationFailureOrPropagate(failure);
-                }));
-    }
-
-    /**
-     * The {@code {"code"}} JSON body shape read by {@code POST /auth/2fa/confirm}.
-     *
-     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
-     */
-    private record ConfirmTwoFactorSetupRequest(String code) {
-    }
-
-    /**
-     * {@code POST /auth/2fa/confirm}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
-     * {@code {"code": ...}} and completes setup via {@link AuthService#confirmTwoFactorSetup} -
-     * from this point on, {@code POST /auth/login} for this account returns a {@link
-     * TwoFactorRequiredResponse} instead of tokens directly. Dispatched off the Jetty worker
-     * thread since this runs database I/O. {@code 200 OK} on success.
-     */
-    private void handleConfirmTwoFactorSetup(@NotNull final Context ctx) {
-        final String userId = requireUserId(ctx);
-        final ConfirmTwoFactorSetupRequest request = this.gson.fromJson(ctx.body(), ConfirmTwoFactorSetupRequest.class);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .runAsync(() -> {
-                    try {
-                        this.authService.confirmTwoFactorSetup(userId, request.code());
-                    } catch (final DatabaseClientException | KeyWrapException e) {
-                        throw new RuntimeException(
-                                "@DefaultRestFactory.handleConfirmTwoFactorSetup: failed to enable two-factor authentication for " + userId, e);
-                    }
-                })
-                .handle((ignored, failure) -> {
-                    if (failure == null) {
-                        ctx.status(200).contentType("application/json")
-                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication enabled")));
-                        return null;
-                    }
-                    throw registrationFailureOrPropagate(failure);
-                }));
-    }
-
-    /**
-     * The {@code {"password"}} JSON body shape read by {@code POST /auth/2fa/disable}.
-     *
-     * @param password the account's current password, re-verified before disabling
-     */
-    private record DisableTwoFactorRequest(String password) {
-    }
-
-    /**
-     * {@code POST /auth/2fa/disable}: bearer-gated like {@link #handleBeginTwoFactorSetup}. Reads
-     * {@code {"password": ...}} and disables two-factor authentication via {@link
-     * AuthService#disableTwoFactor} - which re-verifies {@code password} first, since a
-     * stolen-but-still-valid bearer token alone should not be enough to turn off an account's
-     * second factor. Dispatched off the Jetty worker thread since this runs Argon2id/database I/O.
-     * {@code 200 OK} on success.
-     */
-    private void handleDisableTwoFactor(@NotNull final Context ctx) {
-        final String userId = requireUserId(ctx);
-        final DisableTwoFactorRequest request = this.gson.fromJson(ctx.body(), DisableTwoFactorRequest.class);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .runAsync(() -> this.authService.disableTwoFactor(userId, request.password().toCharArray()))
-                .handle((ignored, failure) -> {
-                    if (failure == null) {
-                        ctx.status(200).contentType("application/json")
-                                .result(this.gson.toJson(new MessageResponse("Two-factor authentication disabled")));
-                        return null;
-                    }
-                    throw unauthorizedOrPropagate(failure);
-                }));
-    }
-
-    /**
-     * The {@code {"pendingToken", "code"}} JSON body shape read by {@code POST /auth/2fa/login}.
-     *
-     * @param pendingToken the token returned by {@code POST /auth/login}'s {@link TwoFactorRequiredResponse}
-     * @param code the current TOTP code, produced by the caller's authenticator app
-     */
-    private record TwoFactorLoginRequest(String pendingToken, String code) {
-    }
-
-    /**
-     * {@code POST /auth/2fa/login}: completes a login left pending by {@code POST /auth/login}
-     * returning a {@link TwoFactorRequiredResponse}, via {@link AuthService#completeTwoFactorLogin} -
-     * verifies the TOTP code and, on success, issues real tokens under the same {@link
-     * LoginResponse} shape {@code POST /auth/login} returns for a non-2FA account. Not bearer-gated
-     * (see {@link #requireValidBearerToken}'s exemption list) - the caller has no real access token
-     * yet by definition. Dispatched off the Jetty worker thread since this runs database I/O.
-     * {@code 200 OK} on success.
-     */
-    private void handleTwoFactorLogin(@NotNull final Context ctx) {
-        final TwoFactorLoginRequest request = this.gson.fromJson(ctx.body(), TwoFactorLoginRequest.class);
-        ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> {
-                    try {
-                        return this.authService.completeTwoFactorLogin(request.pendingToken(), request.code());
-                    } catch (final DatabaseClientException | KeyWrapException e) {
-                        throw new RuntimeException("@DefaultRestFactory.handleTwoFactorLogin: failed to complete two-factor login", e);
-                    }
-                })
-                .handle((tokens, failure) -> {
-                    if (failure == null) {
-                        ctx.status(200).contentType("application/json").result(this.gson.toJson(LoginResponse.of(tokens)));
                         return null;
                     }
                     throw registrationFailureOrPropagate(failure);
@@ -2574,6 +2411,32 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .thenAccept(exists -> ctx.contentType("application/json").result(this.gson.toJson(new EmailExistsResponse(exists)))));
     }
 
+    /**
+     * The {@code {"themeMode"}} JSON body shape read by {@code PUT /cloudUsers/theme} - a plain
+     * string ({@code "LIGHT"}/{@code "DARK"}, or {@code null} to clear) mirroring {@link
+     * ICloudUser#getThemeMode()}'s own "opaque to the server" contract.
+     */
+    private record UpdateThemeRequest(String themeMode) {
+    }
+
+    /**
+     * {@code PUT /cloudUsers/theme} (added 2026-09-04): syncs the caller's light/dark theme
+     * preference across every device signed into their account, replacing what used to be a
+     * per-device local file. Bearer-gated like every other {@code /cloudUsers} route, and always
+     * acts on the caller's own account (from {@link #requireUserId}, never the request body).
+     * Reads {@code {"themeMode": "LIGHT"|"DARK"|null}} and persists it via {@link
+     * CloudUserService#updateThemePreference} - a no-op, not an error, if the caller has no
+     * {@link de.lino.cloud.auth.entity.CloudUser} record yet (mirrors that method's own
+     * contract). {@code 204} on success.
+     */
+    private void handleUpdateThemePreference(@NotNull final Context ctx) {
+        final String userId = requireUserId(ctx);
+        final UpdateThemeRequest request = this.gson.fromJson(ctx.body(), UpdateThemeRequest.class);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.updateThemePreference(userId, request.themeMode()))
+                .thenAccept(ignored -> ctx.status(204)));
+    }
+
     /** {@code POST path}  ->  create (DataFactory#registerAsync), dispatched off the Jetty worker thread. */
     private <T extends Serialized> void bindRegister(final JavalinConfig config, final String path, final Class<T> type) {
         config.routes.post(path, ctx -> {
@@ -2800,7 +2663,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (cause instanceof UploadQuotaExceededException uploadQuotaExceeded) {
             return new ContentTooLargeResponse(uploadQuotaExceeded.getMessage());
         }
-        if (cause instanceof de.lino.cloud.api.storage.object.PresignedTransferUnavailableException) {
+        if (cause instanceof PresignedTransferUnavailableException) {
             // Either this deployment has no PresignedTransferService configured at all, or (for
             // beginPresignedDownload specifically) this particular file isn't eligible for direct
             // transfer - see that method's own Javadoc. Either way, the client's correct response

@@ -8,6 +8,7 @@ import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.UnitParser;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -66,9 +67,9 @@ public class StatisticsCommand implements Command {
 
         final List<StoredFile> allFiles = fileFactory.getEntitiesAsync().join();
 
-        final String cloudRunningFor = Constraints.resolveMilliSecondsToUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
-        final String usedStorage = Constraints.resolveBytesToUnit(allFiles.stream().mapToLong(StoredFile::sizeBytes).sum());
-        final String totalCloudServerStorage = Constraints.resolveBytesToUnit(CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available"));
+        final String cloudRunningFor = UnitParser.parseTimeUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
+        final String usedStorage = UnitParser.parseByteUnit(allFiles.stream().mapToLong(StoredFile::sizeBytes).sum());
+        final String totalCloudServerStorage = UnitParser.parseByteUnit(CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available"));
 
         final String totalFiles = String.valueOf(allFiles.size());
         final String totalCloudUsers = cloudUserService != null ? String.valueOf(cloudUserService.getCloudUsers().size()) : "N/A";

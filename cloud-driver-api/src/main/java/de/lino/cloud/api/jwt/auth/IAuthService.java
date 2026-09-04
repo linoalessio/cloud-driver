@@ -96,94 +96,16 @@ public interface IAuthService {
             throws DatabaseClientException, KeyWrapException;
 
     /**
-     * Verifies {@code username}/{@code rawPassword}, returning a {@link LoginResult} on success -
-     * a freshly issued {@link AuthTokens} pair if the matched account has two-factor authentication
-     * disabled, or a pending second-factor token (see {@link LoginResult#requiresTwoFactor()}) that
-     * must be exchanged, together with a valid TOTP code, via {@link #completeTwoFactorLogin} if it
-     * doesn't.
+     * Verifies {@code username}/{@code rawPassword} and, on success, issues a freshly issued
+     * {@link AuthTokens} pair.
      *
      * @param username the account's identifying username (an email address, in the current implementation) to verify
      * @param rawPassword the plaintext password to verify against the stored hash
-     * @return a {@link LoginResult} either carrying a freshly issued {@link AuthTokens} pair, or
-     *     signaling that a second factor is still required
+     * @return a freshly issued {@link AuthTokens} pair asserting the matched account's id
      * @throws InvalidCredentialsException if the username doesn't exist or the password doesn't match
      */
     @NonNull
-    LoginResult login(@NonNull final String username, final char @NonNull [] rawPassword);
-
-    /**
-     * Starts enabling two-factor authentication for the already-authenticated account {@code
-     * authUserId}: generates a fresh TOTP secret and persists it as a not-yet-live pending setup
-     * (see {@code de.lino.cloud.auth.pending.PendingTwoFactorSetup}), valid for a short window,
-     * without touching the account's live {@code totpSecretBase32} yet - only {@link
-     * #confirmTwoFactorSetup} does that, once the caller has proven it can actually produce a valid
-     * code from the secret. Exposed over HTTP as {@code POST /auth/2fa/setup} (bearer-gated).
-     *
-     * @param authUserId the already-authenticated account starting two-factor setup
-     * @return the freshly generated secret, plus a ready-to-render {@code otpauth://} URI
-     * @throws IllegalArgumentException if no account exists under {@code authUserId}
-     * @throws de.lino.cloud.api.security.database.DatabaseClientException if persisting the pending setup fails
-     * @throws de.lino.cloud.api.security.keys.KeyWrapException if the pending setup's data-encryption key cannot be wrapped by the KMS/HSM
-     */
-    @NonNull
-    TwoFactorSetupStart beginTwoFactorSetup(@NonNull final String authUserId);
-
-    /**
-     * Completes a two-factor setup previously started by {@link #beginTwoFactorSetup}: verifies
-     * {@code code} against the pending setup's secret (and that it hasn't expired), then promotes
-     * that secret onto the account's live {@link de.lino.cloud.api.jwt.user.AuthUser#getTotpSecretBase32()}
-     * and deletes the pending row. From this point on, {@link #login} for this account returns a
-     * pending second-factor token instead of tokens directly. Exposed over HTTP as {@code
-     * POST /auth/2fa/confirm} (bearer-gated).
-     *
-     * @param authUserId the already-authenticated account confirming setup
-     * @param code the current TOTP code, produced by the caller's authenticator app from the pending secret
-     * @throws InvalidVerificationCodeException if there is no pending setup under {@code authUserId},
-     *     it has expired, or {@code code} doesn't verify against its secret
-     * @throws DatabaseClientException if updating the account fails
-     * @throws KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
-     */
-    void confirmTwoFactorSetup(@NonNull final String authUserId, @NonNull final String code) throws DatabaseClientException, KeyWrapException;
-
-    /**
-     * Disables two-factor authentication for the already-authenticated account {@code authUserId} -
-     * a security-sensitive action, so this re-verifies {@code password} against the account's stored
-     * hash first rather than trusting the caller's session/bearer token alone (a stolen-but-still-valid
-     * access token should not by itself be enough to turn off the account's second factor). Exposed
-     * over HTTP as {@code POST /auth/2fa/disable} (bearer-gated).
-     *
-     * @param authUserId the already-authenticated account disabling two-factor authentication
-     * @param password the account's current password, re-verified before disabling
-     * @throws InvalidCredentialsException if no account exists under {@code authUserId} or {@code password} doesn't match
-     * @throws de.lino.cloud.api.security.database.DatabaseClientException if updating the account fails
-     * @throws de.lino.cloud.api.security.keys.KeyWrapException if the account's data-encryption key cannot be wrapped by the KMS/HSM
-     */
-    void disableTwoFactor(@NonNull final String authUserId, final char @NonNull [] password);
-
-    /**
-     * Completes a login previously left pending by {@link #login} returning {@link
-     * LoginResult#requiresTwoFactor()}: verifies {@code code} against the account's live TOTP
-     * secret and, on success, issues a real {@link AuthTokens} pair exactly the way a non-2FA {@link
-     * #login} would (including firing the same {@code LOGIN_SUCCESS} audit event {@link #login}
-     * itself fires for a completed non-2FA login). {@code pendingTwoFactorToken} is only consumed
-     * (deleted) once {@code code} actually verifies - a mistyped code may be retried within the
-     * pending token's short validity window rather than forcing the caller back to a fresh password
-     * login. Exposed over HTTP as {@code POST /auth/2fa/login} (unauthenticated - the caller has no
-     * real access token yet by definition).
-     *
-     * @param pendingTwoFactorToken the token returned by {@link #login}'s {@link
-     *     LoginResult#pendingTwoFactorToken()}
-     * @param code the current TOTP code, produced by the caller's authenticator app
-     * @return a freshly issued {@link AuthTokens} pair asserting the pending login's account id
-     * @throws InvalidVerificationCodeException if {@code pendingTwoFactorToken} doesn't exist, has
-     *     expired, {@code code} doesn't verify, or (defense-in-depth) the account itself no longer
-     *     exists or no longer has two-factor authentication enabled
-     * @throws DatabaseClientException if persisting the issued tokens fails
-     * @throws KeyWrapException if the new tokens' data-encryption key cannot be wrapped by the KMS/HSM
-     */
-    @NonNull
-    AuthTokens completeTwoFactorLogin(@NonNull final String pendingTwoFactorToken, @NonNull final String code)
-            throws DatabaseClientException, KeyWrapException;
+    AuthTokens login(@NonNull final String username, final char @NonNull [] rawPassword);
 
     /**
      * Validates a JWT from the {@code Authorization} header, returning the embedded user id.

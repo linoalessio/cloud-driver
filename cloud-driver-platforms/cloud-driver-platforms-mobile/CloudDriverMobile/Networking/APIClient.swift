@@ -40,6 +40,34 @@ private extension String {
     }
 }
 
+/// A per-request `URLSessionTaskDelegate` forwarding byte-level upload/download progress to
+/// `onProgress(bytesTransferred, totalBytes)` - passed to `session.upload(for:fromFile:delegate:)`/
+/// `session.download(for:delegate:)` (the task-scoped delegate overloads Apple added alongside
+/// async/await, distinct from `URLSession`'s own session-wide delegate, which this app doesn't
+/// use). `onProgress` is `@MainActor`-isolated (the type callers - `AppViewModel`, itself
+/// `@MainActor` - actually want to update `@Published` state directly from), but this delegate's
+/// own callbacks arrive on an arbitrary background queue, so each one hops via `Task { @MainActor in }`
+/// before invoking it.
+private final class ProgressForwardingDelegate: NSObject, URLSessionTaskDelegate {
+    private let onProgress: @MainActor (Int64, Int64) -> Void
+
+    init(onProgress: @escaping @MainActor (Int64, Int64) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        Task { @MainActor [onProgress] in
+            onProgress(totalBytesSent, totalBytesExpectedToSend)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        Task { @MainActor [onProgress] in
+            onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+        }
+    }
+}
+
 /// A plain `URLSession`-based client for `cloud-driver`'s JWT-authenticated REST API - the iOS
 /// counterpart to `cloud-driver-platforms-rest`'s Java `ApiClient`. An `actor` rather than a class
 /// with manual locking, so every token read/write is already serialized without extra ceremony.
@@ -85,19 +113,8 @@ actor APIClient {
 
     // MARK: - Auth
 
-    func login(email: String, password: String) async throws -> LoginOutcome {
+    func login(email: String, password: String) async throws -> AuthResponse {
         let request = try jsonRequest("/auth/login", method: "POST", body: AuthRequest(username: email, password: password), authenticated: false)
-        let (data, _) = try await execute(request, allowRefreshRetry: false)
-        let outcome: LoginOutcome = try decode(data)
-        if !outcome.twoFactorRequired, let token = outcome.token, let freshRefresh = outcome.refreshToken {
-            self.accessToken = token
-            self.refreshToken = freshRefresh
-        }
-        return outcome
-    }
-
-    func completeTwoFactorLogin(pendingToken: String, code: String) async throws -> AuthResponse {
-        let request = try jsonRequest("/auth/2fa/login", method: "POST", body: TwoFactorLoginRequest(pendingToken: pendingToken, code: code), authenticated: false)
         return try await issueTokens(from: request)
     }
 
@@ -213,7 +230,7 @@ actor APIClient {
     /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
     /// transfer - callers should fall back to `uploadFile(fileName:data:folderId:)` on exactly
     /// that status.
-    func uploadFileViaPresignedURL(fileName: String, fileURL: URL, folderId: String?) async throws -> StoredFileSummaryResponse {
+    func uploadFileViaPresignedURL(fileName: String, fileURL: URL, folderId: String?, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws -> StoredFileSummaryResponse {
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let checksumSha256 = try sha256Hex(of: fileURL)
@@ -222,7 +239,7 @@ actor APIClient {
         guard let uploadURL = URL(string: begin.uploadUrl) else {
             throw APIError.network(URLError(.badURL))
         }
-        try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: fileURL)
+        try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: fileURL, onProgress: onProgress)
         return try await completeUpload(fileId: begin.fileId, fileName: fileName, checksumSha256: checksumSha256, folderId: folderId)
     }
 
@@ -233,12 +250,12 @@ actor APIClient {
     /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
     /// transfer, or this particular file isn't eligible for it - callers should fall back to
     /// `downloadFileContent(fileId:)` on exactly that status.
-    func downloadFileViaPresignedURL(fileId: String, destination: URL) async throws {
+    func downloadFileViaPresignedURL(fileId: String, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         let begin = try await beginDownloadURL(fileId: fileId)
         guard let downloadURL = URL(string: begin.downloadUrl) else {
             throw APIError.network(URLError(.badURL))
         }
-        try await downloadFromPresignedURL(url: downloadURL, destination: destination)
+        try await downloadFromPresignedURL(url: downloadURL, destination: destination, onProgress: onProgress)
     }
 
     private func beginUploadURL(fileName: String, sizeBytes: Int64, folderId: String?) async throws -> BeginUploadUrlResponse {
@@ -265,7 +282,9 @@ actor APIClient {
     /// request's signature. Streams from disk via `URLSession.upload(for:fromFile:)`, not a
     /// fully-buffered `Data` upload - this is also the first upload path in this app that streams
     /// rather than fully buffering (see this module's own README on that pre-existing gap).
-    private func putToPresignedURL(url: URL, requiredHeaders: [String: String], fileURL: URL) async throws {
+    /// `onProgress`, if given, is wired up via a per-request `ProgressForwardingDelegate` (the
+    /// task-scoped delegate overload of this call, not this app's session-wide delegate).
+    private func putToPresignedURL(url: URL, requiredHeaders: [String: String], fileURL: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         for (key, value) in requiredHeaders {
@@ -275,7 +294,8 @@ actor APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.upload(for: request, fromFile: fileURL)
+            let delegate = onProgress.map { ProgressForwardingDelegate(onProgress: $0) }
+            (data, response) = try await session.upload(for: request, fromFile: fileURL, delegate: delegate)
         } catch {
             throw APIError.network(error)
         }
@@ -293,12 +313,14 @@ actor APIClient {
 
     /// Downloads directly from `url` (a presigned download URL, not this app's own server) straight
     /// to `destination` on disk via `URLSession.download(for:)` - `destination` must not already
-    /// exist, the same contract `FileManager.moveItem` itself has.
-    private func downloadFromPresignedURL(url: URL, destination: URL) async throws {
+    /// exist, the same contract `FileManager.moveItem` itself has. `onProgress`, if given, is wired
+    /// up the same `ProgressForwardingDelegate` way `putToPresignedURL` uses for uploads.
+    private func downloadFromPresignedURL(url: URL, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         let tempURL: URL
         let response: URLResponse
         do {
-            (tempURL, response) = try await session.download(for: URLRequest(url: url))
+            let delegate = onProgress.map { ProgressForwardingDelegate(onProgress: $0) }
+            (tempURL, response) = try await session.download(for: URLRequest(url: url), delegate: delegate)
         } catch {
             throw APIError.network(error)
         }

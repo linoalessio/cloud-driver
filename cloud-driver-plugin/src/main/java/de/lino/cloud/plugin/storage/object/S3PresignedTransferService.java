@@ -1,9 +1,9 @@
 package de.lino.cloud.plugin.storage.object;
 
-import de.lino.cloud.api.storage.object.ObjectStorageException;
-import de.lino.cloud.api.storage.object.PresignedDownload;
-import de.lino.cloud.api.storage.object.PresignedTransferService;
-import de.lino.cloud.api.storage.object.PresignedUpload;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.s3storage.PresignedDownload;
+import de.lino.cloud.api.s3storage.PresignedTransferService;
+import de.lino.cloud.api.s3storage.PresignedUpload;
 import de.lino.cloud.api.utility.Asserts;
 import org.jetbrains.annotations.NotNull;
 import software.amazon.awssdk.core.exception.SdkException;

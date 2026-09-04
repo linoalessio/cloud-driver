@@ -1,9 +1,10 @@
 package de.lino.cloud.plugin.storage.object;
 
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.envelope.EnvelopeEncryptedPayload;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.api.storage.object.ObjectStorageException;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import org.jetbrains.annotations.NotNull;
@@ -12,7 +13,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Encrypts/decrypts a {@link de.lino.cloud.api.file.StoredFile}'s raw content bytes for storage in
- * an {@link de.lino.cloud.api.storage.object.ObjectStorageService} object, generically across
+ * an {@link ObjectStorageService} object, generically across
  * whichever implementation is configured - the {@code storage.object} package's equivalent of
  * {@code de.lino.cloud.plugin.security.entity.SecureEntityChannel}, adapted for a file's content
  * bytes specifically rather than a whole {@code Serialized} entity's JSON.

@@ -1,6 +1,6 @@
 package de.lino.cloud.api.file;
 
-import de.lino.cloud.api.storage.object.PresignedUpload;
+import de.lino.cloud.api.s3storage.PresignedUpload;
 import de.lino.cloud.api.utility.Asserts;
 
 /**

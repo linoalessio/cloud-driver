@@ -10,7 +10,6 @@ import de.lino.cloud.platform.desktop.model.Entry
 import de.lino.cloud.platform.desktop.model.Screen
 import de.lino.cloud.platform.desktop.model.computeAccountStats
 import de.lino.cloud.platform.desktop.theme.ThemeMode
-import de.lino.cloud.platform.desktop.utils.AppSettingsStore
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.extractZip
@@ -23,7 +22,6 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
-import de.lino.cloud.platform.rest.api.dto.Dtos.TwoFactorSetupResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,20 +76,38 @@ data class TransferProgress(
 /** Page size [AppViewModel.refreshCurrentFolder]/[AppViewModel.loadMoreEntries] request per [CloudDriverClient.listFilesPage]/[listFoldersPage] call. */
 private const val FOLDER_VIEW_PAGE_SIZE = 200
 
-class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, initialThemeMode: ThemeMode) {
+class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) {
 
     /** The active session's HTTP client, against the hardcoded server address(es) passed at construction (see `Main.kt`'s `DEFAULT_SERVER_URL`). */
     val client: CloudDriverClient = CloudDriverClient(initialServerUrl, initialServerUrl)
 
-    /** The active light/dark theme - loaded once at startup via `AppSettingsStore.loadThemeMode()`, toggled via [toggleTheme]. */
-    var themeMode: ThemeMode by mutableStateOf(initialThemeMode)
+    /**
+     * The active light/dark theme - synced to the signed-in account (`CloudUser.themeMode`
+     * server-side, via `PUT /cloudUsers/theme`) instead of a local per-device file, so a choice
+     * made on one device follows the account to every other device it's signed into. Defaults to
+     * [ThemeMode.LIGHT] until the account's own stored preference is fetched (see
+     * [refreshAccountInfo], called right after authenticating) - there is no signed-in account to
+     * ask before that point, e.g. while the login screen itself is showing. Toggled via
+     * [toggleTheme].
+     */
+    var themeMode: ThemeMode by mutableStateOf(ThemeMode.LIGHT)
         private set
 
-    /** Flips [themeMode] and persists the new choice via [AppSettingsStore] so it survives a restart. */
+    /** Flips [themeMode] and syncs the new choice to the account via [CloudDriverClient.updateThemePreference], so it follows the account to every other signed-in device. */
     fun toggleTheme() {
         val newMode = if (this.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK
         this.themeMode = newMode
-        this.scope.launch { AppSettingsStore.saveThemeMode(newMode) }
+        this.scope.launch {
+            try {
+                this@AppViewModel.client.updateThemePreference(newMode.name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Best-effort sync - the local toggle above already applied, and a failed sync
+                // here just means the choice doesn't (yet) follow to another device; not worth
+                // surfacing as a user-facing error for a UI preference.
+            }
+        }
     }
 
     var screen: Screen by mutableStateOf(Screen.Login)
@@ -224,12 +240,17 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     }
 
     /**
-     * Re-fetches [currentUserCreatedAtEpochMillis]/[currentUserUploadedBytes]/[currentUserMaxBytesToUpload]
-     * from the server via [CloudDriverClient.getCloudUser] - called once from [onAuthenticated], and
-     * again from [loadDashboardStats] every time the Dashboard is shown, since an operator can change
-     * an account's upload quota out-of-band (e.g. the terminal's `cu update <email> <bytes>` command)
-     * while this client is already signed in; without a re-fetch here the Dashboard's "Storage" row
-     * would keep showing whatever quota was in effect at login time until the next full sign-in.
+     * Re-fetches [currentUserCreatedAtEpochMillis]/[currentUserUploadedBytes]/[currentUserMaxBytesToUpload]/
+     * [themeMode] from the server via [CloudDriverClient.getCloudUser] - called once from
+     * [onAuthenticated]/[onSessionRestored], and again from [loadDashboardStats] every time the
+     * Dashboard is shown, since an operator can change an account's upload quota out-of-band (e.g.
+     * the terminal's `cu update <email> <bytes>` command) while this client is already signed in;
+     * without a re-fetch here the Dashboard's "Storage" row would keep showing whatever quota was
+     * in effect at login time until the next full sign-in. [themeMode] is only overwritten when the
+     * account actually has a stored preference (`themeMode() != null`) - a fresh account, or one
+     * that predates this field, has no server-side opinion yet, so this device's already-showing
+     * theme (whatever [ThemeMode.LIGHT] default or earlier value it had) is left alone rather than
+     * being reset to a hardcoded default on every login.
      */
     private suspend fun refreshAccountInfo() {
         val userId = this.currentUserId ?: return
@@ -238,6 +259,9 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
             this.currentUserCreatedAtEpochMillis = cloudUser?.timeStamp()
             this.currentUserUploadedBytes = cloudUser?.currentUploadedBytes()
             this.currentUserMaxBytesToUpload = cloudUser?.maxBytesToUpload()
+            cloudUser?.themeMode()?.let { syncedThemeMode ->
+                runCatching { ThemeMode.valueOf(syncedThemeMode) }.getOrNull()?.let { this.themeMode = it }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -422,20 +446,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
     // --- auth --------------------------------------------------------
 
     fun login(email: String, password: String) = run {
-        val outcome = this.client.login(email, password)
-        if (outcome.twoFactorRequired()) {
-            // Password verified, but the account has two-factor authentication enabled (item 12,
-            // see architecture/SERVICES.md) - no session yet, onAuthenticated is not called here.
-            this.screen = Screen.TwoFactorLogin(outcome.pendingToken(), email)
-        } else {
-            this.onAuthenticated(email, outcome.token())
-            this.screen = Screen.Browser
-        }
-    }
-
-    /** Completes a login left pending by [login] switching to [Screen.TwoFactorLogin] - submits [code] and, on success, signs in exactly like a non-2FA [login] would. */
-    fun completeTwoFactorLogin(pendingToken: String, email: String, code: String) = run {
-        val jwt = this.client.completeTwoFactorLogin(pendingToken, code)
+        val jwt = this.client.login(email, password)
         this.onAuthenticated(email, jwt)
         this.screen = Screen.Browser
     }
@@ -1206,39 +1217,6 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String, 
         this.client.confirmEmailChange(code)
         this.currentUserEmail = this.pendingEmailChangeAddress
         this.pendingEmailChangeAddress = null
-    }
-
-    // --- account: two-factor authentication (item 12, see architecture/SERVICES.md) --------
-
-    /**
-     * Set once [beginTwoFactorSetup] starts a setup flow - drives the Dashboard's settings-menu
-     * "Enable Two-Factor Authentication" dialog from step one (show the secret/QR code) to step
-     * two (enter a code from the authenticator app to confirm). `null` outside of that flow;
-     * [confirmTwoFactorSetup] resolves it back to `null` on success, [cancelTwoFactorSetup] does
-     * the same if the user backs out.
-     */
-    var pendingTwoFactorSetup: TwoFactorSetupResponse? by mutableStateOf(null)
-        private set
-
-    /** Step one of enabling two-factor authentication - generates a fresh secret, not yet live on the account. */
-    fun beginTwoFactorSetup() = run {
-        this.pendingTwoFactorSetup = this.client.beginTwoFactorSetup()
-    }
-
-    /** Abandons an in-progress [beginTwoFactorSetup] flow without changing anything server-side - the pending secret simply expires unused. */
-    fun cancelTwoFactorSetup() {
-        this.pendingTwoFactorSetup = null
-    }
-
-    /** Step two - submits [code], which (on success) actually enables two-factor authentication on the account server-side. From this point on, [login] returns [Screen.TwoFactorLogin] instead of signing straight in. */
-    fun confirmTwoFactorSetup(code: String) = run {
-        this.client.confirmTwoFactorSetup(code)
-        this.pendingTwoFactorSetup = null
-    }
-
-    /** Disables two-factor authentication for the signed-in account - the server re-verifies [password] before disabling, since a stolen-but-still-valid session token alone should not be enough to turn off the second factor. */
-    fun disableTwoFactor(password: String) = run {
-        this.client.disableTwoFactor(password)
     }
 
 }

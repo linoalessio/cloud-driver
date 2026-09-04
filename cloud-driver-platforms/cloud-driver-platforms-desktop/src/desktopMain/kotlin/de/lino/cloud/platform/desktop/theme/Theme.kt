@@ -27,7 +27,8 @@ import androidx.compose.ui.unit.sp
  * A light/dark color pair styled after iCloud/Apple's own system apps - a clean, airy light
  * theme (off-white background, pure-white cards, a systemBlue-ish accent) and a true dark theme
  * (near-black background, elevated dark-gray surfaces), rather than Material's own default
- * purple-leaning palette. [ThemeMode] (persisted via [AppSettingsStore]) selects between them.
+ * purple-leaning palette. [ThemeMode] (synced to the account via `CloudUserResponse.themeMode` -
+ * see [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.toggleTheme]) selects between them.
  */
 private val LightColors = lightColorScheme(
     primary = Color(0xFF0A84FF),
@@ -80,7 +81,13 @@ private val CloudDriverTypography = Typography().let { base ->
     )
 }
 
-/** Which persisted color scheme is active - see [AppSettingsStore] for where this is read from/written to. */
+/**
+ * Which color scheme is active - synced to the signed-in account (`CloudUser.themeMode`
+ * server-side), not a local per-device setting, so a choice made on one device follows the
+ * account to every other device it's signed into. See
+ * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.themeMode]/[toggleTheme] for where this
+ * is read from/written to.
+ */
 enum class ThemeMode { LIGHT, DARK }
 
 /** Applies [LightColors]/[DarkColors] depending on [themeMode] plus [CloudDriverTypography], wrapping [content] in a plain [MaterialTheme]. */

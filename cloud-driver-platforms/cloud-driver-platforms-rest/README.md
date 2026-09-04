@@ -45,7 +45,7 @@ Extracted from what used to be `cloud-driver-platforms-desktop`'s own `de.lino.c
 
 No persistence of its own beyond the session token (see Safety & security below). Entities it exchanges with the server are plain Gson-serialized records in `api.dto.Dtos` (deliberately not shared code with the server — this module has no dependency on `cloud-driver-api`), grouped by concern:
 
-- **Auth/session** — `AuthRequest`/`LoginOutcome`/`AuthResponse`, `TwoFactorLoginRequest`/`TwoFactorSetupResponse`/`ConfirmTwoFactorSetupRequest`/`DisableTwoFactorRequest`, `RefreshRequest`, `ConfirmRegistrationRequest`/`RequestPasswordResetRequest`/`ConfirmPasswordResetRequest`, `ChangeEmailRequest`/`ConfirmChangeEmailRequest`, `MessageResponse`, `MeResponse` (the caller's own id/email/admin flag).
+- **Auth/session** — `AuthRequest`/`AuthResponse`, `RefreshRequest`, `ConfirmRegistrationRequest`/`RequestPasswordResetRequest`/`ConfirmPasswordResetRequest`, `ChangeEmailRequest`/`ConfirmChangeEmailRequest`, `MessageResponse`, `MeResponse` (the caller's own id/email/admin flag).
 - **Files/folders** — `StoredFileResponse` (one file's metadata + base64 content), `StoredFileSummaryResponse` (descriptive fields only, no content — what a listing returns), `FolderResponse`, `CreateFolderRequest`/`UpdateFolderRequest`/`MoveFileRequest`, `Page<T>` (cursor-pagination envelope).
 - **Trash** — `TrashedFileSummaryResponse`/`TrashedFolderSummaryResponse` (a file/folder summary paired with `purgeAtEpochMillis`).
 - **Sharing (item 9)** — `ShareRequest`, `SharedFileSummaryResponse`/`SharedFolderSummaryResponse` (paired with the sharing account's email), `SharedFolderContentsResponse` (a shared folder's own files/subfolders), `EmailExistsResponse` (live grantee-email check).
@@ -67,8 +67,8 @@ Purely a client — no server-side state to scale. `ApiClient` holds two mutable
 
 ## API surface
 
-- **`ApiClient`** — the HTTP client itself. Auth: `login`/`completeTwoFactorLogin`/`register`/`confirmRegistration`/`requestPasswordReset`/`confirmPasswordReset`/`requestEmailChange`/`confirmEmailChange`/`refresh`/`revokeRefreshToken`/`beginTwoFactorSetup`/`confirmTwoFactorSetup`/`disableTwoFactor`. Files: `uploadFile`/`uploadFilesAsync`/`listFiles`/`listFilesPage`/`listFilesStream`/`downloadFile`/`downloadFileToPath`/`deleteFile`/`deleteFilesAsync`/`moveFile`. Folders: `createFolder`/`listFolders`/`listFoldersPage`/`updateFolder`/`deleteFolder`. Trash: `listDeletedFiles`/`restoreFile`/`listDeletedFolders`/`restoreFolder`/`emptyTrash`. Sharing: `shareFile`/`revokeFileShare`/`listFileShares`/`listSharedWithMe`/`shareFolder`/`revokeFolderShare`/`listFolderShares`/`listSharedFoldersWithMe`/`listSharedFolderContents`/`checkCloudUserExists`. Admin: `listAdminAuthUsers`/`listAdminAuditLog`. Misc: `getCloudUser`/`getMe`. Every method above has a sync + `*Async` form. Implements `AutoCloseable`.
-- **`SessionManager`** — wraps an `ApiClient` + `TokenStore` so a session survives an app restart; `tryRestoreSession`, `login`/`completeTwoFactorLogin`, `register`/`confirmRegistration`, `confirmPasswordReset`, `logout`, `handleFailure`.
+- **`ApiClient`** — the HTTP client itself. Auth: `login`/`register`/`confirmRegistration`/`requestPasswordReset`/`confirmPasswordReset`/`requestEmailChange`/`confirmEmailChange`/`refresh`/`revokeRefreshToken`. Files: `uploadFile`/`uploadFilesAsync`/`listFiles`/`listFilesPage`/`listFilesStream`/`downloadFile`/`downloadFileToPath`/`deleteFile`/`deleteFilesAsync`/`moveFile`. Folders: `createFolder`/`listFolders`/`listFoldersPage`/`updateFolder`/`deleteFolder`. Trash: `listDeletedFiles`/`restoreFile`/`listDeletedFolders`/`restoreFolder`/`emptyTrash`. Sharing: `shareFile`/`revokeFileShare`/`listFileShares`/`listSharedWithMe`/`shareFolder`/`revokeFolderShare`/`listFolderShares`/`listSharedFoldersWithMe`/`listSharedFolderContents`/`checkCloudUserExists`. Admin: `listAdminAuthUsers`/`listAdminAuditLog`. Misc: `getCloudUser`/`getMe`. Every method above has a sync + `*Async` form. Implements `AutoCloseable`.
+- **`SessionManager`** — wraps an `ApiClient` + `TokenStore` so a session survives an app restart; `tryRestoreSession`, `login`, `register`/`confirmRegistration`, `confirmPasswordReset`, `logout`, `handleFailure`.
 - **`LiveUpdateClient`** — item-10 live push over WebSocket; `connect()`/`close()`, a `Listener` callback delivering `Update(table, operation, id)` notifications, auto-reconnecting.
 - **`Dtos`** — the request/response record shapes listed above.
 - **`TokenStore`** (interface) — `store`/`load`/`clear`. `TokenStoreFactory.create()` picks the right OS-specific implementation automatically and reports whether it fell back to the plain-file store.
@@ -80,7 +80,6 @@ Purely a client — no server-side state to scale. `ApiClient` holds two mutable
 import de.lino.cloud.platform.rest.api.ApiClient;
 import de.lino.cloud.platform.rest.api.SessionManager;
 import de.lino.cloud.platform.rest.api.session.TokenStoreFactory;
-import de.lino.cloud.platform.rest.api.dto.Dtos.LoginOutcome;
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 
 try (ApiClient apiClient = new ApiClient("https://api.cloud-driver.de", "https://api.cloud-driver.de")) {
@@ -89,10 +88,7 @@ try (ApiClient apiClient = new ApiClient("https://api.cloud-driver.de", "https:/
 
     // Restore a previous session, or log in fresh.
     if (!session.tryRestoreSession()) {
-        LoginOutcome outcome = session.login("you@example.com", "hunter2");
-        if (outcome.twoFactorRequired()) {
-            session.completeTwoFactorLogin(outcome.pendingToken(), /* code from an authenticator app */ "123456");
-        }
+        session.login("you@example.com", "hunter2");
     }
 
     // Upload a file straight from disk, optionally into a folder (null = root).

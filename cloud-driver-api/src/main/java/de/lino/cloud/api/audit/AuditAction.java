@@ -29,12 +29,6 @@ public enum AuditAction {
     FILE_DELETE,
 
     /** A {@code CloudUserService#deleteCloudUser} call (permanently empties and removes an account). */
-    ACCOUNT_DELETE,
-
-    /** A completed {@code AuthService#confirmTwoFactorSetup} call (two-factor authentication is now enabled on this account). */
-    TWO_FACTOR_ENABLED,
-
-    /** A completed {@code AuthService#disableTwoFactor} call (two-factor authentication is now disabled on this account). */
-    TWO_FACTOR_DISABLED
+    ACCOUNT_DELETE
 
 }

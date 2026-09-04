@@ -1,4 +1,5 @@
 import Foundation
+import ZIPFoundation
 
 /// One entry in the current folder-navigation trail - `folderId == nil` means the root ("Home").
 /// A plain struct with its own `id` (rather than keying off `folderId`, which is `nil` at the
@@ -46,6 +47,39 @@ enum SelectableEntry: Identifiable, Hashable {
     }
 }
 
+/// Which kind of transfer `AppViewModel.transferProgress` is currently reporting on - the mobile
+/// counterpart to cloud-driver-platforms-desktop's own `AppViewModel.kt#TransferKind`.
+enum TransferKind: Equatable {
+    case upload
+    case download
+    /// Covers both halves of `extractArchive` (downloading the archive, then re-uploading its
+    /// extracted contents) under one label - from the user's perspective "unarchiving" is a
+    /// single action, even though it's a download followed by a batch of uploads under the hood.
+    case extract
+}
+
+/// A snapshot of an in-flight upload/download/extraction - `AppViewModel.transferProgress` is
+/// `nil` whenever no transfer is running. Mirrors cloud-driver-platforms-desktop's own
+/// `AppViewModel.kt#TransferProgress` (byte-level, not just a spinner), simplified for this
+/// module's sequential (never concurrent) transfer model - `totalBytes`/`transferredBytes` are
+/// summed across every item in a multi-item batch (`extractArchive`'s re-upload phase), not just
+/// whichever single item happens to be in flight.
+struct TransferProgress: Equatable {
+    let kind: TransferKind
+    let totalItems: Int
+    let completedItems: Int
+    let totalBytes: Int64
+    let transferredBytes: Int64
+
+    /// `1` if `totalBytes` is `0` (nothing to divide by, e.g. every item in the batch happened to
+    /// be empty) - a full bar reads better than a division-by-zero for a batch with nothing left
+    /// to transfer.
+    var fraction: Double {
+        guard totalBytes > 0 else { return 1 }
+        return min(1, max(0, Double(transferredBytes) / Double(totalBytes)))
+    }
+}
+
 /// Which screen `RootView` is currently showing - the mobile counterpart to
 /// cloud-driver-platforms-desktop's `Screen.kt` sealed interface.
 enum AppScreen: Equatable {
@@ -54,13 +88,12 @@ enum AppScreen: Equatable {
     case confirmRegistration(email: String)
     case resetPasswordRequest
     case resetPasswordConfirm(email: String)
-    case twoFactor(pendingToken: String, email: String)
     case browser
 }
 
 /// All mutable app state plus every user-triggered action - the mobile counterpart to
 /// cloud-driver-platforms-desktop's `AppViewModel.kt`. Deliberately not a 1:1 port: this first
-/// pass covers auth (including two-factor login) and a single-folder-at-a-time file browser
+/// pass covers auth and a single-folder-at-a-time file browser
 /// (list/upload/download/delete/create-folder/navigate) - sharing, trash, admin, live push, and
 /// thumbnails/previews are not implemented yet. See this module's own README for the full list of
 /// what's deferred and why.
@@ -96,6 +129,12 @@ final class AppViewModel: ObservableObject {
     @Published var pendingEmailChangeAddress: String?
 
     @Published var fileToShare: IdentifiableURL?
+
+    /// Real, byte-level progress for whichever upload/download/extraction is currently running -
+    /// `nil` whenever none is. Rendered by `RootView` as a bar visible across every tab, the same
+    /// "owned above the tab content, so it survives which tab happens to be selected" placement
+    /// `errorMessage`'s alert and `fileToShare`'s share sheet already use.
+    @Published var transferProgress: TransferProgress?
 
     let client = APIClient.shared
     private lazy var sessionManager = SessionManager(client: client)
@@ -190,20 +229,7 @@ final class AppViewModel: ObservableObject {
 
     func login(email: String, password: String) {
         run {
-            let outcome = try await self.client.login(email: email, password: password)
-            if outcome.twoFactorRequired, let pendingToken = outcome.pendingToken {
-                self.screen = .twoFactor(pendingToken: pendingToken, email: email)
-            } else {
-                self.currentUserEmail = email
-                await self.sessionManager.persistCurrentSession()
-                try await self.onAuthenticated()
-            }
-        }
-    }
-
-    func completeTwoFactorLogin(pendingToken: String, email: String, code: String) {
-        run {
-            _ = try await self.client.completeTwoFactorLogin(pendingToken: pendingToken, code: code)
+            _ = try await self.client.login(email: email, password: password)
             self.currentUserEmail = email
             await self.sessionManager.persistCurrentSession()
             try await self.onAuthenticated()
@@ -498,13 +524,115 @@ final class AppViewModel: ObservableObject {
     /// for how the actual (blocking or streaming) file access happens off the main actor.
     func uploadPickedFile(url: URL) {
         run {
-            try await self.uploadFileStreaming(fileName: url.lastPathComponent, sourceURL: url)
+            defer { self.transferProgress = nil }
+            let totalBytes = self.fileSize(at: url)
+            self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: totalBytes, transferredBytes: 0)
+            try await self.uploadFileStreaming(fileName: url.lastPathComponent, sourceURL: url, folderId: self.currentFolderId) { transferred, total in
+                self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : totalBytes, transferredBytes: transferred)
+            }
             try await self.refreshCurrentFolder()
         }
     }
 
-    /// Uploads `sourceURL` (a security-scoped URL from `.fileImporter`) as `fileName`, preferring
-    /// the presigned direct-to-client path - `APIClient.uploadFileViaPresignedURL`, which streams
+    /// `url` is a security-scoped URL for a *directory*, handed back by `.fileImporter` with
+    /// `allowedContentTypes: [.folder]`. The server has no folder-tree upload endpoint, only
+    /// single-file `POST /files` - zips the folder client-side (the same "folder upload = zip"
+    /// convention cloud-driver-platforms-desktop's own `FolderZipper.kt` uses) and uploads the
+    /// result as `<folder name>.zip`.
+    func uploadPickedFolder(url: URL) {
+        run {
+            defer { self.transferProgress = nil }
+            try await self.zipAndUploadFolder(sourceURL: url)
+            try await self.refreshCurrentFolder()
+        }
+    }
+
+    /// Copies `sourceURL` (a file or directory, possibly security-scoped) to `destinationURL` via
+    /// `NSFileCoordinator`, not a bare `FileManager.copyItem` - reading a security-scoped picker
+    /// URL's contents (especially nested items inside a picked *folder*) through the coordinator is
+    /// what actually guarantees the OS has made everything beneath it available before this app's
+    /// own code touches it; see `zipAndUploadFolder`'s own "Fixed a real bug" note for why skipping
+    /// this step corrupts ZIPFoundation's file/directory type detection for nested items. `static`
+    /// `nonisolated` (not just `static`) - `AppViewModel` is `@MainActor`, so a plain `static func`
+    /// on it would still be main-actor-isolated by default, defeating the point of calling it from
+    /// inside `Task.detached`'s own off-main-actor closure.
+    private nonisolated static func copyCoordinated(from sourceURL: URL, to destinationURL: URL) throws {
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [], error: &coordinatorError) { coordinatedURL in
+            do {
+                try FileManager.default.copyItem(at: coordinatedURL, to: destinationURL)
+            } catch {
+                copyError = error
+            }
+        }
+        if let coordinatorError {
+            throw coordinatorError
+        }
+        if let copyError {
+            throw copyError
+        }
+    }
+
+    /// Reads `url`'s file size, bracketed by security-scoped access the same way every other
+    /// operation on a `.fileImporter`-provided URL is - harmless (a no-op bracket) for a plain
+    /// local file this app created itself, per Apple's documented behavior for a non-scoped URL.
+    private func fileSize(at url: URL) -> Int64 {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// Zips `sourceURL` (a security-scoped directory URL from `.fileImporter`) into a throwaway
+    /// temp file via ZIPFoundation, then uploads it through the same `uploadFileStreaming` path a
+    /// single file goes through - deleting every temp item afterward regardless of outcome. The
+    /// zipping itself runs off the main actor via `Task.detached` (a real, blocking, synchronous
+    /// disk operation), the same "blocking work never runs on the main actor" convention
+    /// `downloadFileStreaming`'s own fallback branch already uses. No progress is reported during
+    /// the zip step itself (a local, no-network operation with no natural byte-progress signal of
+    /// its own) - `transferProgress` only starts once the real upload begins, against the now-known
+    /// zip file size.
+    ///
+    /// **Fixed a real bug (2026-09-04): zipping a folder that contained nested subfolders failed
+    /// with `"The operation couldn't be completed. Is a directory"`.** ZIPFoundation determines
+    /// each entry's type (file/directory/symlink) via a raw `lstat()` call on its filesystem path,
+    /// and silently falls back to treating it as a plain **file** if `lstat` fails for any reason -
+    /// then calls `fopen()` on it, which throws exactly this error if the path turns out to still be
+    /// a directory. `lstat`-ing a path nested *inside* a security-scoped folder URL (rather than the
+    /// top-level picked URL itself) isn't reliable without `NSFileCoordinator` - the OS may not have
+    /// fully vended access to everything beneath the root by the time raw POSIX calls reach it,
+    /// which is exactly why this only surfaced for a folder containing subfolders, never a flat one.
+    /// Fixed by first copying the whole picked folder into this app's own sandbox (via
+    /// `NSFileCoordinator.coordinate(readingItemAt:options:)` wrapping `FileManager.copyItem`) and
+    /// zipping *that* local copy instead - once the contents are plain local files with no security
+    /// scope involved at all, ZIPFoundation's raw `lstat` calls behave reliably.
+    private func zipAndUploadFolder(sourceURL: URL) async throws {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        let folderName = sourceURL.lastPathComponent
+        let localCopyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let zipURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
+        defer {
+            try? FileManager.default.removeItem(at: localCopyURL)
+            try? FileManager.default.removeItem(at: zipURL)
+        }
+
+        try await Task.detached(priority: .userInitiated) {
+            try Self.copyCoordinated(from: sourceURL, to: localCopyURL)
+            try FileManager().zipItem(at: localCopyURL, to: zipURL, shouldKeepParent: false, compressionMethod: .deflate)
+        }.value
+
+        let totalBytes = fileSize(at: zipURL)
+        self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: totalBytes, transferredBytes: 0)
+        try await self.uploadFileStreaming(fileName: "\(folderName).zip", sourceURL: zipURL, folderId: self.currentFolderId) { transferred, total in
+            self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : totalBytes, transferredBytes: transferred)
+        }
+    }
+
+    /// Uploads `sourceURL` as `fileName` into `folderId` (`nil` for the root), preferring the
+    /// presigned direct-to-client path - `APIClient.uploadFileViaPresignedURL`, which streams
     /// straight from disk via `URLSession.upload(for:fromFile:)`, bypassing this app's own server
     /// for the data path entirely (see cloud-driver's `architecture/AWS_S3_IMPL.md`) - and
     /// transparently falling back to the ordinary server-mediated `uploadFile(fileName:data:folderId:)`
@@ -514,17 +642,27 @@ final class AppViewModel: ObservableObject {
     /// The security-scoped access brackets the *whole* operation, not just a read - unlike the
     /// fallback path (which still needs the full file in memory as `Data`), the presigned path
     /// streams directly from `sourceURL` for as long as the upload takes, so the scope must stay
-    /// open for that entire duration.
-    private func uploadFileStreaming(fileName: String, sourceURL: URL) async throws {
+    /// open for that entire duration. Harmless to call on a plain, non-security-scoped local file
+    /// (e.g. a temp zip this app created itself, or an extracted archive entry) -
+    /// `startAccessingSecurityScopedResource()` simply returns `false` for those, per Apple's own
+    /// documented behavior, and the `defer` below then no-ops.
+    ///
+    /// `onProgress(bytesTransferred, totalBytes)` is called repeatedly on the presigned path (real,
+    /// byte-level progress from `URLSessionTaskDelegate`, already hopped onto the main actor by
+    /// `APIClient`'s own `ProgressForwardingDelegate`) and exactly once, with the full size both
+    /// times, on the fallback path - which has no incremental signal of its own (a single, whole-body
+    /// `Data` request), so this is the best this app can report there without much more plumbing.
+    private func uploadFileStreaming(fileName: String, sourceURL: URL, folderId: String?, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         let accessing = sourceURL.startAccessingSecurityScopedResource()
         defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
         do {
-            _ = try await client.uploadFileViaPresignedURL(fileName: fileName, fileURL: sourceURL, folderId: currentFolderId)
+            _ = try await client.uploadFileViaPresignedURL(fileName: fileName, fileURL: sourceURL, folderId: folderId, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
             let data = try await Task.detached(priority: .userInitiated) {
                 try Data(contentsOf: sourceURL)
             }.value
-            _ = try await client.uploadFile(fileName: fileName, data: data, folderId: currentFolderId)
+            _ = try await client.uploadFile(fileName: fileName, data: data, folderId: folderId)
+            onProgress?(Int64(data.count), Int64(data.count))
         }
     }
 
@@ -533,9 +671,13 @@ final class AppViewModel: ObservableObject {
     /// it into Files, AirDrop it, etc.
     func download(_ file: StoredFileSummaryResponse) {
         run {
+            defer { self.transferProgress = nil }
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + file.fileName)
-            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination)
+            self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
+            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination) { transferred, total in
+                self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
+            }
             self.fileToShare = IdentifiableURL(url: destination)
         }
     }
@@ -544,15 +686,129 @@ final class AppViewModel: ObservableObject {
     /// path (`APIClient.downloadFileViaPresignedURL`, bypassing this app's own server for the data
     /// path entirely) and transparently falling back to the ordinary server-mediated
     /// `downloadFileContent(fileId:)` the moment the server reports (`503`) presigned transfer
-    /// isn't available for this file/deployment.
-    private func downloadFileStreaming(fileId: String, destination: URL) async throws {
+    /// isn't available for this file/deployment. `onProgress` has the same "real progress on the
+    /// presigned path, one final call on the fallback path" contract `uploadFileStreaming` documents.
+    private func downloadFileStreaming(fileId: String, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         do {
-            try await client.downloadFileViaPresignedURL(fileId: fileId, destination: destination)
+            try await client.downloadFileViaPresignedURL(fileId: fileId, destination: destination, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
             let data = try await client.downloadFileContent(fileId: fileId)
             try await Task.detached(priority: .userInitiated) {
                 try data.write(to: destination, options: .atomic)
             }.value
+            onProgress?(Int64(data.count), Int64(data.count))
+        }
+    }
+
+    // MARK: - Archive extraction
+
+    /// Double-tapping/extracting a ZIP archive on cloud-driver-platforms-desktop unarchives it
+    /// into a **new destination folder** created for this extraction, named after the archive
+    /// (extension stripped, e.g. `test.zip` -> `test`) - never directly into the current folder.
+    /// This mirrors that exact behavior: downloads `file`, extracts it locally via ZIPFoundation,
+    /// creates a destination folder (disambiguated against the current folder's already-loaded
+    /// subfolder names via `uniqueFolderName` - `"test"`, then `"test 2"`, ... if `"test"` is
+    /// already taken), and recreates the extracted contents - files and nested folders alike -
+    /// inside it. The archive file itself is left in place, per this app's "never silently delete
+    /// something the user didn't ask to delete" convention.
+    func extractArchive(_ file: StoredFileSummaryResponse) {
+        run {
+            defer { self.transferProgress = nil }
+            try await self.downloadAndExtractArchive(file: file)
+            try await self.refreshCurrentFolder()
+        }
+    }
+
+    /// One file discovered while walking an extracted archive's local directory tree, paired with
+    /// its remote destination folder id and known size - the "plan" half of the re-upload phase,
+    /// letting `downloadAndExtractArchive` show one continuous, accurate progress bar across the
+    /// whole batch instead of restarting per file. Mirrors cloud-driver-platforms-desktop's own
+    /// `AppViewModel.kt#PlannedUpload`.
+    private struct PlannedUpload {
+        let localURL: URL
+        let remoteFolderId: String?
+        let sizeBytes: Int64
+    }
+
+    /// Downloads `file` to a throwaway temp file (reporting progress against its own known size),
+    /// extracts it (via ZIPFoundation, off the main actor - a real, blocking, synchronous disk
+    /// operation) into a sibling temp directory, creates the destination folder, then walks the
+    /// extracted tree via `planDirectoryTree` (creating every needed remote subfolder up front and
+    /// summing every file's size) so the re-upload phase's own total is known before it starts -
+    /// the same "plan first, so progress never has to guess a total up front" shape
+    /// cloud-driver-platforms-desktop's own `planAndCreateDirectoryTree` uses. The whole temp
+    /// directory (archive + extracted contents) is removed afterward regardless of outcome.
+    private func downloadAndExtractArchive(file: StoredFileSummaryResponse) async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let archiveURL = tempDirectory.appendingPathComponent(file.fileName)
+        let extractedDirectory = tempDirectory.appendingPathComponent("extracted")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        try FileManager.default.createDirectory(at: extractedDirectory, withIntermediateDirectories: true)
+
+        self.transferProgress = TransferProgress(kind: .extract, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
+        try await self.downloadFileStreaming(fileId: file.fileId, destination: archiveURL) { transferred, total in
+            self.transferProgress = TransferProgress(kind: .extract, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
+        }
+
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager().unzipItem(at: archiveURL, to: extractedDirectory)
+        }.value
+
+        let existingFolderNames = Set(self.folders.map(\.name))
+        let destinationFolderName = uniqueFolderName(archiveBaseName(file.fileName), existingNames: existingFolderNames)
+        let destinationFolder = try await self.client.createFolder(name: destinationFolderName, parentFolderId: self.currentFolderId)
+
+        let plans = try await planDirectoryTree(localDirectory: extractedDirectory, remoteParentFolderId: destinationFolder.folderId)
+        let uploadTotalBytes = plans.reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let overallTotalBytes = file.sizeBytes + uploadTotalBytes
+        self.transferProgress = TransferProgress(
+            kind: .extract, totalItems: plans.count + 1, completedItems: 1,
+            totalBytes: overallTotalBytes, transferredBytes: file.sizeBytes
+        )
+        try await uploadPlannedFiles(plans, alreadyTransferredBytes: file.sizeBytes, totalBytes: overallTotalBytes)
+    }
+
+    /// Recursively creates every subfolder directly/transitively inside `localDirectory` under
+    /// `remoteParentFolderId` (`nil` = root), and flattens every plain file into one
+    /// `PlannedUpload` list with its size already known (a local file-size read) - mirrors
+    /// cloud-driver-platforms-desktop's own `planAndCreateDirectoryTree`. Deliberately sequential
+    /// (one entry at a time), not a capped-concurrency batch - this app has no existing precedent
+    /// for concurrent transfer batches, and a source archive's own tree is typically shallow/narrow
+    /// enough that sequential planning is simple and safe rather than risking the "too many
+    /// concurrent streams" issue a wide/deep tree could otherwise trigger.
+    private func planDirectoryTree(localDirectory: URL, remoteParentFolderId: String?) async throws -> [PlannedUpload] {
+        var plans: [PlannedUpload] = []
+        let entries = try FileManager.default.contentsOfDirectory(at: localDirectory, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey])
+        for entry in entries {
+            let resourceValues = try? entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if resourceValues?.isDirectory == true {
+                let remoteFolder = try await client.createFolder(name: entry.lastPathComponent, parentFolderId: remoteParentFolderId)
+                plans += try await planDirectoryTree(localDirectory: entry, remoteParentFolderId: remoteFolder.folderId)
+            } else {
+                let sizeBytes = Int64(resourceValues?.fileSize ?? 0)
+                plans.append(PlannedUpload(localURL: entry, remoteFolderId: remoteParentFolderId, sizeBytes: sizeBytes))
+            }
+        }
+        return plans
+    }
+
+    /// Uploads every planned file sequentially, aggregating byte-level progress across the whole
+    /// batch (`alreadyTransferredBytes` is the archive download's own size, already "spent" against
+    /// `totalBytes` before this phase starts) into one continuous `transferProgress` update per
+    /// callback - so the bar never jumps backwards between files, and reads as one unbroken
+    /// operation from the download through the last re-uploaded file.
+    private func uploadPlannedFiles(_ plans: [PlannedUpload], alreadyTransferredBytes: Int64, totalBytes: Int64) async throws {
+        var completedBytes = alreadyTransferredBytes
+        for (index, plan) in plans.enumerated() {
+            let baseline = completedBytes
+            try await uploadFileStreaming(fileName: plan.localURL.lastPathComponent, sourceURL: plan.localURL, folderId: plan.remoteFolderId) { transferred, _ in
+                self.transferProgress = TransferProgress(
+                    kind: .extract, totalItems: plans.count + 1, completedItems: index + 1,
+                    totalBytes: totalBytes, transferredBytes: baseline + transferred
+                )
+            }
+            completedBytes += plan.sizeBytes
         }
     }
 }

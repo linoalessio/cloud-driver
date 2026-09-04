@@ -8,7 +8,7 @@ import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
-import de.lino.cloud.api.storage.object.PresignedTransferService;
+import de.lino.cloud.api.s3storage.PresignedTransferService;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.audit.AuditLogServiceImpl;

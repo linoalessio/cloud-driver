@@ -1,4 +1,4 @@
-package de.lino.cloud.api.storage.object;
+package de.lino.cloud.api.s3storage;
 
 /**
  * Signals that an {@link ObjectStorageService} operation failed - the underlying store rejected

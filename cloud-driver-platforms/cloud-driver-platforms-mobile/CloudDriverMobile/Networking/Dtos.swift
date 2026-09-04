@@ -30,11 +30,6 @@ struct RefreshRequest: Encodable {
     let refreshToken: String
 }
 
-struct TwoFactorLoginRequest: Encodable {
-    let pendingToken: String
-    let code: String
-}
-
 struct CreateFolderRequest: Encodable {
     let name: String
     let parentFolderId: String?
@@ -105,40 +100,8 @@ struct MessageResponse: Decodable {
     let message: String
 }
 
-/// Superset of a completed login and a two-factor-pending login - mirrors the server's
-/// `LoginOutcome`. `token`/`refreshToken` are `nil` when `twoFactorRequired` is `true`, and
-/// `pendingToken` is `nil` otherwise.
-///
-/// **The server actually returns one of two entirely different record shapes**, not one merged
-/// JSON object: a completed login is `DefaultRestFactory.LoginResponse{token, refreshToken}` -
-/// no `twoFactorRequired` key at all - and a 2FA-pending login is
-/// `DefaultRestFactory.TwoFactorRequiredResponse{twoFactorRequired, pendingToken}` - no
-/// `token`/`refreshToken` keys at all. Gson (the server-side/Java-client serializer) tolerates a
-/// missing primitive `boolean` field by defaulting it to `false`; Swift's synthesized
-/// `Decodable` does not - a non-optional `Bool` throws `DecodingError.keyNotFound` the moment the
-/// key isn't present, surfacing to a caller as the unhelpful "The data couldn't be read because
-/// it is missing." This custom initializer restores Gson's lenient behavior for this one field.
-struct LoginOutcome: Decodable {
-    let token: String?
-    let refreshToken: String?
-    let twoFactorRequired: Bool
-    let pendingToken: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case token, refreshToken, twoFactorRequired, pendingToken
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        token = try container.decodeIfPresent(String.self, forKey: .token)
-        refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
-        twoFactorRequired = try container.decodeIfPresent(Bool.self, forKey: .twoFactorRequired) ?? false
-        pendingToken = try container.decodeIfPresent(String.self, forKey: .pendingToken)
-    }
-}
-
-/// Response shape every other token-issuing route returns (register/confirm, reset-password/confirm,
-/// 2fa/login, refresh).
+/// Response shape returned by every token-issuing route (login, register/confirm,
+/// reset-password/confirm, refresh).
 struct AuthResponse: Decodable {
     let token: String
     let refreshToken: String

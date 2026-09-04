@@ -17,14 +17,6 @@ sealed interface Screen {
     /** Before login: step two of a password reset - enter the e-mailed code plus a new password. */
     data class ResetPasswordConfirm(val email: String) : Screen
 
-    /**
-     * Between password verification and a real session: the matched account has two-factor
-     * authentication enabled (item 12, see `architecture/SERVICES.md`) - enter the current TOTP
-     * code from an authenticator app. [pendingToken] is what [AppViewModel.completeTwoFactorLogin]
-     * presents back alongside the code; [email] is only kept for display ("Signed in as ...").
-     */
-    data class TwoFactorLogin(val pendingToken: String, val email: String) : Screen
-
     /** After login: the file/folder browser. */
     data object Browser : Screen
 

@@ -1,6 +1,6 @@
 # cloud-driver-platforms-desktop
 
-A Kotlin Multiplatform / Compose Multiplatform Desktop client app for `cloud-driver`'s JWT-authenticated REST API - register (two-step, e-mail-verified), sign in (with optional two-factor authentication), persist the session across restarts, browse/upload/download/organize files and folders, view an account dashboard, browse the trash, share files/folders with other accounts and browse/download what's shared with you, and (for an admin account) view a read-only accounts/audit-trail panel. Runs on macOS, Linux, and Windows from one codebase, styled after iCloud Drive/Finder.
+A Kotlin Multiplatform / Compose Multiplatform Desktop client app for `cloud-driver`'s JWT-authenticated REST API - register (two-step, e-mail-verified), sign in, persist the session across restarts, browse/upload/download/organize files and folders, view an account dashboard, browse the trash, share files/folders with other accounts and browse/download what's shared with you, and (for an admin account) view a read-only accounts/audit-trail panel. Runs on macOS, Linux, and Windows from one codebase, styled after iCloud Drive/Finder.
 
 ## Build tooling: Gradle, not Maven
 
@@ -25,9 +25,9 @@ Sits outside the `api ← auth ← plugin ← bootstrap` server-side dependency 
 
 ```
 de.lino.cloud.platform.desktop
-├── Main.kt                          application entry point - window setup, session restore, theme load
+├── Main.kt                          application entry point - window setup, session restore
 ├── App.kt                           root composable - dispatches on AppViewModel.screen
-├── auth/AuthScreens.kt              Login / Register (2-step) / Reset password (2-step) / Two-factor-code composables
+├── auth/AuthScreens.kt              Login / Register (2-step) / Reset password (2-step) composables
 ├── client/CloudDriverClient.kt      coroutine facade over cloud-driver-platforms-rest's ApiClient/SessionManager
 ├── model/
 │   ├── Screen.kt                    sealed interface of every screen, before and after login
@@ -83,7 +83,7 @@ Two things this module *does* persist locally, both outside any server-side data
 - **The JWT's subject claim is decoded client-side without signature verification, deliberately.** `JwtDecoder.kt#decodeJwtSubject` is a plain base64 decode used only to display the account id on the Dashboard - it is never used to authorize anything, and every real request still sends the raw token to the server, which is the only party that actually verifies it. Not a weakness: there is nothing this client could gain by forging what it displays to itself.
 - **Password format is validated client-side before submit, but the server remains the real enforcement point.** `PasswordValidation.kt#isValidPasswordFormat` mirrors the server's rule exactly (hand-kept-in-sync, not shared code - see this module's own "client must never depend on cloud-driver-api" boundary above) purely to avoid a round trip for an obviously-invalid password on Register/Reset-password screens; an existing password is never re-validated on login, matching the server's own behavior.
 - **All traffic is HTTPS**, to the single hardcoded `DEFAULT_SERVER_URL` (`Main.kt`) - there is deliberately no in-app "Server" field (one existed on an earlier revision of the login screen; removed so a first-time user isn't asked to configure anything before signing in).
-- **Two-factor authentication and admin-gated data are both fully delegated to server checks.** `TwoFactorLoginScreen`/`DashboardScreen`'s 2FA setup dialog only ever drive the server's own TOTP flow; `AdminScreen` is shown only while `AppViewModel.currentUserIsAdmin` (learned via `GET /auth/me`) as a UI convenience - the server's own `requireAdmin` filter is the real enforcement point, so this client has no privileged capability of its own to protect.
+- **Admin-gated data is fully delegated to server checks.** `AdminScreen` is shown only while `AppViewModel.currentUserIsAdmin` (learned via `GET /auth/me`) as a UI convenience - the server's own `requireAdmin` filter is the real enforcement point, so this client has no privileged capability of its own to protect.
 
 ## 5. Scalability
 
@@ -95,7 +95,7 @@ This module exposes no API for another module to call (see "Build tooling" above
 
 - **`AppViewModel`** - all mutable UI state (current screen, folder listing, selection, transfer progress, every "shared"/"trash"/"admin" list) and every user-triggered action, each routed through the `run { }` busy-guard described above.
 - **`CloudDriverClient`** - the coroutine-friendly facade `AppViewModel` calls into; wraps `cloud-driver-platforms-rest`'s blocking/`CompletableFuture`-based `ApiClient` and `SessionManager`.
-- **Screens** (`panel/`, `auth/AuthScreens.kt`) - `LoginScreen`/`RegisterScreen`/`RegisterConfirmScreen`/`ResetPasswordRequestScreen`/`ResetPasswordConfirmScreen`/`TwoFactorLoginScreen` (before login); `FileBrowserScreen` (Home - upload/download/move/duplicate/delete/share, drag-and-drop both within the app and from the OS); `DashboardScreen` (account info, stat cards, settings menu - change email/reset password/two-factor, Danger Zone Uninstall); `TrashScreen` (restore, per-item purge-eligibility timestamp, Empty trash bin); `SharedWithMeScreen`/`SharedFolderBrowserScreen` (what others have shared with you, including browsing into and downloading a shared folder); `AdminScreen` (admin-only, read-only accounts + audit trail).
+- **Screens** (`panel/`, `auth/AuthScreens.kt`) - `LoginScreen`/`RegisterScreen`/`RegisterConfirmScreen`/`ResetPasswordRequestScreen`/`ResetPasswordConfirmScreen` (before login); `FileBrowserScreen` (Home - upload/download/move/duplicate/delete/share, drag-and-drop both within the app and from the OS); `DashboardScreen` (account info, stat cards, settings menu - change email/reset password, Danger Zone Uninstall); `TrashScreen` (restore, per-item purge-eligibility timestamp, Empty trash bin); `SharedWithMeScreen`/`SharedFolderBrowserScreen` (what others have shared with you, including browsing into and downloading a shared folder); `AdminScreen` (admin-only, read-only accounts + audit trail).
 
 ## 7. Notable design decisions worth knowing before extending this module
 
@@ -103,6 +103,6 @@ This module exposes no API for another module to call (see "Build tooling" above
 - **Drag-and-drop works both ways** - within the app (reordering into a folder) and from the OS (Finder/Explorer) directly into the current folder, uploading a dropped file as-is and zipping a dropped directory first.
 - **Sharing is read-only for the recipient, browsing included.** `SharedFolderBrowserScreen` lets a grantee browse into and download a shared folder's contents (including nested subfolders, since a folder share covers everything nested inside it), but never upload, rename, move, delete, or re-share anything reached via a share - every mutating action in this app stays owner-only.
 
-## Password reset, two-factor authentication, and sharing - added to the server for this app
+## Password reset and sharing - added to the server for this app
 
 Several server-side features (`cloud-driver-auth`/`cloud-driver-plugin`) exist specifically because this module needed them; see the root `CLAUDE.md`'s "JWT authentication for end-user clients" and "Folder organization" sections for the full picture of each - not duplicated here to avoid the two drifting out of sync.

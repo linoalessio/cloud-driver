@@ -7,7 +7,7 @@ import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
-import de.lino.cloud.api.utility.Constraints;
+import de.lino.cloud.api.utility.UnitParser;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -68,7 +68,7 @@ public class CloudUserCommand implements Command {
             terminal.displayApproved("Registered cloud users (&b%s&7): ", cloudUserService.getCloudUsers().size());
 
             cloudUserService.getCloudUsers().forEach(cloudUser -> {
-                final String totalStorage = Constraints.resolveBytesToUnit(cloudUser.getCurrentUploadedBytes());
+                final String totalStorage = UnitParser.parseByteUnit(cloudUser.getCurrentUploadedBytes());
                 terminal.displayApproved("&8- &7Email: &b%s &8| &7Uploaded files (&b%s&7): &b%s", cloudUser.getAuthUser().getEmailAddress(), totalStorage, cloudUser.getStoredFiles().size());
             });
             terminal.emptyLine();
@@ -85,12 +85,12 @@ public class CloudUserCommand implements Command {
                 terminal.displayApproved("Cloud user '&b%s&7' does not exist", emailAddress);
                 return;
             }
-
+            
             terminal.emptyLine();
             terminal.displayApproved("Cloud user: &b%s", cloudUser.get().getAuthUser().getEmailAddress());
             terminal.displayApproved("AuthId: &b%s", cloudUser.get().getAuthUserId());
             terminal.displayApproved("Uploaded files: &b%s", cloudUser.get().getStoredFiles().size());
-            terminal.displayApproved("Uploaded storage: &b%s&8 / &b%s", Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes()), Constraints.resolveBytesToUnit(cloudUser.get().getMaxBytesToUpload()));
+            terminal.displayApproved("Uploaded storage: &b%s&8 / &b%s", UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes()), UnitParser.parseByteUnit(cloudUser.get().getMaxBytesToUpload()));
             terminal.emptyLine();
 
             return;
@@ -106,7 +106,7 @@ public class CloudUserCommand implements Command {
                 return;
             }
 
-            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes());
+            final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
             terminal.displayApproved("Cloud user '&b%s&7' successfully &ccleared &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
             cloudUserService.resetCloudUser(cloudUser.get().getAuthUserId());
 
@@ -123,7 +123,7 @@ public class CloudUserCommand implements Command {
                 return;
             }
 
-            final String clearedStorage = Constraints.resolveBytesToUnit(cloudUser.get().getCurrentUploadedBytes());
+            final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
             terminal.displayApproved("Cloud user '&b%s&7' successfully &cdeleted &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
             cloudUserService.deleteCloudUser(cloudUser.get().getAuthUserId());
 
@@ -158,7 +158,7 @@ public class CloudUserCommand implements Command {
                 }
 
                 cloudUserService.updateCloudUserBytesLimit(cloudUser.get().getAuthUserId(), bytes);
-                terminal.displayApproved("Cloud user '&b%s&7' can now upload up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), Constraints.resolveBytesToUnit(bytes));
+                terminal.displayApproved("Cloud user '&b%s&7' can now upload up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(bytes));
 
 
             } catch (final NumberFormatException e) {

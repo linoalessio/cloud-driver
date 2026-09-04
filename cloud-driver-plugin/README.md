@@ -35,7 +35,7 @@ de.lino.cloud.plugin
 │   └── DefaultRestFactory          Javalin-backed RestFactory: API-key, JWT, or unauthenticated gating - by far this
 │                                   module's largest class (~50 registered routes): the four generic (path,type)
 │                                   verbs, plus the full hand-written surface for auth (login/register/reset-password/
-│                                   change-email/2FA/refresh-tokens), admin (/admin/authUsers, /admin/audit-log),
+│                                   change-email/refresh-tokens), admin (/admin/authUsers, /admin/audit-log),
 │                                   /files and /folders (CRUD, trash, sharing, "empty trash bin"), /cloudUsers, and a
 │                                   WebSocket live-update push route (this class also `implements LiveUpdatePublisher`)
 ├── file

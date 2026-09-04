@@ -24,10 +24,10 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.security.keys.KeyWrapException;
-import de.lino.cloud.api.storage.object.ObjectStorageException;
-import de.lino.cloud.api.storage.object.PresignedDownload;
-import de.lino.cloud.api.storage.object.PresignedTransferService;
-import de.lino.cloud.api.storage.object.PresignedTransferUnavailableException;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.s3storage.PresignedDownload;
+import de.lino.cloud.api.s3storage.PresignedTransferService;
+import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
 import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
@@ -325,6 +325,30 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.updateCloudUserBytesLimit: failed to persist usage update for " + authUserId, e);
         }
 
+    }
+
+    /**
+     * Sets {@code authUserId}'s stored theme preference to {@code themeMode} and persists the
+     * change - a single-row {@link DataFactory#update}, the same shape {@link
+     * #updateCloudUserBytesLimit} uses. A no-op if {@code authUserId} has no {@link CloudUser}
+     * record yet.
+     *
+     * @param authUserId the account whose theme preference to update
+     * @param themeMode the new theme preference, or {@code null} to clear it
+     */
+    @Override
+    public void updateThemePreference(@NonNull final String authUserId, @Nullable final String themeMode) {
+        final Optional<ICloudUser> cloudUser = this.getCloudUser(authUserId);
+        if (cloudUser.isEmpty()) return;
+
+        final ICloudUser existing = cloudUser.get();
+        existing.setThemeMode(themeMode);
+
+        try {
+            this.dataFactory.update((CloudUser) existing);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.updateThemePreference: failed to persist theme preference for " + authUserId, e);
+        }
     }
 
     /**

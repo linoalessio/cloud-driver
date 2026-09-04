@@ -1,7 +1,9 @@
 package de.lino.cloud.bootstrap;
 
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.ExtensionFactory;
+import de.lino.cloud.api.utility.Asserts;
 
 /**
  * No-op placeholder representing {@code cloud-driver-bootstrap} itself as an {@link Extension},
@@ -24,6 +26,9 @@ public class CloudBootstrapExtension extends Extension {
      */
     @Override
     public void onRunning(String[] args) {
+
+        // Checking if cloud-driver main instance is not null
+        Asserts.requireNonNull(CloudDriver.getInstance());
 
     }
 

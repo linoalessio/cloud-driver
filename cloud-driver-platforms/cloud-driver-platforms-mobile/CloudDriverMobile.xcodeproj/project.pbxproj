@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		0F7E6EFB6D92414300ED19A9 /* KeychainTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A913A7D152AA909C606D41 /* KeychainTokenStore.swift */; };
 		14DBB07F56E0BE219BEA89AC /* SharedFolderBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */; };
+		224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */; };
 		32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */; };
 		59CF963C04A97C28243CA2A4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */; };
 		5CAECAA6060FA8CB7603A90F /* SharedWithMeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */; };
 		61CE03AB73C3F45B89F95D67 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8CAB6D77147ACDBCFAFEA2E /* Theme.swift */; };
+		6B4F434EC98F04721207ADE3 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = DC01B1480FE12F7973B6098F /* ZIPFoundation */; };
 		72281DEF3814D91092BB3429 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DF2FDAC649212A535D0C68B /* ActivityView.swift */; };
 		76774EE58B760F3999117AA3 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B94506B9257E25501BB2203 /* DashboardView.swift */; };
 		770E16807DE69C247EF810D3 /* CloudDriverMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */; };
@@ -32,7 +34,7 @@
 
 /* Begin PBXFileReference section */
 		1B94506B9257E25501BB2203 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
-		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		278F4310AD868CB0DBDA9118 /* TrashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashView.swift; sourceTree = "<group>"; };
 		28674A06893A4308FF4A0528 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
 		2DF2FDAC649212A535D0C68B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
@@ -45,6 +47,7 @@
 		84A913A7D152AA909C606D41 /* KeychainTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainTokenStore.swift; sourceTree = "<group>"; };
 		88DF4365F0C76396A0A3A8D4 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToFolderSheet.swift; sourceTree = "<group>"; };
+		AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSupport.swift; sourceTree = "<group>"; };
 		B1E4109F19145B980EE9E021 /* FileIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIcons.swift; sourceTree = "<group>"; };
 		B34EBCEA63EC637D3C7D4D00 /* Dtos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dtos.swift; sourceTree = "<group>"; };
 		B859D1760F6C60068AF4159D /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
@@ -54,6 +57,17 @@
 		F9EAEEA207A01721ECA34C3F /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
 		FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedFolderBrowserView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		69EC0C8C18ECDCE45A94E00A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6B4F434EC98F04721207ADE3 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		238EFFD7F97F6EB1531DC63F /* Products */ = {
@@ -111,6 +125,7 @@
 		EE3254921B9C9FF3432F3943 /* CloudDriverMobile */ = {
 			isa = PBXGroup;
 			children = (
+				AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */,
 				3577B33C2F6A2814D8CAC533 /* Assets.xcassets */,
 				EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */,
 				5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */,
@@ -133,6 +148,7 @@
 			buildPhases = (
 				2F7E537B2B247EA86B42F2BE /* Sources */,
 				564F6968A68F9111FEB2DC87 /* Resources */,
+				69EC0C8C18ECDCE45A94E00A /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -140,6 +156,7 @@
 			);
 			name = CloudDriverMobile;
 			packageProductDependencies = (
+				DC01B1480FE12F7973B6098F /* ZIPFoundation */,
 			);
 			productName = CloudDriverMobile;
 			productReference = 23DEF454370915BF0C9455DC /* CloudDriverMobile.app */;
@@ -153,8 +170,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = 4907A71CA8D7D2066C42706E /* Build configuration list for PBXProject "CloudDriverMobile" */;
 			developmentRegion = en;
@@ -165,6 +180,9 @@
 			);
 			mainGroup = A8FB459E2196A7E21C5AAF16;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6A4EA3CD9674C4EC9818CD03 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 238EFFD7F97F6EB1531DC63F /* Products */;
 			projectDirPath = "";
@@ -194,6 +212,7 @@
 				A7E98EF99FA834FE555E187E /* APIClient.swift in Sources */,
 				72281DEF3814D91092BB3429 /* ActivityView.swift in Sources */,
 				EDDC1C50E9F78F4D28B33A0B /* AppViewModel.swift in Sources */,
+				224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */,
 				87EAD1EBB497CB4D9D456F78 /* AuthScreens.swift in Sources */,
 				B30F9AB753AF1DF2A00562C2 /* ByteFormat.swift in Sources */,
 				32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */,
@@ -281,6 +300,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
@@ -304,6 +324,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
@@ -408,6 +429,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6A4EA3CD9674C4EC9818CD03 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DC01B1480FE12F7973B6098F /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A4EA3CD9674C4EC9818CD03 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A9C6E183D3442FAD1F06C0EA /* Project object */;
 }
