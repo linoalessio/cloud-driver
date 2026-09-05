@@ -29,19 +29,37 @@ struct TrashView: View {
 
                 VStack(spacing: 0) {
                     // Always shown at the top, disabled (not hidden) once there's nothing left
-                    // to empty - fixed outside the `ScrollView` below so it never scrolls away,
-                    // per Lino's own request ("shall be displayed at the top, ALWAYS").
-                    Button(role: .destructive) {
-                        showingEmptyTrashConfirmation = true
-                    } label: {
-                        Text("Empty Trash")
-                            .font(CloudTheme.headline(.body))
-                            .frame(maxWidth: .infinity)
+                    // to act on - fixed outside the `ScrollView` below so this row never scrolls
+                    // away, per Lino's own request ("shall be displayed at the top, ALWAYS").
+                    // "Restore Trash" (green - a positive, fully reversible action, added
+                    // 2026-09-05 per Lino's own request) sits alongside "Empty Trash" (red -
+                    // destructive, irreversible) so the two opposite bulk actions read as a
+                    // deliberate pair, not one favored over the other.
+                    HStack(spacing: 12) {
+                        Button {
+                            viewModel.restoreAllTrash()
+                        } label: {
+                            Text("Restore Trash")
+                                .font(CloudTheme.headline(.body))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.green.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .disabled(isTrashEmpty)
+
+                        Button(role: .destructive) {
+                            showingEmptyTrashConfirmation = true
+                        } label: {
+                            Text("Empty Trash")
+                                .font(CloudTheme.headline(.body))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.red.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .disabled(isTrashEmpty)
                     }
-                    .padding(.vertical, 14)
-                    .foregroundStyle(.white)
-                    .background(Color.red.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .disabled(isTrashEmpty)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
 

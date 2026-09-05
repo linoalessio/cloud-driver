@@ -362,6 +362,40 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Restores everything currently in the trash at once - the non-destructive counterpart to
+    /// `emptyTrash()` below, added 2026-09-05 per Lino's own request ("Restore Trash" next to
+    /// "Empty Trash", restoring the entire trash's contents). There is no server-side batch
+    /// "restore everything" route (only the single-item `POST /files/{id}/restore`/
+    /// `POST /folders/{id}/restore` `restoreFile`/`restoreFolder` already wrap) - this loops over
+    /// every currently-listed trashed file and folder, attempting each one even if an earlier one
+    /// failed, and only then rethrows the *first* failure encountered once every item has been
+    /// attempted - the same batch convention this app's other multi-item actions
+    /// (`AppViewModel`'s own `deleteEntries`-equivalents on desktop) already use, rather than
+    /// aborting the whole restore the moment one item fails.
+    func restoreAllTrash() {
+        run {
+            var firstError: Error?
+            for entry in self.trashFiles {
+                do {
+                    try await self.client.restoreFile(fileId: entry.file.fileId)
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            for entry in self.trashFolders {
+                do {
+                    try await self.client.restoreFolder(folderId: entry.folder.folderId)
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            try await self.refreshTrash()
+            if let firstError {
+                throw firstError
+            }
+        }
+    }
+
     /// Permanently removes everything currently trashed, bypassing the retention window -
     /// irreversible, unlike a single `restoreFile`/`restoreFolder`. `TrashView` gates this behind
     /// its own confirmation dialog before calling it.
