@@ -463,6 +463,26 @@ final class AppViewModel: ObservableObject {
         moveEntries([.folder(folder)], toFolderId: folderId)
     }
 
+    /// Renames `file` - added 2026-09-05, per Lino's own request ("Rename" to change the name of
+    /// the folder/file, updated on the server). `PUT /files/{id}/rename`, a separate route/method
+    /// from `moveFile` (renaming rewrites the file's own entity server-side, unlike a move).
+    func renameFile(_ file: StoredFileSummaryResponse, to newName: String) {
+        run {
+            try await self.client.renameFile(fileId: file.fileId, newFileName: newName)
+            try await self.refreshCurrentFolder()
+        }
+    }
+
+    /// A folder rename is a `PUT` (full replace), so this carries the folder's current
+    /// `parentFolderId` through unchanged - only `name` actually changes, the mirror image of
+    /// `moveFolder`'s own "carries `name` through unchanged" comment above.
+    func renameFolder(_ folder: FolderResponse, to newName: String) {
+        run {
+            _ = try await self.client.updateFolder(folderId: folder.folderId, name: newName, parentFolderId: folder.parentFolderId)
+            try await self.refreshCurrentFolder()
+        }
+    }
+
     // MARK: - Multi-select
 
     func enterSelectionMode() {
@@ -922,6 +942,33 @@ final class AppViewModel: ObservableObject {
             }.value
             _ = try await client.uploadFile(fileName: fileName, data: data, folderId: folderId)
             onProgress?(Int64(data.count), Int64(data.count))
+        }
+    }
+
+    /// Uploads a freshly-scanned document (`DocumentScannerView`, VisionKit's built-in document
+    /// camera combined into one PDF via PDFKit) into the current folder - added 2026-09-05, per
+    /// Lino's own request. Named `"<UUID>_<timestamp-in-milliseconds>.pdf"` exactly as specified -
+    /// a scan has no original file name of its own to preserve the way a picked file/folder does.
+    func uploadScannedDocument(pdfData: Data) {
+        guard !pdfData.isEmpty else {
+            errorMessage = "The scan produced no pages to upload."
+            return
+        }
+        run {
+            defer { self.transferProgress = nil }
+            let fileName = "\(UUID().uuidString)_\(Int(Date().timeIntervalSince1970 * 1000)).pdf"
+            let sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+            try await Task.detached(priority: .userInitiated) {
+                try pdfData.write(to: sourceURL, options: .atomic)
+            }.value
+            defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+            let totalBytes = Int64(pdfData.count)
+            self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: totalBytes, transferredBytes: 0)
+            try await self.uploadFileStreaming(fileName: fileName, sourceURL: sourceURL, folderId: self.currentFolderId) { transferred, total in
+                self.transferProgress = TransferProgress(kind: .upload, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : totalBytes, transferredBytes: transferred)
+            }
+            try await self.refreshCurrentFolder()
         }
     }
 

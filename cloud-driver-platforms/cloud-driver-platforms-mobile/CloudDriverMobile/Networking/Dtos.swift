@@ -39,6 +39,12 @@ struct MoveFileRequest: Encodable {
     let folderId: String?
 }
 
+/// Body for `PUT /files/{id}/rename` - a separate route from `MoveFileRequest`'s, matching the
+/// server's own separate handling (renaming rewrites the file's own entity, unlike a move).
+struct RenameFileRequest: Encodable {
+    let fileName: String
+}
+
 /// Body for `POST /files/upload-url` - the first step of a presigned, direct-to-client upload
 /// (see cloud-driver's `architecture/AWS_S3_IMPL.md`). `sizeBytes` is checked against quota now
 /// and again (against the real uploaded size) at `CompleteUploadRequest`.

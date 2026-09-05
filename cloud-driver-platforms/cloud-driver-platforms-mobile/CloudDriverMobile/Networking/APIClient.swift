@@ -220,6 +220,11 @@ actor APIClient {
         _ = try await execute(request)
     }
 
+    func renameFile(fileId: String, newFileName: String) async throws {
+        let request = try jsonRequest("/files/\(fileId)/rename", method: "PUT", body: RenameFileRequest(fileName: newFileName), authenticated: true)
+        _ = try await execute(request)
+    }
+
     // MARK: - Presigned direct-to-client transfer (architecture/AWS_S3_IMPL.md)
 
     /// Uploads `fileURL` directly to the configured object store, bypassing this app's own server

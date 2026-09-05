@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import VisionKit
 
 /// The "Home" screen once signed in - lists the current folder's subfolders/files inside
 /// `CloudCard` widgets (a "Folders" card, a "Files" card), with upload (via the system document
@@ -79,6 +80,13 @@ struct FileBrowserView: View {
     @State private var movingTargets: MoveTargets?
     @State private var sharingTargets: ShareTargets?
     @State private var showingDeleteSelectedConfirmation = false
+    /// The entry currently being renamed, plus the alert's own text field contents - `nil`/empty
+    /// when the "Rename" alert isn't showing. Added 2026-09-05, per Lino's own request.
+    @State private var renamingEntry: SelectableEntry?
+    @State private var renameText = ""
+    /// Whether the document scanner (`DocumentScannerView`) is currently presented - added
+    /// 2026-09-05, per Lino's own request: scan a document with the camera and import it as a PDF.
+    @State private var isShowingScanner = false
     @State private var quickActionMenu: ActiveQuickActionMenu?
     /// Continuously updated by `quickActionGesture`'s own `DragGesture` while a press is active -
     /// read once a long press actually succeeds, to know where to show the menu. A single shared
@@ -191,7 +199,7 @@ struct FileBrowserView: View {
                                                 }
                                                 CloudRow(
                                                     icon: fileIcon(for: file.contentType),
-                                                    iconColor: CloudTheme.iconFile,
+                                                    iconColor: fileIconColor(for: file.contentType),
                                                     title: file.fileName,
                                                     subtitle: formatBytes(file.sizeBytes),
                                                     showDivider: index != viewModel.files.count - 1
@@ -401,6 +409,49 @@ struct FileBrowserView: View {
         .sheet(item: $sharingTargets) { targets in
             ShareSheet(viewModel: viewModel, targets: targets)
         }
+        // "Rename" (added 2026-09-05, per Lino's own request) - same "alert with a TextField"
+        // shape as "New folder" above, prefilled with the entry's current name via `displayName`
+        // (set alongside `renamingEntry` when the action fires - see `folderMenuActions`/
+        // `fileMenuActions`). Dispatches to `renameFile`/`renameFolder` based on which case
+        // `renamingEntry` actually is.
+        .alert("Rename", isPresented: Binding(
+            get: { renamingEntry != nil },
+            set: { isPresented in if !isPresented { renamingEntry = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty, let entry = renamingEntry {
+                    switch entry {
+                    case .file(let file):
+                        viewModel.renameFile(file, to: name)
+                    case .folder(let folder):
+                        viewModel.renameFolder(folder, to: name)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        // The document scanner (added 2026-09-05, per Lino's own request) - a full-screen camera
+        // UI, matching Apple's own convention for VNDocumentCameraViewController (a `.sheet` would
+        // read as a lightweight modal, not a full camera experience). `isShowingScanner` is reset
+        // to `false` from both `onFinish`/`onError` themselves, so the cover always dismisses
+        // regardless of how the scan session ended.
+        .fullScreenCover(isPresented: $isShowingScanner) {
+            DocumentScannerView(
+                onFinish: { pdfData in
+                    isShowingScanner = false
+                    if let pdfData, !pdfData.isEmpty {
+                        viewModel.uploadScannedDocument(pdfData: pdfData)
+                    }
+                },
+                onError: { error in
+                    isShowingScanner = false
+                    viewModel.errorMessage = error.localizedDescription
+                }
+            )
+            .ignoresSafeArea()
+        }
         // Error display and the download share sheet are both owned by RootView (shared across
         // every tab) - see its own comment.
     }
@@ -425,6 +476,13 @@ struct FileBrowserView: View {
             QuickAction("New folder", systemImage: "plus.rectangle.on.folder") {
                 newFolderName = ""
                 showingNewFolderAlert = true
+            },
+            QuickAction("Scan Document", systemImage: "doc.viewfinder") {
+                if VNDocumentCameraViewController.isSupported {
+                    isShowingScanner = true
+                } else {
+                    viewModel.errorMessage = "Document scanning isn't available on this device."
+                }
             }
         ]
         if !viewModel.folders.isEmpty || !viewModel.files.isEmpty {
@@ -439,6 +497,10 @@ struct FileBrowserView: View {
     /// its long-press dropdown, so the two affordances can never drift out of sync with each other.
     private func folderMenuActions(_ folder: FolderResponse, entry: SelectableEntry) -> [QuickAction] {
         [
+            QuickAction("Rename", systemImage: "pencil") {
+                renameText = entry.displayName
+                renamingEntry = entry
+            },
             QuickAction("Move to...", systemImage: "folder") {
                 movingTargets = MoveTargets(entries: [entry])
             },
@@ -465,6 +527,10 @@ struct FileBrowserView: View {
             })
         }
         actions.append(contentsOf: [
+            QuickAction("Rename", systemImage: "pencil") {
+                renameText = entry.displayName
+                renamingEntry = entry
+            },
             QuickAction("Move to...", systemImage: "folder") {
                 movingTargets = MoveTargets(entries: [entry])
             },

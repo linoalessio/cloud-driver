@@ -1438,6 +1438,48 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Renames {@code storedFileId} to {@code newFileName} - unlike {@link #moveFile}, this
+     * touches the actual {@link StoredFile} entity itself (its {@link StoredFile#fileName()}, and
+     * therefore {@link StoredFile#contentType()}, live only there - {@link StoredFileOwnership}
+     * only ever holds a cached copy for cheap listing), not just the cheap ownership row - so,
+     * unlike a move, this pays the full {@link DataFactory#update} cost of rewriting the file
+     * entity (a full re-encrypt for an inline file; a cheap metadata-only rewrite for an
+     * S3-backed one, since its persisted row never carries its actual content - see {@link
+     * StoredFile}'s own Javadoc). {@link StoredFileOwnership}'s own cached {@code fileName}/{@code
+     * contentType} are updated in the same call via {@link StoredFileOwnership#withMetadata(StoredFile)},
+     * so every listing (which reads that cached copy, never the underlying file directly) reflects
+     * the new name immediately too - without this second update, a listing and a direct
+     * fetch/download would disagree about the file's own name.
+     *
+     * @param authUserId the requesting user's id, checked against the ownership record
+     * @param storedFileId the file to rename
+     * @param newFileName the file's new display name
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     */
+    @Override
+    public void renameFile(@NonNull final String authUserId, @NonNull final String storedFileId, @NonNull final String newFileName) {
+        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never rename it.
+        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+
+        final StoredFile renamed;
+        try {
+            final StoredFile existing = this.fileFactory.findById(storedFileId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "@CloudUserService.renameFile: owned file not found: " + storedFileId));
+            renamed = existing.renamedTo(newFileName);
+            this.dataFactory.update(renamed);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.renameFile: failed to rename " + storedFileId, e);
+        }
+
+        try {
+            this.dataFactory.update(ownership.withMetadata(renamed));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.renameFile: failed to update cached metadata for " + storedFileId, e);
+        }
+    }
+
+    /**
      * Lists every {@link CloudUser} currently registered, as their {@link ICloudUser} contract.
      *
      * @return every currently-registered {@link ICloudUser}

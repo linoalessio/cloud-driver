@@ -292,6 +292,32 @@ public final class StoredFile extends Serialized {
     }
 
     /**
+     * Copy constructor backing {@link #renamedTo(String)} - carries every field over from {@code
+     * source} unchanged except {@link #fileName} and {@link #contentType} (re-inferred from the
+     * new name's extension, the same way the primary constructor infers it for a fresh upload).
+     * Content, checksum, and every timestamp are left untouched - renaming changes neither this
+     * file's bytes nor when they were last uploaded. The trailing {@code boolean} parameter exists
+     * purely to give this constructor a distinct erasure from {@link #StoredFile(StoredFile,
+     * String)} (backing {@link #withObjectStorageKey(String)}), which would otherwise collide on
+     * {@code (StoredFile, String)}.
+     */
+    private StoredFile(final StoredFile source, final String newFileName, final boolean renaming) {
+        this.fileId = source.fileId;
+        this.fileName = Asserts.requireNonNull(newFileName, "@StoredFile: fileName cannot be null");
+        this.contentType = normalizeContentType(this.fileName);
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = source.declaredSizeBytes;
+        this.decodedContent = source.decodedContent;
+    }
+
+    /**
      * Constructor for a file whose content was uploaded directly to an external object store by
      * the client itself, via a presigned URL - never touched by this server at all, so there is no
      * {@code content} argument here the way every other constructor has. Used only by {@code
@@ -527,6 +553,17 @@ public final class StoredFile extends Serialized {
     /** @return a copy of this file, restored out of the trash */
     public StoredFile restored() {
         return new StoredFile(this, (Long) null);
+    }
+
+    /**
+     * @param newFileName this file's new display name - {@link #contentType()} is re-inferred
+     *     from its extension, the same way it is for a freshly uploaded file
+     * @return a copy of this file with {@link #fileName()} (and {@link #contentType()}) changed;
+     *     content, checksum, and every timestamp are unchanged
+     * @throws NullPointerException if {@code newFileName} is {@code null}
+     */
+    public StoredFile renamedTo(final String newFileName) {
+        return new StoredFile(this, newFileName, true);
     }
 
     /** This file's descriptive attributes without its content - see {@link FileMetadata}. */

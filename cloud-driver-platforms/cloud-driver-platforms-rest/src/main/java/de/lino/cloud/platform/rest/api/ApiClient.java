@@ -23,6 +23,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.RenameFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
@@ -1651,6 +1652,33 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/folder"), true)
                 .header("Content-Type", "application/json")
                 .method("PUT", BodyPublishers.ofString(GSON.toJson(new MoveFileRequest(folderId))))
+                .build();
+    }
+
+    /**
+     * Renames {@code fileId} to {@code newFileName} - {@code PUT /files/{id}/rename}. A separate
+     * call from {@link #moveFile(String, String)}, matching the server's own separate routes for
+     * the two operations (renaming rewrites the file's own entity, unlike a move).
+     *
+     * @param fileId      the file to rename
+     * @param newFileName the file's new display name
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired
+     */
+    public void renameFile(final String fileId, final String newFileName) throws ApiException {
+        this.send(this.renameFileRequest(fileId, newFileName), Void.class);
+    }
+
+    /** Async form of {@link #renameFile(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> renameFileAsync(final String fileId, final String newFileName) {
+        return this.sendAsync(this.renameFileRequest(fileId, newFileName), Void.class);
+    }
+
+    /** Builds the {@code PUT /files/{id}/rename} request against {@link #apiBaseUrl}, with a JSON {@link RenameFileRequest} body. */
+    private HttpRequest renameFileRequest(final String fileId, final String newFileName) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/rename"), true)
+                .header("Content-Type", "application/json")
+                .method("PUT", BodyPublishers.ofString(GSON.toJson(new RenameFileRequest(newFileName))))
                 .build();
     }
 

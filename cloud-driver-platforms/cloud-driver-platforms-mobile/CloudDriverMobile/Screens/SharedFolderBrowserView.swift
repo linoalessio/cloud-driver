@@ -65,7 +65,7 @@ struct SharedFolderBrowserView: View {
                                 ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
                                     CloudRow(
                                         icon: fileIcon(for: file.contentType),
-                                        iconColor: CloudTheme.iconFile,
+                                        iconColor: fileIconColor(for: file.contentType),
                                         title: file.fileName,
                                         subtitle: formatBytes(file.sizeBytes),
                                         showDivider: index != files.count - 1

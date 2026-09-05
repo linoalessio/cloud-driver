@@ -104,7 +104,7 @@ struct TrashView: View {
                                         ForEach(Array(viewModel.trashFiles.enumerated()), id: \.element.id) { index, entry in
                                             CloudRow(
                                                 icon: fileIcon(for: entry.file.contentType),
-                                                iconColor: CloudTheme.iconFile,
+                                                iconColor: fileIconColor(for: entry.file.contentType),
                                                 title: entry.file.fileName,
                                                 subtitle: purgeText(entry.purgeAtEpochMillis),
                                                 showDivider: index != viewModel.trashFiles.count - 1

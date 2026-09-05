@@ -340,6 +340,21 @@ public interface ICloudUserService {
     void moveFile(@NotNull String authUserId, @NotNull String storedFileId, @Nullable String folderId);
 
     /**
+     * Renames {@code storedFileId} to {@code newFileName}, but only if {@code authUserId}
+     * actually owns it. Unlike {@link #moveFile}, this rewrites the actual {@link StoredFile}
+     * entity itself (its {@link StoredFile#fileName()}/{@link StoredFile#contentType()} live only
+     * there) as well as the cheap {@link de.lino.cloud.api.file.Folder}-sibling ownership row's
+     * own cached copy, so a listing and a direct fetch/download never disagree about the file's
+     * current name.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to rename
+     * @param newFileName the file's new display name
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     */
+    void renameFile(@NotNull String authUserId, @NotNull String storedFileId, @NotNull String newFileName);
+
+    /**
      * @return every currently registered {@link ICloudUser} record
      */
     @NonNull

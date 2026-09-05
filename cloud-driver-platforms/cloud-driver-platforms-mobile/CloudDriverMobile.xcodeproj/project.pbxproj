@@ -29,6 +29,7 @@
 		C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28674A06893A4308FF4A0528 /* FileBrowserView.swift */; };
 		D05BF570922EC998A3048616 /* TrashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278F4310AD868CB0DBDA9118 /* TrashView.swift */; };
 		E25EE1BD693AA0B181999C30 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3577B33C2F6A2814D8CAC533 /* Assets.xcassets */; };
+		E324B1D7FDEF2844BB0677C7 /* DocumentScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3580CD76DF092E96B0939284 /* DocumentScannerView.swift */; };
 		ED9B038466C119AAD543DAB8 /* MoveToFolderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */; };
 		EDDC1C50E9F78F4D28B33A0B /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 638C74856A457BF0C68E3920 /* AppViewModel.swift */; };
 		FBE51A44D38595738AFE9777 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DF4365F0C76396A0A3A8D4 /* RootView.swift */; };
@@ -42,6 +43,7 @@
 		28674A06893A4308FF4A0528 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
 		2DF2FDAC649212A535D0C68B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		3577B33C2F6A2814D8CAC533 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3580CD76DF092E96B0939284 /* DocumentScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentScannerView.swift; sourceTree = "<group>"; };
 		38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedWithMeView.swift; sourceTree = "<group>"; };
 		436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriverMobileApp.swift; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 				CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */,
 				72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */,
 				1B94506B9257E25501BB2203 /* DashboardView.swift */,
+				3580CD76DF092E96B0939284 /* DocumentScannerView.swift */,
 				28674A06893A4308FF4A0528 /* FileBrowserView.swift */,
 				B16ED61AD9CEBE4BE9FD1A15 /* FilePreviewView.swift */,
 				8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */,
@@ -227,6 +230,7 @@
 				32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */,
 				770E16807DE69C247EF810D3 /* CloudDriverMobileApp.swift in Sources */,
 				76774EE58B760F3999117AA3 /* DashboardView.swift in Sources */,
+				E324B1D7FDEF2844BB0677C7 /* DocumentScannerView.swift in Sources */,
 				9E762BC7D22161665A893329 /* Dtos.swift in Sources */,
 				C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */,
 				9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */,
@@ -316,6 +320,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Cloud Driver uses the camera to scan documents and upload them as PDFs.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -340,6 +345,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Cloud Driver uses the camera to scan documents and upload them as PDFs.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

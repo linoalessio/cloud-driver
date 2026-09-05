@@ -632,6 +632,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
+                config.routes.put(FILES_PATH + "/{id}/rename", this::handleRenameFile);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
@@ -2023,6 +2024,38 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .runAsync(() -> this.cloudUserService.moveFile(userId, id, request.folderId()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"fileName"}} JSON body shape read by {@code PUT /files/{id}/rename}.
+     *
+     * @param fileName the file's new display name
+     */
+    private record RenameFileRequest(String fileName) {
+    }
+
+    /**
+     * {@code PUT /files/{id}/rename}: renames a {@link StoredFile} via {@link
+     * CloudUserService#renameFile}, which checks the caller owns it. {@code 204} on success -
+     * a separate route from {@code PUT /files/{id}/folder} (rather than folding both into one
+     * combined "update" body the way {@code PUT /folders/{id}} does for a folder's name/parent
+     * together) since renaming a file, unlike a move, rewrites the actual {@link StoredFile}
+     * entity itself - keeping the two operations as separate calls means a caller that only wants
+     * to move a file never pays that extra cost, and vice versa.
+     */
+    private void handleRenameFile(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final RenameFileRequest request = this.gson.fromJson(ctx.body(), RenameFileRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.renameFile(userId, id, request.fileName()))
                 .handle((ignored, failure) -> {
                     if (failure == null) {
                         ctx.status(204);

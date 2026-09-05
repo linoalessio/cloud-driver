@@ -61,7 +61,7 @@ struct SharedWithMeView: View {
                                     ForEach(Array(viewModel.sharedFiles.enumerated()), id: \.element.id) { index, entry in
                                         CloudRow(
                                             icon: fileIcon(for: entry.file.contentType),
-                                            iconColor: CloudTheme.iconFile,
+                                            iconColor: fileIconColor(for: entry.file.contentType),
                                             title: entry.file.fileName,
                                             subtitle: "Shared by \(entry.ownerEmail)",
                                             showDivider: index != viewModel.sharedFiles.count - 1

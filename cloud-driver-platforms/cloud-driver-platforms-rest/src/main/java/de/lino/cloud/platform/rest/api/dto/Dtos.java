@@ -156,6 +156,10 @@ public final class Dtos {
     public record MoveFileRequest(String folderId) {
     }
 
+    /** Body for {@code PUT /files/{id}/rename} - {@code fileName} is the file's new display name. */
+    public record RenameFileRequest(String fileName) {
+    }
+
     /**
      * Body for {@code PUT /cloudUsers/theme} (added 2026-09-04) - syncs the caller's light/dark
      * theme choice to their account so it follows them across devices, replacing what used to be
