@@ -63,6 +63,48 @@ enum CloudTheme {
     }
 }
 
+/// The preset colors a user can assign to an individual folder (`FileBrowserView`'s "Set color"
+/// row action, added 2026-09-05) - the mobile counterpart to cloud-driver-platforms-desktop's own
+/// `FolderColorOption`, using the same nine hex values so a folder recolored on one client looks
+/// the same on the other. `rawValue`/`storageName` is the opaque string actually persisted
+/// server-side (`Folder#getColor()`); `forName(_:)` falls back to `.blue` for `nil`/unrecognized -
+/// "default blue" per this feature's own spec, matching what an unset folder already rendered as
+/// via `CloudTheme.iconFolder` before per-folder color existed.
+enum FolderColorOption: String, CaseIterable, Identifiable {
+    case blue = "BLUE"
+    case teal = "TEAL"
+    case green = "GREEN"
+    case indigo = "INDIGO"
+    case purple = "PURPLE"
+    case pink = "PINK"
+    case orange = "ORANGE"
+    case red = "RED"
+    case gray = "GRAY"
+
+    var id: String { rawValue }
+    var storageName: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .blue: return Color(red: 0.039, green: 0.518, blue: 1.0)
+        case .teal: return Color(red: 0.251, green: 0.769, blue: 0.878)
+        case .green: return Color(red: 0.188, green: 0.820, blue: 0.345)
+        case .indigo: return Color(red: 0.369, green: 0.361, blue: 0.902)
+        case .purple: return Color(red: 0.749, green: 0.353, blue: 0.949)
+        case .pink: return Color(red: 1.0, green: 0.216, blue: 0.373)
+        case .orange: return Color(red: 1.0, green: 0.624, blue: 0.039)
+        case .red: return Color(red: 1.0, green: 0.271, blue: 0.227)
+        case .gray: return Color(red: 0.557, green: 0.557, blue: 0.576)
+        }
+    }
+
+    /// - Returns: the option matching `name`, or `.blue` if `nil`/unrecognized.
+    static func forName(_ name: String?) -> FolderColorOption {
+        guard let name, let match = FolderColorOption(rawValue: name) else { return .blue }
+        return match
+    }
+}
+
 /// A translucent "glass" widget card with an icon + title (+ optional subtitle) header - the one
 /// grouping container every screen uses instead of a plain `List`/`Form` section, matching the
 /// reference screenshot's Photos/Drive/Notes/Mail widget shape.

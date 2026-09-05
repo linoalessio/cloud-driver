@@ -1722,6 +1722,26 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Sets {@code folderId}'s display color, via a single {@link DataFactory#update} on the
+     * resulting {@link Folder#coloredAs(String)} copy - the same O(1) shape {@link #updateFolder}
+     * uses.
+     *
+     * @param authUserId the requesting user's id, checked against the folder record
+     * @param folderId the folder to recolor
+     * @param color the new display color, or {@code null} to clear it
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code authUserId}
+     */
+    @Override
+    public void updateFolderColor(@NonNull final String authUserId, @NonNull final String folderId, @Nullable final String color) {
+        final Folder existing = this.requireOwnedFolder(authUserId, folderId);
+        try {
+            this.dataFactory.update(existing.coloredAs(color));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.updateFolderColor: failed to update " + folderId, e);
+        }
+    }
+
+    /**
      * Soft-deletes (moves to the trash) {@code folderId}, but only if {@code authUserId} owns it
      * and it is currently empty of non-trashed content. A folder is never deleted recursively - a
      * non-empty folder must be emptied (its children moved out or deleted individually) first.

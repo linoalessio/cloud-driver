@@ -464,6 +464,23 @@ public interface ICloudUserService {
     void deleteFolder(@NotNull String authUserId, @NotNull String folderId);
 
     /**
+     * Sets {@code folderId}'s display color and persists the change, via a single {@code
+     * DataFactory#update} on the resulting copy (see {@link Folder#coloredAs(String)}) - the
+     * same O(1) shape {@link #updateFolder} uses, deliberately its own method rather than a third
+     * field folded into that whole-resource-replace call, so a client changing only the color
+     * never has to also resend {@code name}/{@code parentFolderId} (and risk a stale value
+     * overwriting a concurrent rename/move, the same reasoning {@code renameFile} being separate
+     * from {@code moveFile} already documents).
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param folderId the folder to recolor
+     * @param color the new display color (an opaque, client-defined string, e.g. {@code "BLUE"}),
+     *              or {@code null} to clear it back to "unset" (the client's own default)
+     * @throws IllegalArgumentException if {@code folderId} isn't tracked as belonging to {@code authUserId}
+     */
+    void updateFolderColor(@NotNull String authUserId, @NotNull String folderId, @Nullable String color);
+
+    /**
      * Restores a previously soft-deleted {@code folderId} out of the trash, but only if {@code
      * authUserId} owns it. Does not validate that {@code folderId}'s own parent is still present/
      * non-trashed - a folder restored under a since-deleted parent simply stays unreachable from a

@@ -12,7 +12,9 @@
 		14DBB07F56E0BE219BEA89AC /* SharedFolderBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */; };
 		19FEB89901626E0643F5BB3A /* QuickActionMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */; };
 		224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */; };
+		2B6088C28C2BB2A4AAC66F82 /* FolderColorPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */; };
 		32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */; };
+		43D0FE4C278A993FCEE75F8C /* Sorting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DACC1275AEE035A69C9738 /* Sorting.swift */; };
 		4B839FAB6BAA0B3453F5E641 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 987C521008C46D41B98F9680 /* PreviewSupport.swift */; };
 		59CF963C04A97C28243CA2A4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */; };
 		5CAECAA6060FA8CB7603A90F /* SharedWithMeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */; };
@@ -38,12 +40,14 @@
 
 /* Begin PBXFileReference section */
 		1B94506B9257E25501BB2203 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderColorPickerSheet.swift; sourceTree = "<group>"; };
 		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		278F4310AD868CB0DBDA9118 /* TrashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashView.swift; sourceTree = "<group>"; };
 		28674A06893A4308FF4A0528 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
 		2DF2FDAC649212A535D0C68B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		3577B33C2F6A2814D8CAC533 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3580CD76DF092E96B0939284 /* DocumentScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentScannerView.swift; sourceTree = "<group>"; };
+		35DACC1275AEE035A69C9738 /* Sorting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sorting.swift; sourceTree = "<group>"; };
 		38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedWithMeView.swift; sourceTree = "<group>"; };
 		436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriverMobileApp.swift; sourceTree = "<group>"; };
@@ -115,6 +119,7 @@
 				3580CD76DF092E96B0939284 /* DocumentScannerView.swift */,
 				28674A06893A4308FF4A0528 /* FileBrowserView.swift */,
 				B16ED61AD9CEBE4BE9FD1A15 /* FilePreviewView.swift */,
+				214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */,
 				8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */,
 				FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */,
 				38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */,
@@ -143,6 +148,7 @@
 				987C521008C46D41B98F9680 /* PreviewSupport.swift */,
 				865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */,
 				88DF4365F0C76396A0A3A8D4 /* RootView.swift */,
+				35DACC1275AEE035A69C9738 /* Sorting.swift */,
 				B8CAB6D77147ACDBCFAFEA2E /* Theme.swift */,
 				6FF21B218FA719B4B11E2EC6 /* Networking */,
 				BD9D67EF7D3037B23B5EF1B9 /* Screens */,
@@ -235,6 +241,7 @@
 				C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */,
 				9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */,
 				04F54EC65B32136532FF90FF /* FilePreviewView.swift in Sources */,
+				2B6088C28C2BB2A4AAC66F82 /* FolderColorPickerSheet.swift in Sources */,
 				0F7E6EFB6D92414300ED19A9 /* KeychainTokenStore.swift in Sources */,
 				ED9B038466C119AAD543DAB8 /* MoveToFolderSheet.swift in Sources */,
 				4B839FAB6BAA0B3453F5E641 /* PreviewSupport.swift in Sources */,
@@ -244,6 +251,7 @@
 				59CF963C04A97C28243CA2A4 /* ShareSheet.swift in Sources */,
 				14DBB07F56E0BE219BEA89AC /* SharedFolderBrowserView.swift in Sources */,
 				5CAECAA6060FA8CB7603A90F /* SharedWithMeView.swift in Sources */,
+				43D0FE4C278A993FCEE75F8C /* Sorting.swift in Sources */,
 				61CE03AB73C3F45B89F95D67 /* Theme.swift in Sources */,
 				D05BF570922EC998A3048616 /* TrashView.swift in Sources */,
 			);

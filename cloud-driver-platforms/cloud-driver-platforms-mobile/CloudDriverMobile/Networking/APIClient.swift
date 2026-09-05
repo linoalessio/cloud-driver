@@ -395,6 +395,13 @@ actor APIClient {
         return try decode(data)
     }
 
+    /// `PUT /folders/{id}/color` - sets a folder's display color, a separate call from
+    /// `updateFolder` so recoloring never touches name/parent.
+    func updateFolderColor(folderId: String, color: String?) async throws {
+        let request = try jsonRequest("/folders/\(folderId)/color", method: "PUT", body: UpdateFolderColorRequest(color: color), authenticated: true)
+        _ = try await execute(request)
+    }
+
     // MARK: - Sharing (grantee side: what's shared with me)
 
     func listSharedFilesWithMe() async throws -> [SharedFileSummaryResponse] {

@@ -131,6 +131,30 @@ object CloudColors {
 }
 
 /**
+ * The preset colors a user can assign to an individual folder (`FileBrowserScreen`'s "Set color"
+ * menu), and what `Folder#getColor()`'s opaque, server-persisted [storageName] string resolves
+ * against on this client. [forName] falls back to [BLUE] for a `null`/unrecognized name - "default
+ * blue" per this feature's own spec, matching what an unset/never-colored folder already rendered
+ * as before per-folder color existed.
+ */
+enum class FolderColorOption(val storageName: String, val color: Color) {
+    BLUE("BLUE", CloudColors.Blue),
+    TEAL("TEAL", CloudColors.Teal),
+    GREEN("GREEN", CloudColors.Green),
+    INDIGO("INDIGO", CloudColors.Indigo),
+    PURPLE("PURPLE", CloudColors.Purple),
+    PINK("PINK", CloudColors.Pink),
+    ORANGE("ORANGE", CloudColors.Orange),
+    RED("RED", CloudColors.Red),
+    GRAY("GRAY", CloudColors.Gray);
+
+    companion object {
+        /** @return the [FolderColorOption] matching [name], or [BLUE] if `null`/unrecognized. */
+        fun forName(name: String?): FolderColorOption = entries.firstOrNull { it.storageName == name } ?: BLUE
+    }
+}
+
+/**
  * The rounded-square "app icon" tile every top-level destination and file-type badge in this app
  * is drawn as - modeled directly on the real macOS iCloud app, where every service (Photos,
  * Drive, Mail, ...) is its own distinctly colored rounded-square glyph rather than one repeated

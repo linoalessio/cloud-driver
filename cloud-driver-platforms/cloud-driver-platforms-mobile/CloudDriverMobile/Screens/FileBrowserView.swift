@@ -84,6 +84,8 @@ struct FileBrowserView: View {
     /// when the "Rename" alert isn't showing. Added 2026-09-05, per Lino's own request.
     @State private var renamingEntry: SelectableEntry?
     @State private var renameText = ""
+    /// The folder a "Set color" action is currently open for, if any - drives `FolderColorPickerSheet`.
+    @State private var colorPickingFolder: FolderResponse?
     /// Whether the document scanner (`DocumentScannerView`) is currently presented - added
     /// 2026-09-05, per Lino's own request: scan a document with the camera and import it as a PDF.
     @State private var isShowingScanner = false
@@ -143,7 +145,7 @@ struct FileBrowserView: View {
                                                 }
                                                 CloudRow(
                                                     icon: "folder.fill",
-                                                    iconColor: CloudTheme.iconFolder,
+                                                    iconColor: FolderColorOption.forName(folder.color).color,
                                                     title: folder.name,
                                                     showDivider: index != viewModel.folders.count - 1
                                                 ) {
@@ -336,6 +338,44 @@ struct FileBrowserView: View {
                         }
                         .disabled(isContentHidden)
                     }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Menu {
+                                ForEach(SortOption.allCases) { option in
+                                    Button {
+                                        viewModel.changeFolderSortOption(option)
+                                    } label: {
+                                        if option == viewModel.folderSortOption {
+                                            Label(option.label, systemImage: "checkmark")
+                                        } else {
+                                            Text(option.label)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("Sort Folders", systemImage: "folder")
+                            }
+                            Menu {
+                                ForEach(SortOption.allCases) { option in
+                                    Button {
+                                        viewModel.changeFileSortOption(option)
+                                    } label: {
+                                        if option == viewModel.fileSortOption {
+                                            Label(option.label, systemImage: "checkmark")
+                                        } else {
+                                            Text(option.label)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("Sort Files", systemImage: "doc")
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down.circle.fill")
+                                .foregroundStyle(CloudTheme.accent)
+                        }
+                        .disabled(isContentHidden)
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -408,6 +448,18 @@ struct FileBrowserView: View {
         }
         .sheet(item: $sharingTargets) { targets in
             ShareSheet(viewModel: viewModel, targets: targets)
+        }
+        // "Set color" (added 2026-09-05) - a small sheet of preset swatches, mirroring the
+        // desktop app's own `FolderColorPickerDialog`.
+        .sheet(item: $colorPickingFolder) { folder in
+            FolderColorPickerSheet(
+                currentColor: FolderColorOption.forName(folder.color),
+                onSelect: { option in
+                    viewModel.setFolderColor(folder, to: option)
+                    colorPickingFolder = nil
+                }
+            )
+            .presentationDetents([.height(180)])
         }
         // "Rename" (added 2026-09-05, per Lino's own request) - same "alert with a TextField"
         // shape as "New folder" above, prefilled with the entry's current name via `displayName`
@@ -503,6 +555,9 @@ struct FileBrowserView: View {
             },
             QuickAction("Move to...", systemImage: "folder") {
                 movingTargets = MoveTargets(entries: [entry])
+            },
+            QuickAction("Set color", systemImage: "paintpalette") {
+                colorPickingFolder = folder
             },
             QuickAction("Share", systemImage: "person.badge.plus") {
                 sharingTargets = ShareTargets(entries: [entry])

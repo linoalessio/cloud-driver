@@ -20,11 +20,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContentCopy
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.Refresh
@@ -91,11 +95,15 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.Entry
+import de.lino.cloud.platform.desktop.model.SortOption
+import de.lino.cloud.platform.desktop.theme.FolderColorOption
 import de.lino.cloud.platform.desktop.utils.colorFor
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
 import de.lino.cloud.platform.desktop.utils.isZipArchive
 import de.lino.cloud.platform.desktop.utils.rememberThumbnail
+import de.lino.cloud.platform.desktop.utils.sortedFiles
+import de.lino.cloud.platform.desktop.utils.sortedFolders
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import java.awt.FileDialog
@@ -204,6 +212,10 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     // content" way moveDialogEntry is, for the same reason (overlays the whole screen).
     var shareDialogEntry by remember { mutableStateOf<Entry?>(null) }
 
+    // The folder a right-click "Set color" was requested for, if any - drives FolderColorPickerDialog,
+    // same "declared at this composable's own top level, outside AuthenticatedShell's content" shape.
+    var colorPickerEntry by remember { mutableStateOf<Entry.FolderEntry?>(null) }
+
     // The file a double-click was requested for, if any - see EntryRow's own click handling and
     // FilePreviewDialog. Same "declared at this composable's own top level, rendered outside
     // AuthenticatedShell's content" shape as moveDialogEntry above, for the same reason.
@@ -298,6 +310,21 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
 
                 UploadMenuButton(viewModel)
 
+                SortMenuButton(
+                    label = "Sort folders",
+                    current = viewModel.folderSortOption,
+                    enabled = !viewModel.busy,
+                    busy = viewModel.computingFolderSizes,
+                    onSelect = { viewModel.changeFolderSortOption(it) },
+                )
+                SortMenuButton(
+                    label = "Sort files",
+                    current = viewModel.fileSortOption,
+                    enabled = !viewModel.busy,
+                    busy = false,
+                    onSelect = { viewModel.changeFileSortOption(it) },
+                )
+
                 // Only shown once something is selected - an empty toolbar slot for an action
                 // with nothing to act on just adds visual noise, per this app's own spec. Bundled
                 // behind one "Options" dropdown, rather than three always-visible buttons, since
@@ -331,7 +358,11 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
             // only re-runs its block (and only then triggers downstream recomposition) when folders/files
             // themselves actually change - real savings once a folder holds more than a handful of entries.
             val entries: List<Entry> by remember {
-                derivedStateOf { viewModel.folders.map { Entry.FolderEntry(it) } + viewModel.files.map { Entry.FileEntry(it) } }
+                derivedStateOf {
+                    val folders = sortedFolders(viewModel.folders, viewModel.folderSortOption, viewModel.folderSizes)
+                    val files = sortedFiles(viewModel.files, viewModel.fileSortOption)
+                    folders.map { Entry.FolderEntry(it) } + files.map { Entry.FileEntry(it) }
+                }
             }
 
             // Drag-and-drop-to-move state, local to this screen - none of it is persisted, so it
@@ -413,6 +444,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         onDuplicateRequest = { viewModel.duplicateEntries(listOf(entry)) },
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
                         onShareRequest = { shareDialogEntry = entry },
+                        onSetColorRequest = { if (entry is Entry.FolderEntry) colorPickerEntry = entry },
                     )
                 }
                 // Explicit "Load more" rather than auto-loading on scroll - a large folder's next
@@ -472,8 +504,92 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
         ShareDialog(viewModel = viewModel, entry = entry, onDismiss = { shareDialogEntry = null })
     }
 
+    colorPickerEntry?.let { entry ->
+        FolderColorPickerDialog(
+            currentColor = FolderColorOption.forName(entry.folder.color()),
+            onSelect = { color -> viewModel.setFolderColor(entry.folder, color); colorPickerEntry = null },
+            onDismiss = { colorPickerEntry = null },
+        )
+    }
+
     previewEntry?.let { entry ->
         FilePreviewDialog(entry = entry, client = viewModel.client, onDismiss = { previewEntry = null })
+    }
+}
+
+/**
+ * The row context menu's "Set color" action: a small dialog of every [FolderColorOption] swatch,
+ * clicking one immediately applies it (via [onSelect]) and closes the dialog - no separate
+ * "confirm" step, since picking a color is a single, easily-undoable action (just pick another
+ * color), unlike the destructive/multi-field dialogs elsewhere in this screen.
+ */
+@Composable
+private fun FolderColorPickerDialog(currentColor: FolderColorOption, onSelect: (FolderColorOption) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Set folder color") },
+        text = {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                for (option in FolderColorOption.entries) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(option.color, CircleShape)
+                            .let {
+                                if (option == currentColor) {
+                                    it.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                                } else it
+                            }
+                            .clickable { onSelect(option) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (option == currentColor) {
+                            Icon(Icons.Filled.Check, contentDescription = option.name, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+    )
+}
+
+/**
+ * A toolbar dropdown for choosing one [SortOption] - used twice ("Sort folders"/"Sort files"),
+ * each independently driving [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.folderSortOption]/
+ * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.fileSortOption]. [busy] shows a small
+ * spinner next to the label - only ever `true` for the folder variant, while
+ * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.computeFolderTotalSize] is walking a
+ * folder tree for [SortOption.SIZE].
+ */
+@Composable
+private fun SortMenuButton(label: String, current: SortOption, enabled: Boolean, busy: Boolean, onSelect: (SortOption) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Column {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label)
+            if (busy) {
+                Spacer(Modifier.width(8.dp))
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            }
+            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            for (option in SortOption.entries) {
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    leadingIcon = if (option == current) {
+                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    } else null,
+                    onClick = { expanded = false; onSelect(option) },
+                )
+            }
+        }
     }
 }
 
@@ -899,6 +1015,7 @@ private fun EntryRow(
     onDuplicateRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
     onShareRequest: () -> Unit,
+    onSetColorRequest: () -> Unit,
 ) {
     var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
     var contextMenuExpanded by remember { mutableStateOf(false) }
@@ -1012,6 +1129,14 @@ private fun EntryRow(
                 enabled = enabled,
                 onClick = { contextMenuExpanded = false; onMoveRequest() },
             )
+            if (entry is Entry.FolderEntry) {
+                DropdownMenuItem(
+                    text = { Text("Set color") },
+                    leadingIcon = { Icon(Icons.Filled.Palette, contentDescription = null) },
+                    enabled = enabled,
+                    onClick = { contextMenuExpanded = false; onSetColorRequest() },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Share") },
                 leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },

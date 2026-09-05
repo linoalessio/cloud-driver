@@ -255,6 +255,11 @@ class CloudDriverClient(
     suspend fun updateFolder(folderId: String, newName: String, newParentFolderId: String?): FolderResponse =
         this.apiClient.updateFolderAsync(folderId, newName, newParentFolderId).await()
 
+    /** Sets a folder's display color (`null` clears it back to "unset") - a separate call from [updateFolder] so recoloring never touches name/parent. */
+    suspend fun updateFolderColor(folderId: String, color: String?) {
+        this.apiClient.updateFolderColorAsync(folderId, color).await()
+    }
+
     suspend fun deleteFolder(folderId: String) {
         this.apiClient.deleteFolderAsync(folderId).await()
     }

@@ -127,7 +127,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * exact same way.
      */
     private static final String FILES_TRASH_PATH = FILES_PATH + "/trash";
-    /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleDeleteFolder}. */
+    /** Path mounted by {@link #start} for {@link #handleCreateFolder}/{@link #handleListFolders}/{@link #handleUpdateFolder}/{@link #handleUpdateFolderColor}/{@link #handleDeleteFolder}. */
     private static final String FOLDERS_PATH = "/folders";
     /** Path mounted by {@link #start} for {@link #handleListDeletedFolders} - registered before {@code PUT}/{@code DELETE /folders/{id}} the same way {@link #FILES_TRASH_PATH} is registered before {@code GET /files/{id}} - though since neither of those two is a {@code GET} route, there is no same-method collision risk here the way {@link #FILES_TRASH_PATH}/{@link #FILES_SHARED_WITH_ME_PATH} have with {@code GET /files/{id}}. */
     private static final String FOLDERS_TRASH_PATH = FOLDERS_PATH + "/trash";
@@ -644,6 +644,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FOLDERS_PATH, this::handleListFolders);
                 config.routes.get(FOLDERS_TRASH_PATH, this::handleListDeletedFolders);
                 config.routes.put(FOLDERS_PATH + "/{id}", this::handleUpdateFolder);
+                config.routes.put(FOLDERS_PATH + "/{id}/color", this::handleUpdateFolderColor);
                 config.routes.delete(FOLDERS_PATH + "/{id}", this::handleDeleteFolder);
                 config.routes.post(FOLDERS_PATH + "/{id}/restore", this::handleRestoreFolder);
                 config.routes.get(FOLDERS_SHARED_WITH_ME_PATH, this::handleListFoldersSharedWithMe);
@@ -2142,6 +2143,37 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .handle((folder, failure) -> {
                     if (failure == null) {
                         ctx.contentType("application/json").result(this.gson.toJson(folder));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, Folder.class, id);
+                }));
+    }
+
+    /**
+     * The {@code {"color"}} JSON body shape read by {@code PUT /folders/{id}/color}.
+     *
+     * @param color the folder's new display color (an opaque, client-defined string), or {@code null} to clear it
+     */
+    private record UpdateFolderColorRequest(String color) {
+    }
+
+    /**
+     * {@code PUT /folders/{id}/color}: sets a {@link Folder}'s display color via {@link
+     * CloudUserService#updateFolderColor}. A separate route from {@code PUT /folders/{id}}
+     * (rather than a third field folded into that whole-resource-replace body) so a client
+     * changing only the color never has to also resend {@code name}/{@code parentFolderId} - the
+     * same reasoning {@code PUT /files/{id}/rename} being separate from {@code PUT
+     * /files/{id}/folder} already documents. {@code 204} on success.
+     */
+    private void handleUpdateFolderColor(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final UpdateFolderColorRequest request = this.gson.fromJson(ctx.body(), UpdateFolderColorRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.updateFolderColor(userId, id, request.color()))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
                         return null;
                     }
                     throw folderFailureOrPropagate(failure, Folder.class, id);

@@ -2,6 +2,7 @@ package de.lino.cloud.platform.desktop.utils
 
 import de.lino.cloud.platform.desktop.model.Entry
 import de.lino.cloud.platform.desktop.theme.CloudColors
+import de.lino.cloud.platform.desktop.theme.FolderColorOption
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.AudioFile
@@ -26,10 +27,12 @@ fun iconFor(entry: Entry): ImageVector = when (entry) {
  * per-service icon tiles) instead of every row sharing one flat monochrome tint. Kept as a
  * separate function from [iconFor] rather than folded into one "icon + color" pair, since some
  * callers (e.g. [de.lino.cloud.platform.desktop.theme.IconTile] elsewhere in this app) only ever
- * need a plain [ImageVector].
+ * need a plain [ImageVector]. A folder's own tint comes from its individually-set
+ * [de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse.color] (via [FolderColorOption.forName],
+ * defaulting to blue) rather than always [CloudColors.Blue].
  */
 fun colorFor(entry: Entry): Color = when (entry) {
-    is Entry.FolderEntry -> CloudColors.Blue
+    is Entry.FolderEntry -> FolderColorOption.forName(entry.folder.color()).color
     is Entry.FileEntry -> colorForContentType(entry.summary.contentType())
 }
 

@@ -119,6 +119,19 @@ final class AppViewModel: ObservableObject {
     @Published var files: [StoredFileSummaryResponse] = []
     @Published var folders: [FolderResponse] = []
 
+    /// How `folders`/`files` are currently ordered in this view - independent of each other, each
+    /// changed via `changeFolderSortOption(_:)`/`changeFileSortOption(_:)`.
+    @Published var folderSortOption: SortOption = .alphabetical
+    @Published var fileSortOption: SortOption = .alphabetical
+    /// Folder id -> recursive total byte size, populated on demand once `.size` folder sorting is
+    /// selected - see `computeFolderTotalSize`. A folder itself carries no size field
+    /// (`FolderResponse` has none), so this is the only way to sort folders by size at all.
+    @Published var folderSizes: [String: Int64] = [:]
+    /// Whether a background `computeMissingFolderSizes` walk is currently running - drives a small
+    /// loading indicator, since summing a folder's whole subtree is a real (sequential) batch of
+    /// network calls, not an instant local computation.
+    @Published var isComputingFolderSizes = false
+
     /// Whether `FileBrowserView` is currently in multi-select mode - see `enterSelectionMode`/
     /// `exitSelectionMode`/`toggleSelection`/`selectAll`/`deleteSelected`/`moveEntries`/`shareEntries`.
     @Published var isSelecting = false
@@ -308,12 +321,63 @@ final class AppViewModel: ObservableObject {
     private func refreshCurrentFolder() async throws {
         async let filesResult = client.listFiles(folderId: currentFolderId)
         async let foldersResult = client.listFolders(parentFolderId: currentFolderId)
-        files = try await filesResult
-        folders = try await foldersResult
+        files = sortedFiles(try await filesResult, by: fileSortOption)
+        folders = sortedFolders(try await foldersResult, by: folderSortOption, sizes: folderSizes)
+        if folderSortOption == .size { computeMissingFolderSizes() }
     }
 
     func loadCurrentFolder() {
         run { try await self.refreshCurrentFolder() }
+    }
+
+    /// Changes how `folders` are ordered - re-sorts the already-loaded list immediately (no
+    /// network round trip needed for `.alphabetical`/`.numeric`/`.createdAt`); `.size` additionally
+    /// triggers `computeMissingFolderSizes` for whichever currently-listed folders don't have a
+    /// total yet.
+    func changeFolderSortOption(_ option: SortOption) {
+        folderSortOption = option
+        folders = sortedFolders(folders, by: option, sizes: folderSizes)
+        if option == .size { computeMissingFolderSizes() }
+    }
+
+    /// Changes how `files` are ordered - a plain re-sort, no network call needed since every
+    /// listed file already carries its own `sizeBytes`.
+    func changeFileSortOption(_ option: SortOption) {
+        fileSortOption = option
+        files = sortedFiles(files, by: option)
+    }
+
+    /// Computes `computeFolderTotalSize` for every currently-listed `folders` entry not already in
+    /// `folderSizes` - so re-selecting `.size`, or navigating into a folder while it's already
+    /// selected, never re-walks a folder whose total is already known. Deliberately not routed
+    /// through `run` (so it doesn't set `busy` and disable the rest of the screen) -
+    /// `isComputingFolderSizes` drives its own, narrower indicator instead.
+    private func computeMissingFolderSizes() {
+        let missing = folders.map(\.folderId).filter { folderSizes[$0] == nil }
+        guard !missing.isEmpty, !isComputingFolderSizes else { return }
+        isComputingFolderSizes = true
+        Task {
+            for folderId in missing {
+                if let total = try? await self.computeFolderTotalSize(folderId) {
+                    self.folderSizes[folderId] = total
+                    self.folders = sortedFolders(self.folders, by: self.folderSortOption, sizes: self.folderSizes)
+                }
+            }
+            self.isComputingFolderSizes = false
+        }
+    }
+
+    /// Recursively sums every file's `sizeBytes` inside `folderId` and all of its nested
+    /// subfolders - the real computation backing the folder "Bytes-Size" sort option, since a
+    /// `FolderResponse` itself carries no size field. Deliberately sequential (not run
+    /// concurrently across subfolders) - the same "an explicit, occasional user action, not a hot
+    /// path" trade-off cloud-driver-platforms-desktop's own `computeFolderTotalSize` makes.
+    private func computeFolderTotalSize(_ folderId: String) async throws -> Int64 {
+        var total = try await client.listFiles(folderId: folderId).reduce(Int64(0)) { $0 + $1.sizeBytes }
+        for subFolder in try await client.listFolders(parentFolderId: folderId) {
+            total += try await computeFolderTotalSize(subFolder.folderId)
+        }
+        return total
     }
 
     // MARK: - Shared with me
@@ -479,6 +543,15 @@ final class AppViewModel: ObservableObject {
     func renameFolder(_ folder: FolderResponse, to newName: String) {
         run {
             _ = try await self.client.updateFolder(folderId: folder.folderId, name: newName, parentFolderId: folder.parentFolderId)
+            try await self.refreshCurrentFolder()
+        }
+    }
+
+    /// Sets `folder`'s display color (added 2026-09-05) - a separate `PUT /folders/{id}/color`
+    /// call from `renameFolder`/`moveFolder`, so recoloring never has to also resend name/parent.
+    func setFolderColor(_ folder: FolderResponse, to option: FolderColorOption) {
+        run {
+            try await self.client.updateFolderColor(folderId: folder.folderId, color: option.storageName)
             try await self.refreshCurrentFolder()
         }
     }

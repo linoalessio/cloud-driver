@@ -128,7 +128,9 @@ struct StoredFileSummaryResponse: Decodable, Identifiable, Hashable {
 }
 
 /// Shape of one entry in `GET /folders`'s response array, and of what `POST /folders`/`PUT
-/// /folders/{id}` return on success.
+/// /folders/{id}` return on success. `color` mirrors the server's `Folder#getColor()` - an
+/// opaque, client-defined string (e.g. `"BLUE"`), `nil` if never explicitly set (this app falls
+/// back to its own default - see `FolderColorOption.forName(_:)` in Theme.swift).
 struct FolderResponse: Decodable, Identifiable, Hashable {
     var id: String { folderId }
     let folderId: String
@@ -137,6 +139,13 @@ struct FolderResponse: Decodable, Identifiable, Hashable {
     let parentFolderId: String?
     let createdAtEpochMillis: Int64
     let modifiedAtEpochMillis: Int64
+    let color: String?
+}
+
+/// Body for `PUT /folders/{id}/color` - a separate route from `UpdateFolderRequest`'s, matching
+/// the server's own separate handling (recoloring never touches name/parent).
+struct UpdateFolderColorRequest: Encodable {
+    let color: String?
 }
 
 /// Shape of one entry in `GET /files/shared-with-me`'s response array - a file another account

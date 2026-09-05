@@ -1,6 +1,7 @@
 package de.lino.cloud.platform.desktop.viewmodel
 
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
@@ -8,7 +9,9 @@ import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.AccountStats
 import de.lino.cloud.platform.desktop.model.Entry
 import de.lino.cloud.platform.desktop.model.Screen
+import de.lino.cloud.platform.desktop.model.SortOption
 import de.lino.cloud.platform.desktop.model.computeAccountStats
+import de.lino.cloud.platform.desktop.theme.FolderColorOption
 import de.lino.cloud.platform.desktop.theme.ThemeMode
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
@@ -358,6 +361,91 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     private var foldersNextCursor: String? by mutableStateOf(null)
     private var filesNextCursor: String? by mutableStateOf(null)
     val hasMoreEntries: Boolean get() = this.foldersNextCursor != null || this.filesNextCursor != null
+
+    // --- folder/file sorting -----------------------------------------------
+
+    /** How [folders] are currently ordered in this view - independent of [fileSortOption]. Changed via [changeFolderSortOption]. */
+    var folderSortOption: SortOption by mutableStateOf(SortOption.ALPHABETICAL)
+        private set
+
+    /** How [files] are currently ordered in this view - independent of [folderSortOption]. Changed via [changeFileSortOption]. */
+    var fileSortOption: SortOption by mutableStateOf(SortOption.ALPHABETICAL)
+        private set
+
+    /**
+     * Folder id -> recursive total byte size, populated on demand once [SortOption.SIZE] folder
+     * sorting is selected (see [changeFolderSortOption]/[ensureFolderSizesComputed]) - a folder
+     * itself carries no size field (see [FolderResponse]'s own Javadoc), so this is the only way
+     * to sort folders by size at all. A folder id absent here simply hasn't been computed yet this
+     * session (`utils/Sorting.kt`'s `sortedFolders` treats that as `0`) - not cleared on an
+     * ordinary refresh, the same "not for perfect freshness, fine for this app" trade-off
+     * `ThumbnailCache` already accepts, since folder ids are globally unique and a stale total is
+     * only ever slightly wrong, never wrong about *which* folder it belongs to.
+     */
+    val folderSizes = mutableStateMapOf<String, Long>()
+
+    /** Whether a background [ensureFolderSizesComputed] walk is currently running - drives a small loading indicator, since summing a folder's whole subtree is a real (if sequential, capped-safe) batch of network calls, not an instant local computation. */
+    var computingFolderSizes: Boolean by mutableStateOf(false)
+        private set
+
+    /** Changes how [folders] are ordered. Selecting [SortOption.SIZE] triggers [ensureFolderSizesComputed] for whichever currently-listed folders don't have a total yet. */
+    fun changeFolderSortOption(option: SortOption) {
+        this.folderSortOption = option
+        if (option == SortOption.SIZE) this.ensureFolderSizesComputed()
+    }
+
+    /** Changes how [files] are ordered - a plain field flip, no network call needed since every listed file already carries its own [StoredFileSummaryResponse.sizeBytes]. */
+    fun changeFileSortOption(option: SortOption) {
+        this.fileSortOption = option
+    }
+
+    /**
+     * Computes [computeFolderTotalSize] for every currently-listed [folders] entry not already in
+     * [folderSizes] - so re-selecting [SortOption.SIZE], or loading more folders via
+     * [loadMoreEntries] while it's already selected, never re-walks a folder whose total is
+     * already known. Deliberately **not** run through [run] (so it doesn't set [busy] and disable
+     * the rest of the screen) - [computingFolderSizes] drives its own, narrower indicator instead,
+     * since this can take a while against a large tree but the rest of the app stays usable
+     * meanwhile.
+     */
+    private fun ensureFolderSizesComputed() {
+        val missing = this.folders.map { it.folderId() }.filter { it !in this.folderSizes }
+        if (missing.isEmpty() || this.computingFolderSizes) return
+        this.computingFolderSizes = true
+        this.scope.launch {
+            try {
+                for (folderId in missing) {
+                    this@AppViewModel.folderSizes[folderId] = this@AppViewModel.computeFolderTotalSize(folderId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                this@AppViewModel.errorMessage = e.message ?: e.toString()
+            } finally {
+                this@AppViewModel.computingFolderSizes = false
+            }
+        }
+    }
+
+    /**
+     * Recursively sums every file's [StoredFileSummaryResponse.sizeBytes] inside [folderId] and
+     * all of its nested subfolders - the real computation backing the folder "Bytes-Size" sort
+     * option, since a [FolderResponse] itself carries no size field. Deliberately **sequential**,
+     * not [mapConcurrently] - unlike a batch of independent file transfers, recursing with one
+     * [mapConcurrently] call per nesting level is the exact uncoordinated-nested-semaphore shape
+     * that made other recursive walks in this class throw `"too many concurrent streams"` on a
+     * large enough tree (see [deleteEntries]/[duplicateEntries]'s own Javadoc for that incident);
+     * this is triggered by an explicit, occasional user action (selecting a sort option) rather
+     * than a hot path, so trading speed for that same safety is an easy call here too - the same
+     * choice [AccountStats]'s own fully-sequential walk already made.
+     */
+    private suspend fun computeFolderTotalSize(folderId: String): Long {
+        var total = this.client.listFiles(folderId).sumOf { it.sizeBytes() }
+        for (subFolder in this.client.listFolders(folderId)) {
+            total += this.computeFolderTotalSize(subFolder.folderId())
+        }
+        return total
+    }
 
     /** The currently in-flight upload/download batch, if any - `null` otherwise. Rendered as a bottom progress bar (see `App.kt`/`Sidebar.kt`). Set/cleared exclusively by [runTransfer]. */
     var transferProgress: TransferProgress? by mutableStateOf(null)
@@ -749,6 +837,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.files.clear()
         this.files.addAll(filePage.items())
         this.filesNextCursor = filePage.nextCursor()
+        if (this.folderSortOption == SortOption.SIZE) this.ensureFolderSizesComputed()
     }
 
     /**
@@ -769,6 +858,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
             this.files.addAll(page.items())
             this.filesNextCursor = page.nextCursor()
         }
+        if (this.folderSortOption == SortOption.SIZE) this.ensureFolderSizesComputed()
     }
 
     /**
@@ -1188,6 +1278,24 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         when (entry) {
             is Entry.FileEntry -> this.client.moveFile(entry.id, targetFolderId)
             is Entry.FolderEntry -> this.client.updateFolder(entry.id, entry.name, targetFolderId)
+        }
+    }
+
+    /**
+     * Sets [folder]'s display color to [colorOption] (see [FolderColorOption]) - backs the row
+     * context menu's "Set color" picker. Applies the change locally to [folders] immediately
+     * (rather than a full [refreshCurrentFolder] round trip - a color change needs no other field
+     * to catch up) by replacing the matching entry with a freshly-built copy, since
+     * [FolderResponse] is an immutable Java record with no in-place setter.
+     */
+    fun setFolderColor(folder: FolderResponse, colorOption: FolderColorOption) = run {
+        this.client.updateFolderColor(folder.folderId(), colorOption.storageName)
+        val index = this.folders.indexOfFirst { it.folderId() == folder.folderId() }
+        if (index >= 0) {
+            this.folders[index] = FolderResponse(
+                folder.folderId(), folder.ownerId(), folder.name(), folder.parentFolderId(),
+                folder.createdAtEpochMillis(), folder.modifiedAtEpochMillis(), colorOption.storageName,
+            )
         }
     }
 

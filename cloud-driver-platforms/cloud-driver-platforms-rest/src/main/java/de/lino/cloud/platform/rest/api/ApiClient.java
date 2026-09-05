@@ -37,6 +37,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.TrashedFolderSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderColorRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateThemeRequest;
 
@@ -1789,6 +1790,34 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId), true)
                 .header("Content-Type", "application/json")
                 .method("PUT", BodyPublishers.ofString(GSON.toJson(new UpdateFolderRequest(newName, newParentFolderId))))
+                .build();
+    }
+
+    /**
+     * {@code PUT /folders/{id}/color}: sets a folder's display color - a separate call from
+     * {@link #updateFolder(String, String, String)} so changing only the color never has to also
+     * resend the folder's name/parent.
+     *
+     * @param folderId the folder to recolor
+     * @param color    the new display color (an opaque, client-defined string, e.g. {@code "BLUE"}),
+     *                 or {@code null} to clear it back to "unset"
+     * @throws ApiException {@code 404} if {@code folderId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired
+     */
+    public void updateFolderColor(final String folderId, final String color) throws ApiException {
+        this.send(this.updateFolderColorRequest(folderId, color), Void.class);
+    }
+
+    /** Async form of {@link #updateFolderColor(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> updateFolderColorAsync(final String folderId, final String color) {
+        return this.sendAsync(this.updateFolderColorRequest(folderId, color), Void.class);
+    }
+
+    /** Builds the {@code PUT /folders/{id}/color} request against {@link #apiBaseUrl}, with a JSON {@link UpdateFolderColorRequest} body. */
+    private HttpRequest updateFolderColorRequest(final String folderId, final String color) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/folders/" + folderId + "/color"), true)
+                .header("Content-Type", "application/json")
+                .method("PUT", BodyPublishers.ofString(GSON.toJson(new UpdateFolderColorRequest(color))))
                 .build();
     }
 

@@ -4,7 +4,6 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.database.json.JsonDocument;
 import io.micrometer.core.instrument.Gauge;

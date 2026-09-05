@@ -129,6 +129,9 @@ public final class Dtos {
      * {@code POST /folders}/{@code PUT /folders/{id}} return on success. Mirrors {@code
      * Folder}'s Gson-serialized fields; {@code ownerId} is included even though the client
      * never needs to act on it, purely because it's part of the server's actual JSON shape.
+     * {@code color} (added for per-folder display color) mirrors {@code Folder#getColor()} -
+     * an opaque, client-defined string (e.g. {@code "BLUE"}), {@code null} if never explicitly
+     * set (a client falls back to its own default).
      */
     public record FolderResponse(
             String folderId,
@@ -136,7 +139,8 @@ public final class Dtos {
             String name,
             String parentFolderId,
             long createdAtEpochMillis,
-            long modifiedAtEpochMillis
+            long modifiedAtEpochMillis,
+            String color
     ) {
     }
 
@@ -150,6 +154,10 @@ public final class Dtos {
      * moves the folder to the top level.
      */
     public record UpdateFolderRequest(String name, String parentFolderId) {
+    }
+
+    /** Body for {@code PUT /folders/{id}/color} - {@code color} {@code null} clears it back to "unset". */
+    public record UpdateFolderColorRequest(String color) {
     }
 
     /** Body for {@code PUT /files/{id}/folder} - {@code folderId} {@code null} moves the file back to the root. */
