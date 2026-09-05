@@ -14,6 +14,7 @@ import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.extractZip
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
+import de.lino.cloud.platform.desktop.utils.sanitizedForLocalPath
 import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
@@ -680,7 +681,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      * which files exist.
      */
     fun downloadSharedFolder(folderId: String, folderName: String, destinationDirectory: Path) = run {
-        val items = this.planSharedFolderDownload(folderId, destinationDirectory.resolve(folderName))
+        val items = this.planSharedFolderDownload(folderId, destinationDirectory.resolve(sanitizedForLocalPath(folderName)))
         this.runTransfer(TransferKind.DOWNLOAD, items, DownloadItem::sizeBytes) { item, onBytesTransferred ->
             this.client.downloadFileStreaming(item.fileId, item.fileName, item.destinationDirectory, onBytesTransferred)
         }
@@ -691,7 +692,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         val contents = this.client.listSharedFolderContents(folderId)
         val items = mutableListOf<DownloadItem>()
         contents.files().forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
-        contents.subfolders().forEach { subfolder -> items += this.planSharedFolderDownload(subfolder.folderId(), destination.resolve(subfolder.name())) }
+        contents.subfolders().forEach { subfolder -> items += this.planSharedFolderDownload(subfolder.folderId(), destination.resolve(sanitizedForLocalPath(subfolder.name()))) }
         return items
     }
 
@@ -935,7 +936,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      */
     fun extractArchive(entry: Entry.FileEntry) = run {
         val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-extract") }
-        val archiveTempFile = tempDir.resolve(entry.name)
+        val archiveTempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
         val extractedDir = tempDir.resolve("extracted")
         try {
             this.runTransfer(TransferKind.EXTRACT, listOf(entry), Entry.FileEntry::sizeBytes) { _, onBytesTransferred ->
@@ -1073,7 +1074,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         for (entry in entries) {
             when (entry) {
                 is Entry.FileEntry -> items += DownloadItem(entry.id, entry.name, entry.sizeBytes, destinationDirectory)
-                is Entry.FolderEntry -> items += this.planFolderDownload(entry.id, destinationDirectory.resolve(entry.name))
+                is Entry.FolderEntry -> items += this.planFolderDownload(entry.id, destinationDirectory.resolve(sanitizedForLocalPath(entry.name)))
             }
         }
         return items
@@ -1082,7 +1083,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     private suspend fun planFolderDownload(folderId: String, destination: Path): List<DownloadItem> {
         val items = mutableListOf<DownloadItem>()
         this.client.listFiles(folderId).forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
-        this.client.listFolders(folderId).forEach { subFolder -> items += this.planFolderDownload(subFolder.folderId(), destination.resolve(subFolder.name())) }
+        this.client.listFolders(folderId).forEach { subFolder -> items += this.planFolderDownload(subFolder.folderId(), destination.resolve(sanitizedForLocalPath(subFolder.name()))) }
         return items
     }
 
@@ -1134,7 +1135,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     /** Downloads [fileId] to a fresh, throwaway local temp directory and re-uploads it as [newName] into [targetFolderId], then cleans the temp file/directory up regardless of outcome. */
     private suspend fun duplicateFileInto(fileId: String, newName: String, targetFolderId: String?) {
         val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-duplicate") }
-        val tempFile = tempDir.resolve(newName)
+        val tempFile = tempDir.resolve(sanitizedForLocalPath(newName))
         try {
             this.client.downloadFileToPath(fileId, tempFile)
             this.client.uploadFile(newName, tempFile, targetFolderId)

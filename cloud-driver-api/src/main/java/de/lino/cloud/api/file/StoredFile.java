@@ -586,9 +586,13 @@ public final class StoredFile extends Serialized {
     /**
      * Re-creates this file on the local filesystem inside {@code
      * destination} (a directory, created first if missing), under its own
-     * {@link #fileName()}, with last-modified time set to {@link
-     * #updatedAt()} and creation time set to {@link #createdAt()} on a
-     * best-effort basis (not every filesystem supports it).
+     * {@link #fileName()} (with any {@code /} replaced by {@code _} first -
+     * {@code fileName} is arbitrary user input and a real {@code /} would
+     * otherwise be misread as introducing a subdirectory that was never
+     * created, failing the write below with {@link java.nio.file.NoSuchFileException}),
+     * with last-modified time set to {@link #updatedAt()} and creation time
+     * set to {@link #createdAt()} on a best-effort basis (not every
+     * filesystem supports it).
      *
      * @param destination the local directory to (re)create this file in
      * @return the path of the recreated file
@@ -600,9 +604,10 @@ public final class StoredFile extends Serialized {
 
         Files.createDirectories(destination);
 
-        Path target = destination.resolve(fileName);
+        final String safeFileName = fileName.replace('/', '_');
+        Path target = destination.resolve(safeFileName);
 
-        if (Files.exists(target)) target = destination.resolve(UUID.randomUUID() + "_" + fileName);
+        if (Files.exists(target)) target = destination.resolve(UUID.randomUUID() + "_" + safeFileName);
 
         Files.write(target, resolveContent());
         Files.setLastModifiedTime(target, FileTime.from(updatedAt()));

@@ -59,7 +59,7 @@ fun rememberThumbnail(entry: Entry, client: CloudDriverClient): ImageBitmap? {
         try {
             withContext(Dispatchers.IO) {
                 val tempDir = Files.createTempDirectory("cloud-driver-thumbnail")
-                val tempFile = tempDir.resolve(entry.name)
+                val tempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
                 try {
                     client.downloadFileToPath(fileId, tempFile)
                     val bufferedImage = ImageIO.read(tempFile.toFile())

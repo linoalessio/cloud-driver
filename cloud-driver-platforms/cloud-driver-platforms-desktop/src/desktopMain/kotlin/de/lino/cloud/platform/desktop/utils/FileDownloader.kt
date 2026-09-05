@@ -9,6 +9,17 @@ import java.nio.file.Path
 import java.util.UUID
 
 /**
+ * Replaces any `/` in [name] with `_` so it's safe to pass to [Path.resolve] as a single path
+ * component without being misread as introducing a subdirectory. A file/folder's display name is
+ * arbitrary user input and may legally contain `/` (e.g. `"Gardasil 9 Impfung, Rezept/Rechnung.pdf"`)
+ * - `Path#resolve` otherwise splits on it as a real separator, so a write to the resulting path
+ * fails with `NoSuchFileException` since the implied subdirectory was never created. Every local
+ * path built from a [de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse]/
+ * [de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse]'s own name must call this first.
+ */
+fun sanitizedForLocalPath(name: String): String = name.replace("/", "_")
+
+/**
  * Downloads [fileId] (whose current name is [fileName]) straight to disk under
  * [destinationDirectory], preferring the presigned direct-to-client path
  * ([CloudDriverClient.downloadFileViaPresignedUrl], bypassing this app's own server for the data
@@ -46,8 +57,9 @@ suspend fun CloudDriverClient.downloadFileStreaming(
 ): Path {
     val target = withContext(Dispatchers.IO) {
         Files.createDirectories(destinationDirectory)
-        val candidate = destinationDirectory.resolve(fileName)
-        if (Files.exists(candidate)) destinationDirectory.resolve("${UUID.randomUUID()}_$fileName") else candidate
+        val safeFileName = sanitizedForLocalPath(fileName)
+        val candidate = destinationDirectory.resolve(safeFileName)
+        if (Files.exists(candidate)) destinationDirectory.resolve("${UUID.randomUUID()}_$safeFileName") else candidate
     }
     return try {
         this.downloadFileViaPresignedUrl(fileId, target, onBytesTransferred)

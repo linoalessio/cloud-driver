@@ -21,6 +21,19 @@ func archiveBaseName(_ archiveFileName: String) -> String {
     return String(archiveFileName[archiveFileName.startIndex..<dotIndex])
 }
 
+/// Replaces any `/` in `fileName` with `_` so it's safe to append as a single path component to a
+/// local `URL` (via `appendingPathComponent`/string concatenation) without being misread as
+/// introducing a subdirectory. A file's display name is arbitrary user input and may legally
+/// contain `/` (e.g. `"Gardasil 9 Impfung, Rezept/Rechnung.pdf"`) - `FileManager`/`URL` handling
+/// otherwise treats that as a real directory separator, so `FileManager.moveItem` throws
+/// `"couldn't be moved... because... the folder containing the latter doesn't exist"` the moment a
+/// download/preview/extraction tries to write to a temp path built directly from the raw name.
+/// Every local temp-path construction in `AppViewModel.swift` (`download`/`previewFile`/
+/// `downloadAndExtractArchive`) must call this on `file.fileName` first, never append it raw.
+func sanitizedForLocalPath(_ fileName: String) -> String {
+    fileName.replacingOccurrences(of: "/", with: "_")
+}
+
 /// Picks a folder name for `baseName` that doesn't collide with anything in `existingNames` -
 /// `"test"`, then `"test 2"`, `"test 3"`, ... if `"test"` is already taken. Mirrors
 /// cloud-driver-platforms-desktop's own `AppViewModel.kt#uniqueFolderName` - deliberately not a

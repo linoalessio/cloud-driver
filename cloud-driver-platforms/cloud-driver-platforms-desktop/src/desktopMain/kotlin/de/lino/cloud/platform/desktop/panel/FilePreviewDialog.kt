@@ -48,6 +48,7 @@ import de.lino.cloud.platform.desktop.utils.MAX_TEXT_PREVIEW_SOURCE_BYTES
 import de.lino.cloud.platform.desktop.utils.PreviewKind
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.previewKindFor
+import de.lino.cloud.platform.desktop.utils.sanitizedForLocalPath
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -109,7 +110,7 @@ fun FilePreviewDialog(entry: Entry.FileEntry, client: CloudDriverClient, onDismi
         try {
             withContext(Dispatchers.IO) {
                 val tempDir = Files.createTempDirectory("cloud-driver-preview")
-                val tempFile = tempDir.resolve(entry.name)
+                val tempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
                 try {
                     client.downloadFileToPath(entry.id, tempFile)
                     when (kind) {

@@ -979,7 +979,7 @@ final class AppViewModel: ObservableObject {
         run {
             defer { self.transferProgress = nil }
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "_" + file.fileName)
+                .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
             try await self.downloadFileStreaming(fileId: file.fileId, destination: destination) { transferred, total in
                 self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
@@ -1012,7 +1012,7 @@ final class AppViewModel: ObservableObject {
         run {
             defer { self.transferProgress = nil }
             let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "_" + file.fileName)
+                .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
             try await self.downloadFileStreaming(fileId: file.fileId, destination: destination) { transferred, total in
                 self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
@@ -1079,7 +1079,7 @@ final class AppViewModel: ObservableObject {
     /// directory (archive + extracted contents) is removed afterward regardless of outcome.
     private func downloadAndExtractArchive(file: StoredFileSummaryResponse) async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let archiveURL = tempDirectory.appendingPathComponent(file.fileName)
+        let archiveURL = tempDirectory.appendingPathComponent(sanitizedForLocalPath(file.fileName))
         let extractedDirectory = tempDirectory.appendingPathComponent("extracted")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
 

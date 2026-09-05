@@ -69,7 +69,7 @@ import java.util.Optional;
  * wasn't configured yet) always converges toward "every row migrated" rather than needing its own
  * separate resume-point bookkeeping.
  */
-public final class MigrateToS3Command implements Command {
+public class MigrateToS3Command implements Command {
 
     /** Rows fetched per keyset page - bounds how many ids (not full files) are held in memory at once, unrelated to how many files the table actually holds. */
     private static final int PAGE_SIZE = 200;
@@ -86,7 +86,7 @@ public final class MigrateToS3Command implements Command {
 
     @Override
     public @NotNull String description() {
-        return "Migrates every not-yet-S3-backed StoredFile's content onto the configured S3 bucket (architecture/AWS_S3_IMPL.md)";
+        return "Migrates every not-yet-S3-backed StoredFile's content onto the configured S3 bucket";
     }
 
     @Override
@@ -181,7 +181,7 @@ public final class MigrateToS3Command implements Command {
                     "&8...&7 migrated &b%s&7, already S3-backed &b%s&7, failed &b%s&7 so far (&b%s&7 moved)",
                     migrated, alreadyMigrated, failed, UnitParser.parseByteUnit(bytesMoved));
 
-            lastId = ids.get(ids.size() - 1);
+            lastId = ids.getLast();
             if (ids.size() < PAGE_SIZE) break; // last, not-full page - done
         }
 
