@@ -1,4 +1,4 @@
-package de.lino.cloud.extensions.terminal.command;
+package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
@@ -9,6 +9,7 @@ import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.UnitParser;
+import de.lino.cloud.extensions.terminal.command.RecomputeStorageCommand;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
 import de.lino.cloud.plugin.storage.object.StoredFileContentChannel;
