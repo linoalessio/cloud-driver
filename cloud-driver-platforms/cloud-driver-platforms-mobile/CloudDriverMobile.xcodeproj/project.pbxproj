@@ -29,6 +29,7 @@
 		A7E98EF99FA834FE555E187E /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B859D1760F6C60068AF4159D /* APIClient.swift */; };
 		B30F9AB753AF1DF2A00562C2 /* ByteFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */; };
 		C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28674A06893A4308FF4A0528 /* FileBrowserView.swift */; };
+		CF6B22CC1F82E87D9F1AFBEA /* Concurrency.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */; };
 		D05BF570922EC998A3048616 /* TrashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278F4310AD868CB0DBDA9118 /* TrashView.swift */; };
 		E25EE1BD693AA0B181999C30 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3577B33C2F6A2814D8CAC533 /* Assets.xcassets */; };
 		E324B1D7FDEF2844BB0677C7 /* DocumentScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3580CD76DF092E96B0939284 /* DocumentScannerView.swift */; };
@@ -65,6 +66,7 @@
 		B859D1760F6C60068AF4159D /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		B8CAB6D77147ACDBCFAFEA2E /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthScreens.swift; sourceTree = "<group>"; };
+		CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Concurrency.swift; sourceTree = "<group>"; };
 		EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ByteFormat.swift; sourceTree = "<group>"; };
 		F9EAEEA207A01721ECA34C3F /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
 		FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedFolderBrowserView.swift; sourceTree = "<group>"; };
@@ -144,6 +146,7 @@
 				3577B33C2F6A2814D8CAC533 /* Assets.xcassets */,
 				EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */,
 				5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */,
+				CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */,
 				B1E4109F19145B980EE9E021 /* FileIcons.swift */,
 				987C521008C46D41B98F9680 /* PreviewSupport.swift */,
 				865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */,
@@ -235,6 +238,7 @@
 				B30F9AB753AF1DF2A00562C2 /* ByteFormat.swift in Sources */,
 				32BD6E0516EB5A3AF5EF0761 /* ChangeEmailSheet.swift in Sources */,
 				770E16807DE69C247EF810D3 /* CloudDriverMobileApp.swift in Sources */,
+				CF6B22CC1F82E87D9F1AFBEA /* Concurrency.swift in Sources */,
 				76774EE58B760F3999117AA3 /* DashboardView.swift in Sources */,
 				E324B1D7FDEF2844BB0677C7 /* DocumentScannerView.swift in Sources */,
 				9E762BC7D22161665A893329 /* Dtos.swift in Sources */,

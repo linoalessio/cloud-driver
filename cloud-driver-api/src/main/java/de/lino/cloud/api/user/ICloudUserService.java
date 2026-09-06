@@ -328,6 +328,20 @@ public interface ICloudUserService {
     FileWithFolder getFile(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
+     * Checks that {@code authUserId} may read {@code storedFileId} - the exact same ownership-or-share
+     * rule {@link #getFile} applies - without resolving or decrypting the file's content. Exists so a
+     * caller that can stream a file's bytes directly from wherever they actually live (e.g. straight
+     * from S3 for a direct-transfer file) can still get the same access check {@link #getFile} gives
+     * every other caller, without paying for a full content resolution it doesn't need.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to check access to
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by {@code authUserId}
+     *                                   and isn't shared with {@code authUserId} either
+     */
+    void checkFileAccess(@NotNull String authUserId, @NotNull String storedFileId);
+
+    /**
      * Moves {@code storedFileId} into {@code folderId} (or back to the root, if {@code null}),
      * but only if {@code authUserId} actually owns both the file and the target folder.
      *

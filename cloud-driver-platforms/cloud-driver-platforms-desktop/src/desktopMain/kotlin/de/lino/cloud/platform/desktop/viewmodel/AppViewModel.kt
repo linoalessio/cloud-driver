@@ -1057,14 +1057,17 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      * [runTransfer] can report one accurate, aggregated percentage across the whole tree instead
      * of restarting per subfolder. Mirrors [planFolderDuplicate]'s own "create the folder remotely
      * first, then recurse into it" shape, just sourced from the local filesystem instead of
-     * another remote folder. Subdirectories are processed concurrently with their siblings (capped
-     * - see [mapConcurrently]), each after its own remote folder is created (a child file/folder
-     * needs a real parent id to upload/create under) - **note this still nests one
-     * [mapConcurrently] call per directory level, the same uncoordinated-semaphore shape flagged
-     * (and fixed) in [deleteEntries]/[duplicateEntries]'s own Javadoc**; not fixed here since a
-     * source archive's own directory tree is typically shallow/narrow relative to a whole cloud
-     * account, but the same "too many concurrent streams" risk applies in principle to a large
-     * enough archive.
+     * another remote folder.
+     *
+     * **Fixed a real bug (2026-09-05): subdirectories used to be processed via [mapConcurrently],
+     * nesting one capped batch per directory level** - the identical uncoordinated-semaphore shape
+     * flagged (and fixed) in [deleteEntries]/[duplicateEntries]'s own Javadoc: each nested call got
+     * its own fresh semaphore, so the real number of simultaneously in-flight HTTP/2 requests
+     * multiplied with the tree's width instead of ever being capped, risking `"too many concurrent
+     * streams"` on a wide-enough archive. This walk is now purely sequential - listings and
+     * `createFolder` calls only, no uploads issued yet - matching [planFolderDuplicate]'s own
+     * sequential shape exactly; the actual concurrency happens exactly once, in [extractArchive]'s
+     * own [runTransfer] batch over the flat [PlannedUpload] list this method returns.
      */
     private suspend fun planAndCreateDirectoryTree(localDirectory: Path, remoteParentFolderId: String?): List<PlannedUpload> {
         val children = withContext(Dispatchers.IO) { Files.list(localDirectory).use { it.toList() } }
@@ -1072,11 +1075,12 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         val filePlans = withContext(Dispatchers.IO) {
             files.map { file -> PlannedUpload(file, remoteParentFolderId, Files.size(file)) }
         }
-        val nestedPlans = directories.mapConcurrently { directory ->
+        val nestedPlans = mutableListOf<PlannedUpload>()
+        for (directory in directories) {
             val remoteFolder = this.client.createFolder(directory.fileName.toString(), remoteParentFolderId)
-            this.planAndCreateDirectoryTree(directory, remoteFolder.folderId())
+            nestedPlans += this.planAndCreateDirectoryTree(directory, remoteFolder.folderId())
         }
-        return filePlans + nestedPlans.flatten()
+        return filePlans + nestedPlans
     }
 
     /** Deletes every currently-selected entry - see [deleteEntries]. */

@@ -8,6 +8,7 @@ import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.jwt.JwtSigner;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.security.password.PasswordHasher;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.s3storage.PresignedTransferService;
 import de.lino.cloud.auth.AuthService;
 import de.lino.cloud.auth.CloudUserService;
@@ -145,7 +146,12 @@ public class CloudRestExtension extends Extension {
         this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
         this.cloudDriver().getServiceContainer().setAuditLogService(auditLogService);
 
-        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService);
+        // Lets GET /files/{id}/content stream a direct-transfer file's content straight from S3
+        // instead of resolving it as a byte[] first - see DefaultRestFactory#resolveDownloadableContent.
+        // null on a deployment that hasn't opted into S3-backed storage, in which case that route
+        // simply keeps its prior, fully-materializing behavior.
+        final ObjectStorageService objectStorageService = this.cloudDriver().getFactoryContainer().getObjectStorageService();
+        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService, objectStorageService);
         REST_FACTORY = restFactory;
 
         // Item 10 (live push via WebSocket, see architecture/SERVICES.md): DefaultRestFactory

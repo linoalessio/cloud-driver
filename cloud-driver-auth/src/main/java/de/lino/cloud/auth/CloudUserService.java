@@ -940,14 +940,7 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public FileWithFolder getFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
-        final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
-                .orElseGet(() -> this.requireSharedFileAccess(authUserId, storedFileId));
-        if (ownership.isDeleted()) {
-            // Hidden from a normal fetch the same "don't confirm existence" way an unowned/unshared
-            // file already is - a trashed file is only reachable via listDeletedFiles/restoreFile,
-            // both owner-only, so a grantee never sees a trashed shared file at all.
-            throw new IllegalArgumentException("@CloudUserService.getFile: " + authUserId + " does not own or have shared access to " + storedFileId);
-        }
+        final StoredFileOwnership ownership = this.requireFileAccess(authUserId, storedFileId, "getFile");
         try {
             final StoredFile file = this.fileFactory.findById(storedFileId)
                     .orElseThrow(() -> new IllegalStateException(
@@ -956,6 +949,34 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.getFile: failed to download " + storedFileId, e);
         }
+    }
+
+    /**
+     * {@link ICloudUserService#checkFileAccess}: the same ownership-or-share check {@link #getFile}
+     * performs, without ever touching {@link #fileFactory}/resolving content.
+     */
+    @Override
+    public void checkFileAccess(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        this.requireFileAccess(authUserId, storedFileId, "checkFileAccess");
+    }
+
+    /**
+     * Shared ownership-or-share check backing both {@link #getFile} and {@link #checkFileAccess} -
+     * see {@link #getFile}'s own Javadoc for the exact rule this applies (plain ownership first,
+     * falling back to {@link #requireSharedFileAccess}; a trashed file is treated as inaccessible
+     * either way, the same "don't confirm existence" idiom every unowned/unshared file already gets).
+     *
+     * @param callerMethodName the public method name to attribute a thrown exception's message to
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by {@code authUserId} and isn't shared with them either
+     */
+    private StoredFileOwnership requireFileAccess(final String authUserId, final String storedFileId, final String callerMethodName) {
+        final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
+                .orElseGet(() -> this.requireSharedFileAccess(authUserId, storedFileId));
+        if (ownership.isDeleted()) {
+            throw new IllegalArgumentException(
+                    "@CloudUserService." + callerMethodName + ": " + authUserId + " does not own or have shared access to " + storedFileId);
+        }
+        return ownership;
     }
 
     /**

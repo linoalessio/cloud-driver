@@ -28,6 +28,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 
 /**
  * Persists and retrieves {@link Serialized} domain entities in per-type
@@ -60,6 +61,21 @@ public final class EntityDatabaseClient {
     /** Default per-type cache maximum entry count, used by the single-argument constructor. */
     public static final long DEFAULT_CACHE_MAX_SIZE = 1_000;
 
+    /**
+     * Caps how many rows {@link #getEntities}/{@link #retrieveAll} resolve concurrently at once.
+     * Without this, a full-table scan (or a specific-id batch) dispatched one task per row with no
+     * limit at all - under a KMS-backed {@link de.lino.cloud.api.security.keys.KeyEncryptionService}
+     * (the production default), each unresolved row is a live, synchronous KMS {@code Decrypt}
+     * network call, so an uncached scan over a table with a few thousand rows fired a few thousand
+     * concurrent KMS calls the instant it ran - queuing on the AWS SDK's small default connection
+     * pool and risking the account's own KMS rate limit. Mirrors {@link
+     * de.lino.cloud.plugin.factory.DefaultFileFactory}'s own {@code MAX_CONCURRENT_VERIFICATIONS}
+     * (same value, same "bound concurrent per-row decrypt work" reasoning), applied here to the
+     * decrypt fan-out this class itself performs rather than the content-resolution fan-out that
+     * class already capped.
+     */
+    private static final int MAX_CONCURRENT_ENTITY_FANOUT = 8;
+
     /** The provider every entity type's {@link DatabaseSection} is resolved against. */
     private final DatabaseProvider databaseProvider;
 
@@ -84,6 +100,22 @@ public final class EntityDatabaseClient {
      * it needs to."
      */
     private final Duration listCacheTtl;
+
+    /**
+     * Per-type override of {@link #listCacheTtl}, resolved by {@link #getEntities} in place of the
+     * process-wide default whenever {@code type} has an entry here. A {@link Duration#ZERO} entry
+     * means list caching is disabled outright for that type - {@link #getEntities} neither reads
+     * nor writes {@link #entityListCache} for it, so that type's full decrypted result is never
+     * held in memory any longer than the single call that produced it.
+     *
+     * <p>Exists because one process-wide {@link #listCacheTtl} forces a bad trade-off for a type
+     * whose {@link #getEntities} result carries full content ({@code StoredFile}, unlike e.g. a
+     * {@code StoredFileOwnership} row): long enough that a normal GUI listing session stays cheap is
+     * also long enough that a rare full-content scan (the terminal's {@code stats} command) keeps an
+     * entire account's decrypted file corpus resident for that same long window. Never {@code null}
+     * - defaults to {@link Map#of()} on the constructors that don't take one explicitly.
+     */
+    private final Map<Class<?>, Duration> listCacheTtlOverrides;
 
     /** One cache per entity type, created lazily via {@link #cacheFor}. */
     private final Map<Class<? extends Serialized>, Cache<String, ? extends Serialized>> caches = new ConcurrentHashMap<>();
@@ -156,6 +188,30 @@ public final class EntityDatabaseClient {
     public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
                                  @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
                                  final Duration cacheTtl, final long cacheMaxSize, final Duration listCacheTtl) {
+        this(databaseProvider, envelopeEncryptionService, cacheTtl, cacheMaxSize, listCacheTtl, Map.of());
+    }
+
+    /**
+     * Same as {@link #EntityDatabaseClient(DatabaseProvider, EnvelopeEncryptionService, Duration,
+     * long, Duration)}, additionally taking {@link #listCacheTtlOverrides} so specific entity types
+     * (e.g. one whose {@link #getEntities} result carries full content) can use a shorter, or
+     * disabled ({@link Duration#ZERO}), list-cache TTL than every other type - see that field's own
+     * Javadoc for why.
+     *
+     * @param databaseProvider the provider meta sections are resolved against
+     * @param envelopeEncryptionService the envelope-encryption service backing this client's {@link SecureEntityChannel}
+     * @param cacheTtl how long a decrypted meta stays cached; {@code null} for unbounded
+     * @param cacheMaxSize maximum cached entries per meta type; {@code <= 0} for unbounded
+     * @param listCacheTtl how long a {@link #getEntities} scan result stays cached, for any type
+     *     with no entry in {@code listCacheTtlOverrides}; {@code null} for unbounded
+     * @param listCacheTtlOverrides per-type list-cache TTL overrides; must not be {@code null} (use
+     *     {@link Map#of()} for none)
+     * @throws NullPointerException if {@code databaseProvider}/{@code envelopeEncryptionService}/{@code listCacheTtlOverrides} is {@code null}
+     */
+    public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
+                                 @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
+                                 final Duration cacheTtl, final long cacheMaxSize, final Duration listCacheTtl,
+                                 @NotNull final Map<Class<?>, Duration> listCacheTtlOverrides) {
         this.databaseProvider = Asserts.requireNonNull(databaseProvider, "@EntityDatabaseClient: databaseProvider cannot be null");
         this.secureEntityChannel = new SecureEntityChannel(
                 Asserts.requireNonNull(envelopeEncryptionService, "@EntityDatabaseClient: envelopeEncryptionService cannot be null")
@@ -163,6 +219,7 @@ public final class EntityDatabaseClient {
         this.cacheTtl = cacheTtl;
         this.cacheMaxSize = cacheMaxSize;
         this.listCacheTtl = listCacheTtl;
+        this.listCacheTtlOverrides = Asserts.requireNonNull(listCacheTtlOverrides, "@EntityDatabaseClient: listCacheTtlOverrides cannot be null");
     }
 
     /** Returns {@code type}'s {@link DatabaseSection} (named after its simple class name), creating it if needed. */
@@ -367,7 +424,10 @@ public final class EntityDatabaseClient {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.retrieveAll: type cannot be null");
 
         final Cache<String, T> cache = cacheFor(type);
-        final List<CompletableFuture<T>> futures = objectIds.stream().map(cache::get).toList();
+        final Semaphore concurrencyLimit = new Semaphore(MAX_CONCURRENT_ENTITY_FANOUT);
+        final List<CompletableFuture<T>> futures = objectIds.stream()
+                .map(objectId -> boundedCacheGet(cache, objectId, concurrencyLimit))
+                .toList();
 
         joinAll(futures);
         // Every future is already complete at this point (joinAll waited on
@@ -447,20 +507,31 @@ public final class EntityDatabaseClient {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
         Asserts.requireNonNull(type, "@EntityDatabaseClient.getEntities: type cannot be null");
 
-        final CachedEntities<T> cached = (CachedEntities<T>) entityListCache.get(type);
-        if (cached != null && !isExpired(cached.cachedAtEpochMillis())) {
-            return cached.entities();
+        final Duration effectiveListCacheTtl = this.listCacheTtlOverrides.getOrDefault(type, this.listCacheTtl);
+        final boolean listCachingDisabled = effectiveListCacheTtl != null && effectiveListCacheTtl.isZero();
+
+        if (!listCachingDisabled) {
+            final CachedEntities<T> cached = (CachedEntities<T>) entityListCache.get(type);
+            if (cached != null && !isExpired(cached.cachedAtEpochMillis(), effectiveListCacheTtl)) {
+                return cached.entities();
+            }
         }
 
         final List<String> objectIds = sectionFor(type).getEntries().stream().map(DatabaseEntry::getId).toList();
+        final Semaphore concurrencyLimit = new Semaphore(MAX_CONCURRENT_ENTITY_FANOUT);
         final List<CompletableFuture<Optional<T>>> futures = objectIds.stream()
-                .map(objectId -> MultiTaskingFactory.getInstance().supplyAsync(() -> findByIdUnchecked(objectId, type)))
+                .map(objectId -> dispatchBoundedFindById(objectId, type, concurrencyLimit))
                 .toList();
 
         joinAll(futures);
         // Every future is already complete at this point (joinAll waited on
         // all of them), so these joins return immediately.
         final List<T> result = futures.stream().map(CompletableFuture::join).flatMap(Optional::stream).toList();
+
+        if (listCachingDisabled) {
+            // Never held any longer than this call's own stack - see listCacheTtlOverrides' own Javadoc.
+            return result;
+        }
 
         // A concurrent write racing this scan may invalidate entityListCache (see invalidateEntityListCache)
         // between the read above and this put - in that (rare) case this simply re-caches a snapshot that
@@ -470,9 +541,9 @@ public final class EntityDatabaseClient {
         return result;
     }
 
-    /** @return {@code true} if a snapshot cached at {@code cachedAtEpochMillis} is now past {@link #listCacheTtl} */
-    private boolean isExpired(final long cachedAtEpochMillis) {
-        return listCacheTtl != null && System.currentTimeMillis() - cachedAtEpochMillis >= listCacheTtl.toMillis();
+    /** @return {@code true} if a snapshot cached at {@code cachedAtEpochMillis} is now past {@code effectiveListCacheTtl} */
+    private static boolean isExpired(final long cachedAtEpochMillis, final Duration effectiveListCacheTtl) {
+        return effectiveListCacheTtl != null && System.currentTimeMillis() - cachedAtEpochMillis >= effectiveListCacheTtl.toMillis();
     }
 
     /** Drops {@code type}'s cached {@link #getEntities} snapshot, if any - called from every write path below. */
@@ -492,6 +563,46 @@ public final class EntityDatabaseClient {
         try {
             return findById(objectId, type);
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new CompletionException(e);
+        }
+    }
+
+    /**
+     * Dispatches {@link #findByIdUnchecked} onto {@link MultiTaskingFactory}'s executor, gated by
+     * {@code concurrencyLimit} - blocks the calling (sequential stream-building) thread until a
+     * permit is free before submitting the next lookup, releasing the permit once that lookup
+     * completes. See {@link #MAX_CONCURRENT_ENTITY_FANOUT}.
+     */
+    private <T extends Serialized> CompletableFuture<Optional<T>> dispatchBoundedFindById(
+            final String objectId, final Class<T> type, final Semaphore concurrencyLimit) {
+        acquireUninterruptibly(concurrencyLimit);
+        final CompletableFuture<Optional<T>> future = MultiTaskingFactory.getInstance().supplyAsync(() -> findByIdUnchecked(objectId, type));
+        future.whenComplete((result, throwable) -> concurrencyLimit.release());
+        return future;
+    }
+
+    /**
+     * {@link Cache#get}, gated by {@code concurrencyLimit} the same way {@link
+     * #dispatchBoundedFindById} gates its own dispatch - blocks the calling thread until a permit is
+     * free before calling {@code cache.get} (a cache hit returns near-instantly and releases its
+     * permit immediately; a miss dispatches onto {@link MultiTaskingFactory}'s executor internally
+     * and holds its permit for the duration of that real database/KMS round trip). See {@link
+     * #MAX_CONCURRENT_ENTITY_FANOUT}.
+     */
+    private <T extends Serialized> CompletableFuture<T> boundedCacheGet(
+            final Cache<String, T> cache, final String objectId, final Semaphore concurrencyLimit) {
+        acquireUninterruptibly(concurrencyLimit);
+        final CompletableFuture<T> future = cache.get(objectId);
+        future.whenComplete((result, throwable) -> concurrencyLimit.release());
+        return future;
+    }
+
+    /** Acquires a permit from {@code semaphore}, restoring the interrupt flag and rethrowing as a {@link CompletionException} if interrupted while waiting. */
+    private static void acquireUninterruptibly(final Semaphore semaphore) {
+        try {
+            semaphore.acquire();
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
             throw new CompletionException(e);
         }
     }

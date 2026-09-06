@@ -5,7 +5,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 
 /**
  * Runs [action] over every element of this [Iterable] concurrently, capped at [maxConcurrency] in
@@ -24,13 +23,32 @@ import kotlinx.coroutines.sync.withPermit
  * Javadoc: "throws the first failure encountered once every item has been attempted"). A real
  * [CancellationException] (the scope itself being cancelled, e.g. the app closing mid-batch) is
  * rethrown immediately rather than collected - it is not a per-item failure.
+ *
+ * **Fixed a real bug (2026-09-05): the permit used to be acquired *inside* each `async` block
+ * (`async { semaphore.withPermit { action(item) } }`), so `async` - which launches immediately -
+ * ran for every element up front, before the semaphore ever gated anything.** For a very large
+ * input this held many suspended [kotlinx.coroutines.Deferred] objects in memory at once, only
+ * gated at the point [action] itself actually started, not at launch. The permit is now acquired
+ * *before* each element's coroutine is launched (`this@mapConcurrently.map` is `inline`, so calling
+ * the suspending [Semaphore.acquire] directly inside its lambda suspends this function's own
+ * iteration, not just the child coroutine) - so at most [maxConcurrency] coroutines exist between
+ * "launched" and "released" at any moment, regardless of how large the input collection is.
  */
 suspend fun <T, R> Iterable<T>.mapConcurrently(
     maxConcurrency: Int = ApiClient.DEFAULT_MAX_CONCURRENT_TRANSFERS,
     action: suspend (T) -> R,
 ): List<R> = supervisorScope {
     val semaphore = Semaphore(maxConcurrency)
-    val deferred = this@mapConcurrently.map { item -> async { semaphore.withPermit { action(item) } } }
+    val deferred = this@mapConcurrently.map { item ->
+        semaphore.acquire()
+        async {
+            try {
+                action(item)
+            } finally {
+                semaphore.release()
+            }
+        }
+    }
 
     var firstFailure: Throwable? = null
     val results = ArrayList<R>(deferred.size)

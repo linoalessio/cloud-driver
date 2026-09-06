@@ -224,6 +224,14 @@ public final class ApiClient implements AutoCloseable {
     private final AtomicReference<String> refreshToken = new AtomicReference<>();
 
     /**
+     * Invoked every time {@link #applyTokens(AuthResponse)} rotates {@link #token}/{@link
+     * #refreshToken} - see {@link #setTokensRotatedListener(Runnable)}. Defaults to a no-op so
+     * this field is never {@code null}.
+     */
+    private volatile Runnable tokensRotatedListener = () -> {
+    };
+
+    /**
      * Builds a client backed by a fresh {@link HttpClient} and virtual-thread executor; call
      * {@link #close()} once done with it.
      *
@@ -588,6 +596,31 @@ public final class ApiClient implements AutoCloseable {
     private void applyTokens(final AuthResponse response) {
         this.token.set(response.token());
         this.refreshToken.set(response.refreshToken());
+        this.tokensRotatedListener.run();
+    }
+
+    /**
+     * Registers {@code listener} to be invoked every time this client mints or rotates a fresh
+     * access/refresh token pair - {@link #login}/{@link #refresh}/{@code refreshAsync} included,
+     * but most importantly the transparent refresh-on-401 retry inside {@link #send(HttpRequest,
+     * Type)}/{@link #sendAsync(HttpRequest, Type)}, which otherwise updates only the in-memory
+     * {@link #token}/{@link #refreshToken} with nothing to notice the change happened. {@link
+     * SessionManager} uses this to keep a persisted session (OS keychain/fallback file) in sync
+     * with the rotated refresh token - <b>fixed a real bug (2026-09-06)</b>: without this, a
+     * session restored after any silent refresh (the access token simply expiring while the app
+     * was closed, then being refreshed the moment the next launch's session-restore probe ran)
+     * left the persisted refresh token already invalidated by the server's own single-use
+     * rotation, so the very next restore attempt failed and the user was forced to log in again -
+     * reported as "have to log in every time after closing the app".
+     *
+     * <p>Runs synchronously, on whatever thread just rotated the token - keep {@code listener}
+     * itself fast and exception-safe, since a thrown exception here would otherwise propagate out
+     * of the very auth call that triggered it.
+     *
+     * @param listener called with no arguments every time {@link #token}/{@link #refreshToken} change
+     */
+    public void setTokensRotatedListener(final Runnable listener) {
+        this.tokensRotatedListener = Objects.requireNonNull(listener, "listener cannot be null");
     }
 
     /**

@@ -310,20 +310,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
 
                 UploadMenuButton(viewModel)
 
-                SortMenuButton(
-                    label = "Sort folders",
-                    current = viewModel.folderSortOption,
-                    enabled = !viewModel.busy,
-                    busy = viewModel.computingFolderSizes,
-                    onSelect = { viewModel.changeFolderSortOption(it) },
-                )
-                SortMenuButton(
-                    label = "Sort files",
-                    current = viewModel.fileSortOption,
-                    enabled = !viewModel.busy,
-                    busy = false,
-                    onSelect = { viewModel.changeFileSortOption(it) },
-                )
+                SortMenuButton(viewModel)
 
                 // Only shown once something is selected - an empty toolbar slot for an action
                 // with nothing to act on just adds visual noise, per this app's own spec. Bundled
@@ -556,38 +543,96 @@ private fun FolderColorPickerDialog(currentColor: FolderColorOption, onSelect: (
     )
 }
 
+/** Which list a [SortMenuButton] second-level menu is currently choosing a [SortOption] for - `null` means the top-level "Sort Files"/"Sort Folders" picker is showing. */
+private enum class SortTarget { FILES, FOLDERS }
+
 /**
- * A toolbar dropdown for choosing one [SortOption] - used twice ("Sort folders"/"Sort files"),
- * each independently driving [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.folderSortOption]/
- * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.fileSortOption]. [busy] shows a small
- * spinner next to the label - only ever `true` for the folder variant, while
- * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.computeFolderTotalSize] is walking a
- * folder tree for [SortOption.SIZE].
+ * The toolbar's single "Sort" dropdown (consolidated 2026-09-05 from two separate always-visible
+ * "Sort folders"/"Sort files" buttons into one, per Lino's own request) - one button opens a
+ * two-level menu: the top level offers "Sort Files"/"Sort Folders", and choosing either drills
+ * into the same [SortOption] list [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.fileSortOption]/
+ * [folderSortOption] already exposed, with a "Back" entry returning to the top level. Compose has
+ * no built-in nested-submenu popup, so this is implemented as one [DropdownMenu] whose content
+ * switches on [activeTarget] rather than two independently-positioned popups - the menu never
+ * closes between levels, only its content changes, matching how a native OS submenu feels. A
+ * small spinner shows next to "Sort Folders" while
+ * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.computingFolderSizes] is walking a folder
+ * tree for [SortOption.SIZE], the same signal the old two-button layout showed on its folder
+ * button only.
  */
 @Composable
-private fun SortMenuButton(label: String, current: SortOption, enabled: Boolean, busy: Boolean, onSelect: (SortOption) -> Unit) {
+private fun SortMenuButton(viewModel: AppViewModel) {
     var expanded by remember { mutableStateOf(false) }
+    var activeTarget by remember { mutableStateOf<SortTarget?>(null) }
+
+    fun closeMenu() {
+        expanded = false
+        activeTarget = null
+    }
 
     Column {
-        OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+        OutlinedButton(onClick = { expanded = true }, enabled = !viewModel.busy) {
             Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text(label)
-            if (busy) {
-                Spacer(Modifier.width(8.dp))
-                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-            }
+            Text("Sort")
             Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            for (option in SortOption.entries) {
-                DropdownMenuItem(
-                    text = { Text(option.label) },
-                    leadingIcon = if (option == current) {
-                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                    } else null,
-                    onClick = { expanded = false; onSelect(option) },
-                )
+        DropdownMenu(expanded = expanded, onDismissRequest = ::closeMenu) {
+            when (activeTarget) {
+                null -> {
+                    DropdownMenuItem(
+                        text = { Text("Sort Files") },
+                        trailingIcon = { Icon(Icons.Filled.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        onClick = { activeTarget = SortTarget.FILES },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Sort Folders") },
+                        trailingIcon = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (viewModel.computingFolderSizes) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Icon(Icons.Filled.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                            }
+                        },
+                        onClick = { activeTarget = SortTarget.FOLDERS },
+                    )
+                }
+                SortTarget.FILES -> {
+                    DropdownMenuItem(
+                        text = { Text("Back") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        onClick = { activeTarget = null },
+                    )
+                    HorizontalDivider()
+                    for (option in SortOption.entries) {
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            leadingIcon = if (option == viewModel.fileSortOption) {
+                                { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                            } else null,
+                            onClick = { viewModel.changeFileSortOption(option); closeMenu() },
+                        )
+                    }
+                }
+                SortTarget.FOLDERS -> {
+                    DropdownMenuItem(
+                        text = { Text("Back") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        onClick = { activeTarget = null },
+                    )
+                    HorizontalDivider()
+                    for (option in SortOption.entries) {
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            leadingIcon = if (option == viewModel.folderSortOption) {
+                                { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                            } else null,
+                            onClick = { viewModel.changeFolderSortOption(option); closeMenu() },
+                        )
+                    }
+                }
             }
         }
     }

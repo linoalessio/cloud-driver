@@ -21,7 +21,11 @@ import de.lino.cloud.api.jwt.auth.AuthTokens;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.file.FileWithFolder;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
@@ -54,10 +58,12 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@link RestFactory} backed by <a href="https://javalin.io">Javalin</a>:
@@ -241,6 +247,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final int DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS = 10;
     /** Default {@code /auth/*} rate-limit window, in seconds - see {@link #DEFAULT_AUTH_RATE_LIMIT_MAX_REQUESTS}'s reasoning. */
     private static final long DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS = 300L;
+    /** {@code configuration.json} key gating {@link #resolveRateLimitKey}'s trust of {@link #FORWARDED_FOR_HEADER} - see that method's own Javadoc. */
+    private static final String TRUST_PROXY_HEADERS_CONFIG_KEY = "trust-proxy-headers";
+    /** The header {@link #resolveRateLimitKey} reads the original client address from, once {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} is enabled. */
+    private static final String FORWARDED_FOR_HEADER = "X-Forwarded-For";
+    /**
+     * How often {@link #requireWithinAuthRateLimit} opportunistically sweeps {@link
+     * #authRateLimitBuckets} for expired-window entries - throttled rather than run on every
+     * request, since a sweep walks the whole map. Bounds this map's long-run memory growth under
+     * sustained scanner/bot traffic (which otherwise leaves one permanent entry per distinct source
+     * IP that has ever hit {@code /auth/*}, for the life of the process) without needing a
+     * dedicated background thread of its own.
+     */
+    private static final long AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
@@ -356,6 +375,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     @Getter
     private final CloudUserService cloudUserService;
 
+    /**
+     * Backs a real-content stream straight from S3 for a direct-transfer file on {@code GET
+     * /files/{id}/content} - see {@link #handleDownloadFileContent}'s own Javadoc for why this
+     * avoids the byte[]-based content resolution every other route still needs. {@code null} if
+     * this deployment hasn't configured S3-backed storage, in which case that route falls back to
+     * its original, fully-materializing behavior unconditionally.
+     */
+    @Nullable
+    private final ObjectStorageService objectStorageService;
+
     /** Paths with a {@code POST} handler registered via {@link #register}. */
     private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
     /** Paths with a {@code GET} handler registered via {@link #fetch}. */
@@ -378,6 +407,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * scale, but a future multi-tenant/high-traffic deployment would want to evict stale entries.
      */
     private final ConcurrentHashMap<String, AuthRateLimitBucket> authRateLimitBuckets = new ConcurrentHashMap<>();
+
+    /** Throttles {@link #maybeSweepAuthRateLimitBuckets} to at most once per {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
+    private final AtomicLong lastAuthRateLimitSweepEpochMillis = new AtomicLong(System.currentTimeMillis());
 
     /**
      * Every currently-connected {@link #LIVE_UPDATES_PATH} session, grouped by the {@code
@@ -430,6 +462,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         this.apiKey = apiKey;
         this.authService = null;
         this.cloudUserService = null;
+        this.objectStorageService = null;
     }
 
     /**
@@ -472,7 +505,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * by this constructor, since uploading/listing/deleting a user's own files and folders is
      * business logic ({@link CloudUserService} - move/rename validate ownership and, for
      * folders, guard against cycles and non-empty deletes), not a plain {@code DataFactory}
-     * CRUD pass-through the way every other registered resource is.
+     * CRUD pass-through the way every other registered resource is. S3-backed storage is not
+     * configured by this overload - see {@link #DefaultRestFactory(DataFactory, AuthService,
+     * CloudUserService, ObjectStorageService)} for a deployment that has opted into it.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
      * @param authService verifies login and issued JWTs; must not be {@code null}
@@ -480,10 +515,29 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
                                @Nullable final CloudUserService cloudUserService) {
+        this(dataFactory, authService, cloudUserService, null);
+    }
+
+    /**
+     * Same as {@link #DefaultRestFactory(DataFactory, AuthService, CloudUserService)}, additionally
+     * taking {@code objectStorageService} so {@link #handleDownloadFileContent} can stream a
+     * direct-transfer file's content straight from S3 instead of resolving it as a {@code byte[]}
+     * first - see that method's own Javadoc. {@code null} (the other constructor's default)
+     * disables that streaming path entirely; {@code GET /files/{id}/content} still works exactly as
+     * before, just without the streaming optimization for a direct-transfer file.
+     *
+     * @param dataFactory the {@link DataFactory} every registered resource is backed by
+     * @param authService verifies login and issued JWTs; must not be {@code null}
+     * @param cloudUserService backs the {@code /files} routes, or {@code null} to leave them unmounted
+     * @param objectStorageService backs a direct-transfer file's streamed download, or {@code null} if this deployment hasn't opted into S3-backed storage
+     */
+    public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
+                               @Nullable final CloudUserService cloudUserService, @Nullable final ObjectStorageService objectStorageService) {
         this.dataFactory = dataFactory;
         this.apiKey = null;
         this.authService = Objects.requireNonNull(authService, "@DefaultRestFactory.init: authService cannot be null");
         this.cloudUserService = cloudUserService;
+        this.objectStorageService = objectStorageService;
     }
 
     /** Registers a {@code POST} handler for {@code path}, via {@link #registerOperation}. */
@@ -826,8 +880,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (!ctx.path().startsWith(AUTH_PATH_PREFIX) || ME_PATH.equals(ctx.path())) {
             return;
         }
-        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(ctx.ip(), ignored -> new AuthRateLimitBucket());
         final long windowMillis = resolveAuthRateLimitWindowSeconds() * 1000L;
+        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(resolveRateLimitKey(ctx), ignored -> new AuthRateLimitBucket());
         final int maxRequests = resolveAuthRateLimitMaxRequests();
         synchronized (bucket) {
             final long now = System.currentTimeMillis();
@@ -841,6 +895,60 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                         "Too many authentication requests from this address - try again later");
             }
         }
+        maybeSweepAuthRateLimitBuckets(windowMillis);
+    }
+
+    /**
+     * Resolves the address {@link #requireWithinAuthRateLimit} keys its per-client bucket on:
+     * {@link Context#ip()} (the immediate TCP peer) by default, or - only if {@code
+     * configuration.json}'s {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} is explicitly set to {@code
+     * true} - the first entry of {@link #FORWARDED_FOR_HEADER} instead.
+     *
+     * <p><b>Only enable {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} if this deployment genuinely sits
+     * behind exactly one trusted reverse-proxy hop that always sets {@link #FORWARDED_FOR_HEADER}
+     * itself, with no way for a client to reach this server directly (bypassing that proxy).</b> If
+     * that assumption doesn't hold, enabling this lets any client trivially spoof their own
+     * rate-limit identity by setting {@link #FORWARDED_FOR_HEADER} on their own request - defeating
+     * the limiter entirely rather than merely working around it. Left disabled by default; whether
+     * this deployment's actual reverse-proxy topology makes it safe to enable is an operator
+     * decision this class deliberately does not make on its own.
+     *
+     * @return the client identity to key the rate-limit bucket on for this request
+     */
+    private static String resolveRateLimitKey(final Context ctx) {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        final boolean trustProxyHeaders = configuration.contains(TRUST_PROXY_HEADERS_CONFIG_KEY)
+                && configuration.getBoolean(TRUST_PROXY_HEADERS_CONFIG_KEY);
+        if (!trustProxyHeaders) {
+            return ctx.ip();
+        }
+        final String forwardedFor = ctx.header(FORWARDED_FOR_HEADER);
+        if (forwardedFor == null || forwardedFor.isBlank()) {
+            return ctx.ip();
+        }
+        return forwardedFor.split(",")[0].trim();
+    }
+
+    /**
+     * Opportunistically removes every {@link #authRateLimitBuckets} entry whose window has already
+     * expired, throttled to at most once per {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS} via a
+     * compare-and-set on {@link #lastAuthRateLimitSweepEpochMillis} - only one concurrent caller
+     * across the whole process ever actually performs a sweep in a given interval; every other
+     * caller in the same interval is a cheap no-op. See {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}'s
+     * own Javadoc for why this exists.
+     */
+    private void maybeSweepAuthRateLimitBuckets(final long windowMillis) {
+        final long now = System.currentTimeMillis();
+        final long lastSweep = this.lastAuthRateLimitSweepEpochMillis.get();
+        if (now - lastSweep < AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS
+                || !this.lastAuthRateLimitSweepEpochMillis.compareAndSet(lastSweep, now)) {
+            return;
+        }
+        this.authRateLimitBuckets.entrySet().removeIf(entry -> {
+            synchronized (entry.getValue()) {
+                return now - entry.getValue().windowStartEpochMillis >= windowMillis;
+            }
+        });
     }
 
     /**
@@ -1921,30 +2029,88 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * CloudUserService#getFile}.
      *
      * <p>{@link StoredFile#content()} still fully materializes the decrypted plaintext in memory
-     * before this method runs - {@code EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot,
-     * not chunked (see {@code architecture/OPTIMIZE_UPLOAD.md}'s "Open decision" - a real,
-     * deliberately out-of-scope limitation, not an oversight here). What this route actually
-     * eliminates is everything downstream of that plaintext: the ~1.37x base64 string, the
-     * enclosing JSON document, and the UTF-8 re-encoding {@link Context#result(String)} would
-     * otherwise perform on top of it - {@link Context#writeSeekableStream(java.io.InputStream,
-     * String, long)} streams the already-resolved bytes straight to the response instead.
+     * before this method runs for an inline or app-encrypted-S3 file - {@code
+     * EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot, not chunked (see {@code
+     * architecture/OPTIMIZE_UPLOAD.md}'s "Open decision" - a real, deliberately out-of-scope
+     * limitation, not an oversight here). What this route eliminates for those files is everything
+     * downstream of that plaintext: the ~1.37x base64 string, the enclosing JSON document, and the
+     * UTF-8 re-encoding {@link Context#result(String)} would otherwise perform on top of it - {@link
+     * Context#writeSeekableStream(java.io.InputStream, String, long)} streams the already-resolved
+     * bytes straight to the response instead.
+     *
+     * <p><b>A direct-transfer (SSE-S3) file is streamed straight from S3</b> when {@link
+     * #objectStorageService} is configured - see {@link #resolveDownloadableContent} - so that mode
+     * never materializes a {@code byte[]} in this JVM at all, not even briefly. Every other content
+     * mode (inline, app-encrypted-S3, or a direct-transfer file on an instance with no {@link
+     * #objectStorageService} configured) still resolves via {@link CloudUserService#getFile} as
+     * before.
      */
     private void handleDownloadFileContent(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.getFile(userId, id))
-                .handle((entry, failure) -> {
+                .supplyAsync(() -> resolveDownloadableContent(userId, id))
+                .handle((download, failure) -> {
                     if (failure == null) {
-                        final StoredFile file = entry.file();
-                        final byte[] content = file.content();
-                        final String encodedFileName = URLEncoder.encode(file.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                        final String encodedFileName = URLEncoder.encode(download.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
                         ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
-                        ctx.writeSeekableStream(new ByteArrayInputStream(content), file.contentType(), content.length);
+                        ctx.writeSeekableStream(download.content(), download.contentType(), download.sizeBytes());
                         return null;
                     }
                     throw notFoundOrPropagate(failure, StoredFile.class, id);
                 }));
+    }
+
+    /** One file's downloadable content, as resolved by {@link #resolveDownloadableContent} - either a direct S3 stream or fully materialized bytes. */
+    private record DownloadableContent(String fileName, String contentType, long sizeBytes, InputStream content) {
+    }
+
+    /**
+     * Resolves {@code storedFileId}'s downloadable content for {@link #handleDownloadFileContent},
+     * checking access the same way {@link CloudUserService#getFile} does either way.
+     *
+     * <p>If {@link #objectStorageService} is configured, checks access via {@link
+     * CloudUserService#checkFileAccess} (no content resolution) and looks up the file's bare,
+     * unresolved metadata via {@link #dataFactory} directly (never through {@link
+     * de.lino.cloud.api.factory.FileFactory}, which would resolve content). If that metadata shows a
+     * direct-transfer, S3-backed file, its content is streamed straight from S3 via {@link
+     * ObjectStorageService#getObjectStream} - {@link StoredFile#sizeBytes()} already reports the
+     * real, confirmed size for such a file without needing its content at all (see {@code
+     * StoredFile}'s own {@code declaredSizeBytes} Javadoc), so nothing about the response needs the
+     * bytes materialized up front either.
+     *
+     * <p>Every other case - inline content, app-encrypted-S3 content, a direct-transfer file whose
+     * metadata vanished between the two lookups above (a genuine, narrow race - treated the same as
+     * "not eligible for streaming" rather than failing outright), or no {@link #objectStorageService}
+     * configured on this instance at all - falls back to {@link CloudUserService#getFile}'s existing,
+     * fully-materializing resolution.
+     */
+    private DownloadableContent resolveDownloadableContent(final String userId, final String storedFileId) {
+        if (this.objectStorageService != null) {
+            this.cloudUserService.checkFileAccess(userId, storedFileId);
+            final Optional<StoredFile> metadata;
+            try {
+                metadata = this.dataFactory.findById(storedFileId, StoredFile.class);
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+                throw new RuntimeException(
+                        "@DefaultRestFactory.resolveDownloadableContent: failed to look up metadata for " + storedFileId, e);
+            }
+            if (metadata.isPresent() && metadata.get().isS3Backed() && metadata.get().isDirectTransfer()) {
+                final StoredFile file = metadata.get();
+                final InputStream stream;
+                try {
+                    stream = this.objectStorageService.getObjectStream(file.objectStorageKey());
+                } catch (final ObjectStorageException e) {
+                    throw new RuntimeException(
+                            "@DefaultRestFactory.resolveDownloadableContent: failed to stream S3 content for " + storedFileId, e);
+                }
+                return new DownloadableContent(file.fileName(), file.contentType(), file.sizeBytes(), stream);
+            }
+        }
+        final FileWithFolder entry = this.cloudUserService.getFile(userId, storedFileId);
+        final StoredFile file = entry.file();
+        final byte[] content = file.content();
+        return new DownloadableContent(file.fileName(), file.contentType(), content.length, new ByteArrayInputStream(content));
     }
 
     /**

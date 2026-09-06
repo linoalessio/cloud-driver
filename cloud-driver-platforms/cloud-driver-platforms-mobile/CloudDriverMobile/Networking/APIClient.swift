@@ -91,7 +91,19 @@ actor APIClient {
     private(set) var accessToken: String?
     private(set) var refreshToken: String?
 
+    /// Notified with the fresh (access, refresh) pair every time `issueTokens(from:)` sets one -
+    /// covers an explicit login/register-confirm/reset-confirm/refresh call *and* the transparent
+    /// 401-retry-triggered refresh inside `execute`, since that path also funnels through
+    /// `issueTokens`. `SessionManager` installs this once, before this actor's tokens can change
+    /// for the first time, so a silent refresh is never left unpersisted in the Keychain - see
+    /// `SessionManager.installTokenRotationHandlerIfNeeded`.
+    private var onTokensRotated: (@Sendable (String, String) -> Void)?
+
     var isAuthenticated: Bool { accessToken != nil }
+
+    func setTokensRotatedHandler(_ handler: @escaping @Sendable (String, String) -> Void) {
+        self.onTokensRotated = handler
+    }
 
     init(baseURL: URL) {
         self.baseURL = baseURL
@@ -188,6 +200,28 @@ actor APIClient {
     func listFiles(folderId: String?) async throws -> [StoredFileSummaryResponse] {
         let scope = (folderId ?? "root").queryEncoded()
         let request = plainRequest("/files?folderId=\(scope)", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Cursor-paginated counterpart to `listFiles(folderId:)` - opts the server into the
+    /// `{"items", "nextCursor"}` envelope by sending `?limit=`, instead of every file in
+    /// `folderId` in one unpaginated array. Added 2026-09-05: before this, every folder view
+    /// fetched a folder's *entire* contents in one response, even though the server route (and
+    /// the desktop client) already supported paging - a real cost for a folder with thousands of
+    /// files. `folderId` maps `nil` to `"root"`, matching `listFiles(folderId:)`'s own convention
+    /// (not `cloud-driver-platforms-rest`'s JVM client, which omits the parameter entirely on
+    /// `nil` - a different, unscoped-listing meaning this app's folder browser never needs).
+    ///
+    /// - Parameters:
+    ///   - cursor: the previous page's `Page.nextCursor`, or `nil` for the first page.
+    ///   - limit: the maximum number of entries to return; must be positive.
+    func listFilesPage(folderId: String?, cursor: String?, limit: Int) async throws -> Page<StoredFileSummaryResponse> {
+        var path = "/files?limit=\(limit)&folderId=\((folderId ?? "root").queryEncoded())"
+        if let cursor {
+            path += "&cursor=\(cursor.queryEncoded())"
+        }
+        let request = plainRequest(path, method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
@@ -375,6 +409,18 @@ actor APIClient {
         return try decode(data)
     }
 
+    /// Cursor-paginated counterpart to `listFolders(parentFolderId:)` - see `listFilesPage`'s own
+    /// doc comment for the full contract; identical shape, scoped to folders instead of files.
+    func listFoldersPage(parentFolderId: String?, cursor: String?, limit: Int) async throws -> Page<FolderResponse> {
+        var path = "/folders?limit=\(limit)&parentFolderId=\((parentFolderId ?? "root").queryEncoded())"
+        if let cursor {
+            path += "&cursor=\(cursor.queryEncoded())"
+        }
+        let request = plainRequest(path, method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
     func createFolder(name: String, parentFolderId: String?) async throws -> FolderResponse {
         let request = try jsonRequest("/folders", method: "POST", body: CreateFolderRequest(name: name, parentFolderId: parentFolderId), authenticated: true)
         let (data, _) = try await execute(request)
@@ -503,6 +549,7 @@ actor APIClient {
         let response: AuthResponse = try decode(data)
         self.accessToken = response.token
         self.refreshToken = response.refreshToken
+        self.onTokensRotated?(response.token, response.refreshToken)
         return response
     }
 

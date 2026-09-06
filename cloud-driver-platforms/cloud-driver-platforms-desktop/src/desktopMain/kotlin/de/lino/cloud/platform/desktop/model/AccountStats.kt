@@ -1,6 +1,13 @@
 package de.lino.cloud.platform.desktop.model
 
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
+import de.lino.cloud.platform.rest.api.ApiClient
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Aggregate counts for [DashboardScreen] - everything the signed-in account owns, across every
@@ -29,38 +36,49 @@ data class AccountStats(
  * /folders` are both scoped to one folder at a time (see CLAUDE.md's "Folder organization"
  * section) - so this is a client-side recursive walk.
  *
- * **Deliberately sequential, not concurrent (fixed a real bug, 2026-09-01).** This used to recurse
- * via `mapConcurrently` (one call per folder level, each with its own fresh, uncoordinated
+ * **One flat, bounded-concurrency walk (fixed 2026-09-05; previously fully sequential, fixed
+ * 2026-09-01 from an even worse concurrency bug before that).** The original implementation
+ * recursed via `mapConcurrently` (one call per folder level, each with its own fresh, uncoordinated
  * semaphore) - the identical shape that made `AppViewModel.deleteEntries` throw `"too many
  * concurrent streams"` on a large-enough folder tree (see that function's own Javadoc for the full
  * mechanism): the real number of simultaneously in-flight HTTP requests multiplied with the tree's
- * depth/breadth instead of ever being capped, risking the same error here too against a wide/deep
- * enough account. Since this only ever issues read-only listing calls (no file content, no
- * upload/download), a plain sequential walk removes the risk entirely at a cost this call site can
- * afford - unlike `AppViewModel`'s file-duplicating/-deleting batches, there is no expensive
- * per-item network transfer here to parallelize; `listFiles`/`listFolders` are cheap metadata-only
- * calls. A single-threaded walk also means no concurrent branches can race the running totals, so
- * the `Mutex`-guarded accumulator this function used to need is gone too - plain closed-over `var`s
- * are enough.
+ * depth/breadth instead of ever being capped. That was fixed by making the walk fully sequential -
+ * safe, but it over-corrected: for an account with hundreds or thousands of folders, a fully
+ * sequential walk means that many *serialized* round trips before the Dashboard can render at all,
+ * directly against this app's own "fit for big data" goal.
+ *
+ * This walk now shares one [Semaphore] (capped at [ApiClient.DEFAULT_MAX_CONCURRENT_TRANSFERS],
+ * matching this codebase's existing concurrency-cap convention) across the *entire* recursive
+ * walk, not per level - every [walk] call, at any depth, acquires a permit from the same instance
+ * before issuing its own `listFiles`/`listFolders` calls, so the total number of in-flight listing
+ * calls never exceeds the cap regardless of the tree's shape, avoiding both the original streams
+ * bug and the serialized-latency regression. Since branches can now genuinely run concurrently, the
+ * running totals are [AtomicInteger]/[AtomicLong] rather than plain closed-over `var`s (the earlier
+ * `Mutex`-guarded accumulator this function once needed, then removed when it went fully
+ * sequential, would also have worked here, but a lock-free atomic add is simpler for a plain sum).
  */
 suspend fun CloudDriverClient.computeAccountStats(): AccountStats {
-    var fileCount = 0
-    var folderCount = 0
-    var totalBytes = 0L
+    val fileCount = AtomicInteger(0)
+    val folderCount = AtomicInteger(0)
+    val totalBytes = AtomicLong(0)
+    val semaphore = Semaphore(ApiClient.DEFAULT_MAX_CONCURRENT_TRANSFERS)
 
     suspend fun walk(folderId: String?) {
-        val files = this.listFiles(folderId)
-        val folders = this.listFolders(folderId)
+        val (files, folders) = semaphore.withPermit {
+            this.listFiles(folderId) to this.listFolders(folderId)
+        }
 
-        fileCount += files.size
-        folderCount += folders.size
-        totalBytes += files.sumOf { it.sizeBytes() }
+        fileCount.addAndGet(files.size)
+        folderCount.addAndGet(folders.size)
+        totalBytes.addAndGet(files.sumOf { it.sizeBytes() })
 
-        folders.forEach { folder -> walk(folder.folderId()) }
+        coroutineScope {
+            folders.map { folder -> async { walk(folder.folderId()) } }.forEach { it.await() }
+        }
     }
 
     walk(null)
     val trashBytes = this.listDeletedFiles().sumOf { it.file().sizeBytes() }
     val sharedFileCount = this.countFilesSharedByMe()
-    return AccountStats(fileCount, folderCount, totalBytes, trashBytes, sharedFileCount)
+    return AccountStats(fileCount.get(), folderCount.get(), totalBytes.get(), trashBytes, sharedFileCount)
 }

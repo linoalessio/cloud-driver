@@ -42,6 +42,27 @@ public final class SessionManager {
     public SessionManager(final ApiClient apiClient, final TokenStore tokenStore) {
         this.apiClient = apiClient;
         this.tokenStore = tokenStore;
+        this.apiClient.setTokensRotatedListener(this::persistCurrentSessionBestEffort);
+    }
+
+    /**
+     * Best-effort re-persist of whatever access/refresh token pair {@link #apiClient} currently
+     * holds - registered as {@link ApiClient#setTokensRotatedListener(Runnable)} so a token
+     * rotated outside an explicit {@link #login}/{@link #confirmRegistration}/{@link
+     * #confirmPasswordReset} call (most importantly {@link ApiClient}'s own transparent
+     * refresh-on-401 retry, and any direct {@link ApiClient#refresh()}/{@code refreshAsync()}
+     * call) is still written back to {@link #tokenStore} immediately - see {@link
+     * ApiClient#setTokensRotatedListener(Runnable)}'s own Javadoc for the bug this fixes. Swallows
+     * a failure to persist rather than propagating it: this runs synchronously inside whatever
+     * auth call just rotated the token, and a keychain write failing here must never break that
+     * call - the in-memory session (already updated) remains usable regardless.
+     */
+    private void persistCurrentSessionBestEffort() {
+        try {
+            this.tokenStore.save(this.encodeCurrentSessionOrThrow());
+        } catch (final TokenStoreException | IllegalStateException e) {
+            System.err.println("@SessionManager: failed to persist rotated session token: " + e.getMessage());
+        }
     }
 
     /** @return the underlying {@link ApiClient} for making authenticated calls once logged in */

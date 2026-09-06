@@ -12,8 +12,12 @@ struct StoredSession: Codable {
 
 /// Persists one `StoredSession` in the iOS Keychain under a fixed service/account pair - there is
 /// only ever one signed-in account per install of this app, so no per-user keying is needed.
-/// `kSecAttrAccessibleAfterFirstUnlock` keeps the session readable while the app runs in the
-/// background (e.g. a scheduled refresh) without requiring the device to be freshly unlocked.
+/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` keeps the session readable while the app
+/// runs in the background (e.g. a scheduled refresh) without requiring the device to be freshly
+/// unlocked, while excluding it from encrypted device backups/restores and iCloud Keychain sync -
+/// the plain (non-`ThisDeviceOnly`) variant does neither, so a 30-day-lived refresh token would
+/// otherwise travel inside a backup and grant a working session on a different physical device
+/// with no additional prompt.
 final class KeychainTokenStore {
     private let service = "de.lino.cloud.platform.mobile"
     private let account = "session"
@@ -31,7 +35,7 @@ final class KeychainTokenStore {
         SecItemDelete(baseQuery as CFDictionary)
         var attributes = baseQuery
         attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(attributes as CFDictionary, nil)
     }
 

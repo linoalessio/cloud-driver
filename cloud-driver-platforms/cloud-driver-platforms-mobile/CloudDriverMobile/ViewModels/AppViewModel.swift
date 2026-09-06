@@ -17,6 +17,14 @@ struct IdentifiableURL: Identifiable {
     let url: URL
 }
 
+/// The ceiling above which `uploadFileStreaming`/`downloadFileStreaming` refuse to fall back to
+/// the non-presigned transfer path rather than attempt it. That fallback (server-mediated, a
+/// single whole-body `Data` request/response) fully buffers the entire file in memory - fine for
+/// a small file, but with no cap at all a large one against a deployment lacking presigned S3
+/// transfer could plausibly trigger an OS memory-pressure ("jetsam") kill on a lower-RAM device.
+/// Presigned transfer itself (the normal path) streams and has no such limit.
+private let maxNonPresignedTransferBytes: Int64 = 200 * 1024 * 1024
+
 /// A file or folder as a single, selectable browser entry - the one shared file/folder union type
 /// backing both `FileBrowserView`'s multi-select set and the single-item payload its per-row "..."
 /// menu already builds (a selection of one). Replaces what used to be two near-identical
@@ -118,6 +126,14 @@ final class AppViewModel: ObservableObject {
     @Published var breadcrumbs: [Breadcrumb] = [Breadcrumb(folderId: nil, name: "Home")]
     @Published var files: [StoredFileSummaryResponse] = []
     @Published var folders: [FolderResponse] = []
+    /// The current folder view's own page cursors (added 2026-09-05) - `nil` once that list's last
+    /// page has been loaded. See `loadMoreEntries()`.
+    @Published var filesNextCursor: String?
+    @Published var foldersNextCursor: String?
+    /// Whether `FileBrowserView` should offer a "Load more" affordance for the current folder.
+    var hasMoreEntries: Bool { filesNextCursor != nil || foldersNextCursor != nil }
+    /// Matches cloud-driver-platforms-desktop's own `FOLDER_VIEW_PAGE_SIZE` convention.
+    private let fileBrowserPageSize = 200
 
     /// How `folders`/`files` are currently ordered in this view - independent of each other, each
     /// changed via `changeFolderSortOption(_:)`/`changeFileSortOption(_:)`.
@@ -234,6 +250,8 @@ final class AppViewModel: ObservableObject {
             self.currentUserUploadedBytes = nil
             self.files = []
             self.folders = []
+            self.filesNextCursor = nil
+            self.foldersNextCursor = nil
             self.currentFolderId = nil
             self.breadcrumbs = [Breadcrumb(folderId: nil, name: "Home")]
             self.sharedFiles = []
@@ -318,16 +336,45 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - File browser actions
 
+    /// Loads the current folder's *first* page of files/folders (added 2026-09-05 - previously an
+    /// unpaginated full listing, see `loadMoreEntries()`'s own doc comment for why that changed).
     private func refreshCurrentFolder() async throws {
-        async let filesResult = client.listFiles(folderId: currentFolderId)
-        async let foldersResult = client.listFolders(parentFolderId: currentFolderId)
-        files = sortedFiles(try await filesResult, by: fileSortOption)
-        folders = sortedFolders(try await foldersResult, by: folderSortOption, sizes: folderSizes)
+        async let filesResult = client.listFilesPage(folderId: currentFolderId, cursor: nil, limit: fileBrowserPageSize)
+        async let foldersResult = client.listFoldersPage(parentFolderId: currentFolderId, cursor: nil, limit: fileBrowserPageSize)
+        let filesPage = try await filesResult
+        let foldersPage = try await foldersResult
+        files = sortedFiles(filesPage.items, by: fileSortOption)
+        folders = sortedFolders(foldersPage.items, by: folderSortOption, sizes: folderSizes)
+        filesNextCursor = filesPage.nextCursor
+        foldersNextCursor = foldersPage.nextCursor
         if folderSortOption == .size { computeMissingFolderSizes() }
     }
 
     func loadCurrentFolder() {
         run { try await self.refreshCurrentFolder() }
+    }
+
+    /// Appends the next page of whichever of `files`/`folders` still has a cursor - added
+    /// 2026-09-05. Before this, `refreshCurrentFolder` fetched a folder's entire contents in one
+    /// unpaginated response, even though the server route (and the desktop client's own "Load
+    /// more") already supported cursor pagination - a real, avoidable cost (one large JSON payload
+    /// decoded synchronously) for a folder with thousands of files. `FileBrowserView` renders a
+    /// "Load more" row whenever `hasMoreEntries` is true.
+    func loadMoreEntries() {
+        guard hasMoreEntries else { return }
+        run {
+            if let cursor = self.filesNextCursor {
+                let page = try await self.client.listFilesPage(folderId: self.currentFolderId, cursor: cursor, limit: self.fileBrowserPageSize)
+                self.files = sortedFiles(self.files + page.items, by: self.fileSortOption)
+                self.filesNextCursor = page.nextCursor
+            }
+            if let cursor = self.foldersNextCursor {
+                let page = try await self.client.listFoldersPage(parentFolderId: self.currentFolderId, cursor: cursor, limit: self.fileBrowserPageSize)
+                self.folders = sortedFolders(self.folders + page.items, by: self.folderSortOption, sizes: self.folderSizes)
+                self.foldersNextCursor = page.nextCursor
+                if self.folderSortOption == .size { self.computeMissingFolderSizes() }
+            }
+        }
     }
 
     /// Changes how `folders` are ordered - re-sorts the already-loaded list immediately (no
@@ -438,21 +485,27 @@ final class AppViewModel: ObservableObject {
     /// aborting the whole restore the moment one item fails.
     func restoreAllTrash() {
         run {
-            var firstError: Error?
-            for entry in self.trashFiles {
+            // Restoring a file/folder has no ordering dependency on any other restore - see
+            // `deleteEntries` for the one batch here that genuinely does need a sequential phase.
+            // Added 2026-09-05: capped at 5 concurrent restores each, rather than one at a time -
+            // see `runConcurrently`'s own doc comment for why this app's batches were sequential.
+            var firstError = await runConcurrently(self.trashFiles, maxConcurrency: 5) { entry in
                 do {
                     try await self.client.restoreFile(fileId: entry.file.fileId)
+                    return nil
                 } catch {
-                    if firstError == nil { firstError = error }
+                    return error
                 }
             }
-            for entry in self.trashFolders {
+            let folderError = await runConcurrently(self.trashFolders, maxConcurrency: 5) { entry in
                 do {
                     try await self.client.restoreFolder(folderId: entry.folder.folderId)
+                    return nil
                 } catch {
-                    if firstError == nil { firstError = error }
+                    return error
                 }
             }
+            if firstError == nil { firstError = folderError }
             try await self.refreshTrash()
             if let firstError {
                 throw firstError
@@ -666,12 +719,17 @@ final class AppViewModel: ObservableObject {
     private func deleteEntries(_ entries: [SelectableEntry]) {
         run {
             let plan = try await self.planDelete(entries)
-            var firstError: Error?
-            for fileId in plan.fileIds {
+            // Files have no ordering dependency on each other - capped concurrent batch (added
+            // 2026-09-05, see `runConcurrently`'s own doc comment). Folders, in contrast, must stay
+            // a separate, strictly sequential, deepest-first phase: a parent can only be deleted
+            // once every file/subfolder placed directly inside it is already gone, and concurrent
+            // execution wouldn't respect that ordering the way this flat, pre-sorted list assumes.
+            var firstError = await runConcurrently(plan.fileIds, maxConcurrency: 5) { fileId in
                 do {
                     try await self.client.deleteFile(fileId: fileId)
+                    return nil
                 } catch {
-                    if firstError == nil { firstError = error }
+                    return error
                 }
             }
             for folderId in plan.folderIdsDeepestFirst {
@@ -693,8 +751,9 @@ final class AppViewModel: ObservableObject {
     /// multi-select confirm.
     func moveEntries(_ entries: [SelectableEntry], toFolderId folderId: String?) {
         run {
-            var firstError: Error?
-            for entry in entries {
+            // No ordering dependency between entries being moved - capped concurrent batch (added
+            // 2026-09-05, see `runConcurrently`'s own doc comment).
+            let firstError = await runConcurrently(entries, maxConcurrency: 5) { entry in
                 do {
                     switch entry {
                     case .file(let file):
@@ -702,8 +761,9 @@ final class AppViewModel: ObservableObject {
                     case .folder(let folder):
                         _ = try await self.client.updateFolder(folderId: folder.folderId, name: folder.name, parentFolderId: folderId)
                     }
+                    return nil
                 } catch {
-                    if firstError == nil { firstError = error }
+                    return error
                 }
             }
             self.exitSelectionMode()
@@ -719,17 +779,19 @@ final class AppViewModel: ObservableObject {
     /// an earlier failure, then rethrows the first one encountered - the caller decides how to
     /// surface it.
     func shareEntries(_ entries: [SelectableEntry], granteeEmail: String) async throws {
-        var firstError: Error?
-        for entry in entries {
+        // No ordering dependency between entries being shared - capped concurrent batch (added
+        // 2026-09-05, see `runConcurrently`'s own doc comment).
+        let firstError = await runConcurrently(entries, maxConcurrency: 5) { entry in
             do {
                 switch entry {
                 case .file(let file):
-                    try await client.shareFile(fileId: file.fileId, granteeEmail: granteeEmail)
+                    try await self.client.shareFile(fileId: file.fileId, granteeEmail: granteeEmail)
                 case .folder(let folder):
-                    try await client.shareFolder(folderId: folder.folderId, granteeEmail: granteeEmail)
+                    try await self.client.shareFolder(folderId: folder.folderId, granteeEmail: granteeEmail)
                 }
+                return nil
             } catch {
-                if firstError == nil { firstError = error }
+                return error
             }
         }
         if let firstError { throw firstError }
@@ -1010,6 +1072,14 @@ final class AppViewModel: ObservableObject {
         do {
             _ = try await client.uploadFileViaPresignedURL(fileName: fileName, fileURL: sourceURL, folderId: folderId, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
+            // This deployment hasn't configured presigned S3 transfer - the only remaining path
+            // fully buffers the file as `Data` before sending it. Refuse rather than risk an OOM
+            // kill for a file large enough that buffering it is a real memory-pressure risk - see
+            // `maxNonPresignedTransferBytes`'s own doc comment.
+            let sizeBytes = self.fileSize(at: sourceURL)
+            guard sizeBytes <= maxNonPresignedTransferBytes else {
+                throw APIError.server(status: 503, message: "This file is too large to upload without direct storage support configured on the server - contact your administrator.")
+            }
             let data = try await Task.detached(priority: .userInitiated) {
                 try Data(contentsOf: sourceURL)
             }.value
@@ -1054,7 +1124,7 @@ final class AppViewModel: ObservableObject {
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
-            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination) { transferred, total in
+            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination, knownSizeBytes: file.sizeBytes) { transferred, total in
                 self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
             }
             self.fileToShare = IdentifiableURL(url: destination)
@@ -1087,7 +1157,7 @@ final class AppViewModel: ObservableObject {
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
-            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination) { transferred, total in
+            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination, knownSizeBytes: file.sizeBytes) { transferred, total in
                 self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
             }
             self.previewURL = IdentifiableURL(url: destination)
@@ -1100,10 +1170,18 @@ final class AppViewModel: ObservableObject {
     /// `downloadFileContent(fileId:)` the moment the server reports (`503`) presigned transfer
     /// isn't available for this file/deployment. `onProgress` has the same "real progress on the
     /// presigned path, one final call on the fallback path" contract `uploadFileStreaming` documents.
-    private func downloadFileStreaming(fileId: String, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
+    ///
+    /// `knownSizeBytes` (the file's already-known size from its own summary/metadata) guards the
+    /// fallback the same way `uploadFileStreaming` guards its own - that path reads the whole
+    /// response body into one `Data` object, so a large file against a deployment lacking
+    /// presigned transfer is refused outright rather than risking an OOM kill.
+    private func downloadFileStreaming(fileId: String, destination: URL, knownSizeBytes: Int64, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         do {
             try await client.downloadFileViaPresignedURL(fileId: fileId, destination: destination, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
+            guard knownSizeBytes <= maxNonPresignedTransferBytes else {
+                throw APIError.server(status: 503, message: "This file is too large to download without direct storage support configured on the server - contact your administrator.")
+            }
             let data = try await client.downloadFileContent(fileId: fileId)
             try await Task.detached(priority: .userInitiated) {
                 try data.write(to: destination, options: .atomic)
@@ -1159,7 +1237,7 @@ final class AppViewModel: ObservableObject {
         try FileManager.default.createDirectory(at: extractedDirectory, withIntermediateDirectories: true)
 
         self.transferProgress = TransferProgress(kind: .extract, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
-        try await self.downloadFileStreaming(fileId: file.fileId, destination: archiveURL) { transferred, total in
+        try await self.downloadFileStreaming(fileId: file.fileId, destination: archiveURL, knownSizeBytes: file.sizeBytes) { transferred, total in
             self.transferProgress = TransferProgress(kind: .extract, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
         }
 
@@ -1205,22 +1283,73 @@ final class AppViewModel: ObservableObject {
         return plans
     }
 
-    /// Uploads every planned file sequentially, aggregating byte-level progress across the whole
-    /// batch (`alreadyTransferredBytes` is the archive download's own size, already "spent" against
-    /// `totalBytes` before this phase starts) into one continuous `transferProgress` update per
-    /// callback - so the bar never jumps backwards between files, and reads as one unbroken
-    /// operation from the download through the last re-uploaded file.
-    private func uploadPlannedFiles(_ plans: [PlannedUpload], alreadyTransferredBytes: Int64, totalBytes: Int64) async throws {
-        var completedBytes = alreadyTransferredBytes
-        for (index, plan) in plans.enumerated() {
-            let baseline = completedBytes
-            try await uploadFileStreaming(fileName: plan.localURL.lastPathComponent, sourceURL: plan.localURL, folderId: plan.remoteFolderId) { transferred, _ in
-                self.transferProgress = TransferProgress(
-                    kind: .extract, totalItems: plans.count + 1, completedItems: index + 1,
-                    totalBytes: totalBytes, transferredBytes: baseline + transferred
-                )
-            }
-            completedBytes += plan.sizeBytes
+    /// One planned upload paired with its position in the batch - `runConcurrently` needs an
+    /// actual (`Sendable`) type to iterate, and a bare tuple can't conform to a generic
+    /// `Sendable` constraint the way a small wrapper struct can.
+    private struct IndexedPlannedUpload {
+        let index: Int
+        let plan: PlannedUpload
+    }
+
+    /// Thread-safe aggregator for `uploadPlannedFiles`' concurrent uploads - an `actor` (not a
+    /// captured local `var`) specifically so multiple in-flight uploads' progress callbacks, each
+    /// arriving from a different concurrent task, can update their own slot and read back the
+    /// current total without racing. Scoped to one batch (constructed fresh per `uploadPlannedFiles`
+    /// call), not a shared/reusable type.
+    private actor ByteProgressAccumulator {
+        private var transferredByIndex: [Int: Int64] = [:]
+        private(set) var completedCount = 0
+
+        func update(index: Int, transferred: Int64) -> Int64 {
+            transferredByIndex[index] = transferred
+            return transferredByIndex.values.reduce(0, +)
         }
+
+        func markCompleted(index: Int, sizeBytes: Int64) -> (totalTransferred: Int64, completedCount: Int) {
+            transferredByIndex[index] = sizeBytes
+            completedCount += 1
+            return (transferredByIndex.values.reduce(0, +), completedCount)
+        }
+    }
+
+    /// Uploads every planned file with at most 4 running concurrently (added 2026-09-05 - see
+    /// `runConcurrently`'s own doc comment; there's no ordering dependency between these files,
+    /// every destination folder was already created up front by `planDirectoryTree`), aggregating
+    /// byte-level progress across the whole batch via `ByteProgressAccumulator`
+    /// (`alreadyTransferredBytes` is the archive download's own size, already "spent" against
+    /// `totalBytes` before this phase starts) into one continuous `transferProgress` update per
+    /// callback - so the bar reads as one unbroken operation from the download through the last
+    /// re-uploaded file, same as the sequential version this replaces (concurrent completion order
+    /// can make the bar's *completedItems* count tick non-monotonically for one frame here and
+    /// there - a cosmetic trade-off accepted for the real wall-clock win on a large archive).
+    private func uploadPlannedFiles(_ plans: [PlannedUpload], alreadyTransferredBytes: Int64, totalBytes: Int64) async throws {
+        guard !plans.isEmpty else { return }
+        let accumulator = ByteProgressAccumulator()
+        let indexed = plans.enumerated().map { IndexedPlannedUpload(index: $0.offset, plan: $0.element) }
+
+        let firstError = await runConcurrently(indexed, maxConcurrency: 4) { item in
+            do {
+                try await self.uploadFileStreaming(fileName: item.plan.localURL.lastPathComponent, sourceURL: item.plan.localURL, folderId: item.plan.remoteFolderId) { transferred, _ in
+                    Task { @MainActor in
+                        let sum = await accumulator.update(index: item.index, transferred: transferred)
+                        self.transferProgress = TransferProgress(
+                            kind: .extract, totalItems: plans.count + 1, completedItems: await accumulator.completedCount + 1,
+                            totalBytes: totalBytes, transferredBytes: alreadyTransferredBytes + sum
+                        )
+                    }
+                }
+                let (sum, completedCount) = await accumulator.markCompleted(index: item.index, sizeBytes: item.plan.sizeBytes)
+                await MainActor.run {
+                    self.transferProgress = TransferProgress(
+                        kind: .extract, totalItems: plans.count + 1, completedItems: completedCount + 1,
+                        totalBytes: totalBytes, transferredBytes: alreadyTransferredBytes + sum
+                    )
+                }
+                return nil
+            } catch {
+                return error
+            }
+        }
+        if let firstError { throw firstError }
     }
 }

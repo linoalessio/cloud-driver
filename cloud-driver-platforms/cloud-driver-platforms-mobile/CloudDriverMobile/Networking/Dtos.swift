@@ -6,6 +6,17 @@ import Foundation
 // hand-kept-in-sync rather than shared code: this app only ever talks HTTP, the same boundary
 // `cloud-driver-platforms-rest` itself enforces against the server modules.
 
+/// The `{"items", "nextCursor"}` envelope `GET /files`/`GET /folders` return when called with
+/// `?limit=` (cursor pagination, mirrors the server's `CursorPage<T>` and
+/// `cloud-driver-platforms-rest`'s `Dtos.Page<T>`/`cloud-driver-platforms-desktop`'s
+/// `Dtos.Page<T>`). `nextCursor` is `nil` once the last page has been reached. Swift's `Codable`
+/// handles a generic type directly - no `TypeToken`/reflection dance needed the way the JVM
+/// clients require.
+struct Page<T: Decodable>: Decodable {
+    let items: [T]
+    let nextCursor: String?
+}
+
 struct AuthRequest: Encodable {
     let username: String
     let password: String

@@ -2,6 +2,7 @@ package de.lino.cloud.plugin.factory.container;
 
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
+import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.plugin.factory.*;
@@ -15,6 +16,7 @@ import lombok.SneakyThrows;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * Default {@link IFactoryContainer} implementation: builds one mutually
@@ -41,6 +43,18 @@ public class FactoryContainer implements IFactoryContainer {
      * indefinitely. See CLAUDE.md's "`EntityDatabaseClient`" section for the incident this fixes.
      */
     private static final Duration ENTITY_LIST_CACHE_TTL = Duration.ofMinutes(5);
+
+    /**
+     * Per-type override of {@link #ENTITY_LIST_CACHE_TTL}, passed to {@link EntityDatabaseClient}'s
+     * {@code listCacheTtlOverrides} constructor argument. {@code StoredFile} is disabled outright
+     * ({@link Duration#ZERO}) rather than merely shortened: unlike every other type this container
+     * scans (e.g. {@code StoredFileOwnership}, a small metadata row), a {@code StoredFile}'s {@code
+     * getEntities} result carries full decrypted file content - caching that at the list level for
+     * any nonzero window, however short, still pins an account's entire file corpus in heap for that
+     * window on every call (e.g. the terminal's {@code stats} command). Disabling it means that
+     * content is never held any longer than the single call that produced it.
+     */
+    private static final Map<Class<?>, Duration> ENTITY_LIST_CACHE_TTL_OVERRIDES = Map.of(StoredFile.class, Duration.ZERO);
 
     /** Encrypted entity persistence, backed by a fresh {@link EntityDatabaseClient}. */
     private final DataFactory dataFactory;
@@ -98,7 +112,8 @@ public class FactoryContainer implements IFactoryContainer {
 
         this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(
                 databaseProvider, envelopeEncryptionService,
-                EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL
+                EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL,
+                ENTITY_LIST_CACHE_TTL_OVERRIDES
         ));
         this.objectStorageService = objectStorageService;
         this.fileFactory = new DefaultFileFactory(

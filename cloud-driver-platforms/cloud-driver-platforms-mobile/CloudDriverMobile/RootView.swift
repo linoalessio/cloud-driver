@@ -14,6 +14,14 @@ private enum Tab: Hashable {
 struct RootView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var selectedTab: Tab = .home
+    // Captured on each sheet's own presentation so `onDismiss` (which SwiftUI calls with no
+    // argument, after the driving `Identifiable?` has already been cleared) still knows which
+    // temp file to remove. Fixes a real data-remanence gap: `download(_:)`/`previewFile(_:)`
+    // (AppViewModel.swift) both write full plaintext content into the sandbox's tmp directory and
+    // never removed it - every download/preview left a permanent, unencrypted copy behind,
+    // reclaimed only opportunistically by iOS.
+    @State private var lastSharedFileURL: URL?
+    @State private var lastPreviewFileURL: URL?
 
     /// A manually-constructed `Binding` (passed to `TabView(selection:)` instead of `$selectedTab`
     /// directly) so its `set` closure runs on **every** tap of a tab item - including re-tapping
@@ -101,11 +109,23 @@ struct RootView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .sheet(item: $viewModel.fileToShare) { item in
+        .sheet(item: $viewModel.fileToShare, onDismiss: {
+            if let url = lastSharedFileURL {
+                try? FileManager.default.removeItem(at: url)
+                lastSharedFileURL = nil
+            }
+        }) { item in
             ActivityView(activityItems: [item.url])
+                .onAppear { lastSharedFileURL = item.url }
         }
-        .sheet(item: $viewModel.previewURL) { item in
+        .sheet(item: $viewModel.previewURL, onDismiss: {
+            if let url = lastPreviewFileURL {
+                try? FileManager.default.removeItem(at: url)
+                lastPreviewFileURL = nil
+            }
+        }) { item in
             FilePreviewView(url: item.url) { viewModel.previewURL = nil }
+                .onAppear { lastPreviewFileURL = item.url }
         }
     }
 }

@@ -26,6 +26,7 @@ import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
+import de.lino.cloud.plugin.file.TrashPurgeScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
 import de.lino.cloud.plugin.storage.object.S3ObjectStorageService;
@@ -93,6 +94,8 @@ public final class CloudBootstrap {
                     startTerminalBootstrap()
 
                     , startPendingUploadScheduler()
+
+                    , startTrashPurgeScheduler()
 
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
 
@@ -261,6 +264,29 @@ public final class CloudBootstrap {
         pendingUploadScheduler.start(Duration.ofMinutes(1));
 
         return pendingUploadScheduler::shutdown;
+    }
+
+    /**
+     * Starts a {@link TrashPurgeScheduler} on its own ticker thread, using {@link
+     * TrashPurgeScheduler#withConfiguredRetention} (30-day default, or {@code configuration.json}'s
+     * {@code "trash-retention-days"} if set) - the retention-window decision {@code
+     * TrashPurgeScheduler}'s own Javadoc requires before wiring it in at all has been made
+     * deliberately (Lino, 2026-09-05: wire in with the existing 30-day default). Ticks once a day -
+     * a 30-day-scale retention window has no need for finer-grained polling, and the first sweep
+     * after every restart happening up to a day later is an accepted, non-urgent delay for a
+     * background housekeeping task operating on already-30-day-old data.
+     *
+     * @return the scheduler's shutdown action
+     */
+    private static Runnable startTrashPurgeScheduler() {
+
+        final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
+        final FileFactory fileFactory = CLOUD_DRIVER.getFactoryContainer().getFileFactory();
+
+        final TrashPurgeScheduler trashPurgeScheduler = TrashPurgeScheduler.withConfiguredRetention(dataFactory, fileFactory);
+        trashPurgeScheduler.start(Duration.ofDays(1));
+
+        return trashPurgeScheduler::shutdown;
     }
 
     /**

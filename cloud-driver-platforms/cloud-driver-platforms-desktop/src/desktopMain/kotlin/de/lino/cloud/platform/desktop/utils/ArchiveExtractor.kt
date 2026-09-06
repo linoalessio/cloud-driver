@@ -8,6 +8,15 @@ import java.nio.file.Path
 import java.util.zip.ZipFile
 
 /**
+ * Ceiling on the total number of decompressed bytes [extractZip] will write across every entry of
+ * one archive combined, before aborting - a defense against a "zip bomb" (a small, maliciously
+ * crafted archive that decompresses to a vastly larger size, exhausting local disk). Generous
+ * enough for any realistic archive this app would legitimately be asked to extract, but bounded -
+ * tune here if a genuinely larger extraction is ever a real need.
+ */
+private const val MAX_TOTAL_DECOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024
+
+/**
  * Extracts [zipPath]'s entries into [destinationDirectory] (created if missing), recreating the
  * archive's own internal folder structure on disk - the read-side counterpart to [zipDirectory],
  * backing `AppViewModel.extractArchive`'s "double-click a zip to unarchive it into the current
@@ -36,10 +45,19 @@ import java.util.zip.ZipFile
  * filesystem I/O plus DEFLATE decompression has no business running on the calling coroutine's
  * own dispatcher, in particular never the single-threaded Compose UI dispatcher.
  *
- * @throws IOException if the zip is malformed, or an entry's path would escape [destinationDirectory]
+ * Also guards against a "zip bomb": tracks the cumulative decompressed bytes actually written
+ * across every entry and aborts, mid-archive, the moment the running total would exceed
+ * [MAX_TOTAL_DECOMPRESSED_BYTES] - a small, maliciously crafted archive that expands to a vastly
+ * larger size on disk is rejected rather than silently exhausting local storage. Based on bytes
+ * genuinely copied (not an entry's declared, and therefore spoofable, size metadata), so an entry
+ * lying about its own size doesn't bypass the check.
+ *
+ * @throws IOException if the zip is malformed, an entry's path would escape [destinationDirectory],
+ *                      or the archive's total decompressed size would exceed [MAX_TOTAL_DECOMPRESSED_BYTES]
  */
 suspend fun extractZip(zipPath: Path, destinationDirectory: Path): Unit = withContext(Dispatchers.IO) {
     Files.createDirectories(destinationDirectory)
+    var totalDecompressedBytes = 0L
     ZipFile(zipPath.toFile()).use { zipFile ->
         for (entry in zipFile.entries()) {
             val entryName = entry.name.replace('\\', '/')
@@ -51,8 +69,12 @@ suspend fun extractZip(zipPath: Path, destinationDirectory: Path): Unit = withCo
                 Files.createDirectories(resolved)
             } else {
                 Files.createDirectories(resolved.parent)
-                zipFile.getInputStream(entry).use { input ->
+                val entryBytes = zipFile.getInputStream(entry).use { input ->
                     Files.newOutputStream(resolved).use { out -> input.copyTo(out) }
+                }
+                totalDecompressedBytes += entryBytes
+                if (totalDecompressedBytes > MAX_TOTAL_DECOMPRESSED_BYTES) {
+                    throw IOException("Zip archive exceeds the maximum allowed decompressed size ($MAX_TOTAL_DECOMPRESSED_BYTES bytes)")
                 }
             }
         }

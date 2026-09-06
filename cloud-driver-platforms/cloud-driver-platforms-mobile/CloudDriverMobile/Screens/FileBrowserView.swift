@@ -231,6 +231,27 @@ struct FileBrowserView: View {
                         if viewModel.folders.isEmpty && viewModel.files.isEmpty && !viewModel.busy {
                             emptyState
                         }
+
+                        // Added 2026-09-05: the current folder now loads one page (200 entries) at
+                        // a time rather than its entire contents in one response - see
+                        // `AppViewModel.loadMoreEntries`'s own doc comment. Deliberately an
+                        // explicit tap, not auto-load-on-scroll, matching this app's own
+                        // convention of every action being a deliberate, visible interaction.
+                        if viewModel.hasMoreEntries {
+                            Button {
+                                viewModel.loadMoreEntries()
+                            } label: {
+                                if viewModel.busy {
+                                    ProgressView()
+                                } else {
+                                    Text("Load more")
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(CloudTheme.accent)
+                            .padding(.vertical, 8)
+                            .disabled(viewModel.busy)
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
