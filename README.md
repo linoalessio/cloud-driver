@@ -16,6 +16,7 @@ module's own `README.md` (linked below) is the reference for that module's code.
 | [docs/configuration.md](docs/configuration.md) | Every environment-specific config file and key |
 | [docs/getting-started.md](docs/getting-started.md) | Building and running the backend, desktop app, and mobile app locally |
 | [docs/api-reference.md](docs/api-reference.md) | The REST API surface both clients use |
+| [docs/api-usage.md](docs/api-usage.md) | Code samples for every way to call the system — in-process Java, REST, and each client library |
 | [docs/testing.md](docs/testing.md) | How changes are verified today |
 | [docs/deployment.md](docs/deployment.md) | Release process, CI, and how the backend reaches a server |
 | [docs/contributing.md](docs/contributing.md) | Code conventions and how to extend the system |

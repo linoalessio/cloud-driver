@@ -8,6 +8,9 @@ Full contract: [`cloud-driver-extensions/cloud-driver-extensions-rest/README.md`
 
 Client library covering these routes: [`cloud-driver-platforms-rest`](../cloud-driver-platforms/cloud-driver-platforms-rest/README.md)
 
+For code samples calling these routes (and every other way to use the system — the in-process Java
+API, each client library, the operator terminal), see [api-usage.md](api-usage.md).
+
 ## Authentication
 
 Every route other than the ones below requires an `Authorization: Bearer <token>` header (a
