@@ -1,4 +1,11 @@
 import Foundation
+import PhotosUI
+// `PhotosPickerItem` (used by `uploadPickedPhotos` below) lives in PhotosUI's SwiftUI cross-import
+// overlay, which only auto-loads in a file that imports *both* `PhotosUI` and `SwiftUI` together -
+// confirmed the hard way via a real `xcodebuild` failure ("cannot find type 'PhotosPickerItem' in
+// scope") before this import was added; `FileBrowserView.swift` already imports `SwiftUI` for
+// unrelated reasons, which is why the same type resolves fine there.
+import SwiftUI
 import ZIPFoundation
 
 /// One entry in the current folder-navigation trail - `folderId == nil` means the root ("Home").
@@ -1256,7 +1263,10 @@ final class AppViewModel: ObservableObject {
             kind: .extract, totalItems: plans.count + 1, completedItems: 1,
             totalBytes: overallTotalBytes, transferredBytes: file.sizeBytes
         )
-        try await uploadPlannedFiles(plans, alreadyTransferredBytes: file.sizeBytes, totalBytes: overallTotalBytes)
+        try await uploadPlannedFiles(
+            plans, kind: .extract, totalItems: plans.count + 1, completedItemsBase: 1,
+            alreadyTransferredBytes: file.sizeBytes, totalBytes: overallTotalBytes
+        )
     }
 
     /// Recursively creates every subfolder directly/transitively inside `localDirectory` under
@@ -1314,15 +1324,27 @@ final class AppViewModel: ObservableObject {
 
     /// Uploads every planned file with at most 4 running concurrently (added 2026-09-05 - see
     /// `runConcurrently`'s own doc comment; there's no ordering dependency between these files,
-    /// every destination folder was already created up front by `planDirectoryTree`), aggregating
-    /// byte-level progress across the whole batch via `ByteProgressAccumulator`
-    /// (`alreadyTransferredBytes` is the archive download's own size, already "spent" against
-    /// `totalBytes` before this phase starts) into one continuous `transferProgress` update per
-    /// callback - so the bar reads as one unbroken operation from the download through the last
-    /// re-uploaded file, same as the sequential version this replaces (concurrent completion order
-    /// can make the bar's *completedItems* count tick non-monotonically for one frame here and
-    /// there - a cosmetic trade-off accepted for the real wall-clock win on a large archive).
-    private func uploadPlannedFiles(_ plans: [PlannedUpload], alreadyTransferredBytes: Int64, totalBytes: Int64) async throws {
+    /// every destination folder was already created up front by the caller), aggregating
+    /// byte-level progress across the whole batch via `ByteProgressAccumulator` into one continuous
+    /// `transferProgress` update per callback - so the bar reads as one unbroken operation, same as
+    /// the sequential version this replaces (concurrent completion order can make the bar's
+    /// *completedItems* count tick non-monotonically for one frame here and there - a cosmetic
+    /// trade-off accepted for the real wall-clock win on a large batch).
+    ///
+    /// Generalized 2026-09-06 (was `downloadAndExtractArchive`'s own private helper, hardcoded to
+    /// `.extract`) so `uploadPickedPhotos` below could reuse it for a plain multi-photo upload
+    /// instead of hand-rolling a second, near-identical concurrent-batch-with-aggregated-progress
+    /// implementation. `totalItems`/`completedItemsBase` let each caller account for a step that
+    /// isn't part of `plans` itself (`downloadAndExtractArchive`'s own already-completed archive
+    /// download; a plain photo upload has no such step, so it passes `plans.count`/`0`).
+    private func uploadPlannedFiles(
+        _ plans: [PlannedUpload],
+        kind: TransferKind,
+        totalItems: Int,
+        completedItemsBase: Int,
+        alreadyTransferredBytes: Int64,
+        totalBytes: Int64
+    ) async throws {
         guard !plans.isEmpty else { return }
         let accumulator = ByteProgressAccumulator()
         let indexed = plans.enumerated().map { IndexedPlannedUpload(index: $0.offset, plan: $0.element) }
@@ -1333,7 +1355,7 @@ final class AppViewModel: ObservableObject {
                     Task { @MainActor in
                         let sum = await accumulator.update(index: item.index, transferred: transferred)
                         self.transferProgress = TransferProgress(
-                            kind: .extract, totalItems: plans.count + 1, completedItems: await accumulator.completedCount + 1,
+                            kind: kind, totalItems: totalItems, completedItems: completedItemsBase + (await accumulator.completedCount),
                             totalBytes: totalBytes, transferredBytes: alreadyTransferredBytes + sum
                         )
                     }
@@ -1341,7 +1363,7 @@ final class AppViewModel: ObservableObject {
                 let (sum, completedCount) = await accumulator.markCompleted(index: item.index, sizeBytes: item.plan.sizeBytes)
                 await MainActor.run {
                     self.transferProgress = TransferProgress(
-                        kind: .extract, totalItems: plans.count + 1, completedItems: completedCount + 1,
+                        kind: kind, totalItems: totalItems, completedItems: completedItemsBase + completedCount,
                         totalBytes: totalBytes, transferredBytes: alreadyTransferredBytes + sum
                     )
                 }
@@ -1351,5 +1373,54 @@ final class AppViewModel: ObservableObject {
             }
         }
         if let firstError { throw firstError }
+    }
+
+    /// Uploads one or more images picked via the system Photos picker (`PhotosPicker`, PhotosUI) -
+    /// added 2026-09-06, per Lino's own request: upload images straight from "Photos" as well,
+    /// alongside the existing document-picker/folder-picker/scanner upload paths. `PhotosPicker`
+    /// runs the system's own out-of-process picker UI, so - unlike a hypothetical full-library
+    /// integration - this app never needs (and never requests) `NSPhotoLibraryUsageDescription`/
+    /// library-access permission at all: it only ever receives the specific items the user
+    /// themselves picked, the same "no permission needed" property `DocumentScannerView`'s camera
+    /// access does *not* share (that one genuinely needs `NSCameraUsageDescription`).
+    ///
+    /// Each `PhotosPickerItem` is loaded as `Data` (`loadTransferable(type: Data.self)` hands back
+    /// the original underlying bytes, not a re-encoded copy) and written to a throwaway temp file
+    /// before upload - the same "plan first as local files, then one capped-concurrency batch"
+    /// shape `uploadPlannedFiles` already provides, reused here directly rather than duplicated.
+    /// A picked item has no filename of its own reachable through this API without a full
+    /// `PHAsset`/library-access round trip (which would defeat the point of using the
+    /// permission-less picker in the first place), so each is named
+    /// `"<UUID>_<timestamp-in-milliseconds>.<ext>"` - the same synthesized-name convention
+    /// `uploadScannedDocument` already uses for the same reason - with `<ext>` read from the item's
+    /// own `supportedContentTypes` (falling back to `"jpg"` if that's somehow empty) so the server
+    /// still infers the right content type from the file extension.
+    func uploadPickedPhotos(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        run {
+            defer { self.transferProgress = nil }
+            let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+            var plans: [PlannedUpload] = []
+            for item in items {
+                guard let data = try await item.loadTransferable(type: Data.self), !data.isEmpty else { continue }
+                let fileExtension = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+                let fileName = "\(UUID().uuidString)_\(Int(Date().timeIntervalSince1970 * 1000)).\(fileExtension)"
+                let localURL = tempDirectory.appendingPathComponent(fileName)
+                try data.write(to: localURL, options: .atomic)
+                plans.append(PlannedUpload(localURL: localURL, remoteFolderId: self.currentFolderId, sizeBytes: Int64(data.count)))
+            }
+            guard !plans.isEmpty else {
+                self.errorMessage = "Couldn't read the selected photo(s)."
+                return
+            }
+
+            let totalBytes = plans.reduce(Int64(0)) { $0 + $1.sizeBytes }
+            self.transferProgress = TransferProgress(kind: .upload, totalItems: plans.count, completedItems: 0, totalBytes: totalBytes, transferredBytes: 0)
+            try await self.uploadPlannedFiles(plans, kind: .upload, totalItems: plans.count, completedItemsBase: 0, alreadyTransferredBytes: 0, totalBytes: totalBytes)
+            try await self.refreshCurrentFolder()
+        }
     }
 }

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 import VisionKit
@@ -89,6 +90,13 @@ struct FileBrowserView: View {
     /// Whether the document scanner (`DocumentScannerView`) is currently presented - added
     /// 2026-09-05, per Lino's own request: scan a document with the camera and import it as a PDF.
     @State private var isShowingScanner = false
+    /// Backs `.photosPicker` below - added 2026-09-06, per Lino's own request: upload images
+    /// straight from "Photos". Cleared back to `[]` once handed off to
+    /// `viewModel.uploadPickedPhotos`, via `.onChange`, so re-picking the exact same photo again
+    /// later still fires a fresh change event (SwiftUI's `.onChange` only fires on an actual value
+    /// change - an unchanged `[PhotosPickerItem]` array wouldn't re-trigger otherwise).
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isShowingPhotosPicker = false
     @State private var quickActionMenu: ActiveQuickActionMenu?
     /// Continuously updated by `quickActionGesture`'s own `DragGesture` while a press is active -
     /// read once a long press actually succeeds, to know where to show the menu. A single shared
@@ -133,6 +141,10 @@ struct FileBrowserView: View {
                                     ForEach(Array(viewModel.folders.enumerated()), id: \.element.id) { index, folder in
                                         let entry = SelectableEntry.folder(folder)
                                         Button {
+                                            // Debounce against the long-press menu also opening
+                                            // this row - see `quickActionGesture()`'s own doc
+                                            // comment for the full "Fixed a real bug" writeup.
+                                            guard quickActionMenu == nil else { return }
                                             if viewModel.isSelecting {
                                                 viewModel.toggleSelection(entry)
                                             } else {
@@ -189,6 +201,9 @@ struct FileBrowserView: View {
                                     ForEach(Array(viewModel.files.enumerated()), id: \.element.id) { index, file in
                                         let entry = SelectableEntry.file(file)
                                         Button {
+                                            // Same debounce as the folder row above - see
+                                            // `quickActionGesture()`'s own doc comment.
+                                            guard quickActionMenu == nil else { return }
                                             if viewModel.isSelecting {
                                                 viewModel.toggleSelection(entry)
                                             } else {
@@ -525,6 +540,19 @@ struct FileBrowserView: View {
             )
             .ignoresSafeArea()
         }
+        // "Upload from Photos" (added 2026-09-06, per Lino's own request) - the system's own
+        // out-of-process Photos picker (`PhotosPicker`/`PhotosUI`), needing no library-access
+        // permission at all (see `AppViewModel.uploadPickedPhotos`'s own doc comment). No
+        // `matching:` filter beyond `.images` - videos/Live Photos aren't handled by this first
+        // pass. `selectedPhotoItems` is cleared right after handing the picked items off, so
+        // picking the exact same photo again later still triggers a fresh `.onChange`.
+        .photosPicker(isPresented: $isShowingPhotosPicker, selection: $selectedPhotoItems, matching: .images)
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            guard !newItems.isEmpty else { return }
+            let items = newItems
+            selectedPhotoItems = []
+            viewModel.uploadPickedPhotos(items)
+        }
         // Error display and the download share sheet are both owned by RootView (shared across
         // every tab) - see its own comment.
     }
@@ -545,6 +573,9 @@ struct FileBrowserView: View {
             },
             QuickAction("Upload folder", systemImage: "folder.badge.plus") {
                 pendingImport = .folder
+            },
+            QuickAction("Upload from Photos", systemImage: "photo.on.rectangle") {
+                isShowingPhotosPicker = true
             },
             QuickAction("New folder", systemImage: "plus.rectangle.on.folder") {
                 newFolderName = ""
@@ -641,6 +672,30 @@ struct FileBrowserView: View {
     /// point - immediately, with no preview/blur animation, unlike a native `.contextMenu`, per
     /// Lino's explicit request. `SimultaneousGesture` (not `.exclusively(before:)`) so this never
     /// competes with - or blocks - a row's own tap-to-open `Button` action underneath it.
+    ///
+    /// **Fixed a real, confirmed bug (2026-09-06): holding a row long enough to open its
+    /// `QuickActionMenu` *also* opened that folder/file - two actions from what should have been
+    /// one gesture.** Root cause is exactly what "never competes with - or blocks" above describes,
+    /// taken to its logical conclusion: `SimultaneousGesture` lets `LongPressGesture` and the row's
+    /// own `Button` tap recognizer track the *same* touch fully independently. `LongPressGesture`'s
+    /// `onEnded` fires the moment `minimumDuration` (0.2s) elapses - while the finger is still down,
+    /// well before it lifts - so by the time the touch actually releases, `quickActionMenu` is
+    /// already showing. A `Button`, though, doesn't care how long a press lasted: like UIKit's
+    /// `.touchUpInside`, it fires its action on any release that lands back inside its own bounds,
+    /// long hold included - the `QuickActionMenu` overlay appearing mid-hold doesn't retroactively
+    /// cancel a touch the `Button`'s own recognizer already started tracking before that overlay
+    /// existed, so the release still reaches it. Net effect: release the hold, and both the menu
+    /// stayed open *and* the row's own open/preview action fired.
+    ///
+    /// **Fix: each row's `Button` action now guards on `quickActionMenu == nil` as its first line**
+    /// (see the two call sites below) - a plain debounce, exactly matching Lino's own framing of
+    /// the fix ("soll sich nur öffnen, wenn man unter einer gewissen Zeit drückt"): `quickActionMenu`
+    /// only ever becomes non-`nil` once the long-press threshold has actually elapsed, so a real
+    /// quick tap (released before 0.2s) always finds it `nil` and opens the row normally, while a
+    /// hold that crossed the threshold finds it already set and skips the open/preview action -
+    /// leaving the menu as the only thing that happened. The menu itself is left untouched by this
+    /// guard (still showing) - only the accidental side effect of also opening the row is
+    /// suppressed.
     private func quickActionGesture() -> some Gesture {
         SimultaneousGesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.menuCoordinateSpace))

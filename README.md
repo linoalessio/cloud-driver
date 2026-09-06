@@ -2,7 +2,7 @@
 
 An encrypted cloud storage system: a Java backend that envelope-encrypts every stored record
 (AES-256-GCM, KMS/HSM-style key wrapping) before persisting it, exposed over a JWT-authenticated
-REST API, with a native desktop client and a native iOS client on top of it.
+REST API, with a native desktop client, a native iOS client, and a Python SDK on top of it.
 
 This file is the map. Detailed, cross-cutting documentation lives under [`docs/`](docs/); each
 module's own `README.md` (linked below) is the reference for that module's code.
@@ -34,6 +34,7 @@ module's own `README.md` (linked below) is the reference for that module's code.
 | `cloud-driver-platforms-rest` | REST API client library, shared by the desktop app | [README](cloud-driver-platforms/cloud-driver-platforms-rest/README.md) |
 | `cloud-driver-platforms-desktop` | Desktop client app (macOS / Windows / Linux) | [README](cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
 | `cloud-driver-platforms-mobile` | Mobile client app (iOS) | [README](cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
+| `cloud-driver-python` | Full-coverage Python SDK for writing microservices against the REST/WebSocket API | [README](cloud-driver-python/README.md) |
 
 See [docs/architecture.md](docs/architecture.md) for how these pieces actually run together (one
 backend process hosting several feature modules, not a fleet of independently deployed services),
