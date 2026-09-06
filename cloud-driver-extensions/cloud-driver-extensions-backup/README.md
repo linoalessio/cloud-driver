@@ -4,7 +4,7 @@ Wraps `DatabaseBackupScheduler` - a keyset-paginated, streaming Postgres backup 
 
 ## Project structure
 
-Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), itself a top-level sibling of `cloud-driver-api`/`cloud-driver-auth`/`cloud-driver-plugin`/`cloud-driver-bootstrap` in the root reactor. This module's own `pom.xml` sets `packaging=jar` and declares exactly one in-repo Maven dependency, `cloud-driver-plugin` (`1.0.2`) - it does **not** depend on `cloud-driver-bootstrap`/`cloud-driver-auth` directly at the Maven level.
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), itself a top-level sibling of `cloud-driver-api`/`cloud-driver-auth`/`cloud-driver-plugin`/`cloud-driver-bootstrap` in the root reactor. This module's own `pom.xml` sets `packaging=jar` and declares exactly one in-repo Maven dependency, `cloud-driver-plugin` (`1.0.3`) - it does **not** depend on `cloud-driver-bootstrap`/`cloud-driver-auth` directly at the Maven level.
 
 `extension.json` (`src/main/resources`):
 

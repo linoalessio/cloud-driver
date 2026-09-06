@@ -4,7 +4,7 @@ Exposes operational metrics (upload counts by outcome, pending-upload queue dept
 
 ## Project structure
 
-Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling of `cloud-driver-extensions-backup`/`-rest`/`-terminal`/`-watcher`. This module's own `pom.xml` sets `packaging=jar` and declares three dependencies: `cloud-driver-plugin` (`1.0.2`, in-repo - needed for `DefaultFileFactory#getPendingUploadCache()`, and transitively brings in `cloud-driver-api`/`cloud-driver-auth`), `io.micrometer:micrometer-registry-prometheus:1.13.6` (pulls in `micrometer-core` transitively), and `io.javalin:javalin:7.2.3` (pinned to the exact same version `cloud-driver-plugin` already uses, so only one Javalin version ever lands on the classpath).
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling of `cloud-driver-extensions-backup`/`-rest`/`-terminal`/`-watcher`. This module's own `pom.xml` sets `packaging=jar` and declares three dependencies: `cloud-driver-plugin` (`1.0.3`, in-repo - needed for `DefaultFileFactory#getPendingUploadCache()`, and transitively brings in `cloud-driver-api`/`cloud-driver-auth`), `io.micrometer:micrometer-registry-prometheus:1.13.6` (pulls in `micrometer-core` transitively), and `io.javalin:javalin:7.2.3` (pinned to the exact same version `cloud-driver-plugin` already uses, so only one Javalin version ever lands on the classpath).
 
 `extension.json` (`src/main/resources`):
 

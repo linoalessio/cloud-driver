@@ -10,11 +10,11 @@ The cryptographic design follows `../architecture/SECURITY_REQUIREMENTS.md` (bun
 <dependency>
     <groupId>de.lino.cloud.plugin</groupId>
     <artifactId>cloud-driver-plugin</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 
-Depends on `cloud-driver-api` and `cloud-driver-auth` (both `1.0.2`), `database-driver-api`/`database-driver-plugin` (`1.3.11`), `org.bouncycastle:bcprov-jdk18on` (Argon2id), `io.javalin:javalin` (`DefaultRestFactory`'s HTTP layer), `org.projectlombok:lombok` (`provided`), and `org.jetbrains:annotations`. See `pom.xml` for the full, commented list - most dependencies there carry a one-line note explaining *why* this module needs them, not just what they are.
+Depends on `cloud-driver-api` and `cloud-driver-auth` (both `1.0.3`), `database-driver-api`/`database-driver-plugin` (`1.3.11`), `org.bouncycastle:bcprov-jdk18on` (Argon2id), `io.javalin:javalin` (`DefaultRestFactory`'s HTTP layer), `org.projectlombok:lombok` (`provided`), and `org.jetbrains:annotations`. See `pom.xml` for the full, commented list - most dependencies there carry a one-line note explaining *why* this module needs them, not just what they are.
 
 ## Module structure
 

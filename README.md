@@ -68,7 +68,7 @@ never touches it. See the extensions README for the full detail.
 mvn clean install                              # build every module, in dependency order
 mvn -pl cloud-driver-plugin -am compile         # build one module + its dependencies
 mvn -pl cloud-driver-bootstrap -am package      # produce the runnable, shaded jar
-java -jar cloud-driver-bootstrap/target/cloud-driver-bootstrap-1.0.2.jar
+java -jar cloud-driver-bootstrap/target/cloud-driver-bootstrap-1.0.3.jar
 ```
 
 No Maven wrapper - use a locally installed Maven. Every child `pom.xml` inherits
