@@ -1,0 +1,27 @@
+{
+  "rest-server-port": "REST_PORT",
+  "rest-server-bind-host": "REST_HOST",
+
+  "web-panel-port": "WEB_PORT",
+  "web-panel-bind-host": "WEB_HOST",
+
+  "metrics-port": 9404,
+  "metrics-bind-host": "METRICS_HOST",
+
+  "cloud-server-max-bytes-available": "274877906944",
+  "cloud-user-max-bytes-to-upload": "1073741824",
+
+  "smtp-host": "MAIL_HOST",
+  "smtp-port": 587,
+  "smtp-username": "MAIL_USER",
+  "smtp-password": "MAIL_PASSWORD",
+  "smtp-from-address": "MAIL_MAIL_SENDER",
+
+  "aws-kms-region": "AWS_KMS_REGION",
+  "aws-kms-key-id": "alias/AWS_KMS_ALIAS_KEY",
+
+  "aws-s3-region": "AWS_S3_REGION",
+  "aws-s3-bucket": "AWS_S3_BUCKIT",
+
+  "jwt-signing-key": "JWT_KEYå"
+}
