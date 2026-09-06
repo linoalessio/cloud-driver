@@ -3,8 +3,9 @@ import UIKit
 import QuickLook
 
 /// A `UIViewControllerRepresentable` wrapper around `QLPreviewController` - Apple's native file
-/// preview UI, which already renders PDF, plain text, and Office documents (.docx/.xlsx/.pptx,
-/// among others) with no per-format rendering code of this app's own, unlike
+/// preview UI, which already renders PDF, plain text, Office documents (.docx/.xlsx/.pptx, among
+/// others), and images (JPG/PNG, among others) with no per-format rendering code of this app's own,
+/// unlike
 /// cloud-driver-platforms-desktop's `FilePreviewDialog.kt` (no JVM equivalent to QuickLook exists
 /// there, so it hand-rolls PDF/DOCX rendering via PDFBox/POI). `url` must already have the file's
 /// real extension in its last path component - `QLPreviewController` identifies how to render a

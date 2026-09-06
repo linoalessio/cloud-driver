@@ -1141,14 +1141,16 @@ final class AppViewModel: ObservableObject {
     /// Previews `file` in-app via `QLPreviewController` (`FilePreviewView`, presented by `RootView`
     /// from `previewURL`) instead of the system share sheet `download(_:)` opens - triggered by a
     /// single tap on a file row in `FileBrowserView` (added 2026-09-05, per Lino's own request).
-    /// Only offered for the same content-type scope cloud-driver-platforms-desktop's own preview
-    /// dialog supports (`PreviewSupport.swift`: text/PDF/DOCX) - QuickLook can render plenty of
-    /// other formats too (images, in particular), but staying within this scope keeps both clients'
-    /// "what's previewable" policy consistent, and avoids downloading a large image/video/archive
-    /// just to preview it when `download(_:)` (via the row's "..." menu) already covers that case.
-    /// Checked, and the file's already-known `sizeBytes` checked against the matching size cap,
-    /// **before any network call** - an unsupported or oversized file reports through
-    /// `errorMessage` immediately rather than being downloaded first only to be rejected.
+    /// Originally scoped to the same text/PDF/DOCX types cloud-driver-platforms-desktop's own
+    /// preview dialog supports; extended 2026-09-06 to also cover JPG/JPEG/PNG images, per Lino's
+    /// own follow-up request - a mobile-only addition (see `PreviewSupport.swift`'s own doc comment)
+    /// not ported back to the desktop client. QuickLook can render plenty of other formats too
+    /// (video, other image formats, ...), but staying within this explicit scope avoids downloading
+    /// a large video/archive/unlisted-image-format file just to preview it when `download(_:)` (via
+    /// the row's "..." menu) already covers that case. Checked, and the file's already-known
+    /// `sizeBytes` checked against the matching size cap, **before any network call** - an
+    /// unsupported or oversized file reports through `errorMessage` immediately rather than being
+    /// downloaded first only to be rejected.
     func previewFile(_ file: StoredFileSummaryResponse) {
         let kind = previewKind(for: file.contentType)
         guard kind != .none else {
