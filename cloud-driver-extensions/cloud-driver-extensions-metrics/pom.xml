@@ -6,7 +6,7 @@
     <parent>
         <groupId>de.lino.cloud.extensions</groupId>
         <artifactId>cloud-driver-extensions</artifactId>
-        <version>1.0.4</version>
+        <version>1.0.5</version>
     </parent>
 
     <groupId>de.lino.cloud.extensions.metrics</groupId>
@@ -18,7 +18,7 @@
         <dependency>
             <groupId>de.lino.cloud.plugin</groupId>
             <artifactId>cloud-driver-plugin</artifactId>
-            <version>1.0.4</version>
+            <version>1.0.5</version>
         </dependency>
 
         <!-- Prometheus registry - pulls in micrometer-core transitively. -->

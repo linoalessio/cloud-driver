@@ -1,6 +1,6 @@
 {
   "name": "cloud-driver-terminal",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "CloudDriver terminal containing all commands inside the system",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]

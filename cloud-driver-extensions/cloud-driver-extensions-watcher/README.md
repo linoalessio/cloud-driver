@@ -4,7 +4,7 @@ Wraps Postgres change-notification (`LISTEN`/`NOTIFY`) as a `cloud-driver` `Exte
 
 ## Project structure
 
-Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling of `cloud-driver-extensions-backup`/`-metrics`/`-rest`/`-terminal`. This module's own `pom.xml` sets `packaging=jar` and declares two dependencies: `cloud-driver-api` (`1.0.4`, for `Extension`/`DatabaseWatchEvent`) and, unusually among the extension modules, a **direct** dependency on `de.lino.database:database-driver-plugin:1.3.11` - needed because `PostgresDatabaseNotification` (the actual `LISTEN`/`NOTIFY` mechanics this module wires up) lives in that upstream artifact, not anywhere in this repo. It does **not** depend on `cloud-driver-plugin` at all.
+Reactor position: a child of the `cloud-driver-extensions` aggregator (`packaging=pom`), sibling of `cloud-driver-extensions-backup`/`-metrics`/`-rest`/`-terminal`. This module's own `pom.xml` sets `packaging=jar` and declares two dependencies: `cloud-driver-api` (`1.0.5`, for `Extension`/`DatabaseWatchEvent`) and, unusually among the extension modules, a **direct** dependency on `de.lino.database:database-driver-plugin:1.3.11` - needed because `PostgresDatabaseNotification` (the actual `LISTEN`/`NOTIFY` mechanics this module wires up) lives in that upstream artifact, not anywhere in this repo. It does **not** depend on `cloud-driver-plugin` at all.
 
 `extension.json` (`src/main/resources`):
 

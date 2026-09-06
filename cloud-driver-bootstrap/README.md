@@ -9,11 +9,11 @@ runnable jar via `maven-shade-plugin`.
 ## Coordinates
 
 Not a library other modules depend on - this is the module that produces the shipped artifact.
-`cloud-driver-bootstrap-1.0.4.jar` (shaded, runnable) is built via:
+`cloud-driver-bootstrap-1.0.5.jar` (shaded, runnable) is built via:
 
 ```
 mvn -pl cloud-driver-bootstrap -am package
-java -jar cloud-driver-bootstrap-1.0.4.jar
+java -jar cloud-driver-bootstrap-1.0.5.jar
 ```
 
 Depends on `cloud-driver-plugin` (every concrete implementation this module wires together) and
@@ -129,7 +129,7 @@ the only way to create an account or obtain a JWT.
 ### Packaging - the shaded jar
 
 `cloud-driver-bootstrap`'s `pom.xml` runs `maven-shade-plugin` at `package`, producing one
-self-contained, runnable `cloud-driver-bootstrap-1.0.4.jar` with every dependency shaded in and a
+self-contained, runnable `cloud-driver-bootstrap-1.0.5.jar` with every dependency shaded in and a
 `Main-Class: de.lino.cloud.bootstrap.CloudBootstrap` manifest entry (via
 `ManifestResourceTransformer`). Two extra transformers matter here:
 
@@ -140,7 +140,7 @@ self-contained, runnable `cloud-driver-bootstrap-1.0.4.jar` with every dependenc
   signed, and leaving its signature files in a re-packaged jar throws "Invalid signature file
   digest" at runtime since the merged jar no longer matches what was originally signed.
 
-The plain `maven-jar-plugin` output (`original-cloud-driver-bootstrap-1.0.4.jar`) is kept
+The plain `maven-jar-plugin` output (`original-cloud-driver-bootstrap-1.0.5.jar`) is kept
 alongside but is not runnable on its own - `java -jar` on it fails with "no main manifest
 attribute", and even with a manifest added, it would still be missing every dependency.
 

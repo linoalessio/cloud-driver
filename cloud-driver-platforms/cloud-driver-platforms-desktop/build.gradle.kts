@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "de.lino.cloud.platforms.desktop"
-version = "1.0.4"
+version = "1.0.5"
 
 repositories {
     google()
@@ -94,7 +94,7 @@ kotlin {
             // (mavenLocal(), declared in settings.gradle.kts). `de.lino.cloud.platforms` was
             // renamed from the earlier singular "de.lino.cloud.platform" groupId - see this
             // module's README for that history.
-            implementation("de.lino.cloud.platforms.rest:cloud-driver-platforms-rest:1.0.4")
+            implementation("de.lino.cloud.platforms.rest:cloud-driver-platforms-rest:1.0.5")
 
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.9.0")
@@ -117,7 +117,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudDriver"
-            packageVersion = "1.0.4"
+            packageVersion = "1.0.5"
             description = "cloud-driver desktop client"
 
             // The jlink-built runtime image only bundles JDK modules jdeps' static bytecode

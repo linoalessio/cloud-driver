@@ -15,8 +15,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.4"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "1.0.5"
+    CURRENT_PROJECT_VERSION: "5"
 targets:
   CloudDriverMobile:
     type: application
