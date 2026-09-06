@@ -10,7 +10,7 @@ The cryptographic design follows `../architecture/SECURITY_REQUIREMENTS.md` (bun
 <dependency>
     <groupId>de.lino.cloud.api</groupId>
     <artifactId>cloud-driver-api</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
@@ -20,7 +20,7 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 <dependency>
     <groupId>de.lino.cloud.plugin</groupId>
     <artifactId>cloud-driver-plugin</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
