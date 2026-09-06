@@ -35,7 +35,12 @@ jobs:
         # repository, not a different one. This second setup-java call appends a matching
         # <server id="database-driver-github"> entry to the same ~/.m2/settings.xml the step above
         # already started - setup-java supports being called more than once per job for exactly
-        # this, one registry's credentials per call.
+        # this, one registry's credentials per call, but ONLY if overwrite-settings is explicitly
+        # set to false here: setup-java's default (true) replaces settings.xml wholesale on every
+        # call, which silently wiped out the first call's "github" server entry (confirmed via a
+        # real failed run, 2026-09-06 - "Build with Maven" succeeded since it only needed this
+        # step's own database-driver-github credentials, but "Publish to GitHub Packages Apache
+        # Maven" 401'd, since by then the "github" entry no longer existed in settings.xml at all).
         uses: actions/setup-java@v4
         with:
           java-version: '21'
@@ -43,6 +48,7 @@ jobs:
           server-id: database-driver-github
           server-username: DATABASE_DRIVER_PACKAGES_ACTOR
           server-password: DATABASE_DRIVER_PACKAGES_TOKEN
+          overwrite-settings: false
 
       - name: Build with Maven
         run: mvn -B package --file pom.xml
