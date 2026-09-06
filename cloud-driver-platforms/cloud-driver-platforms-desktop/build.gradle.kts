@@ -37,14 +37,58 @@ kotlin {
             implementation(compose.ui)
             implementation(compose.components.resources)
             implementation(compose.components.uiToolingPreview)
-            // Material's full icon set (Icons.Filled.Folder/InsertDriveFile/Image/PictureAsPdf/...) -
-            // compose.material3 alone only ships a handful of "core" glyphs, not enough to give
-            // folders/files distinct per-type icons.
-            implementation(compose.materialIconsExtended)
         }
 
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
+
+            // Material's icon set beyond compose.material3's own small "core" set (Icons.Filled.Folder/
+            // Image/PictureAsPdf/CloudUpload/etc., plus Icons.AutoMirrored.Filled.InsertDriveFile/
+            // Sort/Logout/DriveFileMove) - fixed a real bug (2026-09-06): this used to be
+            // `implementation(compose.materialIconsExtended)`, the full JetBrains icon library
+            // (thousands of icons across 5 style variants) shipped in every packaged build purely to
+            // reach the 47 specific icons this app actually references - 36MB out of a 188MB total
+            // app bundle for icons nobody ever saw, since Compose Desktop's jpackage pipeline does
+            // not tree-shake dependency jars. `libs/material-icons-extended-trimmed.jar` (~160KB) is
+            // a hand-built jar containing only those 47 icons' own `<Name>Kt.class` files (43 under
+            // `androidx/compose/material/icons/filled/`, 4 under `.../automirrored/filled/` - the
+            // `Icons.AutoMirrored.*` ones), extracted directly from the real
+            // `material-icons-extended-desktop` jar (found via the Gradle cache:
+            // `~/.gradle/caches/modules-2/files-2.1/org.jetbrains.compose.material/
+            // material-icons-extended-desktop/<version>/.../material-icons-extended-desktop-<version>.jar`)
+            // - each icon file only references the shared `androidx.compose.material.icons.Icons`/
+            // `Icons.Filled`/`Icons.AutoMirrored.Filled`/`IconsKt` classes (confirmed via `javap -v`'s
+            // constant-pool dump), which `compose.material3` already pulls in transitively via
+            // `material-icons-core`, so nothing else needs bundling.
+            //
+            // **The original `META-INF/material-icons-extended.kotlin_module` facade file IS
+            // required in the trimmed jar, unfiltered/whole, even though it lists thousands of
+            // classes the trimmed jar doesn't actually contain.** A first attempt omitting it (on
+            // the theory that each class's own embedded `@Metadata` annotation ought to be enough
+            // for the compiler to resolve a plain top-level Kotlin file) failed with "Unresolved
+            // reference" on every single icon, including ones already present as class files - the
+            // Kotlin 2.1.0 compiler evidently needs the module-level facade listing to resolve these
+            // extension-property-shaped icon accessors from a binary dependency at all, not just the
+            // per-class metadata. Confirmed by reproducing the failure, then fixing it by copying the
+            // untouched `.kotlin_module` file in alongside the 47 trimmed classes - the compiler does
+            // not seem to validate that every class the manifest lists actually exists in the jar, it
+            // only resolves what's actually referenced from this module's own source.
+            //
+            // To add a NEW extended-only icon in the future: find the same source jar in the Gradle
+            // cache above, `unzip -o material-icons-extended-desktop-<version>.jar
+            // "androidx/compose/material/icons/filled/<Name>Kt.class" -d /tmp/x` (or
+            // `.../automirrored/filled/<Name>Kt.class` for an `Icons.AutoMirrored.*` icon), then
+            // `cd /tmp/x && jar uf <path-to>/libs/material-icons-extended-trimmed.jar
+            // androidx/compose/material/icons/filled/<Name>Kt.class` to append it to the existing
+            // trimmed jar in place (the `.kotlin_module` file already inside it needs no change -
+            // it already lists every icon in the real library, trimmed or not) - check
+            // `Icons.Filled.<Name>` doesn't already resolve from `compose.material3`'s own core set
+            // first (see this module's icon list check via `grep -rhoE
+            // "Icons\.(AutoMirrored\.)?(Filled|Outlined|Rounded|TwoTone|Sharp)\.[A-Za-z0-9]+"
+            // src/desktopMain/kotlin` - note the `(AutoMirrored\.)?` group, easy to miss since it
+            // caused a real miss the first time this trimming was done), since 10 common icons
+            // already ship there for free.
+            implementation(files("libs/material-icons-extended-trimmed.jar"))
 
             // The HTTP client - Maven-built, resolved from the local Maven repository
             // (mavenLocal(), declared in settings.gradle.kts). `de.lino.cloud.platforms` was

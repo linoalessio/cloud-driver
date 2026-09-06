@@ -4,6 +4,8 @@ import de.lino.cloud.platform.rest.api.ApiClient.ApiException;
 import de.lino.cloud.platform.rest.api.session.TokenStore;
 import de.lino.cloud.platform.rest.api.session.TokenStoreException;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -87,17 +89,47 @@ public final class SessionManager {
 
         private static final String DELIMITER = "\n";
 
+        /**
+         * The newline-joined pair is Base64-encoded before ever being handed to a {@link
+         * TokenStore}, and decoded back on {@link #decode(String)} - <b>fixed a real bug
+         * (2026-09-06):</b> {@code MacKeychainTokenStore} persists this value via the {@code
+         * security} command-line tool, which silently switches {@code find-generic-password -w}'s
+         * output to a hex-encoded representation whenever the stored value contains an embedded
+         * non-printable byte (confirmed empirically - a plain-ASCII value round-trips as-is, one
+         * containing a raw {@code \n} does not), and {@code MacKeychainTokenStore#load()} had no
+         * way to know that had happened - it simply returned the hex text as if it were the real
+         * token. {@link #decode(String)} would then never find {@link #DELIMITER} inside that
+         * garbled hex string and always return {@link Optional#empty()}, so {@link
+         * #tryRestoreSession()} failed <em>instantly, without ever attempting a network call</em>
+         * (confirmed via a standalone harness reproducing the exact call graph: it returned in
+         * ~20ms, far too fast for a real HTTPS round trip) - on every single restore, not only
+         * after a token rotation, regardless of how recently a valid session had been saved.
+         * Reported as "have to log in every time after closing the app" on macOS. Base64's
+         * alphabet contains no control characters at all, so the value this class ever hands to
+         * <em>any</em> {@link TokenStore} implementation is always plain, uniformly "safe" ASCII -
+         * immune to this specific quirk and to any similar text-oriented mangling a different
+         * backing store (present or future) might apply to raw bytes it wasn't expecting.
+         */
         private String encode() {
-            return this.accessToken + DELIMITER + this.refreshToken;
+            final String joined = this.accessToken + DELIMITER + this.refreshToken;
+            return Base64.getEncoder().encodeToString(joined.getBytes(StandardCharsets.UTF_8));
         }
 
         /**
-         * @return the decoded pair, or {@link Optional#empty()} if {@code raw} doesn't carry the
-         * delimiter at all (e.g. a bare access token persisted by a session predating this
-         * feature) or either half is blank - either way, there is no refresh-capable session
-         * worth restoring, and the caller should fall back to a fresh login instead.
+         * @return the decoded pair, or {@link Optional#empty()} if {@code rawStored} isn't valid
+         * Base64 (e.g. a bare access token persisted by a session predating this feature, or one
+         * predating the Base64-wrapping fix described on {@link #encode()}), doesn't carry {@link
+         * #DELIMITER} once decoded, or either half is blank - either way, there is no
+         * refresh-capable session worth restoring, and the caller should fall back to a fresh
+         * login instead.
          */
-        private static Optional<StoredSession> decode(final String raw) {
+        private static Optional<StoredSession> decode(final String rawStored) {
+            final String raw;
+            try {
+                raw = new String(Base64.getDecoder().decode(rawStored), StandardCharsets.UTF_8);
+            } catch (final IllegalArgumentException notBase64) {
+                return Optional.empty();
+            }
             final int delimiterIndex = raw.indexOf(DELIMITER);
             if (delimiterIndex < 0) {
                 return Optional.empty();

@@ -182,26 +182,41 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.showKeychainFallbackNotice = false
     }
 
-    private suspend fun onAuthenticated(email: String, jwt: String) {
+    private fun onAuthenticated(email: String, jwt: String) {
         this.currentUserEmail = email
         this.currentUserId = decodeJwtSubject(jwt)
         if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
-        this.refreshAccountInfo()
+        // Dashboard-only fields (created date, storage, admin flag, email confirmation) - not
+        // needed to render the file browser, so this must never gate the screen transition below.
+        // Fixed a real bug (2026-09-06): previously awaited inline, meaning login/register/reset
+        // couldn't switch to Screen.Browser until two extra sequential network calls finished -
+        // most noticeable once session-restore itself started actually working (see the
+        // session-persistence fixes above) and this same blocking wait ran on every app startup,
+        // reported as "loading the data takes quite longer than before".
+        this.scope.launch { this@AppViewModel.refreshAccountInfo() }
         this.startLiveUpdates()
     }
 
     /**
      * Called once at startup (see `Main.kt`) after [CloudDriverClient.tryRestoreSession] finds a
-     * still-valid persisted session. Unlike [onAuthenticated], there is no e-mail address on hand
-     * here - restoring a session is not itself a server call that returns one, and this app has no
-     * `GET /me`-style endpoint to fetch it back from - so [currentUserEmail] stays `null` (the
-     * Dashboard's "Email" row already renders `"-"` for that case) until the next explicit
-     * login/register/password-reset or e-mail change.
+     * still-valid persisted session. Unlike [onAuthenticated], there is no e-mail address handed
+     * to this method directly - restoring a session is not itself a call that returns one - but
+     * [refreshAccountInfo] (called below) now fills it in via `GET /me` regardless of which path
+     * called it. <strong>Fixed a real bug (2026-09-06):</strong> this Javadoc used to claim (and
+     * the code used to behave as if) there were no `GET /me`-style endpoint at all, leaving
+     * [currentUserEmail] permanently `null` after a restored session - stale even at the time,
+     * since `GET /auth/me` (and [refreshAccountInfo]'s own call to it, originally added only for
+     * [currentUserIsAdmin]) already existed and already carried the account's e-mail address in
+     * the same response; only noticed once session restore itself started actually working (see
+     * the session-persistence fixes above) and the Dashboard's "Email" row was reported showing
+     * blank after a restore that used to always fail anyway.
      */
-    private suspend fun onSessionRestored(jwt: String) {
+    private fun onSessionRestored(jwt: String) {
         this.currentUserId = decodeJwtSubject(jwt)
         if (this.client.usedKeychainFallback) this.showKeychainFallbackNotice = true
-        this.refreshAccountInfo()
+        // See onAuthenticated's own Javadoc - Dashboard-only fields must never gate the screen
+        // transition below, and this is the path where blocking on them was actually noticed.
+        this.scope.launch { this@AppViewModel.refreshAccountInfo() }
         this.startLiveUpdates()
     }
 
@@ -274,7 +289,9 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
             this.currentUserMaxBytesToUpload = null
         }
         try {
-            this.currentUserIsAdmin = this.client.getMe().isAdmin()
+            val me = this.client.getMe()
+            this.currentUserIsAdmin = me.isAdmin()
+            this.currentUserEmail = me.emailAddress()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
