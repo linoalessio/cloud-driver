@@ -1,6 +1,6 @@
 {
   "name": "cloud-driver-rest-server",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "CloudDriver rest api server for authorizing and maintaining data",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]
