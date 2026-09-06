@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.storage.object;
+package de.lino.cloud.plugin.s3storage;
 
 import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
@@ -30,7 +30,7 @@ import java.util.concurrent.CompletionException;
  * key naming, credential resolution, and "not wired in as a default" convention all deliberately
  * mirror {@code de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService} (see that class's
  * own Javadoc, since both classes share the same design philosophy despite backing entirely
- * separate concerns - object storage, not key wrapping).
+ * separate concerns - object s3storage, not key wrapping).
  *
  * <p><strong>Credentials/config resolution:</strong> this class takes a pre-built {@link
  * S3AsyncClient} (or a {@link Region} for the convenience constructor, which builds one via the

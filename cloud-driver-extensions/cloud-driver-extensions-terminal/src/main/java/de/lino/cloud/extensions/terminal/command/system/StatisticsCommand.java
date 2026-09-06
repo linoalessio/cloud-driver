@@ -14,9 +14,9 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 
 /**
- * Displays cloud driver-wide statistics: uptime and version, configured server storage
+ * Displays cloud driver-wide statistics: uptime and version, configured server s3storage
  * capacity, registered extension count, registered cloud-user count, and total uploaded file
- * count/storage used.
+ * count/s3storage used.
  */
 public class StatisticsCommand implements Command {
 
@@ -40,10 +40,10 @@ public class StatisticsCommand implements Command {
 
     /**
      * Prints the host {@link CloudDriver}'s uptime and version, configured maximum server
-     * storage, registered extension count, registered cloud-user count (falling back to
+     * s3storage, registered extension count, registered cloud-user count (falling back to
      * {@code "N/A"} if {@link de.lino.cloud.api.factory.service.IServiceContainer
      * #getCloudUserService()} is not yet available - i.e. {@code cloud-driver-rest} has not
-     * started), and total uploaded file count/storage used.
+     * started), and total uploaded file count/s3storage used.
      *
      * <p><b>Fixed a real bug (2026-09-02):</b> this used to call {@code fileFactory
      * .getEntitiesAsync().join()} twice - once for the size sum, once for the count - each call
@@ -79,7 +79,7 @@ public class StatisticsCommand implements Command {
 
         terminal.emptyLine();
         terminal.displayApproved("Cloud running for (&bv%s&7): &b%s", cloudVersion, cloudRunningFor);
-        terminal.displayApproved("Server storage: &b%s", totalCloudServerStorage);
+        terminal.displayApproved("Server s3storage: &b%s", totalCloudServerStorage);
         terminal.displayApproved("Extensions: &b%s", totalExtensions);
         terminal.displayApproved("Cloud users: &b%s", totalCloudUsers);
         terminal.displayApproved("Uploaded files &7(&b%s&7): &b%s", usedStorage, totalFiles);

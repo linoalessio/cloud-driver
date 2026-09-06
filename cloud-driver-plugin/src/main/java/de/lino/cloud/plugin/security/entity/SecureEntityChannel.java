@@ -38,7 +38,7 @@ public final class SecureEntityChannel {
 
     /**
      * Serializes and envelope-encrypts {@code entity}, ready for the
-     * configured storage backend.
+     * configured s3storage backend.
      *
      * @param entity the entity to encrypt
      * @return the resulting envelope

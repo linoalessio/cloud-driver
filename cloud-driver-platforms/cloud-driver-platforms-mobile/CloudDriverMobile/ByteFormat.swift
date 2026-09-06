@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Deliberately **not** `ByteCountFormatter`: Apple's formatter spells a zero byte count out as
 /// the word "Zero" (e.g. `"Zero KB"`) instead of `"0 KB"` - documented Apple behavior, not a bug
-/// in this app, but the wrong choice for a value like account storage usage that should always
+/// in this app, but the wrong choice for a value like account s3storage usage that should always
 /// read as a plain number.
 func formatBytes(_ bytes: Int64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB"]

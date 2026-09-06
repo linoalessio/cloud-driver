@@ -137,7 +137,7 @@ The entity-persistence contract, reached via `CloudDriver.getInstance().getFacto
 ```java
 DataFactory dataFactory = CloudDriver.getInstance().getFactoryContainer().getDataFactory();
 
-dataFactory.register(customer);                          // insert-or-update, encrypted before storage
+dataFactory.register(customer);                          // insert-or-update, encrypted before s3storage
 dataFactory.register(customerA, customerB, customerC);   // batch, dispatched concurrently
 
 dataFactory.update(movedCustomer);                        // fails if no record exists yet under this id

@@ -29,7 +29,7 @@ import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.file.TrashPurgeScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
-import de.lino.cloud.plugin.storage.object.S3ObjectStorageService;
+import de.lino.cloud.plugin.s3storage.S3ObjectStorageService;
 import de.lino.database.DatabaseRepository;
 import de.lino.database.DatabaseRepositoryRegistry;
 import de.lino.database.database.DatabaseProvider;
@@ -168,7 +168,7 @@ public final class CloudBootstrap {
      * {@code ""} (no prefix).
      *
      * @param configuration this deployment's loaded {@code configuration.json}
-     * @return a configured {@link S3ObjectStorageService}, or {@code null} if S3-backed storage isn't configured
+     * @return a configured {@link S3ObjectStorageService}, or {@code null} if S3-backed s3storage isn't configured
      */
     private static ObjectStorageService resolveObjectStorageService(final JsonDocument configuration) {
         if (!configuration.contains("aws-s3-bucket") || configuration.getString("aws-s3-bucket").isBlank()) {
@@ -247,7 +247,7 @@ public final class CloudBootstrap {
     /**
      * Starts a {@link PendingUploadScheduler} on its own ticker thread - passing this process's
      * own {@link DefaultFileFactory} so a retried upload also applies the S3-then-metadata
-     * sequence {@link DefaultFileFactory#upload} itself uses, if S3-backed storage is configured
+     * sequence {@link DefaultFileFactory#upload} itself uses, if S3-backed s3storage is configured
      * (see {@code architecture/AWS_S3_IMPL.md}).
      *
      * @return the scheduler's shutdown action

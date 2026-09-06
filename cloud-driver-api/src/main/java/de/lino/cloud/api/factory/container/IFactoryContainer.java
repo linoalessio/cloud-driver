@@ -48,13 +48,13 @@ IFactoryContainer {
     RestFactory getRestFactory();
 
     /**
-     * Returns the object-storage facet backing {@link #getFileFactory()}'s optional S3-backed
+     * Returns the object-s3storage facet backing {@link #getFileFactory()}'s optional S3-backed
      * {@code StoredFile} content path, or {@code null} if this deployment doesn't have one
      * configured - the same "may not exist yet"/opt-in contract {@code
      * de.lino.cloud.api.factory.service.IServiceContainer}'s facets already carry, except this one
      * is fixed for the container's whole lifetime rather than published later by an extension.
      *
-     * @return the {@link ObjectStorageService}, or {@code null} if S3-backed storage isn't configured
+     * @return the {@link ObjectStorageService}, or {@code null} if S3-backed s3storage isn't configured
      */
     @Nullable
     ObjectStorageService getObjectStorageService();

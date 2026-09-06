@@ -223,7 +223,7 @@ final class AppViewModel: ObservableObject {
         try await refreshCurrentFolder()
     }
 
-    /// `GET /cloudUsers/{id}` - the account's creation timestamp and storage quota/usage, backing
+    /// `GET /cloudUsers/{id}` - the account's creation timestamp and s3storage quota/usage, backing
     /// `DashboardView`. Best-effort: a failure here never fails sign-in itself, the same
     /// "optional display value" treatment `onAuthenticated`'s own `client.me()` call already gets.
     private func refreshAccountInfo() async {
@@ -1078,7 +1078,7 @@ final class AppViewModel: ObservableObject {
             // `maxNonPresignedTransferBytes`'s own doc comment.
             let sizeBytes = self.fileSize(at: sourceURL)
             guard sizeBytes <= maxNonPresignedTransferBytes else {
-                throw APIError.server(status: 503, message: "This file is too large to upload without direct storage support configured on the server - contact your administrator.")
+                throw APIError.server(status: 503, message: "This file is too large to upload without direct s3storage support configured on the server - contact your administrator.")
             }
             let data = try await Task.detached(priority: .userInitiated) {
                 try Data(contentsOf: sourceURL)
@@ -1180,7 +1180,7 @@ final class AppViewModel: ObservableObject {
             try await client.downloadFileViaPresignedURL(fileId: fileId, destination: destination, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
             guard knownSizeBytes <= maxNonPresignedTransferBytes else {
-                throw APIError.server(status: 503, message: "This file is too large to download without direct storage support configured on the server - contact your administrator.")
+                throw APIError.server(status: 503, message: "This file is too large to download without direct s3storage support configured on the server - contact your administrator.")
             }
             let data = try await client.downloadFileContent(fileId: fileId)
             try await Task.detached(priority: .userInitiated) {

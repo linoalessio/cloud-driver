@@ -379,7 +379,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * Backs a real-content stream straight from S3 for a direct-transfer file on {@code GET
      * /files/{id}/content} - see {@link #handleDownloadFileContent}'s own Javadoc for why this
      * avoids the byte[]-based content resolution every other route still needs. {@code null} if
-     * this deployment hasn't configured S3-backed storage, in which case that route falls back to
+     * this deployment hasn't configured S3-backed s3storage, in which case that route falls back to
      * its original, fully-materializing behavior unconditionally.
      */
     @Nullable
@@ -505,7 +505,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * by this constructor, since uploading/listing/deleting a user's own files and folders is
      * business logic ({@link CloudUserService} - move/rename validate ownership and, for
      * folders, guard against cycles and non-empty deletes), not a plain {@code DataFactory}
-     * CRUD pass-through the way every other registered resource is. S3-backed storage is not
+     * CRUD pass-through the way every other registered resource is. S3-backed s3storage is not
      * configured by this overload - see {@link #DefaultRestFactory(DataFactory, AuthService,
      * CloudUserService, ObjectStorageService)} for a deployment that has opted into it.
      *
@@ -529,7 +529,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
      * @param authService verifies login and issued JWTs; must not be {@code null}
      * @param cloudUserService backs the {@code /files} routes, or {@code null} to leave them unmounted
-     * @param objectStorageService backs a direct-transfer file's streamed download, or {@code null} if this deployment hasn't opted into S3-backed storage
+     * @param objectStorageService backs a direct-transfer file's streamed download, or {@code null} if this deployment hasn't opted into S3-backed s3storage
      */
     public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
                                @Nullable final CloudUserService cloudUserService, @Nullable final ObjectStorageService objectStorageService) {

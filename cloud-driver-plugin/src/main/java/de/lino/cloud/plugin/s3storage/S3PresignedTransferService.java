@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.storage.object;
+package de.lino.cloud.plugin.s3storage;
 
 import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.PresignedDownload;

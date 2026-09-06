@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The signed-in account-overview tab - email/account id/join date plus storage usage, backed by
+/// The signed-in account-overview tab - email/account id/join date plus s3storage usage, backed by
 /// `GET /auth/me` + `GET /cloudUsers/{id}` (see `AppViewModel.refreshAccountInfo`). The mobile
 /// counterpart to cloud-driver-platforms-desktop's `DashboardScreen.kt`, scoped down to what this
 /// first pass actually tracks - no folder/file counts or sharing stats yet. Styled after Apple's

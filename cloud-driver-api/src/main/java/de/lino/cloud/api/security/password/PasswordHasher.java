@@ -8,7 +8,7 @@ public interface PasswordHasher {
 
     /**
      * Hashes {@code password}, returning a single self-describing string
-     * (algorithm, parameters, salt, hash) suitable for storage and later
+     * (algorithm, parameters, salt, hash) suitable for s3storage and later
      * {@link #verify}.
      *
      * @param password the password to hash

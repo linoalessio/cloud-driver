@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -39,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.Entry
+import de.lino.cloud.platform.desktop.theme.CloudColors
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -55,7 +57,9 @@ private fun formatEpochMilli(epochMilli: Long): String = TRASH_DATE_FORMAT.forma
 /**
  * The trash - every file/folder [AppViewModel.trashFiles]/[AppViewModel.trashFolders] currently
  * holds, each restorable back to where it was via [AppViewModel.restoreFile]/[AppViewModel.restoreFolder],
- * or permanently removed all at once via **"Empty trash bin"** (added 2026-09-02 - [AppViewModel.emptyTrash],
+ * restorable all at once via **"Restore All"** ([AppViewModel.restoreAllTrash], added 2026-09-06 -
+ * no confirmation needed, unlike emptying, since restoring is fully reversible via another delete),
+ * or permanently removed all at once via **"Empty Trash"** (added 2026-09-02 - [AppViewModel.emptyTrash],
  * gated behind [EmptyTrashConfirmationDialog] the same "explicit, separate confirmation click"
  * pattern `DashboardScreen`'s own Uninstall action uses, since this is irreversible). Deliberately
  * much simpler than `FileBrowserScreen` (no drag-and-drop, multi-select, previews, or nested
@@ -87,13 +91,23 @@ fun TrashScreen(viewModel: AppViewModel) {
                 }
                 val isEmpty = viewModel.trashFolders.isEmpty() && viewModel.trashFiles.isEmpty()
                 OutlinedButton(
+                    onClick = { viewModel.restoreAllTrash() },
+                    enabled = !viewModel.busy && !isEmpty,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CloudColors.Green),
+                ) {
+                    Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Restore All")
+                }
+                Spacer(Modifier.width(12.dp))
+                OutlinedButton(
                     onClick = { showEmptyConfirmation = true },
                     enabled = !viewModel.busy && !isEmpty,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) {
                     Icon(Icons.Filled.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Empty trash bin")
+                    Text("Empty Trash")
                 }
             }
 
@@ -152,7 +166,7 @@ private fun EmptyTrashConfirmationDialog(onConfirm: () -> Unit, onDismiss: () ->
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Filled.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-        title = { Text("Empty trash bin?") },
+        title = { Text("Empty Trash?") },
         text = {
             Text(
                 "This permanently deletes every file and folder currently in your trash, right now - " +
@@ -161,7 +175,7 @@ private fun EmptyTrashConfirmationDialog(onConfirm: () -> Unit, onDismiss: () ->
         },
         confirmButton = {
             Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                Text("Empty trash bin")
+                Text("Empty Trash")
             }
         },
         dismissButton = {

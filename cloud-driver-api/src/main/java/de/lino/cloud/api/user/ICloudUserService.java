@@ -141,7 +141,7 @@ public interface ICloudUserService {
      * One-off, operator-triggered backfill/repair for {@code authUserId}'s {@link
      * ICloudUser#getCurrentUploadedBytes()}: recomputes it from scratch as the sum of every
      * currently-tracked {@link de.lino.cloud.api.file.StoredFile}'s recorded size (including
-     * files currently in the trash, which still occupy storage until a purge job removes them -
+     * files currently in the trash, which still occupy s3storage until a purge job removes them -
      * see {@code CloudUserService#deleteFile}'s Javadoc for why trashing alone never decrements
      * this total), then persists the result as a direct overwrite - unlike {@link
      * #updateCloudUserBytesUsage(String, long)}, which only ever applies a relative delta. A

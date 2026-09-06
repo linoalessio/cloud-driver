@@ -342,7 +342,7 @@ public final class SessionManager {
     }
 
     /**
-     * Ends the session both in memory and in persisted storage - first revoking the held refresh
+     * Ends the session both in memory and in persisted s3storage - first revoking the held refresh
      * token server-side (see {@link ApiClient#revokeRefreshToken()}), best-effort: a failed
      * revoke (e.g. no network) never blocks clearing the local session, since the caller is
      * logging out regardless and there is nothing more useful to do with that failure here.

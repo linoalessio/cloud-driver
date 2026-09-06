@@ -704,7 +704,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     }
 
     /**
-     * Permanently removes every file/folder currently in the trash - the "Empty trash bin" action.
+     * Permanently removes every file/folder currently in the trash - the "Empty Trash" action.
      * Bypasses the server's configured retention window entirely and is irreversible; the caller
      * (`TrashScreen`) is responsible for confirming with the user first via a dialog, the same
      * "this function performs the action unconditionally" convention [uninstall]/[deleteEntries]
@@ -713,6 +713,36 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     fun emptyTrash() = run {
         this.client.emptyTrash()
         this.refreshTrash()
+    }
+
+    /**
+     * Restores every file/folder currently in the trash back to where it was - the "Restore All"
+     * action. There is no server-side "restore everything" batch route (only the single-item
+     * `POST /files/{id}/restore`/`POST /folders/{id}/restore` [restoreFile]/[restoreFolder] already
+     * wrap), so this loops over every currently-listed [trashFiles]/[trashFolders] entry via the
+     * same [mapConcurrently] batch shape [deleteEntries]/[duplicateEntries] already use for their
+     * own per-item calls - every item is attempted even if an earlier one fails, and only the first
+     * failure is rethrown once the whole batch has been attempted. Unlike a delete/purge batch,
+     * restoring has no parent-before-child ordering dependency (`restoreFolder`'s own Javadoc notes
+     * a folder restored under a since-deleted parent simply stays unreachable until that parent is
+     * restored too - not an error), so files and folders are both restored concurrently, in one
+     * combined batch, rather than needing any deepest-first sequencing.
+     */
+    fun restoreAllTrash() = run {
+        val fileIds = this.trashFiles.map { it.file().fileId() }
+        val folderIds = this.trashFolders.map { it.folder().folderId() }
+        (fileIds.map { RestoreTarget.File(it) } + folderIds.map { RestoreTarget.Folder(it) }).mapConcurrently { target ->
+            when (target) {
+                is RestoreTarget.File -> this.client.restoreFile(target.id)
+                is RestoreTarget.Folder -> this.client.restoreFolder(target.id)
+            }
+        }
+        this.refreshTrash()
+    }
+
+    private sealed interface RestoreTarget {
+        data class File(val id: String) : RestoreTarget
+        data class Folder(val id: String) : RestoreTarget
     }
 
     // --- shared with me (item 9) ------------------------------------------

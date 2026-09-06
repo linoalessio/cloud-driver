@@ -48,7 +48,7 @@ import java.util.zip.Inflater;
  * <p><b>Content can instead live in an external object store (S3) - see {@link #objectStorageKey}.</b>
  * A file is either inline ({@link #contentBase64} set, {@link #objectStorageKey} {@code null} -
  * every file ever uploaded before this field existed, and every file on a deployment that hasn't
- * opted into S3-backed storage at all) or S3-backed ({@link #objectStorageKey} set, {@link
+ * opted into S3-backed s3storage at all) or S3-backed ({@link #objectStorageKey} set, {@link
  * #contentBase64} {@code null}) - never both. {@code DefaultFileFactory} (the only production
  * caller that constructs either shape) resolves an S3-backed file's content by fetching/decrypting
  * it from the configured {@code ObjectStorageService} and calling {@link
@@ -503,7 +503,7 @@ public final class StoredFile extends Serialized {
      *     and every method built on {@link #resolveContent()} throw {@link IllegalStateException}
      *     on the result until {@link #withResolvedContent(byte[])} hydrates a fetched copy. Used by
      *     {@code DefaultFileFactory#upload} once this file's content has already been written to
-     *     external object storage separately.
+     *     external object s3storage separately.
      * @throws NullPointerException if {@code objectStorageKey} is {@code null}
      */
     public StoredFile withObjectStorageKey(final String objectStorageKey) {
@@ -646,7 +646,7 @@ public final class StoredFile extends Serialized {
             if (objectStorageKey != null) {
                 throw new IllegalStateException(
                         "@StoredFile.resolveContent: file '" + fileId + "'s content lives in external object "
-                                + "storage (key '" + objectStorageKey + "') and has not been resolved yet - "
+                                + "s3storage (key '" + objectStorageKey + "') and has not been resolved yet - "
                                 + "DefaultFileFactory must fetch it and call withResolvedContent() first"
                 );
             }

@@ -57,7 +57,7 @@ public class RecomputeStorageCommand implements Command {
         if (arguments.hasCommand(0, "all")) {
             terminal.emptyLine();
             final List<ICloudUser> cloudUsers = cloudUserService.getCloudUsers();
-            terminal.displayApproved("Recomputing storage usage for &b%s&7 account(s)...", cloudUsers.size());
+            terminal.displayApproved("Recomputing s3storage usage for &b%s&7 account(s)...", cloudUsers.size());
             for (final ICloudUser cloudUser : cloudUsers) {
                 final long total = cloudUserService.recomputeUploadedBytes(cloudUser.getAuthUserId());
                 terminal.displayApproved("&8- &7%s: &b%s", cloudUser.getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(total));
@@ -75,7 +75,7 @@ public class RecomputeStorageCommand implements Command {
         }
 
         final long total = cloudUserService.recomputeUploadedBytes(cloudUser.get().getAuthUserId());
-        terminal.displayApproved("Cloud user '&b%s&7' storage usage recomputed: &b%s",
+        terminal.displayApproved("Cloud user '&b%s&7' s3storage usage recomputed: &b%s",
                 cloudUser.get().getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(total));
     }
 

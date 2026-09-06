@@ -15,20 +15,20 @@ public interface TokenStore {
      * Persists {@code token}, overwriting any previously stored value.
      *
      * @param token the session JWT to store
-     * @throws TokenStoreException if the underlying storage mechanism fails to write the value
+     * @throws TokenStoreException if the underlying s3storage mechanism fails to write the value
      */
     void save(String token) throws TokenStoreException;
 
     /**
      * @return the previously stored token, or {@link Optional#empty()} if none is stored
-     * @throws TokenStoreException if the underlying storage mechanism fails to read the value
+     * @throws TokenStoreException if the underlying s3storage mechanism fails to read the value
      */
     Optional<String> load() throws TokenStoreException;
 
     /**
      * Removes any previously stored token; a no-op (not an error) if none was stored.
      *
-     * @throws TokenStoreException if the underlying storage mechanism fails to remove the value
+     * @throws TokenStoreException if the underlying s3storage mechanism fails to remove the value
      */
     void clear() throws TokenStoreException;
 

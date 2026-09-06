@@ -26,7 +26,7 @@ public interface ObjectStorageService {
     void putObject(@NotNull String objectKey, byte[] content) throws ObjectStorageException;
 
     /**
-     * Streams {@code content} into storage under {@code objectKey} without requiring the caller to
+     * Streams {@code content} into s3storage under {@code objectKey} without requiring the caller to
      * hold the entire object in memory at once - prefer this over {@link #putObject(String, byte[])}
      * for large files.
      *

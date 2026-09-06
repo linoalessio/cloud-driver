@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.storage.object;
+package de.lino.cloud.plugin.s3storage;
 
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.security.crypto.EncryptedPayload;
@@ -29,7 +29,7 @@ import java.nio.charset.StandardCharsets;
  * instead calls {@code EnvelopeEncryptionService#encrypt}/{@code #decrypt} <b>directly</b> on a
  * file's raw content bytes (the exact same AES-256-GCM/DEK-KEK scheme {@code SecureEntityChannel}
  * uses, just invoked a second time, independently, on a narrower input) - which is the source of
- * the {@link EnvelopeEncryptedPayload} this class serializes for S3 storage.
+ * the {@link EnvelopeEncryptedPayload} this class serializes for S3 s3storage.
  *
  * <p>Plain Gson serialization (the convention used for every {@code Serialized} entity) was
  * deliberately not reused here: Gson has no built-in {@code byte[]}-to-base64 adapter in this

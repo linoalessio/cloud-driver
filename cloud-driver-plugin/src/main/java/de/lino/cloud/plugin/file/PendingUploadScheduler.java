@@ -53,7 +53,7 @@ public final class PendingUploadScheduler {
     private final PendingUploadCache pendingUploadCache;
     /** Reports whether connectivity is currently available. */
     private final ConnectivityChecker connectivityChecker;
-    /** Applies {@link DefaultFileFactory#prepareForPersistence} to a retried file before registering it, or {@code null} to skip that step (S3-backed storage not configured). */
+    /** Applies {@link DefaultFileFactory#prepareForPersistence} to a retried file before registering it, or {@code null} to skip that step (S3-backed s3storage not configured). */
     private final DefaultFileFactory fileFactory;
     /** Single-thread, daemon-backed executor driving the tick schedule. */
     private final ScheduledExecutorService scheduledExecutorService;

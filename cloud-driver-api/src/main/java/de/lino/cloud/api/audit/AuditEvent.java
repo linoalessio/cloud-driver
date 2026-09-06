@@ -64,7 +64,7 @@ public final class AuditEvent extends Serialized {
     /**
      * A short, free-form description of additional context - already redacted (via {@link
      * AuditLogService}'s injected redaction function) before this instance is persisted, so this
-     * field never carries a raw secret by the time it reaches storage. {@code null} if the action
+     * field never carries a raw secret by the time it reaches s3storage. {@code null} if the action
      * needed no extra context beyond {@link #action}/{@link #targetId}.
      */
     @Nullable

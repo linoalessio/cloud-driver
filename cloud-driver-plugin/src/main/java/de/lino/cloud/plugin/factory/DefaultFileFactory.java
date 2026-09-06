@@ -18,7 +18,7 @@ import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
-import de.lino.cloud.plugin.storage.object.StoredFileContentChannel;
+import de.lino.cloud.plugin.s3storage.StoredFileContentChannel;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -53,7 +53,7 @@ import java.util.logging.Level;
  * #prepareForPersistence}), and {@link #download}/{@link #findById}/{@link #getEntities}
  * transparently resolve an S3-backed file's content back before verifying its checksum. {@code
  * null} (the default, via the three-argument constructor) behaves exactly as before this feature
- * existed - every file stays inline in {@link DataFactory}'s own storage.
+ * existed - every file stays inline in {@link DataFactory}'s own s3storage.
  *
  * <p>{@code *Async} variants need no override - they're inherited from
  * {@link FileFactory}, implemented generically on top of the sync methods
@@ -104,7 +104,7 @@ public final class DefaultFileFactory extends FileFactory {
      * @param pendingUploadCache where files are queued while connectivity is unavailable
      * @param connectivityChecker reports whether connectivity is currently available
      * @param objectStorageService backs an S3-backed file's content, or {@code null} to keep every
-     *     file inline (this deployment's default, opted out of S3-backed storage)
+     *     file inline (this deployment's default, opted out of S3-backed s3storage)
      * @param envelopeEncryptionService encrypts/decrypts a file's raw content bytes for {@code
      *     objectStorageService} - required (non-{@code null}) iff {@code objectStorageService} is
      *     itself non-{@code null}
@@ -128,7 +128,7 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Delegates to {@link DataFactory#register(Serialized)}, deferring to {@link
-     * #pendingUploadCache} while offline. If S3-backed storage is configured, {@code file}'s
+     * #pendingUploadCache} while offline. If S3-backed s3storage is configured, {@code file}'s
      * content is moved there first via {@link #prepareForPersistence} - a failure at that step
      * (an {@link ObjectStorageException} or {@link KeyWrapException}) propagates directly, not
      * queued for retry, matching this codebase's "a genuine infrastructure problem should fail
@@ -169,7 +169,7 @@ public final class DefaultFileFactory extends FileFactory {
     /**
      * Delegates to {@link DataFactory#register(Serialized...)}, deferring to {@link
      * #pendingUploadCache} while offline - see {@link #upload(StoredFile)}'s own Javadoc for how
-     * S3-backed storage/failure handling applies to each file in the batch.
+     * S3-backed s3storage/failure handling applies to each file in the batch.
      */
     @Override
     public void upload(@NotNull final StoredFile... files) throws DatabaseClientException, KeyWrapException {
@@ -204,7 +204,7 @@ public final class DefaultFileFactory extends FileFactory {
     }
 
     /**
-     * If S3-backed storage is configured ({@link #objectStorageService} non-{@code null}),
+     * If S3-backed s3storage is configured ({@link #objectStorageService} non-{@code null}),
      * encrypts {@code file}'s raw content bytes ({@link StoredFile#rawStorableBytes()}) via {@link
      * #contentChannel}, writes the result to {@link #objectStorageService} under {@code
      * file.fileId()}, and returns a metadata-only copy ({@link
@@ -218,10 +218,10 @@ public final class DefaultFileFactory extends FileFactory {
      * cache the scheduler is draining.
      *
      * @param file the file about to be persisted
-     * @return {@code file} itself if S3-backed storage isn't configured, otherwise a metadata-only copy
+     * @return {@code file} itself if S3-backed s3storage isn't configured, otherwise a metadata-only copy
      * @throws NullPointerException if {@code file} is {@code null}
-     * @throws KeyWrapException if encrypting the content for object storage fails
-     * @throws ObjectStorageException if the object-storage write itself fails
+     * @throws KeyWrapException if encrypting the content for object s3storage fails
+     * @throws ObjectStorageException if the object-s3storage write itself fails
      */
     @NotNull
     public StoredFile prepareForPersistence(@NotNull final StoredFile file) throws KeyWrapException {
@@ -259,7 +259,7 @@ public final class DefaultFileFactory extends FileFactory {
             this.objectStorageService.deleteObject(fileId);
         } catch (final ObjectStorageException cleanupFailed) {
             CloudDriver.getInstance().getLogger().log(
-                    Level.WARNING, "@DefaultFileFactory: failed to delete object storage content for file '" + fileId + "'", cleanupFailed
+                    Level.WARNING, "@DefaultFileFactory: failed to delete object s3storage content for file '" + fileId + "'", cleanupFailed
             );
         }
     }
@@ -349,7 +349,7 @@ public final class DefaultFileFactory extends FileFactory {
     }
 
     /**
-     * Delegates to {@link DataFactory#delete(String, Class)}, then - if S3-backed storage is
+     * Delegates to {@link DataFactory#delete(String, Class)}, then - if S3-backed s3storage is
      * configured - best-effort deletes {@code fileId}'s object too ({@link
      * #deleteObjectQuietly}). Order matters: the database row goes first, the object second - an
      * orphaned S3 object is a cheap cleanup problem, a database row pointing at a deleted S3
@@ -446,7 +446,7 @@ public final class DefaultFileFactory extends FileFactory {
     }
 
     /**
-     * Caps how many files {@link #verifyAll} resolves-from-object-storage/decodes/decompresses at
+     * Caps how many files {@link #verifyAll} resolves-from-object-s3storage/decodes/decompresses at
      * once - each in-flight task holds its own decoded (and, for a compressed file, decompressed)
      * {@code byte[]} copy of the file's full content in memory for its duration (see {@link
      * #verifyAll}'s own Javadoc for why), so an unbounded one-task-per-file fan-out spikes peak

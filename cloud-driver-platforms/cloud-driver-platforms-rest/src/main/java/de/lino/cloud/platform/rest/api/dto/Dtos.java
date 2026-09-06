@@ -228,7 +228,7 @@ public final class Dtos {
      * Gson-serialized fields. {@code timeStamp} is set once, when the {@code CloudUser} record is
      * first created (account confirmation time), so it doubles as the account's creation
      * timestamp - see {@code CloudUser}'s own Javadoc server-side. {@code maxBytesToUpload}/{@code
-     * currentUploadedBytes} back the Dashboard's storage-quota display - see {@code
+     * currentUploadedBytes} back the Dashboard's s3storage-quota display - see {@code
      * ICloudUser#getMaxBytesToUpload()}/{@code #getCurrentUploadedBytes()} server-side for what
      * each actually tracks. {@code themeMode} (added 2026-09-04) is this account's synced
      * light/dark theme preference - {@code null} if never explicitly set, in which case a client

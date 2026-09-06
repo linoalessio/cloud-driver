@@ -10,7 +10,7 @@ import de.lino.cloud.api.utility.Asserts;
 /**
  * A randomly generated, short-lived data-encryption key (DEK) protecting a
  * single payload. Wrapped by a {@link KeyEncryptionService}-managed
- * key-encryption key (KEK) for storage; its raw material should be
+ * key-encryption key (KEK) for s3storage; its raw material should be
  * {@link #destroy() destroyed} once no longer needed.
  */
 public final class DataEncryptionKey {

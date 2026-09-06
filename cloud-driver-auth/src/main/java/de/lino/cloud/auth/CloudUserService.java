@@ -356,7 +356,7 @@ public final class CloudUserService implements ICloudUserService {
      * StoredFileOwnership#getSizeBytes()} across every row this account still tracks - trashed
      * rows included, via {@link #ownedFileOwnershipsIncludingDeleted(String)} rather than {@link
      * #ownedFileOwnerships(String)}, since a trashed-but-not-yet-purged file still occupies
-     * storage (see {@link #deleteFile}'s own Javadoc: trashing alone never decrements the usage
+     * s3storage (see {@link #deleteFile}'s own Javadoc: trashing alone never decrements the usage
      * total, only {@link #hardDeleteFile} does) - so this recompute must agree with that same
      * accounting rule rather than silently under-counting relative to it.
      */
@@ -1524,7 +1524,7 @@ public final class CloudUserService implements ICloudUserService {
      * {@link StoredFileOwnership#deletedAtEpochMillis}'s own Javadoc for why this row, not the
      * underlying {@link StoredFile}, carries the flag {@link CloudUserService} actually checks).
      * Idempotent - a no-op if {@code storedFileId} is already in the trash. Does <b>not</b>
-     * decrement the owner's usage total - the file's bytes still occupy storage until a purge job
+     * decrement the owner's usage total - the file's bytes still occupy s3storage until a purge job
      * (or {@link #resetCloudUser(String)}, via {@link #hardDeleteFile}) actually removes it; see
      * {@link #restoreFile(String, String)} for the reverse.
      *

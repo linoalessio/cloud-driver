@@ -12,7 +12,7 @@ import de.lino.cloud.api.utility.UnitParser;
 import de.lino.cloud.extensions.terminal.command.RecomputeStorageCommand;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
-import de.lino.cloud.plugin.storage.object.StoredFileContentChannel;
+import de.lino.cloud.plugin.s3storage.StoredFileContentChannel;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.sql.SQLExecution;
@@ -56,7 +56,7 @@ import java.util.Optional;
  * the live {@link EnvelopeEncryptionService} instance - see this class's own Javadoc above), but
  * <b>does</b> reuse the live {@link ObjectStorageService} published on {@link
  * CloudDriver#getInstance()}'s {@code IFactoryContainer} for the actual S3 write, so this command
- * only ever runs at all against a deployment that has genuinely opted into S3-backed storage.
+ * only ever runs at all against a deployment that has genuinely opted into S3-backed s3storage.
  * Resolving a second {@link AwsKmsKeyEncryptionService} against the same {@code
  * "aws-kms-region"}/{@code "aws-kms-key-id"} {@code configuration.json} keys {@code CloudBootstrap}
  * itself reads is safe and produces an equivalent instance - KMS {@code Encrypt}/{@code Decrypt}
@@ -66,7 +66,7 @@ import java.util.Optional;
  * <p><b>Idempotent and resumable by construction, not by tracking progress explicitly</b> - every
  * run re-scans the whole id range from scratch (see {@link #fetchIdPage}) and skips any row
  * that's already {@link StoredFile#isS3Backed()}, so a crash mid-run (or simply running this
- * command again later, e.g. against files uploaded since the last run while S3-backed storage
+ * command again later, e.g. against files uploaded since the last run while S3-backed s3storage
  * wasn't configured yet) always converges toward "every row migrated" rather than needing its own
  * separate resume-point bookkeeping.
  */
@@ -198,7 +198,7 @@ public class MigrateToS3Command implements Command {
      * DataFactory#update} (architecture/AWS_S3_IMPL.md section 7, step 4: never null out {@code
      * contentBase64} before the S3 write it depends on has actually succeeded).
      *
-     * @return the number of raw bytes moved to object storage
+     * @return the number of raw bytes moved to object s3storage
      */
     private static long migrateFile(final DataFactory dataFactory, final ObjectStorageService objectStorageService,
                                      final StoredFileContentChannel contentChannel, final StoredFile file) throws Exception {

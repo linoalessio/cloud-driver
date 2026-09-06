@@ -104,7 +104,7 @@
             <version>2.46.7</version>
         </dependency>
 
-        <!-- S3ObjectStorageService (storage.object) - the production ObjectStorageService,
+        <!-- S3ObjectStorageService (s3storage.object) - the production ObjectStorageService,
              backing StoredFile's optional S3-backed content path (architecture/AWS_S3_IMPL.md).
              Not wired in as CloudBootstrap's default; an operator opts in explicitly, same as
              AwsKmsKeyEncryptionService above. Version pinned to match the kms dependency's own

@@ -1,4 +1,4 @@
-package de.lino.cloud.plugin.storage.object;
+package de.lino.cloud.plugin.s3storage;
 
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
@@ -12,9 +12,9 @@ import org.jetbrains.annotations.NotNull;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Encrypts/decrypts a {@link de.lino.cloud.api.file.StoredFile}'s raw content bytes for storage in
+ * Encrypts/decrypts a {@link de.lino.cloud.api.file.StoredFile}'s raw content bytes for s3storage in
  * an {@link ObjectStorageService} object, generically across
- * whichever implementation is configured - the {@code storage.object} package's equivalent of
+ * whichever implementation is configured - the {@code s3storage.object} package's equivalent of
  * {@code de.lino.cloud.plugin.security.entity.SecureEntityChannel}, adapted for a file's content
  * bytes specifically rather than a whole {@code Serialized} entity's JSON.
  *
@@ -74,7 +74,7 @@ public final class StoredFileContentChannel {
      * result.
      *
      * @param fileId the id of the file {@code storedBytes} is expected to belong to
-     * @param storedBytes the serialized, encrypted bytes read back from object storage
+     * @param storedBytes the serialized, encrypted bytes read back from object s3storage
      * @return the recovered raw (compressed-if-applicable, not-yet-decompressed) content bytes -
      *     see {@link de.lino.cloud.api.file.StoredFile#decompressIfNeeded(byte[])} for the remaining step
      * @throws NullPointerException if {@code fileId} or {@code storedBytes} is {@code null}

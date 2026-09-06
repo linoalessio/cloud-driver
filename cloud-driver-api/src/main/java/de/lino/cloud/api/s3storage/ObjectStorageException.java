@@ -12,14 +12,14 @@ package de.lino.cloud.api.s3storage;
 public final class ObjectStorageException extends RuntimeException {
 
     /**
-     * @param message the detail message describing the object-storage failure
+     * @param message the detail message describing the object-s3storage failure
      */
     public ObjectStorageException(final String message) {
         super(message);
     }
 
     /**
-     * @param message the detail message describing the object-storage failure
+     * @param message the detail message describing the object-s3storage failure
      * @param cause the underlying cause, if any
      */
     public ObjectStorageException(final String message, final Throwable cause) {

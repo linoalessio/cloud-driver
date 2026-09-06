@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * A folder a user can organize their {@link StoredFile}s into, the way every other cloud
- * storage system lets a file be filed under a directory rather than only ever sitting in one
+ * s3storage system lets a file be filed under a directory rather than only ever sitting in one
  * flat list.
  *
  * <p>A folder does <b>not</b> itself track which {@link StoredFile}s or child {@link Folder}s

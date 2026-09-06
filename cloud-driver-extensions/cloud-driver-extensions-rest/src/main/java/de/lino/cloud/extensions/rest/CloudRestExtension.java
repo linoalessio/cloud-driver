@@ -20,7 +20,7 @@ import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
 import de.lino.cloud.plugin.security.secrets.SecretRedactor;
-import de.lino.cloud.plugin.storage.object.S3PresignedTransferService;
+import de.lino.cloud.plugin.s3storage.S3PresignedTransferService;
 import de.lino.database.json.JsonDocument;
 import software.amazon.awssdk.regions.Region;
 
@@ -148,7 +148,7 @@ public class CloudRestExtension extends Extension {
 
         // Lets GET /files/{id}/content stream a direct-transfer file's content straight from S3
         // instead of resolving it as a byte[] first - see DefaultRestFactory#resolveDownloadableContent.
-        // null on a deployment that hasn't opted into S3-backed storage, in which case that route
+        // null on a deployment that hasn't opted into S3-backed s3storage, in which case that route
         // simply keeps its prior, fully-materializing behavior.
         final ObjectStorageService objectStorageService = this.cloudDriver().getFactoryContainer().getObjectStorageService();
         final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService, objectStorageService);

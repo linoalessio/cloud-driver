@@ -34,10 +34,10 @@ public record EncryptedEntityRecord(
 ) {
 
     /**
-     * Converts {@code envelope} into its base64-encoded storage representation.
+     * Converts {@code envelope} into its base64-encoded s3storage representation.
      *
      * @param envelope the envelope to convert
-     * @return the resulting storage record
+     * @return the resulting s3storage record
      * @throws NullPointerException if {@code envelope} is {@code null}
      */
     public static EncryptedEntityRecord from(final EnvelopeEncryptedPayload envelope) {

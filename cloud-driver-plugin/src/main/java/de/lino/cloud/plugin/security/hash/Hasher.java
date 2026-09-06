@@ -9,7 +9,7 @@ import de.lino.cloud.api.utility.Asserts;
 
 /**
  * General-purpose cryptographic hashing restricted to the {@link HashAlgorithm
- * approved algorithms}. Not for password storage - see the {@code password}
+ * approved algorithms}. Not for password s3storage - see the {@code password}
  * package for Argon2id.
  */
 public final class Hasher {

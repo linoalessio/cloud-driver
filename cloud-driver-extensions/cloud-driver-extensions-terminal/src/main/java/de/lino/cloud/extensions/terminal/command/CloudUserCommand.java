@@ -15,7 +15,7 @@ import java.util.Optional;
 
 /**
  * Lists and manages {@link de.lino.cloud.api.user.ICloudUser} accounts from the terminal:
- * {@code cloudUser list} prints every registered account's email, uploaded storage, and file
+ * {@code cloudUser list} prints every registered account's email, uploaded s3storage, and file
  * count; {@code cloudUser info <email>} prints one account's detail; {@code cloudUser reset
  * <email>} wipes that account's files/folders via {@link ICloudUserService#resetCloudUser};
  * {@code cloudUser delete <email>} deletes the account entirely via {@link
@@ -90,7 +90,7 @@ public class CloudUserCommand implements Command {
             terminal.displayApproved("Cloud user: &b%s", cloudUser.get().getAuthUser().getEmailAddress());
             terminal.displayApproved("AuthId: &b%s", cloudUser.get().getAuthUserId());
             terminal.displayApproved("Uploaded files: &b%s", cloudUser.get().getStoredFiles().size());
-            terminal.displayApproved("Uploaded storage: &b%s&8 / &b%s", UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes()), UnitParser.parseByteUnit(cloudUser.get().getMaxBytesToUpload()));
+            terminal.displayApproved("Uploaded s3storage: &b%s&8 / &b%s", UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes()), UnitParser.parseByteUnit(cloudUser.get().getMaxBytesToUpload()));
             terminal.emptyLine();
 
             return;
@@ -153,7 +153,7 @@ public class CloudUserCommand implements Command {
                 final long exisingBytesInServer = CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available");
 
                 if ((uploadedBytesToDatabase + bytes) >= exisingBytesInServer) {
-                    terminal.displayApproved("The cloud server has &breached &7its &cmaximum storage capacity&7.");
+                    terminal.displayApproved("The cloud server has &breached &7its &cmaximum s3storage capacity&7.");
                     return;
                 }
 
