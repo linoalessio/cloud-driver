@@ -1,0 +1,8 @@
+{
+  "address": "HOST",
+  "userName": "USER",
+  "password": "PASSWORD",
+  "port": 5432,
+  "database": "DATABASE",
+  "fileRepository": "PATH_IF_FILE_DATABASE_CHOSEN"
+}
