@@ -12,12 +12,6 @@ Parent directory for `cloud-driver`'s **per-ecosystem client SDKs** — put anot
 
 Only `cloud-driver-multiplatform-java` is a Maven module — this directory's own `pom.xml` (`packaging=pom`, `groupId=de.lino.cloud.multiplatform`, `artifactId=cloud-driver-multiplatform`) declares it as its one `<module>`. `cloud-driver-multiplatform-python`/`cloud-driver-multiplatform-swift` are deliberately **not** listed there (each has its own build tooling, `pyproject.toml`/`Package.swift`, no `pom.xml`) — see this directory's `pom.xml` for the comments explaining exactly why each is excluded.
 
-## Why one directory for three unrelated ecosystems
-
-Before 2026-09-07, these three lived in three different places: the Java client was `cloud-driver-platforms-rest`, a Maven child of the `cloud-driver-platforms` aggregator (sibling to the desktop/mobile GUI apps); the Python client was `cloud-driver-python`, sitting directly at the repo root; and the Swift client didn't exist as its own module at all — it was `cloud-driver-platforms-mobile`'s own `Networking/` folder, compiled straight into the GUI app's target. Grouping all three here does two things: it makes "every client SDK for this API, one per language" a single, discoverable location instead of three unrelated spots in the tree, and — for the Swift case specifically — it lets `cloud-driver-platforms-mobile` shed its networking/session code entirely and become GUI-only, the same split `cloud-driver-platforms-desktop` already had via its own (now-moved) Java dependency.
-
-Each move (and the same-day rename that gave two of the three their current `cloud-driver-multiplatform-*` names) is documented in full in the root `CLAUDE.md`'s own "`cloud-driver-multiplatform`" section, and in each submodule's own README under a "Moved"/"Moved, then renamed" note.
-
 ## What changed, what didn't
 
 - **`cloud-driver-multiplatform-java`** — Maven module + Java package rename story: the Maven `artifactId`/`groupId`/`<parent>` changed (twice — first to `cloud-driver-maven`, then to its current name, `cloud-driver-multiplatform-java`), but the Java package root (`de.lino.cloud.platform.rest`) is **unchanged** on purpose — renaming it would touch every import across `cloud-driver-platforms-desktop` and this module's own source for no functional benefit. `cloud-driver-platforms-desktop`'s Gradle dependency coordinate was updated to match (`de.lino.cloud.multiplatform.java:cloud-driver-multiplatform-java:<version>`, resolved via `mavenLocal()`).

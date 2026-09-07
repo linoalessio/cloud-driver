@@ -1,5 +1,15 @@
 # cloud-driver
 
+![Java](https://img.shields.io/badge/Java-21-orange)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF)
+![Swift](https://img.shields.io/badge/Swift-5.9-F05138)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
+![Build](https://img.shields.io/badge/Build-Maven-C71A36)
+![Build](https://img.shields.io/badge/Build-Gradle-02303A)
+![Build](https://img.shields.io/badge/Build-SwiftPM-F05138)
+![Build](https://img.shields.io/badge/Build-pip-3776AB)
+![Version](https://img.shields.io/badge/Version-1.0.5-blue)
+
 An encrypted cloud storage system: a Java backend that envelope-encrypts every stored record
 (AES-256-GCM, KMS/HSM-style key wrapping) before persisting it, exposed over a JWT-authenticated
 REST API, with a native desktop client, a native iOS client, and a Python SDK on top of it.
@@ -34,7 +44,7 @@ module's own `README.md` (linked below) is the reference for that module's code.
 | `cloud-driver-platforms-desktop` | Desktop client app (macOS / Windows / Linux) | [README](cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
 | `cloud-driver-platforms-mobile` | Mobile client app (iOS) — GUI only, its networking/session layer lives in `cloud-driver-multiplatform-swift` | [README](cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
 | `cloud-driver-multiplatform` | Parent of the three per-ecosystem client SDKs below — one REST/WebSocket API, one client library per language | [README](cloud-driver-multiplatform/README.md) |
-| `cloud-driver-multiplatform-java` | Java REST API client library, shared by the desktop app (formerly `cloud-driver-platforms-rest`) | [README](cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) |
+| `cloud-driver-multiplatform-java` | Java REST API client library, shared by the desktop app | [README](cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) |
 | `cloud-driver-multiplatform-swift` | Swift REST/WebSocket API client library, shared by the mobile app | [README](cloud-driver-multiplatform/cloud-driver-multiplatform-swift/README.md) |
 | `cloud-driver-multiplatform-python` | Full-coverage Python SDK for writing microservices against the REST/WebSocket API | [README](cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) |
 

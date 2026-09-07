@@ -5,16 +5,6 @@ microservice can talk to the exact same server every other client in this repo
 (`cloud-driver-multiplatform-java`/`cloud-driver-multiplatform-swift`/`-desktop`/`-mobile`) talks to, without hand-rolling
 HTTP calls.
 
-**Moved, then renamed (2026-09-07)**: this module used to live at the repo root as
-`cloud-driver-python`; it first moved to `cloud-driver-multiplatform/cloud-driver-python`
-(alongside its new Java/Swift siblings), then - the same day - was renamed again to its current
-name/path, `cloud-driver-multiplatform/cloud-driver-multiplatform-python`, alongside its Java
-(`cloud-driver-multiplatform-java`) and Swift (`cloud-driver-multiplatform-swift`) siblings — one
-client SDK per ecosystem, all three talking to the same REST/WebSocket API. Nothing about the
-package itself changed (same importable package name, `cloud_driver_client`, same PyPI
-distribution name `cloud-driver-client`, same `pyproject.toml`), only its location/directory name
-in the repo.
-
 **Not part of the Maven reactor** - like `cloud-driver-platforms-desktop`/`-mobile`, this is a
 client-side module in a different ecosystem (Python, not Java/Kotlin/Swift) with its own build
 tooling (`pyproject.toml`/`pip`, not Maven). It is deliberately **not** listed in
