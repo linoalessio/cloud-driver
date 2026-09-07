@@ -688,6 +688,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
                 config.routes.put(FILES_PATH + "/{id}/rename", this::handleRenameFile);
+                config.routes.put(FILES_PATH + "/{id}/content", this::handleReplaceFileContent);
+                config.routes.get(FILES_PATH + "/{id}/versions", this::handleListFileVersions);
+                config.routes.get(FILES_PATH + "/{id}/versions/{versionNumber}/content", this::handleDownloadFileVersion);
+                config.routes.post(FILES_PATH + "/{id}/versions/{versionNumber}/restore", this::handleRestoreFileVersion);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
@@ -2155,6 +2159,168 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     ctx.contentType("image/jpeg").result(thumbnail.get());
                     return null;
                 }));
+    }
+
+    /**
+     * {@code PUT /files/{id}/content}: overwrites a {@link StoredFile}'s content in place, via
+     * {@link CloudUserService#replaceFileContent} - section 2 (Versioning, {@code
+     * architecture/MICRO.md}). Streams the raw {@code application/octet-stream} request body to a
+     * scratch file first, the same {@link #receiveUploadToScratchFile} primitive {@link
+     * #handleUploadFile} already uses, for the same "never buffer an arbitrarily large body in
+     * heap" reasoning. Responds {@code 200} (not {@code 201} - this replaces an existing resource,
+     * it doesn't create one) with a {@link StoredFileSummary} of the updated file.
+     */
+    private void handleReplaceFileContent(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+
+        final Path scratchFile = receiveUploadToScratchFile(ctx.bodyInputStream());
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    try {
+                        final byte[] content = Files.readAllBytes(scratchFile);
+                        return this.cloudUserService.replaceFileContent(userId, id, content);
+                    } catch (final IOException e) {
+                        throw new UncheckedIOException(
+                                "@DefaultRestFactory.handleReplaceFileContent: failed to read scratch file for '" + id + "'", e);
+                    } finally {
+                        deleteScratchFileQuietly(scratchFile);
+                    }
+                })
+                .handle((summary, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(summary));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/{id}/versions}: lists every currently-retained version of a {@link
+     * StoredFile}, via {@link de.lino.cloud.api.versioning.FileVersioningService#listVersions}.
+     * Access-checked the same owner-or-share way {@link #handleDownloadFileContent} already is -
+     * whoever can currently view a file can see its version history too, matching this
+     * codebase's existing "share is read-only" model. {@code 503} if {@code
+     * cloud-driver-extensions-versioning} isn't running on this deployment, the same shape {@link
+     * #handleGetThumbnail} already uses for its own optional facet.
+     */
+    private void handleListFileVersions(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+
+        final de.lino.cloud.api.versioning.FileVersioningService versioningService =
+                CloudDriver.getInstance().getServiceContainer().getFileVersioningService();
+        if (versioningService == null) {
+            throw new ServiceUnavailableResponse("Versioning extension is not running on this deployment");
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    this.cloudUserService.checkFileAccess(userId, id);
+                    return versioningService.listVersions(id);
+                })
+                .handle((versions, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    ctx.contentType("application/json").result(this.gson.toJson(versions));
+                    return null;
+                }));
+    }
+
+    /**
+     * {@code GET /files/{id}/versions/{versionNumber}/content}: streams one retained version's
+     * raw content, via {@link de.lino.cloud.api.versioning.FileVersioningService#getVersionContent}
+     * - the "Download this version" action. Access-checked/gated the same way {@link
+     * #handleListFileVersions} is. {@code 404} if no such version is currently retained (pruned,
+     * or never existed) - indistinguishable from the outside, matching {@link
+     * de.lino.cloud.api.versioning.FileVersioningService}'s own Javadoc.
+     */
+    private void handleDownloadFileVersion(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final int versionNumber = parseVersionNumber(ctx);
+        final String userId = requireUserId(ctx);
+
+        final de.lino.cloud.api.versioning.FileVersioningService versioningService =
+                CloudDriver.getInstance().getServiceContainer().getFileVersioningService();
+        if (versioningService == null) {
+            throw new ServiceUnavailableResponse("Versioning extension is not running on this deployment");
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    this.cloudUserService.checkFileAccess(userId, id);
+                    return versioningService.getVersionContent(id, versionNumber);
+                })
+                .handle((content, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    if (content.isEmpty()) {
+                        throw new NotFoundResponse("No version " + versionNumber + " for file '" + id + "'");
+                    }
+                    final de.lino.cloud.api.versioning.FileVersionContent version = content.get();
+                    final String encodedFileName = URLEncoder.encode(version.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                    ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
+                    ctx.contentType(version.contentType()).result(version.content());
+                    return null;
+                }));
+    }
+
+    /**
+     * {@code POST /files/{id}/versions/{versionNumber}/restore}: restores a prior version by
+     * calling {@link CloudUserService#replaceFileContent} with that version's own content - per
+     * {@code architecture/MICRO.md} section 2's own instruction, this "creates a fresh version
+     * from the old content rather than mutating history in place": since {@link
+     * CloudUserService#replaceFileContent} always captures whatever is currently live as a new
+     * version before overwriting, restoring version {@code N} automatically captures the
+     * (about-to-be-superseded) current content as its own new version too - nothing is ever lost.
+     * Owner-only, enforced entirely by {@link CloudUserService#replaceFileContent} itself (no
+     * separate access check needed here first - see this method's own implementation note below).
+     */
+    private void handleRestoreFileVersion(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final int versionNumber = parseVersionNumber(ctx);
+        final String userId = requireUserId(ctx);
+
+        final de.lino.cloud.api.versioning.FileVersioningService versioningService =
+                CloudDriver.getInstance().getServiceContainer().getFileVersioningService();
+        if (versioningService == null) {
+            throw new ServiceUnavailableResponse("Versioning extension is not running on this deployment");
+        }
+
+        // No explicit checkFileAccess call before resolving version content: getVersionContent
+        // itself performs no user-scoped check (it's a plain id-keyed lookup), and a caller with
+        // no ownership of `id` still gets exactly one outcome either way - a 404 from
+        // replaceFileContent's own (stricter, owner-only) ownership check below - so there is
+        // nothing about a version's existence a non-owner could ever observe from this route.
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    final Optional<de.lino.cloud.api.versioning.FileVersionContent> version = versioningService.getVersionContent(id, versionNumber);
+                    if (version.isEmpty()) return Optional.<StoredFileSummary>empty();
+                    return Optional.of(this.cloudUserService.replaceFileContent(userId, id, version.get().content()));
+                })
+                .handle((summary, failure) -> {
+                    if (failure != null) {
+                        throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                    }
+                    if (summary.isEmpty()) {
+                        throw new NotFoundResponse("No version " + versionNumber + " for file '" + id + "'");
+                    }
+                    ctx.status(200).contentType("application/json").result(this.gson.toJson(summary.get()));
+                    return null;
+                }));
+    }
+
+    /** Parses {@code ctx}'s {@code {versionNumber}} path parameter, throwing {@link BadRequestResponse} if it isn't a valid integer. */
+    private static int parseVersionNumber(@NotNull final Context ctx) {
+        try {
+            return Integer.parseInt(ctx.pathParam("versionNumber"));
+        } catch (final NumberFormatException e) {
+            throw new BadRequestResponse("Invalid version number");
+        }
     }
 
     /**

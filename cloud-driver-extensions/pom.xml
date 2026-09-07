@@ -20,6 +20,7 @@
         <module>cloud-driver-extensions-backup</module>
         <module>cloud-driver-extensions-metrics</module>
         <module>cloud-driver-extensions-thumbnails</module>
+        <module>cloud-driver-extensions-versioning</module>
     </modules>
 
 </project>

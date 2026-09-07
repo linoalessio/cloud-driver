@@ -33,6 +33,7 @@ import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.CursorPage;
+import de.lino.cloud.api.versioning.FileVersioningService;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.SharedFileGrant;
 import de.lino.cloud.auth.entity.SharedFolderGrant;
@@ -1497,6 +1498,91 @@ public final class CloudUserService implements ICloudUserService {
             this.dataFactory.update(ownership.withMetadata(renamed));
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.renameFile: failed to update cached metadata for " + storedFileId, e);
+        }
+    }
+
+    /**
+     * Overwrites {@code storedFileId}'s content in place - see {@link
+     * ICloudUserService#replaceFileContent}'s own Javadoc for the full contract. Ownership-checked
+     * the same owner-only way {@link #renameFile} is; the size-increase-only quota check mirrors
+     * {@link #uploadFile(String, String, byte[], String)}'s own (checked before ever fetching the
+     * existing file, for the same "don't pay for a rejected write" reasoning).
+     *
+     * @param authUserId the requesting user's id, checked against the ownership record
+     * @param storedFileId the file to overwrite
+     * @param newContent the file's new raw bytes
+     * @return a {@link StoredFileSummary} of the updated file
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws UploadQuotaExceededException if the size increase would exceed {@code authUserId}'s upload quota
+     */
+    @NonNull
+    @Override
+    public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId, final byte[] newContent) {
+        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never overwrite it.
+        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+
+        final StoredFile existing;
+        try {
+            existing = this.fileFactory.findById(storedFileId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "@CloudUserService.replaceFileContent: owned file not found: " + storedFileId));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to look up " + storedFileId, e);
+        }
+
+        final long delta = newContent.length - existing.sizeBytes();
+        if (delta > 0) {
+            final ICloudUser cloudUser = this.getOrCreate(authUserId);
+            if (cloudUser.isUploadLimitReached(delta)) {
+                recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+                throw new UploadQuotaExceededException(authUserId, cloudUser.getCurrentUploadedBytes(), delta, cloudUser.getMaxBytesToUpload());
+            }
+        }
+
+        // Only point at which the about-to-be-overwritten content is still available - see
+        // FileVersioningService#captureVersion's own Javadoc for why this must happen here,
+        // synchronously, before the write below, rather than via any after-the-fact notification.
+        captureFileVersion(storedFileId, existing);
+
+        final StoredFile replaced = new StoredFile(
+                storedFileId, existing.fileName(), newContent,
+                FileChecksum.of(HashAlgorithm.SHA_256, newContent), existing.createdAt(), Instant.now()
+        );
+        try {
+            this.fileFactory.upload(replaced);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to persist new content for " + storedFileId, e);
+        }
+
+        try {
+            this.dataFactory.update(ownership.withMetadata(replaced));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to update cached metadata for " + storedFileId, e);
+        }
+
+        this.updateCloudUserBytesUsage(authUserId, delta);
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
+
+        return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
+                replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId());
+    }
+
+    /**
+     * Forwards {@code sourceFileId}'s about-to-be-overwritten content to {@link
+     * CloudDriver#getInstance()}'s {@link FileVersioningService}, if {@code
+     * cloud-driver-extensions-versioning} has published one - a no-op otherwise. Never throws:
+     * a missing/misbehaving versioning sink must never block a real content replacement, matching
+     * {@link #recordMetric}'s own defensive shape immediately below.
+     *
+     * @param sourceFileId the file about to be overwritten
+     * @param previousContent its full state immediately before the overwrite
+     */
+    private static void captureFileVersion(final String sourceFileId, final StoredFile previousContent) {
+        try {
+            final FileVersioningService versioningService = CloudDriver.getInstance().getServiceContainer().getFileVersioningService();
+            if (versioningService != null) versioningService.captureVersion(sourceFileId, previousContent);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
         }
     }
 

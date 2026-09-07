@@ -369,6 +369,32 @@ public interface ICloudUserService {
     void renameFile(@NotNull String authUserId, @NotNull String storedFileId, @NotNull String newFileName);
 
     /**
+     * Overwrites {@code storedFileId}'s content in place, but only if {@code authUserId} actually
+     * owns it - the primitive underlying section 2 (Versioning, {@code architecture/MICRO.md}).
+     * Unlike every other write in this codebase before this method existed, this genuinely
+     * replaces an existing {@link StoredFile}'s bytes under its own, unchanged id - {@link
+     * #uploadFile}/{@code duplicateFileInto}-style operations always mint a fresh id instead.
+     *
+     * <p>If {@code de.lino.cloud.api.factory.service.IServiceContainer#getFileVersioningService()}
+     * is configured, the file's content <em>before</em> this call is captured as a new version
+     * first - synchronously, before the overwrite - since that is the only point at which the
+     * about-to-be-superseded content is still available (there is no way to recover it once
+     * overwritten). A deployment with no versioning extension running simply loses the previous
+     * content the same way every write in this codebase already does elsewhere.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to overwrite
+     * @param newContent the file's new raw bytes
+     * @return a {@link StoredFileSummary} of the updated file, folder placement included (unchanged by this call)
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the size increase
+     *     (new content larger than the file's current size) would exceed {@code authUserId}'s
+     *     {@link ICloudUser#getMaxBytesToUpload()} upload quota
+     */
+    @NotNull
+    StoredFileSummary replaceFileContent(@NotNull String authUserId, @NotNull String storedFileId, byte[] newContent);
+
+    /**
      * @return every currently registered {@link ICloudUser} record
      */
     @NonNull

@@ -29,6 +29,9 @@ public enum AuditAction {
     FILE_DELETE,
 
     /** A {@code CloudUserService#deleteCloudUser} call (permanently empties and removes an account). */
-    ACCOUNT_DELETE
+    ACCOUNT_DELETE,
+
+    /** A {@code CloudUserService#replaceFileContent} call (overwrites a file's content in place - see {@code architecture/MICRO.md} section 2, versioning). */
+    FILE_CONTENT_REPLACED
 
 }

@@ -8,6 +8,7 @@ import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
 
 /**
@@ -35,6 +36,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile MetricsSnapshotProvider metricsSnapshotProvider;
     /** The thumbnail lookup service, {@code null} until {@link #setThumbnailService} publishes one. */
     private volatile ThumbnailService thumbnailService;
+    /** The file-versioning service, {@code null} until {@link #setFileVersioningService} publishes one. */
+    private volatile FileVersioningService fileVersioningService;
 
     /** {@inheritDoc} */
     @Override
@@ -118,6 +121,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setThumbnailService(@NonNull final ThumbnailService thumbnailService) {
         this.thumbnailService = thumbnailService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public FileVersioningService getFileVersioningService() {
+        return this.fileVersioningService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setFileVersioningService(@NonNull final FileVersioningService fileVersioningService) {
+        this.fileVersioningService = fileVersioningService;
     }
 
 }

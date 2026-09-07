@@ -7,6 +7,7 @@ import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
 
 /**
@@ -157,5 +158,24 @@ public interface IServiceContainer {
      * @param thumbnailService the instance backing {@code GET /files/{id}/thumbnail}
      */
     void setThumbnailService(@NonNull ThumbnailService thumbnailService);
+
+    /**
+     * Returns the file-versioning service (section 2, Versioning, {@code
+     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-versioning}'s
+     * {@code CloudVersioningExtension} hasn't published one yet (not started, or this deployment
+     * doesn't run that extension at all). {@code de.lino.cloud.auth.CloudUserService#replaceFileContent}
+     * and {@code DefaultRestFactory}'s {@code /files/{id}/versions*} routes must null-check this
+     * the same way they already do for {@link #getMetricsSnapshotProvider()}.
+     *
+     * @return the {@link FileVersioningService}, or {@code null}
+     */
+    FileVersioningService getFileVersioningService();
+
+    /**
+     * Publishes the real {@link FileVersioningService}, once built.
+     *
+     * @param fileVersioningService the instance backing content-replacement version capture and {@code GET /files/{id}/versions}
+     */
+    void setFileVersioningService(@NonNull FileVersioningService fileVersioningService);
 
 }
