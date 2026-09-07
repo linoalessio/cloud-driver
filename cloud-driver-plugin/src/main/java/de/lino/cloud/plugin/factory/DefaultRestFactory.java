@@ -293,6 +293,41 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * dedicated background thread of its own.
      */
     private static final long AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
+    /**
+     * {@code configuration.json} key for {@link #resolveApiRateLimitReadMaxRequests} - section 7,
+     * {@code architecture/MICRO.md}. See {@link #requireWithinApiRateLimit}'s own Javadoc for the
+     * general per-user/IP limiter this backs, complementing (never replacing) {@link
+     * #requireWithinAuthRateLimit}'s own dedicated, tighter {@code /auth/*} limiter.
+     */
+    private static final String API_RATE_LIMIT_READ_MAX_REQUESTS_CONFIG_KEY = "api-rate-limit-read-max-requests";
+    /** {@code configuration.json} key for {@link #resolveApiRateLimitReadWindowSeconds}. */
+    private static final String API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY = "api-rate-limit-read-window-seconds";
+    /** {@code configuration.json} key for {@link #resolveApiRateLimitWriteMaxRequests}. */
+    private static final String API_RATE_LIMIT_WRITE_MAX_REQUESTS_CONFIG_KEY = "api-rate-limit-write-max-requests";
+    /** {@code configuration.json} key for {@link #resolveApiRateLimitWriteWindowSeconds}. */
+    private static final String API_RATE_LIMIT_WRITE_WINDOW_SECONDS_CONFIG_KEY = "api-rate-limit-write-window-seconds";
+    /**
+     * Default {@code READ}-class (GET/HEAD) per-identity request cap per {@link
+     * #DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS}-second window - generous, since ordinary
+     * browsing (folder navigation, "Load more" pagination, polling {@code /activity}) can
+     * legitimately fire many reads in a short burst; this exists to blunt a scraping/enumeration
+     * script, not to constrain normal use.
+     */
+    private static final int DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS = 300;
+    /** Default {@code READ}-class rate-limit window, in seconds. */
+    private static final long DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS = 60L;
+    /**
+     * Default {@code WRITE}-class (every non-GET/HEAD method - uploads included, see {@link
+     * #classifyRequest}) per-identity request cap per {@link
+     * #DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS}-second window - tighter than {@link
+     * #DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS}, since a mutation (an upload, a delete, a move)
+     * is inherently more expensive to serve and more consequential if abused than a read.
+     */
+    private static final int DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS = 60;
+    /** Default {@code WRITE}-class rate-limit window, in seconds. */
+    private static final long DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS = 60L;
+    /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
+    private static final long API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
@@ -445,6 +480,21 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private final AtomicLong lastAuthRateLimitSweepEpochMillis = new AtomicLong(System.currentTimeMillis());
 
     /**
+     * Per-{@code (RequestClass, identity)} fixed-window request counters backing {@link
+     * #requireWithinApiRateLimit} (section 7, {@code architecture/MICRO.md}) - a separate map from
+     * {@link #authRateLimitBuckets}, deliberately: the two limiters have different scoping
+     * (per-user-or-IP here vs. always-per-IP there) and different configured limits, and keeping
+     * them independent means neither can be perturbed by touching the other's already-working,
+     * already-documented implementation. Same "not for massive scale, sufficient for a
+     * single-process deployment" trade-off as {@link #authRateLimitBuckets} - see that field's own
+     * Javadoc.
+     */
+    private final ConcurrentHashMap<String, ApiRateLimitBucket> apiRateLimitBuckets = new ConcurrentHashMap<>();
+
+    /** Throttles {@link #maybeSweepApiRateLimitBuckets} to at most once per {@link #API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
+    private final AtomicLong lastApiRateLimitSweepEpochMillis = new AtomicLong(System.currentTimeMillis());
+
+    /**
      * Every currently-connected {@link #LIVE_UPDATES_PATH} session, grouped by the {@code
      * authUserId} it authenticated as (see {@link #configureLiveUpdatesWebSocket}) - an account
      * can have more than one connected client (e.g. the desktop app open on two machines), so
@@ -464,6 +514,24 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * brute-forcing/spam, not a hard security perimeter).
      */
     private static final class AuthRateLimitBucket {
+        private long windowStartEpochMillis = System.currentTimeMillis();
+        private int count;
+    }
+
+    /**
+     * The two coarse endpoint classes {@link #requireWithinApiRateLimit} distinguishes - see
+     * {@link #classifyRequest}. Deliberately just two, not three: the doc's own "uploads vs. reads
+     * vs. auth" framing already has {@code auth} covered by the separate, pre-existing {@link
+     * #requireWithinAuthRateLimit}, so this only needs to split what's left into "cheap to serve,
+     * generously limited" vs. "expensive/consequential, tightly limited" - classifying by HTTP
+     * method alone (GET/HEAD vs. everything else) covers that split without needing to enumerate
+     * every individual upload-shaped route by path, which would be far more fragile to keep
+     * correct as new routes are added.
+     */
+    private enum RequestClass { READ, WRITE }
+
+    /** Identical shape to {@link AuthRateLimitBucket} - kept as a separate class rather than reused, see {@link #apiRateLimitBuckets}'s own Javadoc for why. */
+    private static final class ApiRateLimitBucket {
         private long windowStartEpochMillis = System.currentTimeMillis();
         private int count;
     }
@@ -681,6 +749,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(LOGOUT_PATH, this::handleLogout);
                 config.routes.get(ME_PATH, this::handleGetMe);
                 config.routes.before(this::requireValidBearerToken);
+                // Section 7 (architecture/MICRO.md) - registered directly after requireValidBearerToken
+                // so USER_ID_ATTRIBUTE is already set by the time this runs; see its own Javadoc.
+                config.routes.before(this::requireWithinApiRateLimit);
 
                 config.routes.get(ADMIN_AUTH_USERS_PATH, this::handleListAuthUsers);
                 config.routes.get(ADMIN_AUTH_USERS_PATH + "/{id}", this::handleGetAuthUser);
@@ -947,6 +1018,137 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             }
         }
         maybeSweepAuthRateLimitBuckets(windowMillis);
+    }
+
+    /**
+     * Javalin {@code before} filter capping general REST API request volume - section 7, {@code
+     * architecture/MICRO.md}, complementing the existing per-account <em>upload byte quota</em>
+     * ({@code CloudUser#getMaxBytesToUpload()}), which bounds how much storage an account
+     * accumulates but not how often it can call this API at all. Scoped per authenticated caller
+     * ({@link #USER_ID_ATTRIBUTE}, set by {@link #requireValidBearerToken}, which this filter is
+     * registered directly after so that attribute is always already present by the time this
+     * runs) - falling back to the same IP-or-trusted-proxy-header identity {@link
+     * #resolveRateLimitKey} already resolves for {@link #requireWithinAuthRateLimit}, for any
+     * request reached before a user id is known (there are none on this JWT-gated instance beyond
+     * the seven paths {@link #requireValidBearerToken} itself exempts, which are already covered
+     * by {@link #requireWithinAuthRateLimit} instead - see {@link #AUTH_PATH_PREFIX}'s own
+     * exclusion below).
+     *
+     * <p>Only registered on the JWT-gated constructor ({@link #DefaultRestFactory(DataFactory,
+     * AuthService)} family) - the unauthenticated constructor is documented as "only appropriate
+     * for local development" (nothing to protect), and the {@code ApiKey}-gated constructor gates
+     * a whole deployment behind one shared, operator-issued key for trusted server-to-server
+     * access, where "per user" has no meaning to scope against; adding IP-only limiting there
+     * would protect a threat model this codebase's {@code ApiKey} path doesn't actually have today.
+     *
+     * <p>Excludes {@link #AUTH_PATH_PREFIX} entirely (already covered by {@link
+     * #requireWithinAuthRateLimit}'s own dedicated, tighter limiter - not duplicated here) and
+     * {@link #PUBLIC_PATH_PREFIX} (a public share link's own request volume is bounded by its
+     * token's 384-bit search space making brute-forcing infeasible regardless - see {@code
+     * CLAUDE.md}'s "Sharing" section for that reasoning; a dedicated limiter for that surface is
+     * flagged there as this section's own out-of-scope follow-up, not silently forgotten).
+     *
+     * <p>Classifies every other request into {@link RequestClass#READ}/{@link RequestClass#WRITE}
+     * (see {@link #classifyRequest}) and applies that class's own configured fixed-window cap -
+     * same "fixed window, not a sliding one/token bucket, for simplicity" trade-off {@link
+     * AuthRateLimitBucket}'s own Javadoc already documents (allows a burst of up to 2x the
+     * configured limit right at a window boundary; acceptable here for the same "slow down abuse,
+     * not a hard security perimeter" reasoning).
+     *
+     * @throws TooManyRequestsResponse if this identity has exceeded its request class's configured
+     *     cap within the current window
+     */
+    private void requireWithinApiRateLimit(@NotNull final Context ctx) {
+        if (ctx.path().startsWith(AUTH_PATH_PREFIX) || ctx.path().startsWith(PUBLIC_PATH_PREFIX)) {
+            return;
+        }
+        final RequestClass requestClass = classifyRequest(ctx);
+        final boolean isWrite = requestClass == RequestClass.WRITE;
+        final long windowMillis = (isWrite ? resolveApiRateLimitWriteWindowSeconds() : resolveApiRateLimitReadWindowSeconds()) * 1000L;
+        final int maxRequests = isWrite ? resolveApiRateLimitWriteMaxRequests() : resolveApiRateLimitReadMaxRequests();
+        final String bucketKey = requestClass.name() + ':' + resolveApiRateLimitIdentity(ctx);
+        final ApiRateLimitBucket bucket = this.apiRateLimitBuckets.computeIfAbsent(bucketKey, ignored -> new ApiRateLimitBucket());
+        synchronized (bucket) {
+            final long now = System.currentTimeMillis();
+            if (now - bucket.windowStartEpochMillis >= windowMillis) {
+                bucket.windowStartEpochMillis = now;
+                bucket.count = 0;
+            }
+            bucket.count++;
+            if (bucket.count > maxRequests) {
+                throw new TooManyRequestsResponse("Too many requests - try again later");
+            }
+        }
+        maybeSweepApiRateLimitBuckets(windowMillis);
+    }
+
+    /**
+     * Classifies {@code ctx} into {@link RequestClass#READ} ({@link HandlerType#GET}/{@link
+     * HandlerType#HEAD}) or {@link RequestClass#WRITE} (every other method - {@code POST}/{@code
+     * PUT}/{@code DELETE}/{@code PATCH}, uploads included) - see {@link RequestClass}'s own Javadoc
+     * for why this method-based split, rather than enumerating individual routes by path.
+     */
+    private static RequestClass classifyRequest(final Context ctx) {
+        return ctx.method() == HandlerType.GET || ctx.method() == HandlerType.HEAD ? RequestClass.READ : RequestClass.WRITE;
+    }
+
+    /**
+     * The identity {@link #requireWithinApiRateLimit} scopes a bucket to - {@code "user:" +
+     * USER_ID_ATTRIBUTE} if present (an authenticated caller), otherwise {@code "ip:" + }{@link
+     * #resolveRateLimitKey}'s own IP-or-trusted-proxy-header resolution. The {@code "user:"}/{@code
+     * "ip:"} prefix keeps the two identity spaces from ever colliding (a user id and an IP address
+     * are drawn from unrelated formats in practice, but prefixing removes any doubt).
+     */
+    private static String resolveApiRateLimitIdentity(final Context ctx) {
+        final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
+        return userId != null ? "user:" + userId : "ip:" + resolveRateLimitKey(ctx);
+    }
+
+    /** Same sweep shape as {@link #maybeSweepAuthRateLimitBuckets}, applied to {@link #apiRateLimitBuckets}/{@link #lastApiRateLimitSweepEpochMillis} instead. */
+    private void maybeSweepApiRateLimitBuckets(final long windowMillis) {
+        final long now = System.currentTimeMillis();
+        final long lastSweep = this.lastApiRateLimitSweepEpochMillis.get();
+        if (now - lastSweep < API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS
+                || !this.lastApiRateLimitSweepEpochMillis.compareAndSet(lastSweep, now)) {
+            return;
+        }
+        this.apiRateLimitBuckets.entrySet().removeIf(entry -> {
+            synchronized (entry.getValue()) {
+                return now - entry.getValue().windowStartEpochMillis >= windowMillis;
+            }
+        });
+    }
+
+    /** Reads {@link #API_RATE_LIMIT_READ_MAX_REQUESTS_CONFIG_KEY}, defaulting to {@link #DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS} if unset. */
+    private static int resolveApiRateLimitReadMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(API_RATE_LIMIT_READ_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(API_RATE_LIMIT_READ_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS;
+    }
+
+    /** Reads {@link #API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY}, defaulting to {@link #DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS} if unset. */
+    private static long resolveApiRateLimitReadWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS;
+    }
+
+    /** Reads {@link #API_RATE_LIMIT_WRITE_MAX_REQUESTS_CONFIG_KEY}, defaulting to {@link #DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS} if unset. */
+    private static int resolveApiRateLimitWriteMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(API_RATE_LIMIT_WRITE_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(API_RATE_LIMIT_WRITE_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS;
+    }
+
+    /** Reads {@link #API_RATE_LIMIT_WRITE_WINDOW_SECONDS_CONFIG_KEY}, defaulting to {@link #DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS} if unset. */
+    private static long resolveApiRateLimitWriteWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(API_RATE_LIMIT_WRITE_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(API_RATE_LIMIT_WRITE_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS;
     }
 
     /**
