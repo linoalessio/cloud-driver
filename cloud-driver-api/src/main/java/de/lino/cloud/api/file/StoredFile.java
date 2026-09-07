@@ -201,6 +201,16 @@ public final class StoredFile extends Serialized {
     private final String dedupOfFileId;
 
     /**
+     * This file's malware-scan status - see {@link ScanStatus}'s own Javadoc for how {@code null}
+     * is read back. Set to {@link ScanStatus#PENDING} at upload time only if {@code
+     * CloudUserService#uploadFile} finds a {@code ContentScanService} actually published (see
+     * {@link #withScanStatus(ScanStatus)}) - left {@code null} on every other upload, matching the
+     * "must keep working with every microservice turned off" architectural constraint {@code
+     * architecture/MICRO.md} itself states.
+     */
+    private final ScanStatus scanStatus;
+
+    /**
      * How many {@link #dedupOfFileId} aliases currently point at this file's content - meaningful
      * only when {@link #isDedupAlias()} is {@code false} (an alias never itself has aliases; a
      * chain is always flattened to point directly at the true canonical, so this never needs to
@@ -255,6 +265,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = null;
         this.dedupOfFileId = null;
         this.dedupRefCount = 0;
+        this.scanStatus = null;
     }
 
     /**
@@ -279,6 +290,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = source.scanStatus;
         this.decodedContent = source.decodedContent;
     }
 
@@ -309,6 +321,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = null;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = source.scanStatus;
         this.decodedContent = null;
     }
 
@@ -333,6 +346,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = source.scanStatus;
         this.decodedContent = decodedContent;
     }
 
@@ -361,6 +375,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = source.scanStatus;
         this.decodedContent = source.decodedContent;
     }
 
@@ -383,6 +398,30 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = dedupRefCount;
+        this.scanStatus = source.scanStatus;
+        this.decodedContent = source.decodedContent;
+    }
+
+    /**
+     * Copy constructor backing {@link #withScanStatus(ScanStatus)} - carries every field over from
+     * {@code source} unchanged except {@link #scanStatus}.
+     */
+    private StoredFile(final StoredFile source, final ScanStatus newScanStatus) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = source.declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = newScanStatus;
         this.decodedContent = source.decodedContent;
     }
 
@@ -419,6 +458,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = sizeBytes;
         this.dedupOfFileId = null;
         this.dedupRefCount = 0;
+        this.scanStatus = null;
     }
 
     /**
@@ -471,6 +511,7 @@ public final class StoredFile extends Serialized {
         this.declaredSizeBytes = sizeBytes;
         this.dedupOfFileId = dedupOfFileId;
         this.dedupRefCount = 0;
+        this.scanStatus = null;
     }
 
     /**
@@ -605,6 +646,22 @@ public final class StoredFile extends Serialized {
     @NotNull
     public StoredFile withDedupRefCount(final int newCount) {
         return new StoredFile(this, newCount);
+    }
+
+    /** This file's malware-scan status - {@code null} is read back as {@link ScanStatus#CLEAN}, see that enum's own Javadoc. */
+    @NotNull
+    public ScanStatus scanStatus() {
+        return this.scanStatus != null ? this.scanStatus : ScanStatus.CLEAN;
+    }
+
+    /**
+     * @param newStatus the new scan status
+     * @return a copy of this file with {@link #scanStatus()} changed to {@code newStatus}; every
+     *     other field, content included, is left unchanged
+     */
+    @NotNull
+    public StoredFile withScanStatus(@NotNull final ScanStatus newStatus) {
+        return new StoredFile(this, Asserts.requireNonNull(newStatus, "@StoredFile.withScanStatus: newStatus cannot be null"));
     }
 
     /**

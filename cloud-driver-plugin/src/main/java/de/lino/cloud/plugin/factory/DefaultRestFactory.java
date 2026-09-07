@@ -3666,9 +3666,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
         }
+        if (cause instanceof de.lino.cloud.api.file.exception.FileScanBlockedException scanBlocked) {
+            return scanBlockedResponse(scanBlocked);
+        }
         CloudDriver.getInstance().getLogger().severe("@DefaultRestFactorynotFoundOrPropagate: unmapped " + type.getSimpleName() + " failure (id " + id + "), returning 500:");
         cause.printStackTrace();
         return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
+    }
+
+    /**
+     * Translates a {@link de.lino.cloud.api.file.exception.FileScanBlockedException} (section 9,
+     * Content-Scanning, {@code architecture/MICRO.md}) into a status distinguishing "not ready
+     * yet" from "permanently refused", per the handoff doc's own "blocked with a clear status
+     * response, not a generic error" instruction: {@link de.lino.cloud.api.file.ScanStatus#PENDING}
+     * → {@link ConflictResponse} (409, a transient/retryable state), {@link
+     * de.lino.cloud.api.file.ScanStatus#FLAGGED} → {@link ForbiddenResponse} (403, permanent).
+     */
+    private static RuntimeException scanBlockedResponse(final de.lino.cloud.api.file.exception.FileScanBlockedException scanBlocked) {
+        return switch (scanBlocked.scanStatus()) {
+            case PENDING -> new ConflictResponse("This file is still being scanned for malware - try again shortly");
+            case FLAGGED -> new ForbiddenResponse("This file was flagged by malware scanning and cannot be downloaded");
+            case CLEAN -> scanBlocked; // unreachable - CLEAN never throws FileScanBlockedException
+        };
     }
 
     /**
@@ -3709,6 +3728,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             // architecture/MICRO.md, section 6 (public share links) - see that exception's own
             // Javadoc for why this carries one message for every "not usable" reason.
             return new NotFoundResponse(publicLinkInvalid.getMessage());
+        }
+        if (cause instanceof de.lino.cloud.api.file.exception.FileScanBlockedException scanBlocked) {
+            // architecture/MICRO.md, section 9 (content scanning) - see scanBlockedResponse's own Javadoc.
+            return scanBlockedResponse(scanBlocked);
         }
         if (cause instanceof IllegalStateException illegalState) {
             return new ConflictResponse(illegalState.getMessage());

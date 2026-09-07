@@ -5,6 +5,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.webhook.WebhookService;
@@ -217,5 +218,24 @@ public interface IServiceContainer {
      * @param webhookService the instance backing {@code /webhooks*} and every file mutation's dispatch hook
      */
     void setWebhookService(@NonNull WebhookService webhookService);
+
+    /**
+     * Returns the content-scan trigger (section 9, Content-Scanning, {@code
+     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-scan}'s {@code
+     * CloudScanExtension} hasn't published one yet (not started, or this deployment doesn't run
+     * that extension at all). {@code de.lino.cloud.auth.CloudUserService#uploadFile} and {@code
+     * DefaultRestFactory}'s content-serving routes must null-check this the same way they already
+     * do for {@link #getWebhookService()}.
+     *
+     * @return the {@link ContentScanService}, or {@code null}
+     */
+    ContentScanService getContentScanService();
+
+    /**
+     * Publishes the real {@link ContentScanService}, once built.
+     *
+     * @param contentScanService the instance backing the {@code FileChangeListener}-triggered scan-on-upload hook
+     */
+    void setContentScanService(@NonNull ContentScanService contentScanService);
 
 }

@@ -23,6 +23,7 @@
         <module>cloud-driver-extensions-versioning</module>
         <module>cloud-driver-extensions-search</module>
         <module>cloud-driver-extensions-webhooks</module>
+        <module>cloud-driver-extensions-scan</module>
     </modules>
 
 </project>

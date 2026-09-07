@@ -6,6 +6,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.webhook.WebhookService;
@@ -44,6 +45,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile SearchIndexService searchIndexService;
     /** The webhook dispatcher, {@code null} until {@link #setWebhookService} publishes one. */
     private volatile WebhookService webhookService;
+    /** The content-scan trigger, {@code null} until {@link #setContentScanService} publishes one. */
+    private volatile ContentScanService contentScanService;
 
     /** {@inheritDoc} */
     @Override
@@ -163,6 +166,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setWebhookService(@NonNull final WebhookService webhookService) {
         this.webhookService = webhookService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public ContentScanService getContentScanService() {
+        return this.contentScanService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setContentScanService(@NonNull final ContentScanService contentScanService) {
+        this.contentScanService = contentScanService;
     }
 
 }

@@ -16,11 +16,14 @@ import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.file.exception.FileScanBlockedException;
 import de.lino.cloud.api.file.exception.PublicShareLinkInvalidException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.file.PublicFileLinkSummary;
+import de.lino.cloud.api.file.ScanStatus;
 import de.lino.cloud.api.file.SharePermission;
+import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.search.SearchDocument;
@@ -675,12 +678,23 @@ public final class CloudUserService implements ICloudUserService {
         // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
+        // architecture/MICRO.md, section 9 (content scanning) - checked once, up front: cheap (a
+        // null check on an already-resolved service reference), and decides whether this upload
+        // (either branch below, dedup alias included - see uploadFile's own dedup-alias-scanning
+        // trade-off documented on ContentScanService/DefaultContentScanService) starts out
+        // PENDING or stays permanently CLEAN, matching "must keep working with every microservice
+        // turned off" - a deployment not running cloud-driver-extensions-scan never produces a
+        // PENDING file at all.
+        final boolean scanningEnabled = isContentScanServicePublished();
+
         final StoredFile storedFile;
         final String dedupCanonicalFileId;
         if (dedupCandidate.isPresent()) {
             dedupCanonicalFileId = dedupCandidate.get().resolvedDedupCanonicalFileId();
-            storedFile = StoredFile.createDedupAlias(
+            StoredFile alias = StoredFile.createDedupAlias(
                     UUID.randomUUID().toString(), fileName, content.length, checksum, Instant.now(), Instant.now(), dedupCanonicalFileId);
+            if (scanningEnabled) alias = alias.withScanStatus(ScanStatus.PENDING);
+            storedFile = alias;
             this.incrementDedupRefCount(dedupCanonicalFileId);
             try {
                 // No content of its own to persist through fileFactory.upload - a plain metadata
@@ -691,7 +705,9 @@ public final class CloudUserService implements ICloudUserService {
             }
         } else {
             dedupCanonicalFileId = null;
-            storedFile = new StoredFile(UUID.randomUUID().toString(), fileName, content);
+            StoredFile fresh = new StoredFile(UUID.randomUUID().toString(), fileName, content);
+            if (scanningEnabled) fresh = fresh.withScanStatus(ScanStatus.PENDING);
+            storedFile = fresh;
             try {
                 this.fileFactory.upload(storedFile);
             } catch (final DatabaseClientException | KeyWrapException e) {
@@ -1192,6 +1208,18 @@ public final class CloudUserService implements ICloudUserService {
             throw new IllegalArgumentException(
                     "@CloudUserService." + callerMethodName + ": " + authUserId + " does not own or have shared access to " + storedFileId);
         }
+        // architecture/MICRO.md, section 9 (content scanning) - a cheap metadata-only fetch (no
+        // content resolution/decompression), checked after ownership/trash but before this method
+        // returns, so every caller (getFile, checkFileAccess - and therefore every route built on
+        // either, thumbnail generation included) uniformly refuses content access to a
+        // still-scanning or flagged file, without each caller having to remember to check this
+        // itself.
+        this.findStoredFileMetadata(storedFileId).ifPresent(file -> {
+            final ScanStatus scanStatus = file.scanStatus();
+            if (scanStatus != ScanStatus.CLEAN) {
+                throw new FileScanBlockedException(scanStatus);
+            }
+        });
         return ownership;
     }
 
@@ -2155,6 +2183,20 @@ public final class CloudUserService implements ICloudUserService {
             if (webhookService != null) webhookService.dispatchEvent(authUserId, eventType, targetId);
         } catch (final RuntimeException ignored) {
             // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /**
+     * @return {@code true} if {@code cloud-driver-extensions-scan} has published a {@link
+     * ContentScanService} - see {@link #uploadFile(String, String, byte[], String)}'s own use of
+     * this for why it's checked once, up front, rather than let a missing service simply no-op
+     * later (it decides the file's *initial* scan status, not a follow-up action).
+     */
+    private static boolean isContentScanServicePublished() {
+        try {
+            return CloudDriver.getInstance().getServiceContainer().getContentScanService() != null;
+        } catch (final RuntimeException e) {
+            return false;
         }
     }
 

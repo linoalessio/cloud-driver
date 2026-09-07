@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.lino.cloud.extensions</groupId>
+        <artifactId>cloud-driver-extensions</artifactId>
+        <version>1.0.6</version>
+    </parent>
+
+    <groupId>de.lino.cloud.extensions.scan</groupId>
+    <artifactId>cloud-driver-extensions-scan</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.6</version>
+        </dependency>
+
+        <!-- No ClamAV Java client library dependency needed - the clamd wire protocol (INSTREAM)
+             is a handful of raw socket reads/writes (see ClamAvClient's own Javadoc), simple
+             enough not to warrant a third-party dependency for it alone. -->
+
+    </dependencies>
+
+</project>
