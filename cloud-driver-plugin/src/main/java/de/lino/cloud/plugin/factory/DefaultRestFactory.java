@@ -148,6 +148,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final String TRASH_EMPTY_PATH = "/trash/empty";
     /**
+     * Path mounted by {@link #start} for {@link #handleListActivity} (section 3, Activity/
+     * Audit-Feed, {@code architecture/MICRO.md}) - a standalone top-level resource, the same
+     * "no single natural owner between {@code /files}/{@code /folders} to nest under" reasoning
+     * {@link #TRASH_EMPTY_PATH} already documents, since one call spans both files' and folders'
+     * activity together via a single {@link CloudUserService#listActivity} call.
+     */
+    private static final String ACTIVITY_PATH = "/activity";
+    /** Default page size for {@link #handleListFileActivity}/{@link #handleListFolderActivity}/{@link #handleListActivity} when {@link #LIMIT_QUERY_PARAM} is absent - unlike {@link #handleListFiles}/{@link #handleListFolders}, pagination here is never optional (an unbounded activity feed has no natural size ceiling the way a single folder's contents do), so a request with no {@code ?limit=} still gets a bounded, paginated response rather than one unbounded bare array. */
+    private static final int DEFAULT_ACTIVITY_PAGE_LIMIT = 50;
+    /**
      * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
      * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
      * #FILES_TRASH_PATH}'s own Javadoc for why registration order (not any Javalin routing
@@ -692,6 +702,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_PATH + "/{id}/versions", this::handleListFileVersions);
                 config.routes.get(FILES_PATH + "/{id}/versions/{versionNumber}/content", this::handleDownloadFileVersion);
                 config.routes.post(FILES_PATH + "/{id}/versions/{versionNumber}/restore", this::handleRestoreFileVersion);
+                config.routes.get(FILES_PATH + "/{id}/activity", this::handleListFileActivity);
+                config.routes.get(ACTIVITY_PATH, this::handleListActivity);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
@@ -711,6 +723,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FOLDERS_PATH + "/{id}/share", this::handleListFolderShares);
                 config.routes.delete(FOLDERS_PATH + "/{id}/share/{email}", this::handleRevokeFolderShare);
                 config.routes.get(FOLDERS_PATH + "/{id}/shared-contents", this::handleListSharedFolderContents);
+                config.routes.get(FOLDERS_PATH + "/{id}/activity", this::handleListFolderActivity);
             }
 
             this.registerResources.forEach((path, type) -> this.bindRegister(config, path, type));
@@ -2321,6 +2334,70 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         } catch (final NumberFormatException e) {
             throw new BadRequestResponse("Invalid version number");
         }
+    }
+
+    /**
+     * {@code GET /files/{id}/activity}: lists every {@link de.lino.cloud.api.audit.AuditEvent}
+     * recorded against one {@link StoredFile}, newest first, via {@link
+     * CloudUserService#listFileActivity} - section 3 (Activity/Audit-Feed, {@code
+     * architecture/MICRO.md}). Always paginated (see {@link #DEFAULT_ACTIVITY_PAGE_LIMIT}'s own
+     * Javadoc for why, unlike {@link #handleListFiles}).
+     */
+    private void handleListFileActivity(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final int limit = resolveActivityLimit(ctx);
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listFileActivity(userId, id, cursor, limit))
+                .handle((page, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)));
+                    return null;
+                }));
+    }
+
+    /** {@code GET /folders/{id}/activity}: same as {@link #handleListFileActivity}, scoped to a {@link Folder} via {@link CloudUserService#listFolderActivity}. */
+    private void handleListFolderActivity(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final int limit = resolveActivityLimit(ctx);
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listFolderActivity(userId, id, cursor, limit))
+                .handle((page, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, Folder.class, id);
+                    }
+                    ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)));
+                    return null;
+                }));
+    }
+
+    /**
+     * {@code GET /activity}: the caller's global activity feed - every {@link
+     * de.lino.cloud.api.audit.AuditEvent} recorded against any file/folder they currently own or
+     * have been shared, newest first, via {@link CloudUserService#listActivity}. Never fails with
+     * a mapped 404/409 the way the per-resource routes can (there is no single owned/shared id to
+     * check access against here), so this uses {@code thenAccept} rather than {@code handle} -
+     * any failure falls through to Javalin's default exception handling like an unmapped one
+     * would elsewhere in this class.
+     */
+    private void handleListActivity(@NotNull final Context ctx) {
+        final int limit = resolveActivityLimit(ctx);
+        final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listActivity(userId, cursor, limit))
+                .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
+    }
+
+    /** Resolves the page size for an activity route: {@link #LIMIT_QUERY_PARAM} if present and valid, otherwise {@link #DEFAULT_ACTIVITY_PAGE_LIMIT}. */
+    private static int resolveActivityLimit(final Context ctx) {
+        final Integer limit = parsePageLimit(ctx);
+        return limit != null ? limit : DEFAULT_ACTIVITY_PAGE_LIMIT;
     }
 
     /**

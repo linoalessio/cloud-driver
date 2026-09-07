@@ -1,5 +1,6 @@
 package de.lino.cloud.api.user;
 
+import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.PresignedUploadTicket;
@@ -532,6 +533,57 @@ public interface ICloudUserService {
      * @throws IllegalStateException if {@code folderId} is not currently in the trash
      */
     void restoreFolder(@NotNull String authUserId, @NotNull String folderId);
+
+    /**
+     * Lists every {@link AuditEvent} recorded against {@code storedFileId}, newest first - section
+     * 3 (Activity/Audit-Feed, {@code architecture/MICRO.md}), a presentation layer over {@link
+     * de.lino.cloud.api.audit.AuditLogService}'s existing data, not a new audit system.
+     * Owner-or-share access-checked the same way {@link #checkFileAccess} already is - whoever can
+     * currently view a file can see its change history too, matching this codebase's existing
+     * "share is read-only" model.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the file to list activity for
+     * @param cursor the previous page's {@link CursorPage#nextCursor()}, or {@code null} for the first page
+     * @param limit the maximum number of entries to return; must be positive
+     * @return a page of at most {@code limit} {@link AuditEvent}s, newest first
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by or shared with {@code authUserId}
+     */
+    @NotNull
+    CursorPage<AuditEvent> listFileActivity(@NotNull String authUserId, @NotNull String storedFileId,
+                                             @Nullable String cursor, int limit);
+
+    /**
+     * Same as {@link #listFileActivity}, scoped to a {@link de.lino.cloud.api.file.Folder} instead
+     * of a {@link StoredFile}.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param folderId the folder to list activity for
+     * @param cursor the previous page's {@link CursorPage#nextCursor()}, or {@code null} for the first page
+     * @param limit the maximum number of entries to return; must be positive
+     * @return a page of at most {@code limit} {@link AuditEvent}s, newest first
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by or shared with {@code authUserId}
+     */
+    @NotNull
+    CursorPage<AuditEvent> listFolderActivity(@NotNull String authUserId, @NotNull String folderId,
+                                               @Nullable String cursor, int limit);
+
+    /**
+     * Lists every {@link AuditEvent} whose {@link AuditEvent#getTargetId()} is a file or folder
+     * {@code authUserId} currently owns or has been shared, newest first - the global "Activity"
+     * feed counterpart to {@link #listFileActivity}/{@link #listFolderActivity}. Scans every
+     * owned/shared file and folder id first (the same full-scan trade-off {@link
+     * #listSharedWithMe}/{@code StoredFileOwnership} already accept elsewhere), then filters the
+     * full {@link AuditEvent} table against that set - a nested full scan, deliberately not
+     * optimized further in this first pass (no indexed query exists for either side today).
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param cursor the previous page's {@link CursorPage#nextCursor()}, or {@code null} for the first page
+     * @param limit the maximum number of entries to return; must be positive
+     * @return a page of at most {@code limit} {@link AuditEvent}s, newest first
+     */
+    @NotNull
+    CursorPage<AuditEvent> listActivity(@NotNull String authUserId, @Nullable String cursor, int limit);
 
     /**
      * Lists every folder currently in {@code authUserId}'s trash, each paired with when it becomes

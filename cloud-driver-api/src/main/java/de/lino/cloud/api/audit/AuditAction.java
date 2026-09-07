@@ -32,6 +32,30 @@ public enum AuditAction {
     ACCOUNT_DELETE,
 
     /** A {@code CloudUserService#replaceFileContent} call (overwrites a file's content in place - see {@code architecture/MICRO.md} section 2, versioning). */
-    FILE_CONTENT_REPLACED
+    FILE_CONTENT_REPLACED,
+
+    /** A {@code CloudUserService#uploadFile} call - added for section 3 (Activity/Audit-Feed, {@code architecture/MICRO.md}), the first pass to instrument this codebase's core file/folder lifecycle operations rather than only deletes/replaces. */
+    FILE_UPLOAD,
+
+    /** A {@code CloudUserService#renameFile} call. */
+    FILE_RENAME,
+
+    /** A {@code CloudUserService#moveFile} call. */
+    FILE_MOVE,
+
+    /** A {@code CloudUserService#restoreFile} call (out of the trash). */
+    FILE_RESTORE,
+
+    /** A {@code CloudUserService#createFolder} call. */
+    FOLDER_CREATE,
+
+    /** A {@code CloudUserService#updateFolder} call (rename and/or move, in one step). */
+    FOLDER_UPDATE,
+
+    /** A {@code CloudUserService#deleteFolder} call (moves a folder to the trash). */
+    FOLDER_DELETE,
+
+    /** A {@code CloudUserService#restoreFolder} call (out of the trash). */
+    FOLDER_RESTORE
 
 }

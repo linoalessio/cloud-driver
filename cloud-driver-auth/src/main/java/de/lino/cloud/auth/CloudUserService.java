@@ -565,6 +565,7 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         this.updateCloudUserBytesUsage(authUserId, content.length);
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
 
         return storedFile;
     }
@@ -1457,6 +1458,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.moveFile: failed to move " + storedFileId + " to folder " + folderId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_MOVE, storedFileId, folderId));
     }
 
     /**
@@ -1499,6 +1501,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.renameFile: failed to update cached metadata for " + storedFileId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_RENAME, storedFileId, newFileName));
     }
 
     /**
@@ -1660,6 +1663,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.restoreFile: failed to restore " + storedFileId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_RESTORE, storedFileId, null));
     }
 
     /**
@@ -1712,6 +1716,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.createFolder: failed to create folder '" + name + "'", e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FOLDER_CREATE, folder.getFolderId(), null));
         return folder;
     }
 
@@ -1801,6 +1806,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.updateFolder: failed to update " + folderId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FOLDER_UPDATE, folderId, newName));
         return updated;
     }
 
@@ -1887,6 +1893,7 @@ public final class CloudUserService implements ICloudUserService {
         // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment on why this must be
         // explicit rather than relying on Folder#isDeleted() alone.
         this.revokeAllFolderShares(folderId);
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FOLDER_DELETE, folderId, null));
     }
 
     /**
@@ -1912,6 +1919,125 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.restoreFolder: failed to restore " + folderId, e);
         }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FOLDER_RESTORE, folderId, null));
+    }
+
+    /**
+     * See {@link ICloudUserService#listFileActivity}'s Javadoc.
+     *
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by or shared with {@code authUserId}
+     */
+    @NonNull
+    @Override
+    public CursorPage<AuditEvent> listFileActivity(@NonNull final String authUserId, @NonNull final String storedFileId,
+                                                     @Nullable final String cursor, final int limit) {
+        this.checkFileAccess(authUserId, storedFileId);
+        return this.activityForTarget(storedFileId, cursor, limit);
+    }
+
+    /**
+     * See {@link ICloudUserService#listFolderActivity}'s Javadoc.
+     *
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by or shared with {@code authUserId}
+     */
+    @NonNull
+    @Override
+    public CursorPage<AuditEvent> listFolderActivity(@NonNull final String authUserId, @NonNull final String folderId,
+                                                        @Nullable final String cursor, final int limit) {
+        this.requireFolderViewAccess(authUserId, folderId);
+        return this.activityForTarget(folderId, cursor, limit);
+    }
+
+    /** See {@link ICloudUserService#listActivity}'s Javadoc. */
+    @NonNull
+    @Override
+    public CursorPage<AuditEvent> listActivity(@NonNull final String authUserId, @Nullable final String cursor, final int limit) {
+        final Set<String> visibleTargetIds = this.visibleActivityTargetIds(authUserId);
+        final List<AuditEvent> allEvents;
+        try {
+            allEvents = this.dataFactory.getEntities(AuditEvent.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listActivity: failed to scan audit events for " + authUserId, e);
+        }
+        final List<AuditEvent> sorted = allEvents.stream()
+                .filter(event -> event.getTargetId() != null && visibleTargetIds.contains(event.getTargetId()))
+                .sorted(Comparator.comparing(CloudUserService::activityCursorKey))
+                .toList();
+        return paginate(sorted, cursor, limit, CloudUserService::activityCursorKey);
+    }
+
+    /**
+     * Owner-or-share view-access check for a folder, mirroring {@link #checkFileAccess}'s own
+     * "try owned first, fall back to shared" shape for a file - tries {@link #requireOwnedFolder}
+     * first, falling back to {@link #requireSharedFolderAccess} only if that fails.
+     *
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by or shared with {@code authUserId}
+     */
+    private void requireFolderViewAccess(final String authUserId, final String folderId) {
+        try {
+            this.requireOwnedFolder(authUserId, folderId);
+        } catch (final IllegalArgumentException notOwned) {
+            this.requireSharedFolderAccess(authUserId, folderId);
+        }
+    }
+
+    /**
+     * Every {@link AuditEvent} whose {@link AuditEvent#getTargetId()} equals {@code targetId},
+     * newest first, paginated - the shared full-scan-then-sort-then-slice shape {@link
+     * #listActivity} also uses, scoped to a single id instead of a whole visible-target set.
+     */
+    private CursorPage<AuditEvent> activityForTarget(final String targetId, final String cursor, final int limit) {
+        final List<AuditEvent> allEvents;
+        try {
+            allEvents = this.dataFactory.getEntities(AuditEvent.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.activityForTarget: failed to scan audit events for " + targetId, e);
+        }
+        final List<AuditEvent> sorted = allEvents.stream()
+                .filter(event -> targetId.equals(event.getTargetId()))
+                .sorted(Comparator.comparing(CloudUserService::activityCursorKey))
+                .toList();
+        return paginate(sorted, cursor, limit, CloudUserService::activityCursorKey);
+    }
+
+    /**
+     * Every file/folder id {@code authUserId} currently owns or has been shared, directly - the
+     * scope {@link #listActivity} filters the global {@link AuditEvent} table against. Trashed
+     * files/folders are intentionally included ({@link #ownedFileOwnerships} already excludes
+     * them, so this specifically re-includes files via {@link #ownedFileOwnershipsIncludingDeleted}
+     * instead) - an activity feed showing "file X was deleted" would otherwise lose exactly the
+     * one event that explains why the file disappeared from a live listing.
+     */
+    private Set<String> visibleActivityTargetIds(final String authUserId) {
+        final Set<String> targetIds = new HashSet<>();
+
+        this.ownedFileOwnershipsIncludingDeleted(authUserId).forEach(ownership -> targetIds.add(ownership.getStoredFileId()));
+        this.listSharedWithMe(authUserId).forEach(shared -> targetIds.add(shared.file().fileId()));
+
+        try {
+            this.dataFactory.getEntities(Folder.class).stream()
+                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+                    .forEach(folder -> targetIds.add(folder.getFolderId()));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.visibleActivityTargetIds: failed to scan folders for " + authUserId, e);
+        }
+        this.listSharedFoldersWithMe(authUserId).forEach(shared -> targetIds.add(shared.folder().getFolderId()));
+
+        return targetIds;
+    }
+
+    /**
+     * A lexicographically-ascending-sortable key that orders {@link AuditEvent}s <em>newest
+     * first</em> - {@code Long.MAX_VALUE - timestampEpochMillis} zero-padded, so sorting ascending
+     * by this string is equivalent to sorting descending by the real timestamp (ties broken
+     * ascending by {@link AuditEvent#getId()}, an arbitrary but stable order). Lets {@link
+     * #listActivity}/{@link #activityForTarget} reuse {@link #paginate} completely unchanged -
+     * that helper only ever assumes an ascending sort key, which every one of its other callers
+     * happens to want in the same direction as display order, but an activity feed's natural
+     * display order is newest-first, the opposite.
+     */
+    private static String activityCursorKey(final AuditEvent event) {
+        return String.format("%019d:%s", Long.MAX_VALUE - event.getTimestampEpochMillis(), event.getId());
     }
 
     /**
