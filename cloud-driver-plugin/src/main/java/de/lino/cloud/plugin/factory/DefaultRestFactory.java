@@ -169,6 +169,18 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** Default result count for {@link #handleSearch} when {@link #LIMIT_QUERY_PARAM} is absent - generous enough for a typical query, small enough to keep a client's results list from growing unbounded. */
     private static final int DEFAULT_SEARCH_RESULT_LIMIT = 25;
     /**
+     * Path prefix mounted for every public, unauthenticated share-link route (section 6, {@code
+     * architecture/MICRO.md}) - checked by {@link #requireValidBearerToken} the same {@code
+     * ctx.path().startsWith(...)} way {@link #ADMIN_PATH_PREFIX}/{@link #AUTH_PATH_PREFIX} already
+     * are, since the dynamic {@code {token}} segment can't be exempted via an exact-path match the
+     * way {@link #LOGIN_PATH}/etc. are. A route under this prefix carries its own authority
+     * entirely in the token itself - the same "carries its own authority in the request, not a
+     * bearer token" reasoning {@link #REFRESH_PATH}/{@link #LOGOUT_PATH} already document.
+     */
+    private static final String PUBLIC_PATH_PREFIX = "/public/";
+    /** Path mounted by {@link #start} for {@link #handleResolvePublicFileLink} - see {@link #PUBLIC_PATH_PREFIX}'s own Javadoc. */
+    private static final String PUBLIC_FILES_PATH = "/public/files";
+    /**
      * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
      * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
      * #FILES_TRASH_PATH}'s own Javadoc for why registration order (not any Javalin routing
@@ -719,6 +731,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
+                config.routes.post(FILES_PATH + "/{id}/public-link", this::handleCreatePublicFileLink);
+                config.routes.get(FILES_PATH + "/{id}/public-link", this::handleListPublicFileLinks);
+                config.routes.delete(FILES_PATH + "/{id}/public-link/{token}", this::handleRevokePublicFileLink);
+                config.routes.get(PUBLIC_FILES_PATH + "/{token}", this::handleResolvePublicFileLink);
                 config.routes.post(FILES_UPLOAD_URL_PATH, this::handleBeginPresignedUpload);
                 config.routes.post(FILES_PATH + "/{id}/complete-upload", this::handleCompletePresignedUpload);
                 config.routes.get(FILES_PATH + "/{id}/download-url", this::handleBeginPresignedDownload);
@@ -811,7 +827,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * refresh token) rather than a bearer access token - a refresh call's entire purpose is
      * obtaining a fresh access token once the old one has already expired, and a logout call must
      * still work with an already-expired access token, so neither can require one - all seven
-     * must stay reachable without one. The token itself is resolved by {@link
+     * must stay reachable without one. Also exempts anything under {@link #PUBLIC_PATH_PREFIX} -
+     * see that constant's own Javadoc (section 6, {@code architecture/MICRO.md}, public share
+     * links) - via a prefix check rather than an exact-path match, since its dynamic {@code
+     * {token}} path segment can't be listed as a fixed path the way the other exemptions above
+     * are. The token itself is resolved by {@link
      * #resolveBearerToken} (header, preferred, or a query parameter fallback). Stores the
      * validated user id as a request attribute ({@link #USER_ID_ATTRIBUTE}) for the {@link
      * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
@@ -822,7 +842,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
                 || RESET_PASSWORD_PATH.equals(ctx.path()) || RESET_PASSWORD_CONFIRM_PATH.equals(ctx.path())
-                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())) {
+                || REFRESH_PATH.equals(ctx.path()) || LOGOUT_PATH.equals(ctx.path())
+                || ctx.path().startsWith(PUBLIC_PATH_PREFIX)) {
             return;
         }
         final String token = resolveBearerToken(ctx);
@@ -2764,27 +2785,50 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * The {@code {"granteeEmail"}} JSON body shape read by {@code POST /files/{id}/share} and
-     * {@code POST /folders/{id}/share} (item 9, file/folder sharing).
+     * The JSON body shape read by {@code POST /files/{id}/share} and {@code POST
+     * /folders/{id}/share} (item 9, file/folder sharing; {@code permissionLevel}/{@code
+     * expiresAtEpochMillis} added section 6, {@code architecture/MICRO.md}).
      *
-     * @param granteeEmail the email address of the account to grant read access to
+     * @param granteeEmail the email address of the account to grant access to
+     * @param permissionLevel {@code "VIEW"}/{@code "EDIT"} (case-insensitive), or {@code null}/absent for {@link de.lino.cloud.api.file.SharePermission#VIEW}
+     * @param expiresAtEpochMillis when the grant should expire, as epoch millis, or {@code null}/absent to never expire
      */
-    private record ShareRequest(String granteeEmail) {
+    private record ShareRequest(String granteeEmail, String permissionLevel, Long expiresAtEpochMillis) {
     }
 
     /**
-     * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account read-only access to
-     * {@code id} via {@link CloudUserService#shareFile}, which checks the caller owns it. {@code
-     * 204} on success, {@code 404} (via {@link #folderFailureOrPropagate}'s {@link
-     * IllegalArgumentException} handling) if {@code id} isn't owned by the caller, is currently
-     * trashed, or {@code granteeEmail} has no registered account.
+     * Parses {@link ShareRequest#permissionLevel()} into a {@link SharePermission}, defaulting a
+     * {@code null}/blank value to {@link SharePermission#VIEW} - the shape every pre-section-6
+     * client already sends (no such field at all).
+     *
+     * @throws BadRequestResponse if {@code raw} is non-blank but not a valid {@link SharePermission} name
+     */
+    private static de.lino.cloud.api.file.SharePermission parseSharePermission(final String raw) {
+        if (raw == null || raw.isBlank()) {
+            return de.lino.cloud.api.file.SharePermission.VIEW;
+        }
+        try {
+            return de.lino.cloud.api.file.SharePermission.valueOf(raw.toUpperCase(Locale.ROOT));
+        } catch (final IllegalArgumentException e) {
+            throw new BadRequestResponse("Invalid permissionLevel '" + raw + "' - expected VIEW or EDIT");
+        }
+    }
+
+    /**
+     * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account access to {@code id}
+     * via {@link CloudUserService#shareFile}, which checks the caller owns it. {@code 204} on
+     * success, {@code 400} if {@code permissionLevel} is present but invalid, {@code 404} (via
+     * {@link #folderFailureOrPropagate}'s {@link IllegalArgumentException} handling) if {@code id}
+     * isn't owned by the caller, is currently trashed, or {@code granteeEmail} has no registered
+     * account.
      */
     private void handleShareFile(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
         final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final de.lino.cloud.api.file.SharePermission permission = parseSharePermission(request.permissionLevel());
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .runAsync(() -> this.cloudUserService.shareFile(userId, id, request.granteeEmail()))
+                .runAsync(() -> this.cloudUserService.shareFile(userId, id, request.granteeEmail(), permission, request.expiresAtEpochMillis()))
                 .handle((ignored, failure) -> {
                     if (failure == null) {
                         ctx.status(204);
@@ -2835,6 +2879,95 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 }));
     }
 
+    /** The {@code {"expiresAtEpochMillis"}} JSON body shape read by {@code POST /files/{id}/public-link} (section 6, {@code architecture/MICRO.md}). */
+    private record CreatePublicFileLinkRequest(Long expiresAtEpochMillis) {
+    }
+
+    /**
+     * {@code POST /files/{id}/public-link}: creates a public, unauthenticated share link on {@code
+     * id} via {@link CloudUserService#createPublicFileLink} - owner-only. {@code 201} with a {@link
+     * de.lino.cloud.api.file.PublicFileLinkSummary} on success, {@code 404} (via {@link
+     * #folderFailureOrPropagate}) if {@code id} isn't owned by the caller or is currently trashed.
+     */
+    private void handleCreatePublicFileLink(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final CreatePublicFileLinkRequest request = this.gson.fromJson(ctx.body(), CreatePublicFileLinkRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.createPublicFileLink(userId, id, request.expiresAtEpochMillis()))
+                .handle((summary, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(summary));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/{id}/public-link}: lists every currently-active public link on {@code id},
+     * via {@link CloudUserService#listPublicFileLinks} - owner-only, the management-UI counterpart
+     * to {@link #handleCreatePublicFileLink}.
+     */
+    private void handleListPublicFileLinks(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.listPublicFileLinks(userId, id))
+                .handle((links, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(links));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /files/{id}/public-link/{token}}: revokes a previously-created public link, via
+     * {@link CloudUserService#revokePublicFileLink} - owner-only. {@code 204} on success (idempotent
+     * - also {@code 204} if no such link existed).
+     */
+    private void handleRevokePublicFileLink(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String token = ctx.pathParam("token");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> this.cloudUserService.revokePublicFileLink(userId, id, token))
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /public/files/{token}}: streams a public link's file content directly - no bearer
+     * token/login at all, see {@link #PUBLIC_PATH_PREFIX}'s own Javadoc for how this route reaches
+     * {@link #requireValidBearerToken}'s exemption. Resolved via {@link
+     * CloudUserService#resolvePublicFileLink}, which itself checks the link exists, hasn't expired,
+     * and its file hasn't since been trashed/removed by its owner - {@code 404} (via {@link
+     * #folderFailureOrPropagate}'s {@link de.lino.cloud.api.file.exception.PublicShareLinkInvalidException}
+     * handling) if any of those checks fail, one message for all three (don't leak which).
+     */
+    private void handleResolvePublicFileLink(@NotNull final Context ctx) {
+        final String token = ctx.pathParam("token");
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.resolvePublicFileLink(token))
+                .handle((file, failure) -> {
+                    if (failure == null) {
+                        final String encodedFileName = URLEncoder.encode(file.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                        ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
+                        final byte[] content = file.content();
+                        ctx.writeSeekableStream(new ByteArrayInputStream(content), file.contentType(), content.length);
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, token);
+                }));
+    }
+
     /**
      * {@code GET /files/shared-with-me}: lists every file directly shared with the caller, as
      * {@link StoredFileSummary}s, via {@link CloudUserService#listSharedWithMe}. Does not include a
@@ -2871,9 +3004,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void handleShareFolder(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
         final ShareRequest request = this.gson.fromJson(ctx.body(), ShareRequest.class);
+        final de.lino.cloud.api.file.SharePermission permission = parseSharePermission(request.permissionLevel());
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .runAsync(() -> this.cloudUserService.shareFolder(userId, id, request.granteeEmail()))
+                .runAsync(() -> this.cloudUserService.shareFolder(userId, id, request.granteeEmail(), permission, request.expiresAtEpochMillis()))
                 .handle((ignored, failure) -> {
                     if (failure == null) {
                         ctx.status(204);
@@ -3227,6 +3361,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         }
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
+        }
+        if (cause instanceof de.lino.cloud.api.file.exception.PublicShareLinkInvalidException publicLinkInvalid) {
+            // architecture/MICRO.md, section 6 (public share links) - see that exception's own
+            // Javadoc for why this carries one message for every "not usable" reason.
+            return new NotFoundResponse(publicLinkInvalid.getMessage());
         }
         if (cause instanceof IllegalStateException illegalState) {
             return new ConflictResponse(illegalState.getMessage());

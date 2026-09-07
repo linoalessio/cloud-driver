@@ -59,7 +59,29 @@ public final class SharedFileGrant extends Serialized implements Owned {
     private final long grantedAtEpochMillis;
 
     /**
-     * Creates a fresh grant, stamping {@link #grantedAtEpochMillis} with the current time.
+     * This grant's access level - {@link SharePermission#VIEW} for a legacy row persisted before
+     * this field existed (Gson leaves an absent JSON property at {@code null}, read back as {@code
+     * VIEW} by {@link #permissionLevel()}, never {@code null} itself from the outside) - see {@link
+     * SharePermission}'s own Javadoc for exactly what {@link SharePermission#EDIT} grants.
+     */
+    @Nullable
+    private final SharePermission permissionLevel;
+
+    /**
+     * When this grant expires, as epoch millis, or {@code null} if it never does - the same
+     * "nullable = feature not opted into" convention {@code Folder#getParentFolderId()} already
+     * uses. Checked by {@code CloudUserService}'s own share-access lookups (see {@link
+     * #isExpired()}) the same way a trashed {@code StoredFileOwnership} row is already treated as
+     * inaccessible - an expired grant behaves as if it doesn't exist at all, not as a distinct
+     * "expired" error state a caller has to handle differently.
+     */
+    @Nullable
+    private final Long expiresAtEpochMillis;
+
+    /**
+     * Same as {@link #SharedFileGrant(String, String, String, SharePermission, Long)}, granting
+     * {@link SharePermission#VIEW} with no expiry - the shape every pre-existing caller (and every
+     * row written before permission levels/expiry existed) already uses.
      *
      * @param granteeAuthUserId the account being granted read access
      * @param storedFileId the file being shared
@@ -67,23 +89,54 @@ public final class SharedFileGrant extends Serialized implements Owned {
      */
     public SharedFileGrant(@NotNull final String granteeAuthUserId, @NotNull final String storedFileId,
                             @NotNull final String ownerAuthUserId) {
-        this(granteeAuthUserId, storedFileId, ownerAuthUserId, System.currentTimeMillis());
+        this(granteeAuthUserId, storedFileId, ownerAuthUserId, SharePermission.VIEW, null);
+    }
+
+    /**
+     * Creates a fresh grant, stamping {@link #grantedAtEpochMillis} with the current time.
+     *
+     * @param granteeAuthUserId the account being granted access
+     * @param storedFileId the file being shared
+     * @param ownerAuthUserId the file's actual owner, creating this grant
+     * @param permissionLevel this grant's access level
+     * @param expiresAtEpochMillis when this grant expires, as epoch millis, or {@code null} to never expire
+     */
+    public SharedFileGrant(@NotNull final String granteeAuthUserId, @NotNull final String storedFileId,
+                            @NotNull final String ownerAuthUserId, @NotNull final SharePermission permissionLevel,
+                            @Nullable final Long expiresAtEpochMillis) {
+        this(granteeAuthUserId, storedFileId, ownerAuthUserId, System.currentTimeMillis(), permissionLevel, expiresAtEpochMillis);
     }
 
     /**
      * Full constructor, for re-hydrating a grant with a known timestamp (Gson deserialization).
      *
-     * @param granteeAuthUserId the account being granted read access
+     * @param granteeAuthUserId the account being granted access
      * @param storedFileId the file being shared
      * @param ownerAuthUserId the file's actual owner, who created this grant
      * @param grantedAtEpochMillis when this grant was created, as epoch millis
+     * @param permissionLevel this grant's access level, or {@code null} for a legacy {@link SharePermission#VIEW} row
+     * @param expiresAtEpochMillis when this grant expires, as epoch millis, or {@code null} to never expire
      */
     public SharedFileGrant(@NotNull final String granteeAuthUserId, @NotNull final String storedFileId,
-                            @NotNull final String ownerAuthUserId, final long grantedAtEpochMillis) {
+                            @NotNull final String ownerAuthUserId, final long grantedAtEpochMillis,
+                            @Nullable final SharePermission permissionLevel, @Nullable final Long expiresAtEpochMillis) {
         this.granteeAuthUserId = Objects.requireNonNull(granteeAuthUserId, "@SharedFileGrant.init: granteeAuthUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@SharedFileGrant.init: storedFileId cannot be null");
         this.ownerAuthUserId = Objects.requireNonNull(ownerAuthUserId, "@SharedFileGrant.init: ownerAuthUserId cannot be null");
         this.grantedAtEpochMillis = grantedAtEpochMillis;
+        this.permissionLevel = permissionLevel;
+        this.expiresAtEpochMillis = expiresAtEpochMillis;
+    }
+
+    /** @return {@link #permissionLevel}, or {@link SharePermission#VIEW} if this is a legacy row predating permission levels */
+    @NotNull
+    public SharePermission permissionLevel() {
+        return this.permissionLevel != null ? this.permissionLevel : SharePermission.VIEW;
+    }
+
+    /** @return {@code true} if {@link #expiresAtEpochMillis} is set and in the past - an expired grant is treated as if it doesn't exist at all */
+    public boolean isExpired() {
+        return this.expiresAtEpochMillis != null && this.expiresAtEpochMillis < System.currentTimeMillis();
     }
 
     /**

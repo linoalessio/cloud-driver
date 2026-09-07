@@ -4,6 +4,8 @@ import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.PresignedUploadTicket;
+import de.lino.cloud.api.file.PublicFileLinkSummary;
+import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.file.SharedFileSummary;
 import de.lino.cloud.api.file.SharedFolderContents;
 import de.lino.cloud.api.file.SharedFolderSummary;
@@ -632,6 +634,27 @@ public interface ICloudUserService {
     void shareFile(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail);
 
     /**
+     * Same as {@link #shareFile(String, String, String)}, with an explicit access level and
+     * optional expiry (section 6, {@code architecture/MICRO.md}) - {@link #shareFile(String,
+     * String, String)} itself delegates here with {@link SharePermission#VIEW}/{@code null}.
+     * Re-sharing with the same grantee replaces the existing grant's permission level/expiry, not
+     * just its timestamp.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file to share
+     * @param granteeEmail the email address of the account to grant access to
+     * @param permissionLevel the access level to grant - see {@link SharePermission}'s own Javadoc
+     *     for exactly what {@link SharePermission#EDIT} allows
+     * @param expiresAtEpochMillis when this grant should expire, as epoch millis, or {@code null} to never expire
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}, is
+     *                                   currently in the trash, or {@code granteeEmail} resolves to
+     *                                   {@code ownerAuthUserId} itself
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
+     */
+    void shareFile(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String granteeEmail,
+                    @NotNull SharePermission permissionLevel, @Nullable Long expiresAtEpochMillis);
+
+    /**
      * Revokes a previously-granted read-only share of {@code fileId} from {@code granteeEmail}'s
      * account - owner-only, the reverse of {@link #shareFile}. Idempotent: a no-op if no such grant
      * exists.
@@ -677,6 +700,26 @@ public interface ICloudUserService {
     void shareFolder(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail);
 
     /**
+     * Same as {@link #shareFolder(String, String, String)}, with an explicit access level and
+     * optional expiry (section 6, {@code architecture/MICRO.md}) - {@link #shareFolder(String,
+     * String, String)} itself delegates here with {@link SharePermission#VIEW}/{@code null}. See
+     * {@link SharePermission}'s own Javadoc for why {@link SharePermission#EDIT} currently carries
+     * no behavior change on a folder grant.
+     *
+     * @param ownerAuthUserId the folder's actual owner, who must already own {@code folderId}
+     * @param folderId the folder to share
+     * @param granteeEmail the email address of the account to grant access to
+     * @param permissionLevel the access level to grant
+     * @param expiresAtEpochMillis when this grant should expire, as epoch millis, or {@code null} to never expire
+     * @throws IllegalArgumentException if {@code folderId} isn't owned by {@code ownerAuthUserId},
+     *                                   is currently in the trash, or {@code granteeEmail} resolves
+     *                                   to {@code ownerAuthUserId} itself
+     * @throws GranteeAccountNotFoundException if {@code granteeEmail} has no registered account
+     */
+    void shareFolder(@NotNull String ownerAuthUserId, @NotNull String folderId, @NotNull String granteeEmail,
+                      @NotNull SharePermission permissionLevel, @Nullable Long expiresAtEpochMillis);
+
+    /**
      * Revokes a previously-granted read-only share of {@code folderId} from {@code granteeEmail}'s
      * account - owner-only, the reverse of {@link #shareFolder}. Idempotent: a no-op if no such
      * grant exists. Does not affect any direct {@link #shareFile} grant on a file nested inside
@@ -703,6 +746,62 @@ public interface ICloudUserService {
      */
     @NotNull
     List<SharedFolderSummary> listSharedFoldersWithMe(@NotNull String authUserId);
+
+    /**
+     * Creates a public, unauthenticated share link on {@code fileId} - section 6 of {@code
+     * architecture/MICRO.md}. Unlike {@link #shareFile}, this grants access to <b>anyone who has
+     * the returned token</b>, no account or login required at all - resolved via the public {@code
+     * GET /public/files/{token}} route, always read-only ({@link SharePermission#VIEW} only - there
+     * is no unauthenticated write path in this codebase, and none is added here). Owner-only.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file to create a public link for
+     * @param expiresAtEpochMillis when the link should expire, as epoch millis, or {@code null} to never expire
+     * @return the newly-created link, including its unguessable token
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}, or is currently in the trash
+     */
+    @NotNull
+    PublicFileLinkSummary createPublicFileLink(@NotNull String ownerAuthUserId, @NotNull String fileId, @Nullable Long expiresAtEpochMillis);
+
+    /**
+     * Revokes a previously-created public link. Owner-only. Idempotent: a no-op if {@code token}
+     * doesn't exist, or exists but wasn't created for {@code fileId} by {@code ownerAuthUserId}.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file the link was created for
+     * @param token the link's token, as returned by {@link #createPublicFileLink}
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}
+     */
+    void revokePublicFileLink(@NotNull String ownerAuthUserId, @NotNull String fileId, @NotNull String token);
+
+    /**
+     * Lists every currently-active (non-expired) public link on {@code fileId} - owner-only, the
+     * management-UI counterpart to {@link #listFileShares}.
+     *
+     * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
+     * @param fileId the file whose public links to list
+     * @return every active {@link PublicFileLinkSummary} on {@code fileId}
+     * @throws IllegalArgumentException if {@code fileId} isn't owned by {@code ownerAuthUserId}
+     */
+    @NotNull
+    List<PublicFileLinkSummary> listPublicFileLinks(@NotNull String ownerAuthUserId, @NotNull String fileId);
+
+    /**
+     * Resolves {@code token} to its file's full content - the one operation this interface exposes
+     * with <b>no {@code authUserId} parameter at all</b>, since a public link's whole point is
+     * requiring none. Also denies access if the underlying file has since been trashed/deleted by
+     * its owner (the same "an owner action revokes downstream access" precedent {@code
+     * revokeAllFileShares} already established for account-to-account grants), even though the
+     * link row itself may still exist.
+     *
+     * @param token the link's token
+     * @return the file's full content
+     * @throws de.lino.cloud.api.file.exception.PublicShareLinkInvalidException if {@code token}
+     *     doesn't exist, has expired, or its file is no longer accessible - one message for all
+     *     three, deliberately not distinguished (see that exception's own Javadoc)
+     */
+    @NotNull
+    StoredFile resolvePublicFileLink(@NotNull String token);
 
     /**
      * Lists the non-trashed files and subfolders directly inside {@code folderId}, for a caller who

@@ -16,8 +16,11 @@ import de.lino.cloud.api.file.StoredFileSummary;
 import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
+import de.lino.cloud.api.file.exception.PublicShareLinkInvalidException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.file.meta.FileChecksum;
+import de.lino.cloud.api.file.PublicFileLinkSummary;
+import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.search.SearchDocument;
@@ -37,6 +40,7 @@ import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import de.lino.cloud.auth.entity.CloudUser;
+import de.lino.cloud.auth.entity.PublicShareLink;
 import de.lino.cloud.auth.entity.SharedFileGrant;
 import de.lino.cloud.auth.entity.SharedFolderGrant;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
@@ -276,6 +280,8 @@ public final class CloudUserService implements ICloudUserService {
         // directly on a possibly still-live file (bypassing the trash entirely), so this must not
         // assume deleteFile's own revocation already ran.
         this.revokeAllFileShares(storedFileId);
+        // architecture/MICRO.md, section 6 - same idempotency reasoning as revokeAllFileShares above.
+        this.revokeAllPublicFileLinks(storedFileId);
         // architecture/MICRO.md, section 5 - same idempotency reasoning as revokeAllFileShares
         // above: a no-op if deleteFile already removed this id from the index (the normal
         // trash-then-purge path), but resetCloudUser/deleteCloudUser call hardDeleteFile directly
@@ -1194,6 +1200,15 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void shareFile(@NonNull final String ownerAuthUserId, @NonNull final String fileId, @NonNull final String granteeEmail) {
+        this.shareFile(ownerAuthUserId, fileId, granteeEmail, SharePermission.VIEW, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void shareFile(@NonNull final String ownerAuthUserId, @NonNull final String fileId, @NonNull final String granteeEmail,
+                           @NonNull final SharePermission permissionLevel, @Nullable final Long expiresAtEpochMillis) {
         final StoredFileOwnership ownership = this.requireOwnedFile(ownerAuthUserId, fileId);
         if (ownership.isDeleted()) {
             throw new IllegalArgumentException("@CloudUserService.shareFile: cannot share trashed file " + fileId);
@@ -1203,7 +1218,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new IllegalArgumentException("@CloudUserService.shareFile: cannot share a file with its own owner");
         }
         try {
-            this.dataFactory.register(new SharedFileGrant(granteeAuthUserId, fileId, ownerAuthUserId));
+            this.dataFactory.register(new SharedFileGrant(granteeAuthUserId, fileId, ownerAuthUserId, permissionLevel, expiresAtEpochMillis));
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.shareFile: failed to persist grant for " + fileId + " to " + granteeEmail, e);
         }
@@ -1243,6 +1258,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
                     .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+                    .filter(grant -> !grant.isExpired())
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.listSharedWithMe: failed to list file grants for " + authUserId, e);
@@ -1274,6 +1290,15 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void shareFolder(@NonNull final String ownerAuthUserId, @NonNull final String folderId, @NonNull final String granteeEmail) {
+        this.shareFolder(ownerAuthUserId, folderId, granteeEmail, SharePermission.VIEW, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void shareFolder(@NonNull final String ownerAuthUserId, @NonNull final String folderId, @NonNull final String granteeEmail,
+                             @NonNull final SharePermission permissionLevel, @Nullable final Long expiresAtEpochMillis) {
         final Folder folder = this.requireOwnedFolder(ownerAuthUserId, folderId);
         if (folder.isDeleted()) {
             throw new IllegalArgumentException("@CloudUserService.shareFolder: cannot share trashed folder " + folderId);
@@ -1283,7 +1308,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new IllegalArgumentException("@CloudUserService.shareFolder: cannot share a folder with its own owner");
         }
         try {
-            this.dataFactory.register(new SharedFolderGrant(granteeAuthUserId, folderId, ownerAuthUserId));
+            this.dataFactory.register(new SharedFolderGrant(granteeAuthUserId, folderId, ownerAuthUserId, permissionLevel, expiresAtEpochMillis));
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.shareFolder: failed to persist grant for " + folderId + " to " + granteeEmail, e);
         }
@@ -1320,6 +1345,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
                     .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+                    .filter(grant -> !grant.isExpired())
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.listSharedFoldersWithMe: failed to list folder grants for " + authUserId, e);
@@ -1340,6 +1366,89 @@ public final class CloudUserService implements ICloudUserService {
                 .toList();
     }
 
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PublicFileLinkSummary createPublicFileLink(@NonNull final String ownerAuthUserId, @NonNull final String fileId,
+                                                        @Nullable final Long expiresAtEpochMillis) {
+        final StoredFileOwnership ownership = this.requireOwnedFile(ownerAuthUserId, fileId);
+        if (ownership.isDeleted()) {
+            throw new IllegalArgumentException("@CloudUserService.createPublicFileLink: cannot create a public link for trashed file " + fileId);
+        }
+        final PublicShareLink link = new PublicShareLink(fileId, ownerAuthUserId, expiresAtEpochMillis);
+        try {
+            this.dataFactory.register(link);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.createPublicFileLink: failed to persist link for " + fileId, e);
+        }
+        return new PublicFileLinkSummary(link.getToken(), link.getCreatedAtEpochMillis(), link.getExpiresAtEpochMillis());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void revokePublicFileLink(@NonNull final String ownerAuthUserId, @NonNull final String fileId, @NonNull final String token) {
+        this.requireOwnedFile(ownerAuthUserId, fileId);
+        try {
+            final Optional<PublicShareLink> link = this.dataFactory.findById(token, PublicShareLink.class);
+            if (link.isEmpty() || !link.get().getOwnerAuthUserId().equals(ownerAuthUserId) || !link.get().getStoredFileId().equals(fileId)) {
+                return;
+            }
+            this.dataFactory.delete(token, PublicShareLink.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokePublicFileLink: failed to revoke link " + token + " for " + fileId, e);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public List<PublicFileLinkSummary> listPublicFileLinks(@NonNull final String ownerAuthUserId, @NonNull final String fileId) {
+        this.requireOwnedFile(ownerAuthUserId, fileId);
+        try {
+            return this.dataFactory.getEntities(PublicShareLink.class).stream()
+                    .filter(link -> link.getOwnerAuthUserId().equals(ownerAuthUserId) && link.getStoredFileId().equals(fileId))
+                    .filter(link -> !link.isExpired())
+                    .map(link -> new PublicFileLinkSummary(link.getToken(), link.getCreatedAtEpochMillis(), link.getExpiresAtEpochMillis()))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.listPublicFileLinks: failed to list links for " + fileId, e);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public StoredFile resolvePublicFileLink(@NonNull final String token) {
+        final PublicShareLink link;
+        try {
+            link = this.dataFactory.findById(token, PublicShareLink.class).orElseThrow(PublicShareLinkInvalidException::new);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.resolvePublicFileLink: failed to look up link " + token, e);
+        }
+        if (link.isExpired()) {
+            throw new PublicShareLinkInvalidException();
+        }
+
+        final Optional<StoredFileOwnership> ownership;
+        try {
+            ownership = this.dataFactory.findById(
+                    StoredFileOwnership.compositeKey(link.getOwnerAuthUserId(), link.getStoredFileId()), StoredFileOwnership.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.resolvePublicFileLink: failed to resolve owner of " + link.getStoredFileId(), e);
+        }
+        // The owner has since trashed/removed the file - the link row may still exist, but there's
+        // nothing left to serve. Same exception as every other invalid-token case - don't leak which.
+        if (ownership.isEmpty() || ownership.get().isDeleted()) {
+            throw new PublicShareLinkInvalidException();
+        }
+
+        try {
+            return this.fileFactory.findById(link.getStoredFileId()).orElseThrow(PublicShareLinkInvalidException::new);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.resolvePublicFileLink: failed to fetch content for " + link.getStoredFileId(), e);
+        }
+    }
+
     /**
      * Lists the email addresses of every account {@code fileId} is currently shared with - see
      * {@link ICloudUserService#listFileShares}'s Javadoc. Owner-only, checked via {@link
@@ -1352,6 +1461,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             return this.dataFactory.getEntities(SharedFileGrant.class).stream()
                     .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getStoredFileId().equals(fileId))
+                    .filter(grant -> !grant.isExpired())
                     .map(SharedFileGrant::getGranteeAuthUserId)
                     .map(this::resolveEmailForAuthUserId)
                     .flatMap(Optional::stream)
@@ -1373,6 +1483,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             return this.dataFactory.getEntities(SharedFolderGrant.class).stream()
                     .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getFolderId().equals(folderId))
+                    .filter(grant -> !grant.isExpired())
                     .map(SharedFolderGrant::getGranteeAuthUserId)
                     .map(this::resolveEmailForAuthUserId)
                     .flatMap(Optional::stream)
@@ -1393,6 +1504,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             return (int) this.dataFactory.getEntities(SharedFileGrant.class).stream()
                     .filter(grant -> grant.getOwnerAuthUserId().equals(authUserId))
+                    .filter(grant -> !grant.isExpired())
                     .map(SharedFileGrant::getStoredFileId)
                     .distinct()
                     .count();
@@ -1448,6 +1560,35 @@ public final class CloudUserService implements ICloudUserService {
                 this.dataFactory.delete(SharedFileGrant.compositeKey(grant.getGranteeAuthUserId(), fileId), SharedFileGrant.class);
             } catch (final DatabaseClientException e) {
                 throw new RuntimeException("@CloudUserService.revokeAllFileShares: failed to revoke a share of " + fileId, e);
+            }
+        }
+    }
+
+    /**
+     * Deletes every {@link PublicShareLink} still pointing at {@code fileId} - the public-link
+     * (section 6, {@code architecture/MICRO.md}) counterpart to {@link #revokeAllFileShares},
+     * called from the exact same two places (soft delete via {@link #deleteFile}, permanent
+     * removal via {@link #hardDeleteFile}) and for the same reason: {@link #resolvePublicFileLink}
+     * already denies access to a trashed/removed file's link defensively, but leaving the row
+     * itself behind would let it silently start working again the moment the file is restored,
+     * without the owner ever choosing to re-share it that way. Idempotent - a no-op if no links exist.
+     *
+     * @param fileId the file whose outstanding public links (if any) to revoke
+     */
+    private void revokeAllPublicFileLinks(final String fileId) {
+        final List<PublicShareLink> links;
+        try {
+            links = this.dataFactory.getEntities(PublicShareLink.class).stream()
+                    .filter(link -> link.getStoredFileId().equals(fileId))
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.revokeAllPublicFileLinks: failed to list links for " + fileId, e);
+        }
+        for (final PublicShareLink link : links) {
+            try {
+                this.dataFactory.delete(link.getToken(), PublicShareLink.class);
+            } catch (final DatabaseClientException e) {
+                throw new RuntimeException("@CloudUserService.revokeAllPublicFileLinks: failed to revoke a link for " + fileId, e);
             }
         }
     }
@@ -1548,12 +1689,17 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         try {
-            if (this.dataFactory.findById(SharedFileGrant.compositeKey(authUserId, storedFileId), SharedFileGrant.class).isPresent()) {
+            // architecture/MICRO.md, section 6 (expiring shares) - an expired grant is treated as
+            // if it doesn't exist at all, the same "don't distinguish, just deny" idiom a trashed
+            // StoredFileOwnership row already gets.
+            if (this.dataFactory.findById(SharedFileGrant.compositeKey(authUserId, storedFileId), SharedFileGrant.class)
+                    .filter(grant -> !grant.isExpired()).isPresent()) {
                 return ownerOwnership;
             }
             String currentFolderId = ownerOwnership.getFolderId();
             while (currentFolderId != null) {
-                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class).isPresent()) {
+                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class)
+                        .filter(grant -> !grant.isExpired()).isPresent()) {
                     return ownerOwnership;
                 }
                 currentFolderId = this.dataFactory.findById(currentFolderId, Folder.class)
@@ -1584,7 +1730,9 @@ public final class CloudUserService implements ICloudUserService {
         try {
             String currentFolderId = folderId;
             while (currentFolderId != null) {
-                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class).isPresent()) {
+                // architecture/MICRO.md, section 6 (expiring shares) - see requireSharedFileAccess's own comment.
+                if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class)
+                        .filter(grant -> !grant.isExpired()).isPresent()) {
                     return;
                 }
                 currentFolderId = this.dataFactory.findById(currentFolderId, Folder.class)
@@ -1733,8 +1881,14 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId, final byte[] newContent) {
-        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never overwrite it.
-        final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
+        // Item 9 (sharing) + architecture/MICRO.md section 6 (EDIT-level shares): the owner, or a
+        // grantee holding a direct, non-expired SharePermission.EDIT grant on this exact file, may
+        // overwrite its content - see requireEditableFileAccess's own Javadoc. The returned
+        // ownership row always belongs to the file's real owner, never the calling grantee -
+        // quota/usage/search-indexing below are all charged to that owner, not the caller, since
+        // the owner is who actually stores the bytes.
+        final StoredFileOwnership ownership = this.requireEditableFileAccess(authUserId, storedFileId);
+        final String ownerAuthUserId = ownership.getAuthUserId();
 
         final StoredFile existing;
         try {
@@ -1755,10 +1909,10 @@ public final class CloudUserService implements ICloudUserService {
 
         final long delta = newContent.length - existing.sizeBytes();
         if (delta > 0) {
-            final ICloudUser cloudUser = this.getOrCreate(authUserId);
+            final ICloudUser cloudUser = this.getOrCreate(ownerAuthUserId);
             if (cloudUser.isUploadLimitReached(delta)) {
                 recordMetric(MetricsRecorder::recordUploadQuotaRejected);
-                throw new UploadQuotaExceededException(authUserId, cloudUser.getCurrentUploadedBytes(), delta, cloudUser.getMaxBytesToUpload());
+                throw new UploadQuotaExceededException(ownerAuthUserId, cloudUser.getCurrentUploadedBytes(), delta, cloudUser.getMaxBytesToUpload());
             }
         }
 
@@ -1783,12 +1937,67 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.replaceFileContent: failed to update cached metadata for " + storedFileId, e);
         }
 
-        this.updateCloudUserBytesUsage(authUserId, delta);
+        this.updateCloudUserBytesUsage(ownerAuthUserId, delta);
+        // The audit entry's actor is the real caller (possibly an EDIT-grantee, not the owner) -
+        // this is "who did this", unlike the quota/usage charge above, which is "whose storage".
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
-        indexFileForSearch(authUserId, replaced, ownership.getFolderId(), newContent);
+        indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), newContent);
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
                 replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId());
+    }
+
+    /**
+     * Resolves write access to {@code storedFileId} for {@code authUserId} - either the file's
+     * real owner, or an account holding a direct (never folder-inherited - see {@link
+     * SharePermission}'s own Javadoc), non-expired {@link SharePermission#EDIT} {@link
+     * SharedFileGrant} on this exact file. Backs {@link #replaceFileContent} only - every other
+     * mutating method on this class stays strictly owner-only, unaffected by this new access path.
+     *
+     * @param authUserId the requesting user's id - checked for ownership first, then for a direct EDIT grant
+     * @param storedFileId the file write access is being requested for
+     * @return the file's real owner's {@link StoredFileOwnership} row (never {@code authUserId}'s own, unless they are the owner)
+     * @throws IllegalArgumentException if {@code storedFileId} isn't owned by {@code authUserId},
+     *     is currently trashed, and {@code authUserId} doesn't hold a valid, non-expired {@link
+     *     SharePermission#EDIT} grant on it either
+     */
+    private StoredFileOwnership requireEditableFileAccess(final String authUserId, final String storedFileId) {
+        final Optional<StoredFileOwnership> owned = this.tryOwnedFile(authUserId, storedFileId);
+        if (owned.isPresent()) {
+            final StoredFileOwnership ownership = owned.get();
+            if (ownership.isDeleted()) {
+                throw new IllegalArgumentException("@CloudUserService.requireEditableFileAccess: " + storedFileId + " is trashed");
+            }
+            return ownership;
+        }
+
+        final Optional<SharedFileGrant> grant;
+        try {
+            grant = this.dataFactory.findById(SharedFileGrant.compositeKey(authUserId, storedFileId), SharedFileGrant.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.requireEditableFileAccess: failed to look up grant for " + storedFileId, e);
+        }
+        if (grant.isEmpty() || grant.get().isExpired() || grant.get().permissionLevel() != SharePermission.EDIT) {
+            throw new IllegalArgumentException(
+                    "@CloudUserService.requireEditableFileAccess: " + authUserId + " does not have edit access to " + storedFileId);
+        }
+
+        final String ownerAuthUserId = grant.get().getOwnerAuthUserId();
+        final Optional<StoredFileOwnership> ownerOwnership;
+        try {
+            ownerOwnership = this.dataFactory.findById(
+                    StoredFileOwnership.compositeKey(ownerAuthUserId, storedFileId), StoredFileOwnership.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.requireEditableFileAccess: failed to resolve owner of " + storedFileId, e);
+        }
+        if (ownerOwnership.isEmpty() || ownerOwnership.get().isDeleted()) {
+            // The owner has since trashed/removed the file - the grant nominally still exists, but
+            // there's nothing left to edit. Same message as the "no grant at all" case above -
+            // don't leak which.
+            throw new IllegalArgumentException(
+                    "@CloudUserService.requireEditableFileAccess: " + authUserId + " does not have edit access to " + storedFileId);
+        }
+        return ownerOwnership.get();
     }
 
     /**
@@ -1974,6 +2183,8 @@ public final class CloudUserService implements ICloudUserService {
         // would silently re-grant every previously-shared recipient access again, without the
         // owner ever having chosen to re-share. See revokeAllFileShares's own Javadoc.
         this.revokeAllFileShares(storedFileId);
+        // architecture/MICRO.md, section 6 - same reasoning as revokeAllFileShares immediately above.
+        this.revokeAllPublicFileLinks(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
         removeFromSearchIndex(authUserId, storedFileId);
     }
