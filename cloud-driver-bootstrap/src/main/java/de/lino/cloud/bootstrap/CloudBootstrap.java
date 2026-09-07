@@ -66,23 +66,11 @@ public final class CloudBootstrap {
      * on one shared shutdown latch until the process is told to stop.
      *
      * @param args service-line arguments, forwarded to every started extension
-     * @throws IOException if reading local configuration/security-requirement files fails
      */
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
 
         CLOUD_DRIVER = initiateCloudDriver().orElseThrow();
 
-        // Blocks the actual main thread (not a disposable virtual thread - see
-        // runTaskInMainSafety's Javadoc) indefinitely, no busy-wait, once every startX()
-        // call below has returned. PendingUploadScheduler runs on its own ticker thread and
-        // the cloud-driver-extensions-watcher extension's PostgresDatabaseNotification blocks
-        // its own dedicated listener thread on its own extension thread - all daemon threads,
-        // so none alone keeps the JVM alive - but extension startup (ExtensionFactory#startAll)
-        // and event registration (EventFactory#registerEvent) run synchronously, on this very
-        // thread, before the shutdown latch below is even constructed. None of the background
-        // threads is ever joined - only this one latch, on the true main thread, is. Must be
-        // main's final action: runTaskInMainSafety shuts the shared executor down once this
-        // returns, so nothing here submits further tasks afterward.
         MultiTaskingFactory.getInstance().runTaskInMainSafety(() -> {
 
             Constraints.CLOUD_START_TIME_STAMP.set(System.currentTimeMillis());
@@ -145,9 +133,7 @@ public final class CloudBootstrap {
         final Region region = Region.of(configuration.getString("aws-kms-region"));
         final KeyEncryptionService keyEncryptionService = new AwsKmsKeyEncryptionService(region, encryptionKeyAlias);
 
-        // TODO: remove --> final KeyEncryptionService keyEncryptionService = new DatabaseKeyEncryptionService(databaseSection);
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
-
         final ObjectStorageService objectStorageService = resolveObjectStorageService(configuration);
 
         DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER, objectStorageService);
