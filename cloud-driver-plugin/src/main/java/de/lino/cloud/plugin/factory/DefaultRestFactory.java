@@ -158,6 +158,17 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** Default page size for {@link #handleListFileActivity}/{@link #handleListFolderActivity}/{@link #handleListActivity} when {@link #LIMIT_QUERY_PARAM} is absent - unlike {@link #handleListFiles}/{@link #handleListFolders}, pagination here is never optional (an unbounded activity feed has no natural size ceiling the way a single folder's contents do), so a request with no {@code ?limit=} still gets a bounded, paginated response rather than one unbounded bare array. */
     private static final int DEFAULT_ACTIVITY_PAGE_LIMIT = 50;
     /**
+     * Path mounted by {@link #start} for {@link #handleSearch} (section 5, Search/Indexing, {@code
+     * architecture/MICRO.md}) - a standalone top-level resource, the same "no single natural owner
+     * between {@code /files}/{@code /folders} to nest under" reasoning {@link #ACTIVITY_PATH}
+     * already documents, since a search matches files regardless of which folder they sit in.
+     */
+    private static final String SEARCH_PATH = "/search";
+    /** Query parameter name for {@link #handleSearch}'s search text. */
+    private static final String SEARCH_QUERY_QUERY_PARAM = "q";
+    /** Default result count for {@link #handleSearch} when {@link #LIMIT_QUERY_PARAM} is absent - generous enough for a typical query, small enough to keep a client's results list from growing unbounded. */
+    private static final int DEFAULT_SEARCH_RESULT_LIMIT = 25;
+    /**
      * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
      * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
      * #FILES_TRASH_PATH}'s own Javadoc for why registration order (not any Javalin routing
@@ -704,6 +715,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(FILES_PATH + "/{id}/versions/{versionNumber}/restore", this::handleRestoreFileVersion);
                 config.routes.get(FILES_PATH + "/{id}/activity", this::handleListFileActivity);
                 config.routes.get(ACTIVITY_PATH, this::handleListActivity);
+                config.routes.get(SEARCH_PATH, this::handleSearch);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
@@ -2398,6 +2410,47 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static int resolveActivityLimit(final Context ctx) {
         final Integer limit = parsePageLimit(ctx);
         return limit != null ? limit : DEFAULT_ACTIVITY_PAGE_LIMIT;
+    }
+
+    /**
+     * {@code GET /search?q=<query>&limit=<n>}: searches the caller's own files by filename/
+     * indexed text content, via {@link de.lino.cloud.api.search.SearchIndexService#search} -
+     * section 5 (Search/Indexing, {@code architecture/MICRO.md}). Reached directly off {@link
+     * CloudDriver#getInstance()}'s {@link de.lino.cloud.api.factory.service.IServiceContainer},
+     * the same shape {@link #handleGetThumbnail}/{@link #handleListFileVersions} already use for
+     * their own optional facets - {@code 503} (via {@link ServiceUnavailableResponse}) if {@code
+     * cloud-driver-extensions-search} isn't running on this deployment. A missing/blank {@code
+     * ?q=} returns an empty JSON array immediately rather than a {@code 400} - the same "an empty
+     * query is simply zero results, not a client error" convention a search box's own empty-state
+     * naturally wants. Never fails with a mapped {@code 404}/{@code 409} - there is no single
+     * owned/shared id to check access against here (the index is already scoped to the caller's
+     * own account) - so this uses {@code thenAccept} rather than {@code handle}, the same shape
+     * {@link #handleListActivity} already uses for the same reason.
+     */
+    private void handleSearch(@NotNull final Context ctx) {
+        final String query = ctx.queryParam(SEARCH_QUERY_QUERY_PARAM);
+        final int limit = resolveSearchLimit(ctx);
+        final String userId = requireUserId(ctx);
+
+        final de.lino.cloud.api.search.SearchIndexService searchIndexService =
+                CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
+        if (searchIndexService == null) {
+            throw new ServiceUnavailableResponse("Search extension is not running on this deployment");
+        }
+        if (query == null || query.isBlank()) {
+            ctx.contentType("application/json").result(this.gson.toJson(List.of()));
+            return;
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> searchIndexService.search(userId, query, limit))
+                .thenAccept(results -> ctx.contentType("application/json").result(this.gson.toJson(results))));
+    }
+
+    /** Resolves the result count for {@link #handleSearch}: {@link #LIMIT_QUERY_PARAM} if present and valid, otherwise {@link #DEFAULT_SEARCH_RESULT_LIMIT}. */
+    private static int resolveSearchLimit(final Context ctx) {
+        final Integer limit = parsePageLimit(ctx);
+        return limit != null ? limit : DEFAULT_SEARCH_RESULT_LIMIT;
     }
 
     /**

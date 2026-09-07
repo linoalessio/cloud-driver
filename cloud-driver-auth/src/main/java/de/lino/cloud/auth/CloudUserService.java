@@ -20,6 +20,8 @@ import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
+import de.lino.cloud.api.search.SearchDocument;
+import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
@@ -43,6 +45,7 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -273,6 +276,11 @@ public final class CloudUserService implements ICloudUserService {
         // directly on a possibly still-live file (bypassing the trash entirely), so this must not
         // assume deleteFile's own revocation already ran.
         this.revokeAllFileShares(storedFileId);
+        // architecture/MICRO.md, section 5 - same idempotency reasoning as revokeAllFileShares
+        // above: a no-op if deleteFile already removed this id from the index (the normal
+        // trash-then-purge path), but resetCloudUser/deleteCloudUser call hardDeleteFile directly
+        // on a possibly still-live (never-trashed) file, so this must not assume it already ran.
+        removeFromSearchIndex(authUserId, storedFileId);
     }
 
     /**
@@ -697,6 +705,7 @@ public final class CloudUserService implements ICloudUserService {
             this.updateCloudUserBytesUsage(authUserId, content.length);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
+        indexFileForSearch(authUserId, storedFile, folderId, content);
 
         return storedFile;
     }
@@ -1655,6 +1664,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.moveFile: failed to move " + storedFileId + " to folder " + folderId, e);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_MOVE, storedFileId, folderId));
+        updateSearchIndexMetadata(authUserId, storedFileId, existing.getFileName(), folderId);
     }
 
     /**
@@ -1698,6 +1708,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.renameFile: failed to update cached metadata for " + storedFileId, e);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_RENAME, storedFileId, newFileName));
+        updateSearchIndexMetadata(authUserId, storedFileId, newFileName, ownership.getFolderId());
     }
 
     /**
@@ -1774,6 +1785,7 @@ public final class CloudUserService implements ICloudUserService {
 
         this.updateCloudUserBytesUsage(authUserId, delta);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
+        indexFileForSearch(authUserId, replaced, ownership.getFolderId(), newContent);
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
                 replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId());
@@ -1795,6 +1807,120 @@ public final class CloudUserService implements ICloudUserService {
             if (versioningService != null) versioningService.captureVersion(sourceFileId, previousContent);
         } catch (final RuntimeException ignored) {
             // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /**
+     * Content types indexed as text (section 5, Search/Indexing, {@code architecture/MICRO.md}) -
+     * mirrors {@code cloud-driver-platforms-desktop}'s own {@code PreviewSupport.kt#previewKindFor}
+     * {@code TEXT} classification (any {@code text/*} content type, plus {@code application/json}/
+     * {@code xml}/{@code yaml}/{@code toml}) - v1 scope, per the doc's own instruction: OCR for
+     * images and PDF/DOCX text extraction are explicit follow-ups, not attempted here.
+     */
+    private static final Set<String> NON_TEXT_PREFIX_INDEXABLE_CONTENT_TYPES =
+            Set.of("application/json", "application/xml", "application/yaml", "application/toml");
+
+    /**
+     * Caps how much of a file's own text this class ever hands to {@link SearchIndexService} -
+     * an in-memory index (see {@code InMemorySearchIndexService}'s own Javadoc) has no reason to
+     * hold an entire, possibly very large, text file's content just to make it searchable; a
+     * bounded prefix is more than enough for a filename/content-substring match. 64 KiB.
+     */
+    private static final int MAX_INDEXED_TEXT_BYTES = 65_536;
+
+    /**
+     * Extracts a bounded, UTF-8-decoded text prefix of {@code content} if {@code contentType} is
+     * one of {@link #NON_TEXT_PREFIX_INDEXABLE_CONTENT_TYPES}/{@code text/*}, otherwise {@code
+     * null} (not indexed at all in v1 - see that constant's own Javadoc).
+     *
+     * @param contentType the file's {@link StoredFile#contentType()}
+     * @param content the file's raw, uncompressed bytes
+     * @return a bounded text extract, or {@code null} if this content type isn't text-indexed
+     */
+    private static String extractIndexableText(final String contentType, final byte[] content) {
+        final boolean indexable = contentType.startsWith("text/") || NON_TEXT_PREFIX_INDEXABLE_CONTENT_TYPES.contains(contentType);
+        if (!indexable) return null;
+
+        final int length = Math.min(content.length, MAX_INDEXED_TEXT_BYTES);
+        return new String(content, 0, length, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Indexes (or re-indexes) {@code storedFile} into {@link CloudDriver#getInstance()}'s {@link
+     * SearchIndexService}, if {@code cloud-driver-extensions-search} has published one - a no-op
+     * otherwise. Never throws: a missing/misbehaving search sink must never block a real upload/
+     * content replacement, matching {@link #captureFileVersion}'s own defensive shape.
+     *
+     * @param authUserId the owning account
+     * @param storedFile the file's current state, already persisted
+     * @param folderId the folder the file was placed in, or {@code null} for the root
+     * @param content the file's raw, uncompressed bytes, to extract indexable text from
+     */
+    private static void indexFileForSearch(final String authUserId, final StoredFile storedFile, final String folderId, final byte[] content) {
+        try {
+            final SearchIndexService searchIndexService = CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
+            if (searchIndexService == null) return;
+            final String extractedText = extractIndexableText(storedFile.contentType(), content);
+            searchIndexService.indexFile(new SearchDocument(authUserId, storedFile.fileId(), storedFile.fileName(), folderId, extractedText));
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /**
+     * Updates only the indexed {@code fileName}/{@code folderId} for an already-indexed file
+     * (see {@link SearchIndexService#updateMetadata}) - called by {@link #renameFile}/{@link
+     * #moveFile}, neither of which have the file's content in hand. A no-op (including if {@code
+     * fileName} is {@code null} - a legacy {@link StoredFileOwnership} row with no cached
+     * metadata, see {@link StoredFileOwnership#hasMetadata()}) if the search extension isn't
+     * running, matching {@link #indexFileForSearch}'s own defensive shape.
+     */
+    private static void updateSearchIndexMetadata(final String authUserId, final String storedFileId, final String fileName, final String folderId) {
+        if (fileName == null) return;
+        try {
+            final SearchIndexService searchIndexService = CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
+            if (searchIndexService != null) searchIndexService.updateMetadata(authUserId, storedFileId, fileName, folderId);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see indexFileForSearch's own Javadoc.
+        }
+    }
+
+    /**
+     * Removes {@code storedFileId} from the search index, if one is published - called by {@link
+     * #deleteFile} (trash) and unconditionally by {@link #hardDeleteFile} (permanent removal,
+     * idempotent alongside the trash case - see that method's own comment). A no-op if the search
+     * extension isn't running, matching {@link #indexFileForSearch}'s own defensive shape.
+     */
+    private static void removeFromSearchIndex(final String authUserId, final String storedFileId) {
+        try {
+            final SearchIndexService searchIndexService = CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
+            if (searchIndexService != null) searchIndexService.removeFile(authUserId, storedFileId);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see indexFileForSearch's own Javadoc.
+        }
+    }
+
+    /**
+     * Re-indexes {@code storedFileId} after {@link #restoreFile} brings it back out of the trash -
+     * unlike {@link #updateSearchIndexMetadata}, this fetches the file's full, resolved content
+     * (via {@link #fileFactory}) to re-extract indexable text, since restoring is a deliberate,
+     * occasional user action that can afford the extra cost, unlike a rename/move. A no-op if the
+     * search extension isn't running, or if the fetch itself fails for any reason - restoring the
+     * file itself must never be blocked by a reindex failure, matching {@link #indexFileForSearch}'s
+     * own defensive shape.
+     */
+    private void reindexRestoredFileForSearch(final String authUserId, final String storedFileId, final String folderId) {
+        try {
+            final SearchIndexService searchIndexService = CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
+            if (searchIndexService == null) return;
+            final StoredFile restored = this.fileFactory.findById(storedFileId).orElse(null);
+            if (restored == null) return;
+            final String extractedText = extractIndexableText(restored.contentType(), restored.content());
+            searchIndexService.restoreFile(new SearchDocument(authUserId, storedFileId, restored.fileName(), folderId, extractedText));
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException ignored) {
+            // Same reasoning - a failed re-fetch must never block the restore itself.
         }
     }
 
@@ -1849,6 +1975,7 @@ public final class CloudUserService implements ICloudUserService {
         // owner ever having chosen to re-share. See revokeAllFileShares's own Javadoc.
         this.revokeAllFileShares(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
+        removeFromSearchIndex(authUserId, storedFileId);
     }
 
     /**
@@ -1873,6 +2000,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.restoreFile: failed to restore " + storedFileId, e);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_RESTORE, storedFileId, null));
+        this.reindexRestoredFileForSearch(authUserId, storedFileId, ownership.getFolderId());
     }
 
     /**

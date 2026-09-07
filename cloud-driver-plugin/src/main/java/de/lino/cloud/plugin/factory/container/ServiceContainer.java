@@ -6,6 +6,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.versioning.FileVersioningService;
@@ -38,6 +39,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile ThumbnailService thumbnailService;
     /** The file-versioning service, {@code null} until {@link #setFileVersioningService} publishes one. */
     private volatile FileVersioningService fileVersioningService;
+    /** The search index, {@code null} until {@link #setSearchIndexService} publishes one. */
+    private volatile SearchIndexService searchIndexService;
 
     /** {@inheritDoc} */
     @Override
@@ -133,6 +136,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setFileVersioningService(@NonNull final FileVersioningService fileVersioningService) {
         this.fileVersioningService = fileVersioningService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public SearchIndexService getSearchIndexService() {
+        return this.searchIndexService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setSearchIndexService(@NonNull final SearchIndexService searchIndexService) {
+        this.searchIndexService = searchIndexService;
     }
 
 }

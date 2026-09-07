@@ -5,6 +5,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.versioning.FileVersioningService;
@@ -177,5 +178,24 @@ public interface IServiceContainer {
      * @param fileVersioningService the instance backing content-replacement version capture and {@code GET /files/{id}/versions}
      */
     void setFileVersioningService(@NonNull FileVersioningService fileVersioningService);
+
+    /**
+     * Returns the search index (section 5, Search/Indexing, {@code architecture/MICRO.md}), or
+     * {@code null} if {@code cloud-driver-extensions-search}'s {@code CloudSearchExtension} hasn't
+     * published one yet (not started, or this deployment doesn't run that extension at all). {@code
+     * de.lino.cloud.auth.CloudUserService}'s upload/rename/move/delete/restore/content-replace
+     * methods and {@code DefaultRestFactory}'s {@code GET /search} route must null-check this the
+     * same way they already do for {@link #getFileVersioningService()}.
+     *
+     * @return the {@link SearchIndexService}, or {@code null}
+     */
+    SearchIndexService getSearchIndexService();
+
+    /**
+     * Publishes the real {@link SearchIndexService}, once built.
+     *
+     * @param searchIndexService the instance backing {@code GET /search} and every file mutation's indexing hook
+     */
+    void setSearchIndexService(@NonNull SearchIndexService searchIndexService);
 
 }

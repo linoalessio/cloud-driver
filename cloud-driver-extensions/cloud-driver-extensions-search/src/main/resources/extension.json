@@ -1,0 +1,7 @@
+{
+  "name": "cloud-driver-search",
+  "version": "1.0.6",
+  "description": "Per-account filename/text-content search index over StoredFile",
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-bootstrap"]
+}

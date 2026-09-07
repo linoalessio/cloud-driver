@@ -1,5 +1,6 @@
 package de.lino.cloud.auth.entity;
 
+import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.database.database.entity.Serialized;
@@ -7,6 +8,7 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;

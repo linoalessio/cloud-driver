@@ -21,6 +21,7 @@
         <module>cloud-driver-extensions-metrics</module>
         <module>cloud-driver-extensions-thumbnails</module>
         <module>cloud-driver-extensions-versioning</module>
+        <module>cloud-driver-extensions-search</module>
     </modules>
 
 </project>
