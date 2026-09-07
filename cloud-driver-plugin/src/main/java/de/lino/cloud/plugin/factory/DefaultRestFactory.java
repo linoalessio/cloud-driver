@@ -180,6 +180,17 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String PUBLIC_PATH_PREFIX = "/public/";
     /** Path mounted by {@link #start} for {@link #handleResolvePublicFileLink} - see {@link #PUBLIC_PATH_PREFIX}'s own Javadoc. */
     private static final String PUBLIC_FILES_PATH = "/public/files";
+    /** Path mounted by {@link #start} for {@link #handleRegisterWebhook}/{@link #handleListWebhooks} (section 8, {@code architecture/MICRO.md}). */
+    private static final String WEBHOOKS_PATH = "/webhooks";
+    /**
+     * Path mounted by {@link #start} for {@link #handleListWebhookDeliveries} - one call spans
+     * every one of the caller's webhooks together, the same "no single natural owner" reasoning
+     * {@link #ACTIVITY_PATH} already documents. No registration-order risk against {@code DELETE
+     * /webhooks/{id}} - there is no {@code GET /webhooks/{id}} route for this two-segment {@code
+     * GET} path to ever be shadowed by (only {@link #WEBHOOKS_PATH}'s own one-segment {@code GET},
+     * which can't match a two-segment path at all).
+     */
+    private static final String WEBHOOKS_DELIVERIES_PATH = "/webhooks/deliveries";
     /**
      * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
      * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
@@ -799,6 +810,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_PATH + "/{id}/activity", this::handleListFileActivity);
                 config.routes.get(ACTIVITY_PATH, this::handleListActivity);
                 config.routes.get(SEARCH_PATH, this::handleSearch);
+                config.routes.post(WEBHOOKS_PATH, this::handleRegisterWebhook);
+                config.routes.get(WEBHOOKS_PATH, this::handleListWebhooks);
+                config.routes.delete(WEBHOOKS_PATH + "/{id}", this::handleRevokeWebhook);
+                config.routes.get(WEBHOOKS_DELIVERIES_PATH, this::handleListWebhookDeliveries);
                 config.routes.post(FILES_PATH + "/{id}/share", this::handleShareFile);
                 config.routes.get(FILES_PATH + "/{id}/share", this::handleListFileShares);
                 config.routes.delete(FILES_PATH + "/{id}/share/{email}", this::handleRevokeFileShare);
@@ -2674,6 +2689,132 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static int resolveSearchLimit(final Context ctx) {
         final Integer limit = parsePageLimit(ctx);
         return limit != null ? limit : DEFAULT_SEARCH_RESULT_LIMIT;
+    }
+
+    /** The {@code {"url", "eventTypes"}} JSON body shape read by {@code POST /webhooks} (section 8, {@code architecture/MICRO.md}). */
+    private record RegisterWebhookRequest(String url, java.util.List<String> eventTypes) {
+    }
+
+    /**
+     * {@code POST /webhooks}: registers a new webhook subscription via {@link
+     * de.lino.cloud.api.webhook.WebhookService#registerWebhook}. {@code 201} with a {@link
+     * de.lino.cloud.api.webhook.WebhookSubscriptionCreated} (secret included - shown only this
+     * once) on success; {@code 400} if {@code url} isn't a valid/allowed {@code https://} URL, is
+     * unresolvable, or resolves to a private/reserved address, or if {@code eventTypes} is empty
+     * or contains an unrecognized value; {@code 503} if {@code cloud-driver-extensions-webhooks}
+     * isn't running on this deployment.
+     */
+    private void handleRegisterWebhook(@NotNull final Context ctx) {
+        final de.lino.cloud.api.webhook.WebhookService webhookService = requireWebhookService();
+        final RegisterWebhookRequest request = this.gson.fromJson(ctx.body(), RegisterWebhookRequest.class);
+        final Set<de.lino.cloud.api.webhook.WebhookEventType> eventTypes = parseWebhookEventTypes(request.eventTypes());
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> webhookService.registerWebhook(userId, request.url(), eventTypes))
+                .handle((created, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(created));
+                        return null;
+                    }
+                    throw webhookFailureOrPropagate(failure);
+                }));
+    }
+
+    /**
+     * Parses {@code raw} (each element a {@link de.lino.cloud.api.webhook.WebhookEventType} name,
+     * case-insensitive) into a {@link Set} - {@code null}/empty is passed through unchanged
+     * ({@link de.lino.cloud.api.webhook.WebhookService#registerWebhook} itself rejects an empty
+     * set with a clear message, so this doesn't duplicate that check).
+     *
+     * @throws BadRequestResponse if any element isn't a valid {@link de.lino.cloud.api.webhook.WebhookEventType} name
+     */
+    private static Set<de.lino.cloud.api.webhook.WebhookEventType> parseWebhookEventTypes(final java.util.List<String> raw) {
+        if (raw == null) {
+            return Set.of();
+        }
+        try {
+            return raw.stream()
+                    .map(name -> de.lino.cloud.api.webhook.WebhookEventType.valueOf(name.toUpperCase(Locale.ROOT)))
+                    .collect(java.util.stream.Collectors.toSet());
+        } catch (final IllegalArgumentException e) {
+            throw new BadRequestResponse("Invalid eventTypes - expected any of "
+                    + java.util.Arrays.toString(de.lino.cloud.api.webhook.WebhookEventType.values()));
+        }
+    }
+
+    /**
+     * {@code GET /webhooks}: lists every webhook the caller has registered (without secrets), via
+     * {@link de.lino.cloud.api.webhook.WebhookService#listWebhooks}. {@code 503} if the extension isn't running.
+     */
+    private void handleListWebhooks(@NotNull final Context ctx) {
+        final de.lino.cloud.api.webhook.WebhookService webhookService = requireWebhookService();
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> webhookService.listWebhooks(userId))
+                .thenAccept(webhooks -> ctx.contentType("application/json").result(this.gson.toJson(webhooks))));
+    }
+
+    /**
+     * {@code DELETE /webhooks/{id}}: revokes a previously-registered webhook via {@link
+     * de.lino.cloud.api.webhook.WebhookService#revokeWebhook} - owner-only, idempotent. {@code
+     * 204} on success (also if no such webhook existed, or it belonged to someone else); {@code
+     * 503} if the extension isn't running.
+     */
+    private void handleRevokeWebhook(@NotNull final Context ctx) {
+        final de.lino.cloud.api.webhook.WebhookService webhookService = requireWebhookService();
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .runAsync(() -> webhookService.revokeWebhook(userId, id))
+                .thenAccept(ignored -> ctx.status(204)));
+    }
+
+    /**
+     * {@code GET /webhooks/deliveries}: lists the most recent delivery attempts across every one
+     * of the caller's webhooks, via {@link de.lino.cloud.api.webhook.WebhookService#listRecentDeliveries} -
+     * purely in-memory/informational, see that method's own Javadoc. {@code 503} if the extension isn't running.
+     */
+    private void handleListWebhookDeliveries(@NotNull final Context ctx) {
+        final de.lino.cloud.api.webhook.WebhookService webhookService = requireWebhookService();
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> webhookService.listRecentDeliveries(userId))
+                .thenAccept(deliveries -> ctx.contentType("application/json").result(this.gson.toJson(deliveries))));
+    }
+
+    /**
+     * Resolves the live {@link de.lino.cloud.api.webhook.WebhookService} off {@link
+     * CloudDriver#getInstance()}'s {@link de.lino.cloud.api.factory.service.IServiceContainer} -
+     * the same direct-reach shape {@link #handleGetThumbnail}/{@link #handleListFileVersions}
+     * already use for their own optional facets.
+     *
+     * @throws ServiceUnavailableResponse if {@code cloud-driver-extensions-webhooks} isn't running on this deployment
+     */
+    private static de.lino.cloud.api.webhook.WebhookService requireWebhookService() {
+        final de.lino.cloud.api.webhook.WebhookService webhookService = CloudDriver.getInstance().getServiceContainer().getWebhookService();
+        if (webhookService == null) {
+            throw new ServiceUnavailableResponse("Webhooks extension is not running on this deployment");
+        }
+        return webhookService;
+    }
+
+    /**
+     * Translates a {@code /webhooks*} route failure: {@link de.lino.cloud.api.webhook.InvalidWebhookUrlException}/{@link
+     * IllegalArgumentException} (empty {@code eventTypes}) → {@link BadRequestResponse} (400).
+     * Any other cause is logged (the same "make a silent 500 visible" convention {@link
+     * #folderFailureOrPropagate} already established) and rethrown as-is.
+     */
+    private static RuntimeException webhookFailureOrPropagate(final Throwable failure) {
+        final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        if (cause instanceof de.lino.cloud.api.webhook.InvalidWebhookUrlException invalidUrl) {
+            return new BadRequestResponse(invalidUrl.getMessage());
+        }
+        if (cause instanceof IllegalArgumentException illegalArgument) {
+            return new BadRequestResponse(illegalArgument.getMessage());
+        }
+        CloudDriver.getInstance().getLogger().severe("@DefaultRestFactory.webhookFailureOrPropagate: unmapped webhook failure, returning 500:");
+        cause.printStackTrace();
+        return cause instanceof RuntimeException runtimeException ? runtimeException : new CompletionException(cause);
     }
 
     /**

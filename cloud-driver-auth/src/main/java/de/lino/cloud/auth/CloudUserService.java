@@ -25,6 +25,8 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.search.SearchDocument;
 import de.lino.cloud.api.search.SearchIndexService;
+import de.lino.cloud.api.webhook.WebhookEventType;
+import de.lino.cloud.api.webhook.WebhookService;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
@@ -712,6 +714,7 @@ public final class CloudUserService implements ICloudUserService {
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
         indexFileForSearch(authUserId, storedFile, folderId, content);
+        dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, storedFile.fileId());
 
         return storedFile;
     }
@@ -1222,6 +1225,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.shareFile: failed to persist grant for " + fileId + " to " + granteeEmail, e);
         }
+        dispatchWebhookEvent(ownerAuthUserId, WebhookEventType.FILE_SHARED, fileId);
     }
 
     /**
@@ -2134,6 +2138,27 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * Notifies {@link CloudDriver#getInstance()}'s {@link WebhookService}, if {@code
+     * cloud-driver-extensions-webhooks} has published one - a no-op otherwise. Never throws: a
+     * missing/misbehaving webhook dispatcher must never block a real file operation, matching
+     * {@link #indexFileForSearch}'s own defensive shape. {@link WebhookService#dispatchEvent}
+     * itself is cheap (a quick per-account scan + submitting async tasks) - the real HTTP delivery
+     * always happens on that service's own background workers, never this calling thread.
+     *
+     * @param authUserId the account whose webhooks to notify
+     * @param eventType the event that occurred
+     * @param targetId the {@link StoredFile#fileId()} the event concerns
+     */
+    private static void dispatchWebhookEvent(final String authUserId, final WebhookEventType eventType, final String targetId) {
+        try {
+            final WebhookService webhookService = CloudDriver.getInstance().getServiceContainer().getWebhookService();
+            if (webhookService != null) webhookService.dispatchEvent(authUserId, eventType, targetId);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /**
      * Lists every {@link CloudUser} currently registered, as their {@link ICloudUser} contract.
      *
      * @return every currently-registered {@link ICloudUser}
@@ -2187,6 +2212,9 @@ public final class CloudUserService implements ICloudUserService {
         this.revokeAllPublicFileLinks(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
         removeFromSearchIndex(authUserId, storedFileId);
+        // architecture/MICRO.md, section 8 - fired once, at soft-delete (when a user actually
+        // experiences "my file is gone"), not again at the later permanent purge of the same file.
+        dispatchWebhookEvent(authUserId, WebhookEventType.FILE_DELETED, storedFileId);
     }
 
     /**

@@ -7,6 +7,7 @@ import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
+import de.lino.cloud.api.webhook.WebhookService;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
@@ -197,5 +198,24 @@ public interface IServiceContainer {
      * @param searchIndexService the instance backing {@code GET /search} and every file mutation's indexing hook
      */
     void setSearchIndexService(@NonNull SearchIndexService searchIndexService);
+
+    /**
+     * Returns the webhook dispatcher (section 8, Webhooks, {@code architecture/MICRO.md}), or
+     * {@code null} if {@code cloud-driver-extensions-webhooks}'s {@code CloudWebhooksExtension}
+     * hasn't published one yet (not started, or this deployment doesn't run that extension at
+     * all). {@code de.lino.cloud.auth.CloudUserService}'s upload/delete/share methods and {@code
+     * DefaultRestFactory}'s {@code /webhooks*} routes must null-check this the same way they
+     * already do for {@link #getSearchIndexService()}.
+     *
+     * @return the {@link WebhookService}, or {@code null}
+     */
+    WebhookService getWebhookService();
+
+    /**
+     * Publishes the real {@link WebhookService}, once built.
+     *
+     * @param webhookService the instance backing {@code /webhooks*} and every file mutation's dispatch hook
+     */
+    void setWebhookService(@NonNull WebhookService webhookService);
 
 }

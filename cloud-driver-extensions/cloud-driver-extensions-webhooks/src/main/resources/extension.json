@@ -1,0 +1,7 @@
+{
+  "name": "cloud-driver-webhooks",
+  "version": "1.0.6",
+  "description": "Lets an account subscribe an HTTPS URL to file events (upload/delete/share), HMAC-signed, with retry",
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-bootstrap"]
+}

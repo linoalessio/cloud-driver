@@ -8,6 +8,7 @@ import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
+import de.lino.cloud.api.webhook.WebhookService;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
@@ -41,6 +42,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile FileVersioningService fileVersioningService;
     /** The search index, {@code null} until {@link #setSearchIndexService} publishes one. */
     private volatile SearchIndexService searchIndexService;
+    /** The webhook dispatcher, {@code null} until {@link #setWebhookService} publishes one. */
+    private volatile WebhookService webhookService;
 
     /** {@inheritDoc} */
     @Override
@@ -148,6 +151,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setSearchIndexService(@NonNull final SearchIndexService searchIndexService) {
         this.searchIndexService = searchIndexService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public WebhookService getWebhookService() {
+        return this.webhookService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setWebhookService(@NonNull final WebhookService webhookService) {
+        this.webhookService = webhookService;
     }
 
 }
