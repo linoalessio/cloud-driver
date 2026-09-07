@@ -9,6 +9,7 @@ import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -54,6 +55,13 @@ import java.util.zip.Inflater;
  * it from the configured {@code ObjectStorageService} and calling {@link
  * #withResolvedContent(byte[])} to hydrate a copy - every accessor below throws {@link
  * IllegalStateException} on an S3-backed instance until that hydration has happened.
+ *
+ * <p><b>Content can also be a per-account deduplication alias of another file's content - see
+ * {@link #dedupOfFileId}.</b> An alias (created only by {@code CloudUserService#uploadFile} when
+ * an account uploads content it already owns elsewhere - see {@code
+ * architecture/MICRO.md}, section 4) carries no {@link #contentBase64}/{@link #objectStorageKey}
+ * of its own; {@code DefaultFileFactory} resolves it the same "fetch, then {@link
+ * #withResolvedContent(byte[])}" way it resolves S3-backed content.
  */
 // content is excluded from toString(): dumping it - even base64-encoded -
 // would still put a file's entire content into any log line or console
@@ -174,6 +182,35 @@ public final class StoredFile extends Serialized {
     private final Long declaredSizeBytes;
 
     /**
+     * The {@link #fileId} of the "canonical" {@code StoredFile} this instance's content is an
+     * alias for, or {@code null} if this instance owns its own content (inline or S3-backed) as
+     * every file did before per-account deduplication existed. Set only via {@link
+     * #createDedupAlias(String, String, long, FileChecksum, Instant, Instant, String)} - {@code
+     * DefaultFileFactory} resolves an alias's actual bytes by fetching the canonical file and
+     * calling {@link #withResolvedContent(byte[])}, the same "metadata-only reference until
+     * hydrated" shape {@link #objectStorageKey} already uses for S3-backed content. Mutually
+     * exclusive with {@link #contentBase64}/{@link #objectStorageKey}: an alias carries neither,
+     * since it stores no content of its own at all.
+     *
+     * <p>Deduplication is scoped to a single account (see {@code CloudUserService#uploadFile}) -
+     * an alias is only ever created against a canonical file the same account already owns, never
+     * across accounts, so renaming/moving one owner's "file" (really just this alias row) never
+     * affects another owner's, and there is exactly one owner chain to reason about when deciding
+     * whether the canonical's content can finally be freed (see {@link #dedupRefCount}).
+     */
+    private final String dedupOfFileId;
+
+    /**
+     * How many {@link #dedupOfFileId} aliases currently point at this file's content - meaningful
+     * only when {@link #isDedupAlias()} is {@code false} (an alias never itself has aliases; a
+     * chain is always flattened to point directly at the true canonical, so this never needs to
+     * be resolved transitively). {@code 0} for a file nothing aliases. Incremented/decremented by
+     * {@code CloudUserService} whenever an alias pointing at this file is created/permanently
+     * removed - see {@link #withDedupRefCount(int)}.
+     */
+    private final int dedupRefCount;
+
+    /**
      * Lazily-decoded (and decompressed) cache of {@link #contentBase64},
      * populated on first access. Transient so Gson never serializes it;
      * plain reads/writes are safe since resolving is a pure, deterministic
@@ -216,6 +253,8 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = null;
         this.directTransfer = false;
         this.declaredSizeBytes = null;
+        this.dedupOfFileId = null;
+        this.dedupRefCount = 0;
     }
 
     /**
@@ -238,6 +277,8 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
         this.declaredSizeBytes = source.declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
         this.decodedContent = source.decodedContent;
     }
 
@@ -266,6 +307,8 @@ public final class StoredFile extends Serialized {
         );
         this.directTransfer = false;
         this.declaredSizeBytes = null;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
         this.decodedContent = null;
     }
 
@@ -288,6 +331,8 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
         this.declaredSizeBytes = source.declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
         this.decodedContent = decodedContent;
     }
 
@@ -314,6 +359,30 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
         this.declaredSizeBytes = source.declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
+        this.decodedContent = source.decodedContent;
+    }
+
+    /**
+     * Copy constructor backing {@link #withDedupRefCount(int)} - carries every field over from
+     * {@code source} unchanged except {@link #dedupRefCount}.
+     */
+    private StoredFile(final StoredFile source, final int dedupRefCount) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = source.declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = dedupRefCount;
         this.decodedContent = source.decodedContent;
     }
 
@@ -348,6 +417,60 @@ public final class StoredFile extends Serialized {
         this.objectStorageKey = Asserts.requireNonNull(objectStorageKey, "@StoredFile: objectStorageKey cannot be null");
         this.directTransfer = true;
         this.declaredSizeBytes = sizeBytes;
+        this.dedupOfFileId = null;
+        this.dedupRefCount = 0;
+    }
+
+    /**
+     * Constructor for a file whose content is a per-account deduplication alias of another,
+     * already-stored file's content - never touched by this server's encrypt/compress/object-store
+     * pipeline at all, since there is nothing of its own to persist. Used only by {@code
+     * CloudUserService#uploadFile} once it has found an existing file owned by the same account
+     * with a matching {@link #checksum()}. {@code checksum}/{@code sizeBytes} are the matched
+     * file's own values, copied over unchanged (the whole point of an alias is that its content -
+     * and therefore its checksum/size - is byte-identical to {@code dedupOfFileId}'s).
+     *
+     * @param fileId this file's unique id, its {@link #primaryKey()}
+     * @param fileName the original file name; also the source of {@link #contentType()}
+     * @param sizeBytes the aliased content's size, copied from the canonical file
+     * @param checksum the aliased content's checksum, copied from the canonical file
+     * @param createdAt when this file was first "uploaded" (deduped)
+     * @param updatedAt when this file's content was last changed
+     * @param dedupOfFileId the {@link #fileId} of the canonical file whose content this instance aliases
+     * @return a fresh alias {@code StoredFile}, with no content of its own
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    @NotNull
+    public static StoredFile createDedupAlias(final String fileId, final String fileName, final long sizeBytes,
+                                               final FileChecksum checksum, final Instant createdAt, final Instant updatedAt,
+                                               final String dedupOfFileId) {
+        return new StoredFile(fileId, fileName, sizeBytes, checksum, createdAt, updatedAt,
+                Asserts.requireNonNull(dedupOfFileId, "@StoredFile.createDedupAlias: dedupOfFileId cannot be null"), true);
+    }
+
+    /**
+     * Package-visible constructor backing {@link #createDedupAlias}. Mirrors the presigned-transfer
+     * constructor's shape (no content argument) but sets {@link #dedupOfFileId} instead of {@link
+     * #objectStorageKey}/{@link #directTransfer} - the trailing {@code boolean} exists purely to
+     * give this constructor a distinct erasure from {@link #StoredFile(String, String, long,
+     * FileChecksum, Instant, Instant, String)}.
+     */
+    private StoredFile(final String fileId, final String fileName, final long sizeBytes, final FileChecksum checksum,
+                        final Instant createdAt, final Instant updatedAt, final String dedupOfFileId, final boolean dedupAlias) {
+        this.fileId = Asserts.requireNonNull(fileId, "@StoredFile: fileId cannot be null");
+        this.fileName = Asserts.requireNonNull(fileName, "@StoredFile: fileName cannot be null");
+        this.contentType = normalizeContentType(this.fileName);
+        this.contentBase64 = null;
+        this.contentCompressed = false;
+        this.checksum = Asserts.requireNonNull(checksum, "@StoredFile: checksum cannot be null");
+        this.createdAtEpochMilli = Asserts.requireNonNull(createdAt, "@StoredFile: createdAt cannot be null").toEpochMilli();
+        this.updatedAtEpochMilli = Asserts.requireNonNull(updatedAt, "@StoredFile: updatedAt cannot be null").toEpochMilli();
+        this.deletedAtEpochMillis = null;
+        this.objectStorageKey = null;
+        this.directTransfer = false;
+        this.declaredSizeBytes = sizeBytes;
+        this.dedupOfFileId = dedupOfFileId;
+        this.dedupRefCount = 0;
     }
 
     /**
@@ -457,6 +580,31 @@ public final class StoredFile extends Serialized {
     /** The key this file's content is stored under in an external object store, or {@code null} if {@link #isS3Backed()} is {@code false}. */
     public String objectStorageKey() {
         return objectStorageKey;
+    }
+
+    /** @return {@code true} if this file's content is a per-account deduplication alias of another file's content - see {@link #dedupOfFileId} */
+    public boolean isDedupAlias() {
+        return dedupOfFileId != null;
+    }
+
+    /** The {@link #fileId} of the canonical file this instance's content is an alias for, or {@code null} if {@link #isDedupAlias()} is {@code false}. */
+    public String dedupOfFileId() {
+        return dedupOfFileId;
+    }
+
+    /** How many aliases currently point at this file's content - meaningful only when {@link #isDedupAlias()} is {@code false}. */
+    public int dedupRefCount() {
+        return dedupRefCount;
+    }
+
+    /**
+     * @param newCount the new alias reference count
+     * @return a copy of this file with {@link #dedupRefCount()} changed to {@code newCount};
+     *     every other field, content included, is left unchanged
+     */
+    @NotNull
+    public StoredFile withDedupRefCount(final int newCount) {
+        return new StoredFile(this, newCount);
     }
 
     /**
@@ -648,6 +796,13 @@ public final class StoredFile extends Serialized {
                         "@StoredFile.resolveContent: file '" + fileId + "'s content lives in external object "
                                 + "s3storage (key '" + objectStorageKey + "') and has not been resolved yet - "
                                 + "DefaultFileFactory must fetch it and call withResolvedContent() first"
+                );
+            }
+            if (dedupOfFileId != null) {
+                throw new IllegalStateException(
+                        "@StoredFile.resolveContent: file '" + fileId + "' is a deduplication alias of '" + dedupOfFileId
+                                + "' and has not been resolved yet - DefaultFileFactory must fetch the canonical file's "
+                                + "content and call withResolvedContent() first"
                 );
             }
             final byte[] stored = Base64.getDecoder().decode(contentBase64);

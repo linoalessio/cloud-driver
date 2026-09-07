@@ -254,11 +254,13 @@ public final class CloudUserService implements ICloudUserService {
      */
     private void hardDeleteFile(final String authUserId, final StoredFileOwnership ownership) {
         final String storedFileId = ownership.getStoredFileId();
-        try {
-            this.fileFactory.delete(storedFileId);
-        } catch (final DatabaseClientException e) {
-            throw new RuntimeException("@CloudUserService.hardDeleteFile: failed to delete " + storedFileId, e);
-        }
+
+        // architecture/MICRO.md, section 4 (per-account deduplication). A row is either a
+        // deduplication alias of another of this account's own files (dedupCanonicalFileId set) or
+        // "the payer" carrying real content of its own - see deleteDeduplicatedFile's own Javadoc
+        // for how content and usage accounting are kept correct across either shape.
+        this.deleteDeduplicatedFile(authUserId, ownership);
+
         try {
             this.dataFactory.delete(StoredFileOwnership.compositeKey(authUserId, storedFileId), StoredFileOwnership.class);
         } catch (final DatabaseClientException e) {
@@ -271,8 +273,108 @@ public final class CloudUserService implements ICloudUserService {
         // directly on a possibly still-live file (bypassing the trash entirely), so this must not
         // assume deleteFile's own revocation already ran.
         this.revokeAllFileShares(storedFileId);
+    }
+
+    /**
+     * Removes {@code ownership}'s underlying {@link StoredFile} content, if this is genuinely the
+     * moment it becomes unreferenced by {@code authUserId}'s own account - the deduplication-aware
+     * half of {@link #hardDeleteFile}, kept separate since it's substantial enough to warrant its
+     * own Javadoc. Three cases:
+     *
+     * <ul>
+     *   <li><b>{@code ownership} is a deduplication alias</b> ({@link
+     *       StoredFileOwnership#getDedupCanonicalFileId()} non-{@code null}) - its own row carries
+     *       no content, so it's always safe to remove; the canonical file's {@link
+     *       StoredFile#dedupRefCount()} is decremented, and if that reaches zero <em>and</em> the
+     *       canonical no longer has a live ownership row of its own either (see {@link
+     *       #resolveOwnerAuthUserId}) - i.e. this was genuinely the last reference to that content
+     *       left anywhere in the account - the canonical's content is finally freed and only then
+     *       is usage decremented (see the next case for why usage was never charged to the alias
+     *       itself).
+     *   <li><b>{@code ownership} is the canonical (payer) with active aliases</b> ({@link
+     *       StoredFile#dedupRefCount()} {@code > 0}) - its content must survive for those aliases,
+     *       so neither the {@link StoredFile} row nor the usage total is touched here; usage is
+     *       decremented later, whenever the last alias referencing it is itself removed (the case
+     *       above).
+     *   <li><b>Otherwise</b> (a plain file, or a canonical with no remaining aliases) - exactly the
+     *       delete/decrement sequence this method always performed before deduplication existed.
+     * </ul>
+     *
+     * @param authUserId the owning user, whose usage total may be decremented
+     * @param ownership the ownership row being permanently removed
+     */
+    private void deleteDeduplicatedFile(final String authUserId, final StoredFileOwnership ownership) {
+        final String storedFileId = ownership.getStoredFileId();
+
+        if (ownership.getDedupCanonicalFileId() != null) {
+            final String canonicalFileId = ownership.getDedupCanonicalFileId();
+            try {
+                this.fileFactory.delete(storedFileId);
+            } catch (final DatabaseClientException e) {
+                throw new RuntimeException("@CloudUserService.deleteDeduplicatedFile: failed to delete alias " + storedFileId, e);
+            }
+            this.decrementDedupRefCountAndMaybeFree(authUserId, canonicalFileId, ownership);
+            return;
+        }
+
+        final int refCount = this.findStoredFileMetadata(storedFileId).map(StoredFile::dedupRefCount).orElse(0);
+        if (refCount > 0) {
+            // Other files this same account owns still alias this content - keep it alive. Only
+            // this ownership row is removed (by hardDeleteFile, right after this method returns);
+            // usage stays charged until the last remaining alias is itself removed.
+            return;
+        }
+
+        try {
+            this.fileFactory.delete(storedFileId);
+        } catch (final DatabaseClientException e) {
+            throw new RuntimeException("@CloudUserService.deleteDeduplicatedFile: failed to delete " + storedFileId, e);
+        }
         if (ownership.hasMetadata()) {
             this.updateCloudUserBytesUsage(authUserId, -ownership.getSizeBytes());
+        }
+    }
+
+    /**
+     * Decrements {@code canonicalFileId}'s {@link StoredFile#dedupRefCount()} by one (a no-op if
+     * the canonical no longer exists) and, only if that reaches zero <em>and</em> no live ownership
+     * row still points directly at {@code canonicalFileId} (its own original upload was already
+     * removed earlier - see {@link #deleteDeduplicatedFile}'s middle case), actually frees its
+     * content and decrements {@code authUserId}'s usage total by {@code aliasOwnership}'s own
+     * (byte-identical) {@link StoredFileOwnership#getSizeBytes()} - the one point in this whole
+     * scheme usage is ever decremented on the alias side, ensuring it happens exactly once,
+     * whichever deletion (the canonical's own, or the last alias's) turns out to be the one that
+     * actually frees the bytes.
+     *
+     * @param authUserId the account whose usage total to adjust if the content is actually freed
+     * @param canonicalFileId the canonical file whose reference count to decrement
+     * @param aliasOwnership the alias ownership row being removed, whose size backs the usage decrement
+     */
+    private void decrementDedupRefCountAndMaybeFree(final String authUserId, final String canonicalFileId,
+                                                      final StoredFileOwnership aliasOwnership) {
+        final Optional<StoredFile> canonical = this.findStoredFileMetadata(canonicalFileId);
+        if (canonical.isEmpty()) {
+            return;
+        }
+
+        final int newCount = Math.max(0, canonical.get().dedupRefCount() - 1);
+        try {
+            this.dataFactory.update(canonical.get().withDedupRefCount(newCount));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.decrementDedupRefCountAndMaybeFree: failed to persist refcount for " + canonicalFileId, e);
+        }
+
+        if (newCount == 0 && this.resolveOwnerAuthUserId(canonicalFileId).isEmpty()) {
+            try {
+                this.fileFactory.delete(canonicalFileId);
+            } catch (final DatabaseClientException e) {
+                throw new RuntimeException(
+                        "@CloudUserService.decrementDedupRefCountAndMaybeFree: failed to delete orphaned canonical " + canonicalFileId, e);
+            }
+            if (aliasOwnership.hasMetadata()) {
+                this.updateCloudUserBytesUsage(authUserId, -aliasOwnership.getSizeBytes());
+            }
         }
     }
 
@@ -537,37 +639,131 @@ public final class CloudUserService implements ICloudUserService {
     public StoredFile uploadFile(@NonNull final String authUserId, @NonNull final String fileName, final byte[] content,
                                   @Nullable final String folderId) {
 
+        // architecture/MICRO.md, section 4 (per-account deduplication, confirmed with Lino as
+        // per-account only - never across accounts). Computed up front (cheap - a single SHA-256
+        // pass, unlike the StoredFile constructor below, which also DEFLATE-compresses and
+        // base64-encodes) so a match can skip both the quota check and the real upload entirely.
+        final FileChecksum checksum = FileChecksum.of(HashAlgorithm.SHA_256, content);
+        final Optional<StoredFileOwnership> dedupCandidate = this.findDedupCandidate(authUserId, checksum);
+
         final ICloudUser cloudUser = this.getOrCreate(authUserId);
-        // Checked before requireOwnedFolder/constructing the StoredFile (which DEFLATE-compresses
-        // and base64-encodes content up front) - no reason to pay for either on a rejected upload.
-        if (cloudUser.isUploadLimitReached(content.length)) {
-            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
-            throw new UploadQuotaExceededException(
-                    authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
+        if (dedupCandidate.isEmpty()) {
+            // Checked before requireOwnedFolder/constructing the StoredFile (which DEFLATE-compresses
+            // and base64-encodes content up front) - no reason to pay for either on a rejected upload.
+            if (cloudUser.isUploadLimitReached(content.length)) {
+                recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+                throw new UploadQuotaExceededException(
+                        authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
+            }
         }
         // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
-        final StoredFile storedFile = new StoredFile(UUID.randomUUID().toString(), fileName, content);
-
-        try {
-            this.fileFactory.upload(storedFile);
-        } catch (final DatabaseClientException | KeyWrapException e) {
-            throw new RuntimeException("@CloudUserService.uploadFile: failed to upload '" + fileName + "'", e);
+        final StoredFile storedFile;
+        final String dedupCanonicalFileId;
+        if (dedupCandidate.isPresent()) {
+            dedupCanonicalFileId = dedupCandidate.get().resolvedDedupCanonicalFileId();
+            storedFile = StoredFile.createDedupAlias(
+                    UUID.randomUUID().toString(), fileName, content.length, checksum, Instant.now(), Instant.now(), dedupCanonicalFileId);
+            this.incrementDedupRefCount(dedupCanonicalFileId);
+            try {
+                // No content of its own to persist through fileFactory.upload - a plain metadata
+                // insert, same reasoning CloudUserService#completePresignedUpload's register call has.
+                this.dataFactory.register(storedFile);
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.uploadFile: failed to register deduplicated '" + fileName + "'", e);
+            }
+        } else {
+            dedupCanonicalFileId = null;
+            storedFile = new StoredFile(UUID.randomUUID().toString(), fileName, content);
+            try {
+                this.fileFactory.upload(storedFile);
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.uploadFile: failed to upload '" + fileName + "'", e);
+            }
         }
 
         try {
-            this.dataFactory.register(StoredFileOwnership.of(authUserId, storedFile, folderId));
+            this.dataFactory.register(StoredFileOwnership.of(authUserId, storedFile, folderId, dedupCanonicalFileId));
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException(
                     "@CloudUserService.uploadFile: failed to track ownership of " + storedFile.fileId() + " for " + authUserId, e
             );
         }
 
-        this.updateCloudUserBytesUsage(authUserId, content.length);
+        if (dedupCandidate.isEmpty()) {
+            // A deduplicated upload consumes no new physical storage - see this method's own dedup
+            // branch above and hardDeleteFile's matching decrement-on-actual-free logic.
+            this.updateCloudUserBytesUsage(authUserId, content.length);
+        }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
 
         return storedFile;
+    }
+
+    /**
+     * Looks for a file {@code authUserId} already owns (live, not trashed) whose content matches
+     * {@code checksum} - the per-account deduplication candidate {@link #uploadFile(String, String,
+     * byte[], String)} aliases a fresh upload against instead of storing a second copy of the same
+     * bytes. Reuses {@link #ownedFileOwnerships(String)}'s already-accepted full-scan trade-off (see
+     * that method's own Javadoc) - this adds one more scan per upload, on top of whatever else a
+     * caller already pays for uploading a file.
+     *
+     * <p>Scoped to a single account, deliberately - see {@code architecture/MICRO.md} section 4's
+     * own "Open Decisions" write-up on the cross-account blob-sharing privacy tradeoff this
+     * sidesteps entirely by never matching against another account's files.
+     *
+     * @param authUserId the uploading user's id - only their own files are considered
+     * @param checksum the freshly-computed checksum of the content being uploaded
+     * @return the matching {@link StoredFileOwnership} row, if any
+     */
+    @NotNull
+    private Optional<StoredFileOwnership> findDedupCandidate(@NotNull final String authUserId, @NotNull final FileChecksum checksum) {
+        return this.ownedFileOwnerships(authUserId).stream()
+                .filter(StoredFileOwnership::hasChecksum)
+                .filter(ownership -> ownership.getChecksumAlgorithm().equals(checksum.algorithm().name())
+                        && ownership.getChecksumHex().equalsIgnoreCase(checksum.hexDigest()))
+                .findFirst();
+    }
+
+    /**
+     * Increments {@code canonicalFileId}'s {@link StoredFile#dedupRefCount()} by one and persists
+     * the change - called once for every alias {@link #uploadFile(String, String, byte[], String)}
+     * creates against it. A plain read-modify-write, not compare-and-swap - like {@link
+     * #updateCloudUserBytesUsage}, this codebase has no atomic increment primitive to reach for
+     * here; two uploads deduplicating against the exact same canonical file at the same instant is
+     * a narrow, accepted race, consistent with every other read-modify-write update in this class.
+     *
+     * @param canonicalFileId the canonical file whose reference count to increment
+     * @throws IllegalStateException if {@code canonicalFileId} no longer exists
+     */
+    private void incrementDedupRefCount(@NotNull final String canonicalFileId) {
+        final StoredFile canonical = this.findStoredFileMetadata(canonicalFileId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "@CloudUserService.incrementDedupRefCount: canonical file " + canonicalFileId + " no longer exists"));
+        try {
+            this.dataFactory.update(canonical.withDedupRefCount(canonical.dedupRefCount() + 1));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.incrementDedupRefCount: failed to persist refcount for " + canonicalFileId, e);
+        }
+    }
+
+    /**
+     * Looks up {@code storedFileId}'s raw {@link StoredFile} row directly via {@link #dataFactory}
+     * - not {@link #fileFactory}, which would also resolve/verify full content (S3 fetch,
+     * deduplication-alias resolution, checksum verification) this method never needs, only ever
+     * reading {@link StoredFile#isDedupAlias()}/{@link StoredFile#dedupRefCount()}.
+     *
+     * @param storedFileId the file to look up
+     * @return the raw entity, or {@link Optional#empty()} if it no longer exists
+     */
+    @NotNull
+    private Optional<StoredFile> findStoredFileMetadata(@NotNull final String storedFileId) {
+        try {
+            return this.dataFactory.findById(storedFileId, StoredFile.class);
+        } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.findStoredFileMetadata: failed to look up " + storedFileId, e);
+        }
     }
 
     /** Default lifetime of a presigned upload/download URL - long enough for a slow connection on a large file, short enough that a leaked URL doesn't stay usable indefinitely. */
@@ -1516,6 +1712,11 @@ public final class CloudUserService implements ICloudUserService {
      * @param newContent the file's new raw bytes
      * @return a {@link StoredFileSummary} of the updated file
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws IllegalStateException if {@code storedFileId} is a per-account deduplication alias
+     *     (architecture/MICRO.md section 4) or is itself aliased by another of the account's own
+     *     files - overwriting either would silently corrupt content another "file" still relies on;
+     *     duplicate the file first (breaking the alias relationship) if it genuinely needs its own,
+     *     independent content
      * @throws UploadQuotaExceededException if the size increase would exceed {@code authUserId}'s upload quota
      */
     @NonNull
@@ -1531,6 +1732,14 @@ public final class CloudUserService implements ICloudUserService {
                             "@CloudUserService.replaceFileContent: owned file not found: " + storedFileId));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.replaceFileContent: failed to look up " + storedFileId, e);
+        }
+
+        // architecture/MICRO.md, section 4 (per-account deduplication) - see this method's own
+        // @throws Javadoc above for why neither shape is safe to overwrite in place.
+        if (existing.isDedupAlias() || existing.dedupRefCount() > 0) {
+            throw new IllegalStateException(
+                    "@CloudUserService.replaceFileContent: " + storedFileId + " shares content with another file "
+                            + "via per-account deduplication - duplicate it first before replacing its content");
         }
 
         final long delta = newContent.length - existing.sizeBytes();

@@ -312,12 +312,12 @@ public final class DefaultFileFactory extends FileFactory {
         return this.connectivityChecker;
     }
 
-    /** Fetches via {@link #dataFactory}, resolves S3-backed content if configured (see {@link #resolveFromObjectStorage}), and checks the result's checksum. */
+    /** Fetches via {@link #dataFactory}, resolves deduplicated/S3-backed content if either applies (see {@link #resolveContent}), and checks the result's checksum. */
     @NotNull
     @Override
     public StoredFile download(@NotNull final String fileId)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
-        return verifyIntegrity(resolveFromObjectStorage(this.dataFactory.fetch(fileId, StoredFile.class)));
+        return verifyIntegrity(resolveContent(this.dataFactory.fetch(fileId, StoredFile.class)));
     }
 
     /** Fetches via {@link #dataFactory} and resolves/checks every result concurrently - see {@link #verifyAll}. */
@@ -328,14 +328,14 @@ public final class DefaultFileFactory extends FileFactory {
         return verifyAll(this.dataFactory.fetch(fileIds, StoredFile.class));
     }
 
-    /** Looks up via {@link #dataFactory}, resolves S3-backed content if configured, and checks the result's checksum, if present. */
+    /** Looks up via {@link #dataFactory}, resolves deduplicated/S3-backed content if either applies, and checks the result's checksum, if present. */
     @NotNull
     @Override
     public Optional<StoredFile> findById(@NotNull final String fileId)
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
         final Optional<StoredFile> file = this.dataFactory.findById(fileId, StoredFile.class);
         if (file.isPresent()) {
-            return Optional.of(verifyIntegrity(resolveFromObjectStorage(file.get())));
+            return Optional.of(verifyIntegrity(resolveContent(file.get())));
         }
         return file;
     }
@@ -433,14 +433,54 @@ public final class DefaultFileFactory extends FileFactory {
     }
 
     /**
-     * Same as {@link #resolveFromObjectStorage(StoredFile)}, but rethrows a checked failure
-     * wrapped in a {@link CompletionException} so it can run inside a {@link CompletableFuture}
-     * task by {@link #verifyAll}.
+     * Resolves {@code file}'s content end to end - first as a per-account deduplication alias (see
+     * {@link #resolveDedupAlias}, architecture/MICRO.md section 4), then as S3-backed content (see
+     * {@link #resolveFromObjectStorage}) - either step is a no-op if it doesn't apply to {@code
+     * file}. A file is never both at once (an alias carries no {@link StoredFile#objectStorageKey()}
+     * of its own), but resolving the alias first is what lets {@link #resolveFromObjectStorage}'s
+     * own {@code isS3Backed()} check on the *canonical* file's content still apply correctly if the
+     * canonical itself happens to be S3-backed.
+     *
+     * @param file the file, as read back from {@link #dataFactory} - possibly a dedup alias and/or S3-backed
+     * @return {@code file} itself if neither applies, otherwise a hydrated copy with content resolved
      */
-    private StoredFile resolveFromObjectStorageUnchecked(final StoredFile file) {
+    private StoredFile resolveContent(final StoredFile file)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        return resolveFromObjectStorage(resolveDedupAlias(file));
+    }
+
+    /**
+     * Resolves {@code file}'s content from the canonical file it aliases (architecture/MICRO.md
+     * section 4) if {@link StoredFile#isDedupAlias()}, otherwise returns it unchanged. The canonical
+     * file's own content is resolved the same way any other read of it would be ({@link
+     * #resolveFromObjectStorage}, in case the canonical itself is S3-backed) before being handed to
+     * {@link StoredFile#withResolvedContent(byte[])} - a dedup alias is never itself chained to
+     * another alias (see {@link StoredFile#dedupOfFileId()}'s own Javadoc), so this never recurses.
+     *
+     * @param file the file, as read back from {@link #dataFactory} - possibly a deduplication alias
+     * @return {@code file} itself if not an alias, otherwise a hydrated copy with content resolved
+     * @throws DatabaseClientException if fetching the canonical file fails
+     * @throws KeyWrapException if unwrapping the canonical content's data-encryption key fails
+     * @throws AuthenticationFailedException if the canonical content's authentication tag verification fails
+     */
+    private StoredFile resolveDedupAlias(final StoredFile file)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        if (!file.isDedupAlias()) {
+            return file;
+        }
+        final StoredFile canonical = resolveFromObjectStorage(this.dataFactory.fetch(file.dedupOfFileId(), StoredFile.class));
+        return file.withResolvedContent(canonical.content());
+    }
+
+    /**
+     * Same as {@link #resolveContent(StoredFile)}, but rethrows a checked failure wrapped in a
+     * {@link CompletionException} so it can run inside a {@link CompletableFuture} task by {@link
+     * #verifyAll}.
+     */
+    private StoredFile resolveContentUnchecked(final StoredFile file) {
         try {
-            return resolveFromObjectStorage(file);
-        } catch (final KeyWrapException | AuthenticationFailedException e) {
+            return resolveContent(file);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new CompletionException(e);
         }
     }
@@ -483,7 +523,7 @@ public final class DefaultFileFactory extends FileFactory {
      * {@code StatisticsCommand} was separately fixed to stop calling this path twice per invocation.
      */
     private List<StoredFile> verifyAll(final List<StoredFile> files)
-            throws FileIntegrityException, KeyWrapException, AuthenticationFailedException {
+            throws FileIntegrityException, KeyWrapException, AuthenticationFailedException, DatabaseClientException {
         final Semaphore concurrencyLimit = new Semaphore(MAX_CONCURRENT_VERIFICATIONS);
         final List<CompletableFuture<StoredFile>> resolutions = files.stream()
                 .map(file -> MultiTaskingFactory.getInstance().supplyAsync(() -> resolveAndVerifyBounded(file, concurrencyLimit)))
@@ -493,8 +533,8 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Acquires {@code concurrencyLimit} before resolving-and-verifying {@code file} (via {@link
-     * #resolveFromObjectStorageUnchecked}/{@link #verifyIntegrityUnchecked}), releasing it
-     * afterward regardless of outcome - see {@link #verifyAll}'s own Javadoc.
+     * #resolveContentUnchecked}/{@link #verifyIntegrityUnchecked}), releasing it afterward
+     * regardless of outcome - see {@link #verifyAll}'s own Javadoc.
      *
      * @throws CompletionException wrapping an {@link InterruptedException} if interrupted while waiting for a permit
      */
@@ -506,7 +546,7 @@ public final class DefaultFileFactory extends FileFactory {
             throw new CompletionException(e);
         }
         try {
-            return verifyIntegrityUnchecked(resolveFromObjectStorageUnchecked(file));
+            return verifyIntegrityUnchecked(resolveContentUnchecked(file));
         } finally {
             concurrencyLimit.release();
         }
@@ -553,11 +593,12 @@ public final class DefaultFileFactory extends FileFactory {
      * @throws FileIntegrityException if any task failed a checksum check
      * @throws KeyWrapException if any task failed to unwrap a content data-encryption key
      * @throws AuthenticationFailedException if any task failed content authentication tag verification
+     * @throws DatabaseClientException if any task failed to fetch a deduplication alias's canonical file
      * @throws RuntimeException the original unchecked cause, if a task failed with something else
      * @throws IllegalStateException if a task failed with a non-{@link RuntimeException} cause
      */
     private static List<StoredFile> joinAllVerifications(final List<CompletableFuture<StoredFile>> futures)
-            throws FileIntegrityException, KeyWrapException, AuthenticationFailedException {
+            throws FileIntegrityException, KeyWrapException, AuthenticationFailedException, DatabaseClientException {
         try {
             return futures.stream().map(CompletableFuture::join).toList();
         } catch (final CompletionException e) {
@@ -570,6 +611,9 @@ public final class DefaultFileFactory extends FileFactory {
             }
             if (cause instanceof AuthenticationFailedException authenticationFailedException) {
                 throw authenticationFailedException;
+            }
+            if (cause instanceof DatabaseClientException databaseClientException) {
+                throw databaseClientException;
             }
             if (cause instanceof RuntimeException runtimeException) {
                 throw runtimeException;

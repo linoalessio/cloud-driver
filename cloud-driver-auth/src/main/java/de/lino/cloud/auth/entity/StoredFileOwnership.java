@@ -2,6 +2,7 @@ package de.lino.cloud.auth.entity;
 
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
@@ -93,6 +94,35 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     private final Long deletedAtEpochMillis;
 
     /**
+     * {@code storedFileId}'s {@link StoredFile#checksum()} algorithm name (e.g. {@code "SHA_256"}),
+     * captured at upload time alongside {@link #fileName} - what lets {@link
+     * de.lino.cloud.auth.CloudUserService#uploadFile} find a per-account deduplication candidate
+     * (see {@code architecture/MICRO.md}, section 4) straight off this already-scanned row, with no
+     * extra fetch of the full {@link StoredFile}. {@code null} for a row written before per-account
+     * deduplication existed, or one that predates {@link #fileName} itself - see {@link
+     * #hasChecksum()}.
+     */
+    @Nullable
+    private final String checksumAlgorithm;
+
+    /** {@code storedFileId}'s {@link StoredFile#checksum()} hex digest - see {@link #checksumAlgorithm}'s own Javadoc. */
+    @Nullable
+    private final String checksumHex;
+
+    /**
+     * The {@link StoredFile#fileId()} of the true canonical file {@code storedFileId}'s content
+     * ultimately resolves to - equal to {@link #storedFileId} itself for a file that isn't a
+     * deduplication alias (see {@link StoredFile#dedupOfFileId()}). Cached here (rather than
+     * resolved by fetching {@code storedFileId} itself) so a later upload can dedupe directly
+     * against the true canonical without ever aliasing an alias - a chain is always flattened to
+     * one hop. {@code null} only for a row written before per-account deduplication existed; treat
+     * a {@code null} value as "equal to {@link #storedFileId}", the same "absent = default" reading
+     * every other nullable field added later to this class already uses.
+     */
+    @Nullable
+    private final String dedupCanonicalFileId;
+
+    /**
      * Same as {@link #StoredFileOwnership(String, String, String)}, placing the file at the root
      * ({@code folderId} {@code null}).
      *
@@ -162,6 +192,35 @@ public final class StoredFileOwnership extends Serialized implements Owned {
                                 @Nullable final String contentType, final long sizeBytes,
                                 final long createdAtEpochMilli, final long updatedAtEpochMilli,
                                 @Nullable final Long deletedAtEpochMillis) {
+        this(authUserId, storedFileId, folderId, fileName, contentType, sizeBytes, createdAtEpochMilli,
+                updatedAtEpochMilli, deletedAtEpochMillis, null, null, null);
+    }
+
+    /**
+     * Full constructor, additionally carrying {@link #checksumAlgorithm}/{@link #checksumHex}/
+     * {@link #dedupCanonicalFileId} - the actual field-setting constructor every other constructor
+     * above delegates to. Prefer {@link #of(String, StoredFile, String)} when a {@link StoredFile}
+     * instance is directly in hand.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the plain {@link StoredFile#fileId()} being tracked as owned
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     * @param fileName {@code storedFileId}'s {@link StoredFile#fileName()}, or {@code null} if unknown
+     * @param contentType {@code storedFileId}'s {@link StoredFile#contentType()}, or {@code null} if unknown
+     * @param sizeBytes {@code storedFileId}'s {@link StoredFile#sizeBytes()}
+     * @param createdAtEpochMilli {@code storedFileId}'s {@link StoredFile#createdAt()}, as epoch millis
+     * @param updatedAtEpochMilli {@code storedFileId}'s {@link StoredFile#updatedAt()}, as epoch millis
+     * @param deletedAtEpochMillis when this row was soft-deleted, or {@code null} if not currently in the trash
+     * @param checksumAlgorithm {@code storedFileId}'s {@link StoredFile#checksum()} algorithm name, or {@code null} if unknown
+     * @param checksumHex {@code storedFileId}'s {@link StoredFile#checksum()} hex digest, or {@code null} if unknown
+     * @param dedupCanonicalFileId the true canonical file id {@code storedFileId}'s content resolves to, or {@code null} if unknown/not deduped
+     */
+    public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
+                                @Nullable final String folderId, @Nullable final String fileName,
+                                @Nullable final String contentType, final long sizeBytes,
+                                final long createdAtEpochMilli, final long updatedAtEpochMilli,
+                                @Nullable final Long deletedAtEpochMillis, @Nullable final String checksumAlgorithm,
+                                @Nullable final String checksumHex, @Nullable final String dedupCanonicalFileId) {
         this.authUserId = Objects.requireNonNull(authUserId, "@StoredFileOwnership.init: authUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@StoredFileOwnership.init: storedFileId cannot be null");
         this.folderId = folderId;
@@ -171,11 +230,14 @@ public final class StoredFileOwnership extends Serialized implements Owned {
         this.createdAtEpochMilli = createdAtEpochMilli;
         this.updatedAtEpochMilli = updatedAtEpochMilli;
         this.deletedAtEpochMillis = deletedAtEpochMillis;
+        this.checksumAlgorithm = checksumAlgorithm;
+        this.checksumHex = checksumHex;
+        this.dedupCanonicalFileId = dedupCanonicalFileId;
     }
 
     /**
-     * Same as the full constructor, reading every metadata field directly off {@code file} instead
-     * of requiring the caller to unpack it first.
+     * Same as {@link #of(String, StoredFile, String, String)}, leaving {@code dedupCanonicalFileId}
+     * unset - {@code file} isn't a deduplication alias of anything, so it is its own canonical file.
      *
      * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param file the file being tracked as owned - {@link StoredFile#fileId()} becomes {@link #storedFileId}
@@ -184,8 +246,26 @@ public final class StoredFileOwnership extends Serialized implements Owned {
      */
     @NotNull
     public static StoredFileOwnership of(@NotNull final String authUserId, @NotNull final StoredFile file, @Nullable final String folderId) {
+        return of(authUserId, file, folderId, null);
+    }
+
+    /**
+     * Same as the full constructor, reading every metadata/checksum field directly off {@code file}
+     * instead of requiring the caller to unpack it first.
+     *
+     * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param file the file being tracked as owned - {@link StoredFile#fileId()} becomes {@link #storedFileId}
+     * @param folderId the {@link Folder#getFolderId()} this file currently sits in, or {@code null} for the root
+     * @param dedupCanonicalFileId the true canonical file id {@code file}'s content resolves to, or
+     *     {@code null} if {@code file} isn't a deduplication alias of anything (its own id is its canonical id)
+     * @return a fresh {@code StoredFileOwnership} row for {@code file}
+     */
+    @NotNull
+    public static StoredFileOwnership of(@NotNull final String authUserId, @NotNull final StoredFile file,
+                                          @Nullable final String folderId, @Nullable final String dedupCanonicalFileId) {
         return new StoredFileOwnership(authUserId, file.fileId(), folderId, file.fileName(), file.contentType(),
-                file.sizeBytes(), file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli());
+                file.sizeBytes(), file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), null,
+                file.checksum().algorithm().name(), file.checksum().hexDigest(), dedupCanonicalFileId);
     }
 
     /**
@@ -195,7 +275,8 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     @NotNull
     public StoredFileOwnership movedTo(@Nullable final String newFolderId) {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId, this.fileName, this.contentType,
-                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, this.deletedAtEpochMillis);
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, this.deletedAtEpochMillis,
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
     }
 
     /** @return {@code true} if this file is currently soft-deleted (in the trash) from {@link #authUserId}'s point of view */
@@ -207,14 +288,16 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     @NotNull
     public StoredFileOwnership markedDeleted() {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
-                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, System.currentTimeMillis());
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, System.currentTimeMillis(),
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
     }
 
     /** @return a copy of this row, restored out of the trash - every other field carried over unchanged */
     @NotNull
     public StoredFileOwnership restored() {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
-                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, null);
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, null,
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
     }
 
     /**
@@ -228,15 +311,40 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     }
 
     /**
+     * @return {@code true} once this row carries {@link #checksumAlgorithm}/{@link #checksumHex} -
+     * {@code false} for a row written before per-account deduplication existed, in which case it is
+     * simply never considered a deduplication candidate ({@link
+     * de.lino.cloud.auth.CloudUserService#uploadFile} skips it rather than fetching the full {@link
+     * StoredFile} just to backfill this).
+     */
+    public boolean hasChecksum() {
+        return this.checksumHex != null;
+    }
+
+    /**
+     * @return the {@link StoredFile#fileId()} of the true canonical file {@link #storedFileId}'s
+     * content resolves to - {@link #dedupCanonicalFileId} if set, otherwise {@link #storedFileId}
+     * itself (a row that isn't a deduplication alias is its own canonical file).
+     */
+    @NotNull
+    public String resolvedDedupCanonicalFileId() {
+        return this.dedupCanonicalFileId != null ? this.dedupCanonicalFileId : this.storedFileId;
+    }
+
+    /**
      * @param file the full {@link StoredFile} this row tracks ownership of ({@link
      * StoredFile#fileId()} must equal {@link #storedFileId})
-     * @return a copy of this row with every metadata field populated from {@code file}
+     * @return a copy of this row with every metadata/checksum field populated from {@code file};
+     * {@link #dedupCanonicalFileId} is carried over unchanged, since re-deriving it from {@code
+     * file} alone (a plain {@link StoredFile}, with no knowledge of this row's own dedup history)
+     * isn't possible
      */
     @NotNull
     public StoredFileOwnership withMetadata(@NotNull final StoredFile file) {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId,
                 file.fileName(), file.contentType(), file.sizeBytes(),
-                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), this.deletedAtEpochMillis);
+                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), this.deletedAtEpochMillis,
+                file.checksum().algorithm().name(), file.checksum().hexDigest(), this.dedupCanonicalFileId);
     }
 
     /**
