@@ -398,6 +398,38 @@ public interface ICloudUserService {
     StoredFileSummary replaceFileContent(@NotNull String authUserId, @NotNull String storedFileId, byte[] newContent);
 
     /**
+     * Same as {@link #replaceFileContent(String, String, byte[])}, with an optimistic-concurrency
+     * precondition - section 10 (Sync, {@code architecture/MICRO.md}). {@link #replaceFileContent(String,
+     * String, byte[])} itself delegates here with {@code expectedUpdatedAtEpochMillis} {@code null}
+     * (unconditional overwrite, unchanged behavior for every existing caller).
+     *
+     * <p>If {@code expectedUpdatedAtEpochMillis} is non-{@code null} and doesn't match {@code
+     * storedFileId}'s <em>current</em> {@link StoredFile#updatedAt()} (as epoch millis) - meaning
+     * some other write reached the server after the caller last read this file - the overwrite is
+     * refused and a {@link de.lino.cloud.api.file.exception.SyncConflictException} is thrown
+     * instead: the canonical file is left completely untouched, and {@code newContent} is
+     * persisted as a new "conflicted copy" file in the same folder (the same Drive/Dropbox-style
+     * UX the handoff doc names explicitly) - "last write wins" for the canonical name, but nothing
+     * is ever silently discarded.
+     *
+     * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param storedFileId the {@link StoredFile#fileId()} to overwrite
+     * @param newContent the file's new raw bytes
+     * @param expectedUpdatedAtEpochMillis the {@link StoredFile#updatedAt()} (epoch millis) the
+     *     caller last observed, or {@code null} for an unconditional overwrite
+     * @return a {@link StoredFileSummary} of the updated file, folder placement included (unchanged by this call)
+     * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the size increase
+     *     (new content larger than the file's current size) would exceed {@code authUserId}'s
+     *     {@link ICloudUser#getMaxBytesToUpload()} upload quota
+     * @throws de.lino.cloud.api.file.exception.SyncConflictException if {@code
+     *     expectedUpdatedAtEpochMillis} is stale - see this method's own Javadoc above
+     */
+    @NotNull
+    StoredFileSummary replaceFileContent(@NotNull String authUserId, @NotNull String storedFileId, byte[] newContent,
+                                          @org.jetbrains.annotations.Nullable Long expectedUpdatedAtEpochMillis);
+
+    /**
      * @return every currently registered {@link ICloudUser} record
      */
     @NonNull

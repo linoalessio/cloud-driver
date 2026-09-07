@@ -18,6 +18,7 @@ import de.lino.cloud.api.file.TrashedFolderSummary;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.FileScanBlockedException;
 import de.lino.cloud.api.file.exception.PublicShareLinkInvalidException;
+import de.lino.cloud.api.file.exception.SyncConflictException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.file.PublicFileLinkSummary;
@@ -57,6 +58,8 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -1913,6 +1916,16 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId, final byte[] newContent) {
+        return this.replaceFileContent(authUserId, storedFileId, newContent, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @NonNull
+    @Override
+    public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId,
+                                                 final byte[] newContent, @Nullable final Long expectedUpdatedAtEpochMillis) {
         // Item 9 (sharing) + architecture/MICRO.md section 6 (EDIT-level shares): the owner, or a
         // grantee holding a direct, non-expired SharePermission.EDIT grant on this exact file, may
         // overwrite its content - see requireEditableFileAccess's own Javadoc. The returned
@@ -1929,6 +1942,23 @@ public final class CloudUserService implements ICloudUserService {
                             "@CloudUserService.replaceFileContent: owned file not found: " + storedFileId));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             throw new RuntimeException("@CloudUserService.replaceFileContent: failed to look up " + storedFileId, e);
+        }
+
+        // architecture/MICRO.md, section 10 (Sync) - optimistic concurrency. Checked before the
+        // dedup guard/quota check/version capture below, since a detected conflict skips all of
+        // that entirely: the canonical file is never touched, only a new "conflicted copy" is
+        // created (via the ordinary uploadFile path, in the same folder). Uploaded under
+        // ownerAuthUserId, not the calling authUserId - the same "charged to whoever actually
+        // stores the bytes" reasoning the quota check below already applies, and the only way this
+        // works at all for an EDIT-grantee caller (who doesn't own, and therefore couldn't upload
+        // into, ownership.getFolderId() themselves) - the conflicted copy lands in the file
+        // owner's own account, alongside the original, where they can reconcile it.
+        if (expectedUpdatedAtEpochMillis != null && existing.updatedAt().toEpochMilli() != expectedUpdatedAtEpochMillis) {
+            final String conflictName = conflictedCopyFileName(existing.fileName());
+            final StoredFile conflictFile = this.uploadFile(ownerAuthUserId, conflictName, newContent, ownership.getFolderId());
+            throw new SyncConflictException(new StoredFileSummary(conflictFile.fileId(), conflictFile.fileName(),
+                    conflictFile.contentType(), conflictFile.sizeBytes(), conflictFile.createdAt().toEpochMilli(),
+                    conflictFile.updatedAt().toEpochMilli(), ownership.getFolderId()));
         }
 
         // architecture/MICRO.md, section 4 (per-account deduplication) - see this method's own
@@ -1977,6 +2007,27 @@ public final class CloudUserService implements ICloudUserService {
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
                 replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId());
+    }
+
+    /** {@code yyyy-MM-dd HHmmss}, system default zone - matches this codebase's own client-side date-formatting convention (e.g. {@code cloud-driver-platforms-desktop}'s "Restore all"/"Deleted on" timestamps), just applied server-side for {@link #conflictedCopyFileName}. */
+    private static final DateTimeFormatter CONFLICTED_COPY_TIMESTAMP_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HHmmss").withZone(ZoneId.systemDefault());
+
+    /**
+     * Builds a "conflicted copy" file name from {@code originalFileName} - {@code "name (conflicted
+     * copy yyyy-MM-dd HHmmss).ext"}, inserted before the extension (matching {@link
+     * StoredFile}'s own extension-inference convention) so the copy still carries a recognizable
+     * type. No collision-avoidance beyond the timestamp itself - a second conflict on the exact
+     * same file within the same second is vanishingly unlikely, and {@link #uploadFile} places
+     * files by id, not name, so an exact name collision wouldn't fail regardless.
+     */
+    private static String conflictedCopyFileName(final String originalFileName) {
+        final int dotIndex = originalFileName.lastIndexOf('.');
+        final String suffix = " (conflicted copy " + CONFLICTED_COPY_TIMESTAMP_FORMAT.format(Instant.now()) + ")";
+        if (dotIndex <= 0 || dotIndex == originalFileName.length() - 1) {
+            return originalFileName + suffix;
+        }
+        return originalFileName.substring(0, dotIndex) + suffix + originalFileName.substring(dotIndex);
     }
 
     /**

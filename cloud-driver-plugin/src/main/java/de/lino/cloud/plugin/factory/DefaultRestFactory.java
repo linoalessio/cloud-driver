@@ -166,6 +166,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String SEARCH_PATH = "/search";
     /** Query parameter name for {@link #handleSearch}'s search text. */
     private static final String SEARCH_QUERY_QUERY_PARAM = "q";
+    /**
+     * Query parameter {@link #handleReplaceFileContent} reads an optimistic-concurrency
+     * precondition from (section 10, Sync, {@code architecture/MICRO.md}) - the caller's last-seen
+     * {@link StoredFile#updatedAt()}, as epoch millis. Absent means an unconditional overwrite,
+     * unchanged behavior from before this section existed.
+     */
+    private static final String EXPECTED_UPDATED_AT_QUERY_PARAM = "expectedUpdatedAt";
     /** Default result count for {@link #handleSearch} when {@link #LIMIT_QUERY_PARAM} is absent - generous enough for a typical query, small enough to keep a client's results list from growing unbounded. */
     private static final int DEFAULT_SEARCH_RESULT_LIMIT = 25;
     /**
@@ -2436,6 +2443,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void handleReplaceFileContent(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
         final String userId = requireUserId(ctx);
+        final Long expectedUpdatedAt = parseExpectedUpdatedAt(ctx);
 
         final Path scratchFile = receiveUploadToScratchFile(ctx.bodyInputStream());
 
@@ -2443,7 +2451,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .supplyAsync(() -> {
                     try {
                         final byte[] content = Files.readAllBytes(scratchFile);
-                        return this.cloudUserService.replaceFileContent(userId, id, content);
+                        return this.cloudUserService.replaceFileContent(userId, id, content, expectedUpdatedAt);
                     } catch (final IOException e) {
                         throw new UncheckedIOException(
                                 "@DefaultRestFactory.handleReplaceFileContent: failed to read scratch file for '" + id + "'", e);
@@ -2456,8 +2464,42 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(summary));
                         return null;
                     }
+                    // architecture/MICRO.md, section 10 (Sync) - a detected conflict is 409, but
+                    // (unlike every other 409 case in this file) carries the conflicted copy's own
+                    // StoredFileSummary as its JSON body, not just a message - the client needs
+                    // that to actually show/navigate to the preserved edit, not merely know a
+                    // conflict happened. Checked ahead of folderFailureOrPropagate, which has no
+                    // way to write a structured body from inside its own "return an exception to
+                    // throw" shape.
+                    final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+                    if (cause instanceof de.lino.cloud.api.file.exception.SyncConflictException conflict) {
+                        ctx.status(409).contentType("application/json").result(this.gson.toJson(conflict.conflictedCopy()));
+                        return null;
+                    }
                     throw folderFailureOrPropagate(failure, StoredFile.class, id);
                 }));
+    }
+
+    /**
+     * Parses {@link #EXPECTED_UPDATED_AT_QUERY_PARAM} - {@code null} if absent/blank (unconditional
+     * overwrite), otherwise a positive {@code long}.
+     *
+     * @throws BadRequestResponse if present but not a valid positive integer
+     */
+    private static Long parseExpectedUpdatedAt(final Context ctx) {
+        final String raw = ctx.queryParam(EXPECTED_UPDATED_AT_QUERY_PARAM);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            final long value = Long.parseLong(raw.trim());
+            if (value <= 0) {
+                throw new BadRequestResponse("'" + EXPECTED_UPDATED_AT_QUERY_PARAM + "' must be a positive integer");
+            }
+            return value;
+        } catch (final NumberFormatException exception) {
+            throw new BadRequestResponse("'" + EXPECTED_UPDATED_AT_QUERY_PARAM + "' must be a positive integer");
+        }
     }
 
     /**
