@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "de.lino.cloud.platforms.desktop"
-version = "1.0.5"
+version = "1.0.6"
 
 repositories {
     google()
@@ -98,7 +98,7 @@ kotlin {
             // `cloud-driver-multiplatform-java` (groupId `de.lino.cloud.multiplatform.java`) - the Java
             // package the classes themselves live under (`de.lino.cloud.platform.rest`) is
             // unchanged by that move, only the Maven module/coordinates changed.
-            implementation("de.lino.cloud.multiplatform.java:cloud-driver-multiplatform-java:1.0.5")
+            implementation("de.lino.cloud.multiplatform.java:cloud-driver-multiplatform-java:1.0.6")
 
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.9.0")
@@ -121,7 +121,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudDriver"
-            packageVersion = "1.0.5"
+            packageVersion = "1.0.6"
             description = "cloud-driver desktop client"
 
             // The jlink-built runtime image only bundles JDK modules jdeps' static bytecode

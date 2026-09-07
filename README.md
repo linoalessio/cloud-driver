@@ -8,7 +8,7 @@
 ![Build](https://img.shields.io/badge/Build-Gradle-02303A)
 ![Build](https://img.shields.io/badge/Build-SwiftPM-F05138)
 ![Build](https://img.shields.io/badge/Build-pip-3776AB)
-![Version](https://img.shields.io/badge/Version-1.0.5-blue)
+![Version](https://img.shields.io/badge/Version-1.0.6-blue)
 
 An encrypted cloud storage system: a Java backend that envelope-encrypts every stored record
 (AES-256-GCM, KMS/HSM-style key wrapping) before persisting it, exposed over a JWT-authenticated
