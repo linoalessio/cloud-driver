@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.lino.cloud.extensions</groupId>
+        <artifactId>cloud-driver-extensions</artifactId>
+        <version>1.0.6</version>
+    </parent>
+
+    <groupId>de.lino.cloud.extensions.thumbnails</groupId>
+    <artifactId>cloud-driver-extensions-thumbnails</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.6</version>
+        </dependency>
+
+        <!-- First-page PDF rendering only - JPEG/PNG thumbnails use the JDK's own built-in
+             javax.imageio, no dependency needed. Checked ../../pom.xml (the whole reactor) first,
+             per architecture/MICRO.md section 1's own instruction - nothing in this repo already
+             depends on a PDF-rendering library server-side (cloud-driver-platforms-desktop uses
+             PDFBox too, but that's a separate Gradle build, not reachable from here), so this is a
+             fresh addition. Version 2.0.29 matches cloud-driver-platforms-desktop's own pinned
+             version, for consistency, though the two have no build-time relationship. -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.29</version>
+        </dependency>
+
+    </dependencies>
+
+</project>

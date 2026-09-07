@@ -1,10 +1,12 @@
 package de.lino.cloud.plugin.factory.container;
 
+import de.lino.cloud.api.event.database.FileChangeListenerRegistry;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
+import de.lino.cloud.plugin.event.database.DefaultFileChangeListenerRegistry;
 import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
@@ -74,6 +76,9 @@ public class FactoryContainer implements IFactoryContainer {
     /** Backs {@link #fileFactory}'s optional S3-backed {@code StoredFile} content path, or {@code null} if this deployment hasn't opted into it. */
     private final ObjectStorageService objectStorageService;
 
+    /** Fan-out point for {@code DatabaseWatchEvent} notifications - see its own Javadoc. Always constructed, regardless of whether {@code cloud-driver-watcher} ever actually runs. */
+    private final FileChangeListenerRegistry fileChangeListenerRegistry;
+
     /**
      * Same as {@link #FactoryContainer(DatabaseProvider, EnvelopeEncryptionService,
      * ConnectivityChecker, ObjectStorageService)} with {@code objectStorageService} defaulted to
@@ -122,6 +127,7 @@ public class FactoryContainer implements IFactoryContainer {
         this.extensionFactory = new DefaultExtensionFactory();
         this.eventFactory = new DefaultEventFactory();
         this.restFactory = new DefaultRestFactory(this.dataFactory);
+        this.fileChangeListenerRegistry = new DefaultFileChangeListenerRegistry();
 
     }
 

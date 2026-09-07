@@ -19,6 +19,7 @@
         <module>cloud-driver-extensions-terminal</module>
         <module>cloud-driver-extensions-backup</module>
         <module>cloud-driver-extensions-metrics</module>
+        <module>cloud-driver-extensions-thumbnails</module>
     </modules>
 
 </project>

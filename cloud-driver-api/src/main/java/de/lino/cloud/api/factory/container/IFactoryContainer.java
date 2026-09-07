@@ -1,5 +1,6 @@
 package de.lino.cloud.api.factory.container;
 
+import de.lino.cloud.api.event.database.FileChangeListenerRegistry;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import org.jetbrains.annotations.Nullable;
@@ -9,8 +10,7 @@ import org.jetbrains.annotations.Nullable;
  * de.lino.cloud.api.CloudDriver} implementation is constructed with, reached
  * through {@link de.lino.cloud.api.CloudDriver#getFactoryContainer()}.
  */
-public interface
-IFactoryContainer {
+public interface IFactoryContainer {
     
     /**
      * Returns the entity-persistence facet.
@@ -58,5 +58,18 @@ IFactoryContainer {
      */
     @Nullable
     ObjectStorageService getObjectStorageService();
+
+    /**
+     * Returns the fan-out registry every {@link de.lino.cloud.api.event.database.DatabaseWatchEvent}
+     * notification is routed through, so multiple independent addons can each react to a {@code
+     * StoredFile} table change without touching {@link EventFactory}'s own one-handler-per-class
+     * contract - see {@link FileChangeListenerRegistry}'s own Javadoc for the full reasoning.
+     * Always non-{@code null}, unlike every {@code IServiceContainer} facet - constructed
+     * unconditionally alongside every other facet here, regardless of whether {@code
+     * cloud-driver-watcher} is actually running on this deployment.
+     *
+     * @return the {@link FileChangeListenerRegistry}, never {@code null}
+     */
+    FileChangeListenerRegistry getFileChangeListenerRegistry();
 
 }

@@ -1,0 +1,7 @@
+{
+  "name": "cloud-driver-thumbnails",
+  "version": "1.0.6",
+  "description": "Generates and serves preview thumbnails for uploaded images and PDFs",
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-bootstrap"]
+}

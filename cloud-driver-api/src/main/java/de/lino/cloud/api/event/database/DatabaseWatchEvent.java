@@ -71,6 +71,7 @@ public class DatabaseWatchEvent extends Event {
         }
 
         this.pushLiveUpdate(properties, id);
+        this.notifyFileChangeListeners(properties, id);
 
         if (uploadedFile.isPresent()) return;
 
@@ -109,6 +110,33 @@ public class DatabaseWatchEvent extends Event {
 
         } catch (final RuntimeException e) {
             this.cloudDriver().getLogger().log(Level.WARNING, "Failed to push live update for file id '" + id + "'", e);
+        }
+    }
+
+    /**
+     * Forwards this notification's raw {@code "operation"} field to every registered {@link
+     * FileChangeListener}, via {@link FileChangeListenerRegistry#notifyChange} - see {@link
+     * FileChangeListener}'s own Javadoc for why this fan-out exists at all (one {@code Event}
+     * class can only ever have one {@code EventFactory}-registered handler). Runs unconditionally,
+     * regardless of whether {@link #handle}'s own {@code findById}/reload above hit or missed - a
+     * listener (e.g. a thumbnail generator) only needs the id and operation, it re-fetches
+     * whatever content it actually needs itself.
+     *
+     * <p>{@link FileChangeListenerRegistry#notifyChange} itself never throws (it catches and
+     * logs each listener's own failure individually) - this method's own try/catch is
+     * defense-in-depth on top of that, matching {@link #pushLiveUpdate}'s own reasoning: this
+     * runs inside a Postgres {@code LISTEN}/{@code NOTIFY}-driven listener thread with zero
+     * tolerance for an uncaught exception.
+     *
+     * @param properties this event's own notification payload
+     * @param id the changed {@link StoredFile}'s id, already extracted by the caller
+     */
+    private void notifyFileChangeListeners(@NonNull final JsonDocument properties, @NonNull final String id) {
+        try {
+            this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry()
+                    .notifyChange(id, properties.getString("operation"));
+        } catch (final RuntimeException e) {
+            this.cloudDriver().getLogger().log(Level.WARNING, "Failed to notify file change listeners for file id '" + id + "'", e);
         }
     }
 

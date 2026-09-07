@@ -683,6 +683,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_SHARED_BY_ME_COUNT_PATH, this::handleCountFilesSharedByMe);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
+                config.routes.get(FILES_PATH + "/{id}/thumbnail", this::handleGetThumbnail);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
@@ -2111,6 +2112,49 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final StoredFile file = entry.file();
         final byte[] content = file.content();
         return new DownloadableContent(file.fileName(), file.contentType(), content.length, new ByteArrayInputStream(content));
+    }
+
+    /**
+     * {@code GET /files/{id}/thumbnail}: returns a previously generated thumbnail for one {@link
+     * StoredFile} as raw JPEG bytes, or {@code 404} if none exists yet (still generating,
+     * unsupported content type, or generation failed - see {@code
+     * de.lino.cloud.api.thumbnail.ThumbnailService#getThumbnail}'s own Javadoc for why those three
+     * are indistinguishable from the outside). Section 1 (Thumbnail/Preview Service, {@code
+     * architecture/MICRO.md}) - access-checked the same ownership-or-share way {@link
+     * #handleDownloadFileContent} already is, via {@link CloudUserService#checkFileAccess}, before
+     * this route ever asks {@code ThumbnailService} for anything - a caller with no access to the
+     * source file must never learn whether a thumbnail exists for it either.
+     *
+     * <p>{@code 503} (via {@link ServiceUnavailableResponse}) if {@code
+     * cloud-driver-extensions-thumbnails} isn't running on this deployment at all - checked
+     * synchronously, before dispatching anything onto {@link MultiTaskingFactory}, the same
+     * shape {@link #handleGetAdminMetrics} already uses for its own optional-extension facet.
+     */
+    private void handleGetThumbnail(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+
+        final de.lino.cloud.api.thumbnail.ThumbnailService thumbnailService =
+                CloudDriver.getInstance().getServiceContainer().getThumbnailService();
+        if (thumbnailService == null) {
+            throw new ServiceUnavailableResponse("Thumbnails extension is not running on this deployment");
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    this.cloudUserService.checkFileAccess(userId, id);
+                    return thumbnailService.getThumbnail(id, de.lino.cloud.api.thumbnail.ThumbnailSize.SMALL);
+                })
+                .handle((thumbnail, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    if (thumbnail.isEmpty()) {
+                        throw new NotFoundResponse("No thumbnail available for file '" + id + "'");
+                    }
+                    ctx.contentType("image/jpeg").result(thumbnail.get());
+                    return null;
+                }));
     }
 
     /**

@@ -6,6 +6,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
 
@@ -32,6 +33,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile MetricsRecorder metricsRecorder;
     /** The metrics read side, {@code null} until {@link #setMetricsSnapshotProvider} publishes one. */
     private volatile MetricsSnapshotProvider metricsSnapshotProvider;
+    /** The thumbnail lookup service, {@code null} until {@link #setThumbnailService} publishes one. */
+    private volatile ThumbnailService thumbnailService;
 
     /** {@inheritDoc} */
     @Override
@@ -103,6 +106,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setMetricsSnapshotProvider(@NonNull final MetricsSnapshotProvider metricsSnapshotProvider) {
         this.metricsSnapshotProvider = metricsSnapshotProvider;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public ThumbnailService getThumbnailService() {
+        return this.thumbnailService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setThumbnailService(@NonNull final ThumbnailService thumbnailService) {
+        this.thumbnailService = thumbnailService;
     }
 
 }

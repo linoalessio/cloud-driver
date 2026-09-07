@@ -5,6 +5,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.user.ICloudUserService;
 import lombok.NonNull;
 
@@ -137,5 +138,24 @@ public interface IServiceContainer {
      * @param metricsSnapshotProvider the instance backing {@code GET /admin/metrics}
      */
     void setMetricsSnapshotProvider(@NonNull MetricsSnapshotProvider metricsSnapshotProvider);
+
+    /**
+     * Returns the thumbnail lookup service (section 1, Thumbnail/Preview, {@code
+     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-thumbnails}'s
+     * {@code CloudThumbnailsExtension} hasn't published one yet (not started, or this deployment
+     * doesn't run that extension at all). {@code DefaultRestFactory}'s {@code GET
+     * /files/{id}/thumbnail} route must null-check this the same way it already does for {@link
+     * #getMetricsSnapshotProvider()}.
+     *
+     * @return the {@link ThumbnailService}, or {@code null}
+     */
+    ThumbnailService getThumbnailService();
+
+    /**
+     * Publishes the real {@link ThumbnailService}, once built.
+     *
+     * @param thumbnailService the instance backing {@code GET /files/{id}/thumbnail}
+     */
+    void setThumbnailService(@NonNull ThumbnailService thumbnailService);
 
 }

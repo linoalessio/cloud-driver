@@ -45,6 +45,19 @@
             <version>1.13.6</version>
         </dependency>
 
+        <!-- Not used by any class in this module directly - needed at runtime by
+             cloud-driver-extensions-thumbnails (section 1, architecture/MICRO.md), for the exact
+             same classloading reason as the micrometer-registry-prometheus dependency above:
+             every extension jar is unshaded and loaded via its own URLClassLoader, parent-first
+             against this jar's own shaded classpath, so a third-party dependency an extension
+             needs must already be shaded in here too. Version matches that module's own
+             pom.xml. -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.29</version>
+        </dependency>
+
     </dependencies>
 
     <build>
