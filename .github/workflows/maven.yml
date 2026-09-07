@@ -9,15 +9,21 @@ on:
     paths-ignore:
       - 'cloud-driver-platforms/cloud-driver-platforms-desktop/**'
       - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-python/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-swift/**'
       - '**/*.md'
       - '.github/workflows/swift.yml'
+      - '.github/workflows/python.yml'
   pull_request:
     branches: [ "master" ]
     paths-ignore:
       - 'cloud-driver-platforms/cloud-driver-platforms-desktop/**'
       - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-python/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-swift/**'
       - '**/*.md'
       - '.github/workflows/swift.yml'
+      - '.github/workflows/python.yml'
   workflow_dispatch:
 
 jobs:
@@ -55,10 +61,13 @@ jobs:
 
       - name: Build with Maven
         # Root pom.xml is a multi-module reactor - this reaches every Java module
-        # (cloud-driver-api/-auth/-plugin/-bootstrap/-extensions*/-platforms-rest) in one
-        # dependency-ordered build. cloud-driver-platforms-desktop (Gradle/Kotlin) and
-        # cloud-driver-platforms-mobile (Xcode/Swift) are deliberately not Maven modules and are
-        # never touched here - see swift.yml for the mobile app's own CI build.
+        # (cloud-driver-api/-auth/-plugin/-bootstrap/-extensions*/cloud-driver-multiplatform-java)
+        # in one dependency-ordered build. cloud-driver-platforms-desktop (Gradle/Kotlin),
+        # cloud-driver-platforms-mobile (Xcode/Swift), cloud-driver-multiplatform-swift (a plain
+        # SPM package), and cloud-driver-multiplatform-python (pip) are deliberately not Maven
+        # modules and are never touched here - see swift.yml/python.yml for those modules' own CI
+        # builds (also why both are excluded from this workflow's own `paths-ignore` above,
+        # alongside the two directories themselves).
         run: mvn -B package --file pom.xml
         env:
           DATABASE_DRIVER_PACKAGES_ACTOR: ${{ github.actor }}

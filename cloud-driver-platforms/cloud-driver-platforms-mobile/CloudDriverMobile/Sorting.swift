@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import Foundation
 
 /// How to order the folders shown in a folder view, or (independently) the files shown in it -

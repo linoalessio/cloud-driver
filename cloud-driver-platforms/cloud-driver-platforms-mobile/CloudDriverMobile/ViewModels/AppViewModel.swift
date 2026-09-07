@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import Foundation
 import PhotosUI
 // `PhotosPickerItem` (used by `uploadPickedPhotos` below) lives in PhotosUI's SwiftUI cross-import

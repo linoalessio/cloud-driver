@@ -6,7 +6,7 @@ summary; the full, current route-by-route contract is documented in that module'
 
 Full contract: [`cloud-driver-extensions/cloud-driver-extensions-rest/README.md`](../cloud-driver-extensions/cloud-driver-extensions-rest/README.md)
 
-Client library covering these routes: [`cloud-driver-platforms-rest`](../cloud-driver-platforms/cloud-driver-platforms-rest/README.md)
+Client libraries covering these routes: [`cloud-driver-multiplatform-java`](../cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) (Java), [`cloud-driver-multiplatform-swift`](../cloud-driver-multiplatform/cloud-driver-multiplatform-swift/README.md) (Swift), [`cloud-driver-multiplatform-python`](../cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) (Python)
 
 For code samples calling these routes (and every other way to use the system — the in-process Java
 API, each client library, the operator terminal), see [api-usage.md](api-usage.md).

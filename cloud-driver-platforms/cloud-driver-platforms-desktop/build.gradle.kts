@@ -91,10 +91,14 @@ kotlin {
             implementation(files("libs/material-icons-extended-trimmed.jar"))
 
             // The HTTP client - Maven-built, resolved from the local Maven repository
-            // (mavenLocal(), declared in settings.gradle.kts). `de.lino.cloud.platforms` was
-            // renamed from the earlier singular "de.lino.cloud.platform" groupId - see this
-            // module's README for that history.
-            implementation("de.lino.cloud.platforms.rest:cloud-driver-platforms-rest:1.0.5")
+            // (mavenLocal(), declared in settings.gradle.kts). Formerly `cloud-driver-platforms-rest`
+            // (groupId `de.lino.cloud.platforms.rest`, itself renamed from the earlier singular
+            // "de.lino.cloud.platform" groupId - see this module's README for that history);
+            // moved out of cloud-driver-platforms into cloud-driver-multiplatform and renamed to
+            // `cloud-driver-multiplatform-java` (groupId `de.lino.cloud.multiplatform.java`) - the Java
+            // package the classes themselves live under (`de.lino.cloud.platform.rest`) is
+            // unchanged by that move, only the Maven module/coordinates changed.
+            implementation("de.lino.cloud.multiplatform.java:cloud-driver-multiplatform-java:1.0.5")
 
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.9.0")
@@ -122,7 +126,7 @@ compose.desktop {
 
             // The jlink-built runtime image only bundles JDK modules jdeps' static bytecode
             // analysis finds a direct reference to (see the `suggestRuntimeModules` Gradle task) -
-            // it missed `java.net.http` entirely even though `ApiClient` (cloud-driver-platforms-rest)
+            // it missed `java.net.http` entirely even though `ApiClient` (cloud-driver-multiplatform-java)
             // directly calls `HttpClient.newBuilder()`, which crashed every packaged build (though
             // never `./gradlew run`, which uses the full JDK, not a trimmed one) with
             // `NoClassDefFoundError: java/net/http/HttpClient` the moment `ApiClient`'s constructor

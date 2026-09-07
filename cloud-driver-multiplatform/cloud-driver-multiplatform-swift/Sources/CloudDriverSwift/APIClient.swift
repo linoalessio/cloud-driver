@@ -3,13 +3,13 @@ import Foundation
 
 /// Failures surfaced from `APIClient`. `errorDescription` is what view models put directly into
 /// `AppViewModel.errorMessage` for display.
-enum APIError: Error, LocalizedError {
+public enum APIError: Error, LocalizedError {
     case network(Error)
     case server(status: Int, message: String)
     case decoding(Error)
     case notAuthenticated
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .network(let error):
             return error.localizedDescription
@@ -69,19 +69,25 @@ private final class ProgressForwardingDelegate: NSObject, URLSessionTaskDelegate
 }
 
 /// A plain `URLSession`-based client for `cloud-driver`'s JWT-authenticated REST API - the iOS
-/// counterpart to `cloud-driver-platforms-rest`'s Java `ApiClient`. An `actor` rather than a class
+/// counterpart to `cloud-driver-maven`'s Java `ApiClient`. An `actor` rather than a class
 /// with manual locking, so every token read/write is already serialized without extra ceremony.
 ///
 /// Every authenticated call transparently retries once after a `401` by exchanging the held
 /// refresh token first (`execute`'s own retry branch) - mirroring the same contract the Java
 /// client and the server's refresh-token design document (see cloud-driver's CLAUDE.md, "Refresh
 /// tokens") describe. A caller only ever sees the original `401` if that retry also fails.
-actor APIClient {
+///
+/// Lives in the `CloudDriverSwift` package (extracted out of `cloud-driver-platforms-mobile`'s own
+/// "Networking" folder, 2026-09-07, so that app can stay GUI-only) - every member an app target
+/// actually calls is `public`; everything else (request-building/execution plumbing, the token
+/// accessors `SessionManager` reads directly since it lives in this same package/module) stays at
+/// the default `internal`/`private` access it always had.
+public actor APIClient {
 
     /// The one deployment this app talks to - see cloud-driver-platforms-desktop's `Main.kt` for
     /// the equivalent hardcoded constant on the desktop client. Change and rebuild to point this
     /// app at a different server.
-    static let shared = APIClient(baseURL: URL(string: "https://api.cloud-driver.de")!)
+    public static let shared = APIClient(baseURL: URL(string: "https://api.cloud-driver.de")!)
 
     private let baseURL: URL
     private let session: URLSession
@@ -105,7 +111,7 @@ actor APIClient {
         self.onTokensRotated = handler
     }
 
-    init(baseURL: URL) {
+    public init(baseURL: URL) {
         self.baseURL = baseURL
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -125,29 +131,29 @@ actor APIClient {
 
     // MARK: - Auth
 
-    func login(email: String, password: String) async throws -> AuthResponse {
+    public func login(email: String, password: String) async throws -> AuthResponse {
         let request = try jsonRequest("/auth/login", method: "POST", body: AuthRequest(username: email, password: password), authenticated: false)
         return try await issueTokens(from: request)
     }
 
-    func register(email: String, password: String) async throws -> MessageResponse {
+    public func register(email: String, password: String) async throws -> MessageResponse {
         let request = try jsonRequest("/auth/register", method: "POST", body: AuthRequest(username: email, password: password), authenticated: false)
         let (data, _) = try await execute(request, allowRefreshRetry: false)
         return try decode(data)
     }
 
-    func confirmRegistration(email: String, code: String) async throws -> AuthResponse {
+    public func confirmRegistration(email: String, code: String) async throws -> AuthResponse {
         let request = try jsonRequest("/auth/register/confirm", method: "POST", body: ConfirmRegistrationRequest(username: email, code: code), authenticated: false)
         return try await issueTokens(from: request)
     }
 
-    func requestPasswordReset(email: String) async throws -> MessageResponse {
+    public func requestPasswordReset(email: String) async throws -> MessageResponse {
         let request = try jsonRequest("/auth/reset-password", method: "POST", body: RequestPasswordResetRequest(username: email), authenticated: false)
         let (data, _) = try await execute(request, allowRefreshRetry: false)
         return try decode(data)
     }
 
-    func confirmPasswordReset(email: String, code: String, newPassword: String) async throws -> AuthResponse {
+    public func confirmPasswordReset(email: String, code: String, newPassword: String) async throws -> AuthResponse {
         let request = try jsonRequest("/auth/reset-password/confirm", method: "POST", body: ConfirmPasswordResetRequest(username: email, code: code, newPassword: newPassword), authenticated: false)
         return try await issueTokens(from: request)
     }
@@ -167,13 +173,13 @@ actor APIClient {
         self.refreshToken = nil
     }
 
-    func me() async throws -> MeResponse {
+    public func me() async throws -> MeResponse {
         let request = plainRequest("/auth/me", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func cloudUser(authUserId: String) async throws -> CloudUserResponse {
+    public func cloudUser(authUserId: String) async throws -> CloudUserResponse {
         let request = plainRequest("/cloudUsers/\(authUserId)", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -181,7 +187,7 @@ actor APIClient {
 
     /// Starts an e-mail change for the caller's own (already-authenticated) account - `newEmail`
     /// isn't live yet, only `confirmEmailChange` actually applies it.
-    func requestEmailChange(newEmailAddress: String) async throws -> MessageResponse {
+    public func requestEmailChange(newEmailAddress: String) async throws -> MessageResponse {
         let request = try jsonRequest("/auth/change-email", method: "POST", body: ChangeEmailRequest(newEmail: newEmailAddress), authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -189,7 +195,7 @@ actor APIClient {
 
     /// Applies a pending e-mail change - does **not** issue a fresh token (a JWT's subject is the
     /// account id, never its e-mail, so the caller's already-held token stays valid unchanged).
-    func confirmEmailChange(code: String) async throws -> MessageResponse {
+    public func confirmEmailChange(code: String) async throws -> MessageResponse {
         let request = try jsonRequest("/auth/change-email/confirm", method: "POST", body: ConfirmChangeEmailRequest(code: code), authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -197,7 +203,7 @@ actor APIClient {
 
     // MARK: - Files
 
-    func listFiles(folderId: String?) async throws -> [StoredFileSummaryResponse] {
+    public func listFiles(folderId: String?) async throws -> [StoredFileSummaryResponse] {
         let scope = (folderId ?? "root").queryEncoded()
         let request = plainRequest("/files?folderId=\(scope)", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
@@ -210,13 +216,13 @@ actor APIClient {
     /// fetched a folder's *entire* contents in one response, even though the server route (and
     /// the desktop client) already supported paging - a real cost for a folder with thousands of
     /// files. `folderId` maps `nil` to `"root"`, matching `listFiles(folderId:)`'s own convention
-    /// (not `cloud-driver-platforms-rest`'s JVM client, which omits the parameter entirely on
+    /// (not `cloud-driver-maven`'s JVM client, which omits the parameter entirely on
     /// `nil` - a different, unscoped-listing meaning this app's folder browser never needs).
     ///
     /// - Parameters:
     ///   - cursor: the previous page's `Page.nextCursor`, or `nil` for the first page.
     ///   - limit: the maximum number of entries to return; must be positive.
-    func listFilesPage(folderId: String?, cursor: String?, limit: Int) async throws -> Page<StoredFileSummaryResponse> {
+    public func listFilesPage(folderId: String?, cursor: String?, limit: Int) async throws -> Page<StoredFileSummaryResponse> {
         var path = "/files?limit=\(limit)&folderId=\((folderId ?? "root").queryEncoded())"
         if let cursor {
             path += "&cursor=\(cursor.queryEncoded())"
@@ -226,7 +232,7 @@ actor APIClient {
         return try decode(data)
     }
 
-    func uploadFile(fileName: String, data: Data, folderId: String?) async throws -> StoredFileSummaryResponse {
+    public func uploadFile(fileName: String, data: Data, folderId: String?) async throws -> StoredFileSummaryResponse {
         var path = "/files?fileName=\(fileName.queryEncoded())"
         if let folderId {
             path += "&folderId=\(folderId.queryEncoded())"
@@ -238,23 +244,23 @@ actor APIClient {
         return try decode(responseData)
     }
 
-    func downloadFileContent(fileId: String) async throws -> Data {
+    public func downloadFileContent(fileId: String) async throws -> Data {
         let request = plainRequest("/files/\(fileId)/content", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return data
     }
 
-    func deleteFile(fileId: String) async throws {
+    public func deleteFile(fileId: String) async throws {
         let request = plainRequest("/files/\(fileId)", method: "DELETE", authenticated: true)
         _ = try await execute(request)
     }
 
-    func moveFile(fileId: String, folderId: String?) async throws {
+    public func moveFile(fileId: String, folderId: String?) async throws {
         let request = try jsonRequest("/files/\(fileId)/folder", method: "PUT", body: MoveFileRequest(folderId: folderId), authenticated: true)
         _ = try await execute(request)
     }
 
-    func renameFile(fileId: String, newFileName: String) async throws {
+    public func renameFile(fileId: String, newFileName: String) async throws {
         let request = try jsonRequest("/files/\(fileId)/rename", method: "PUT", body: RenameFileRequest(fileName: newFileName), authenticated: true)
         _ = try await execute(request)
     }
@@ -269,7 +275,7 @@ actor APIClient {
     /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
     /// transfer - callers should fall back to `uploadFile(fileName:data:folderId:)` on exactly
     /// that status.
-    func uploadFileViaPresignedURL(fileName: String, fileURL: URL, folderId: String?, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws -> StoredFileSummaryResponse {
+    public func uploadFileViaPresignedURL(fileName: String, fileURL: URL, folderId: String?, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws -> StoredFileSummaryResponse {
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let checksumSha256 = try sha256Hex(of: fileURL)
@@ -289,7 +295,7 @@ actor APIClient {
     /// Throws `APIError.server(status: 503, ...)` if this deployment hasn't configured presigned
     /// transfer, or this particular file isn't eligible for it - callers should fall back to
     /// `downloadFileContent(fileId:)` on exactly that status.
-    func downloadFileViaPresignedURL(fileId: String, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
+    public func downloadFileViaPresignedURL(fileId: String, destination: URL, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         let begin = try await beginDownloadURL(fileId: fileId)
         guard let downloadURL = URL(string: begin.downloadUrl) else {
             throw APIError.network(URLError(.badURL))
@@ -402,7 +408,7 @@ actor APIClient {
 
     // MARK: - Folders
 
-    func listFolders(parentFolderId: String?) async throws -> [FolderResponse] {
+    public func listFolders(parentFolderId: String?) async throws -> [FolderResponse] {
         let scope = (parentFolderId ?? "root").queryEncoded()
         let request = plainRequest("/folders?parentFolderId=\(scope)", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
@@ -411,7 +417,7 @@ actor APIClient {
 
     /// Cursor-paginated counterpart to `listFolders(parentFolderId:)` - see `listFilesPage`'s own
     /// doc comment for the full contract; identical shape, scoped to folders instead of files.
-    func listFoldersPage(parentFolderId: String?, cursor: String?, limit: Int) async throws -> Page<FolderResponse> {
+    public func listFoldersPage(parentFolderId: String?, cursor: String?, limit: Int) async throws -> Page<FolderResponse> {
         var path = "/folders?limit=\(limit)&parentFolderId=\((parentFolderId ?? "root").queryEncoded())"
         if let cursor {
             path += "&cursor=\(cursor.queryEncoded())"
@@ -421,13 +427,13 @@ actor APIClient {
         return try decode(data)
     }
 
-    func createFolder(name: String, parentFolderId: String?) async throws -> FolderResponse {
+    public func createFolder(name: String, parentFolderId: String?) async throws -> FolderResponse {
         let request = try jsonRequest("/folders", method: "POST", body: CreateFolderRequest(name: name, parentFolderId: parentFolderId), authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func deleteFolder(folderId: String) async throws {
+    public func deleteFolder(folderId: String) async throws {
         let request = plainRequest("/folders/\(folderId)", method: "DELETE", authenticated: true)
         _ = try await execute(request)
     }
@@ -435,7 +441,7 @@ actor APIClient {
     /// `PUT /folders/{id}` - a full replace of both fields; moving a folder without renaming it
     /// means carrying its current `name` through unchanged (`nil` `parentFolderId` moves it to
     /// the top level).
-    func updateFolder(folderId: String, name: String, parentFolderId: String?) async throws -> FolderResponse {
+    public func updateFolder(folderId: String, name: String, parentFolderId: String?) async throws -> FolderResponse {
         let request = try jsonRequest("/folders/\(folderId)", method: "PUT", body: UpdateFolderRequest(name: name, parentFolderId: parentFolderId), authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -443,20 +449,20 @@ actor APIClient {
 
     /// `PUT /folders/{id}/color` - sets a folder's display color, a separate call from
     /// `updateFolder` so recoloring never touches name/parent.
-    func updateFolderColor(folderId: String, color: String?) async throws {
+    public func updateFolderColor(folderId: String, color: String?) async throws {
         let request = try jsonRequest("/folders/\(folderId)/color", method: "PUT", body: UpdateFolderColorRequest(color: color), authenticated: true)
         _ = try await execute(request)
     }
 
     // MARK: - Sharing (grantee side: what's shared with me)
 
-    func listSharedFilesWithMe() async throws -> [SharedFileSummaryResponse] {
+    public func listSharedFilesWithMe() async throws -> [SharedFileSummaryResponse] {
         let request = plainRequest("/files/shared-with-me", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func listSharedFoldersWithMe() async throws -> [SharedFolderSummaryResponse] {
+    public func listSharedFoldersWithMe() async throws -> [SharedFolderSummaryResponse] {
         let request = plainRequest("/folders/shared-with-me", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -465,7 +471,7 @@ actor APIClient {
     /// Lists the non-trashed files/subfolders directly inside `folderId` - works for the shared
     /// folder itself, and (since a share on an ancestor covers every descendant) for any
     /// subfolder reached by navigating deeper into it, via the exact same route.
-    func sharedFolderContents(folderId: String) async throws -> SharedFolderContentsResponse {
+    public func sharedFolderContents(folderId: String) async throws -> SharedFolderContentsResponse {
         let request = plainRequest("/folders/\(folderId)/shared-contents", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -473,35 +479,35 @@ actor APIClient {
 
     // MARK: - Sharing (owner side: sharing my own files/folders out)
 
-    func shareFile(fileId: String, granteeEmail: String) async throws {
+    public func shareFile(fileId: String, granteeEmail: String) async throws {
         let request = try jsonRequest("/files/\(fileId)/share", method: "POST", body: ShareRequest(granteeEmail: granteeEmail), authenticated: true)
         _ = try await execute(request)
     }
 
-    func revokeFileShare(fileId: String, granteeEmail: String) async throws {
+    public func revokeFileShare(fileId: String, granteeEmail: String) async throws {
         let request = plainRequest("/files/\(fileId)/share/\(granteeEmail.queryEncoded())", method: "DELETE", authenticated: true)
         _ = try await execute(request)
     }
 
     /// The emails of every account `fileId` is currently shared with - owner-only, backs the
     /// revoke UI in `ShareSheet`.
-    func listFileShares(fileId: String) async throws -> [String] {
+    public func listFileShares(fileId: String) async throws -> [String] {
         let request = plainRequest("/files/\(fileId)/share", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func shareFolder(folderId: String, granteeEmail: String) async throws {
+    public func shareFolder(folderId: String, granteeEmail: String) async throws {
         let request = try jsonRequest("/folders/\(folderId)/share", method: "POST", body: ShareRequest(granteeEmail: granteeEmail), authenticated: true)
         _ = try await execute(request)
     }
 
-    func revokeFolderShare(folderId: String, granteeEmail: String) async throws {
+    public func revokeFolderShare(folderId: String, granteeEmail: String) async throws {
         let request = plainRequest("/folders/\(folderId)/share/\(granteeEmail.queryEncoded())", method: "DELETE", authenticated: true)
         _ = try await execute(request)
     }
 
-    func listFolderShares(folderId: String) async throws -> [String] {
+    public func listFolderShares(folderId: String) async throws -> [String] {
         let request = plainRequest("/folders/\(folderId)/share", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
@@ -511,31 +517,31 @@ actor APIClient {
 
     /// `DELETE /files/{id}`/`DELETE /folders/{id}` (see `deleteFile`/`deleteFolder` above) are
     /// already soft deletes server-side - these three methods surface what that put there.
-    func listDeletedFiles() async throws -> [TrashedFileSummaryResponse] {
+    public func listDeletedFiles() async throws -> [TrashedFileSummaryResponse] {
         let request = plainRequest("/files/trash", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func listDeletedFolders() async throws -> [TrashedFolderSummaryResponse] {
+    public func listDeletedFolders() async throws -> [TrashedFolderSummaryResponse] {
         let request = plainRequest("/folders/trash", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
     }
 
-    func restoreFile(fileId: String) async throws {
+    public func restoreFile(fileId: String) async throws {
         let request = plainRequest("/files/\(fileId)/restore", method: "POST", authenticated: true)
         _ = try await execute(request)
     }
 
-    func restoreFolder(folderId: String) async throws {
+    public func restoreFolder(folderId: String) async throws {
         let request = plainRequest("/folders/\(folderId)/restore", method: "POST", authenticated: true)
         _ = try await execute(request)
     }
 
     /// Permanently removes everything currently in the trash, bypassing the retention window
     /// entirely - irreversible, unlike a single `restoreFile`/`restoreFolder`.
-    func emptyTrash() async throws {
+    public func emptyTrash() async throws {
         let request = plainRequest("/trash/empty", method: "POST", authenticated: true)
         _ = try await execute(request)
     }

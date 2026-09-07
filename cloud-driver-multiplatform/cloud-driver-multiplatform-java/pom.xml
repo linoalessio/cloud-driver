@@ -4,13 +4,13 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>de.lino.cloud.platforms</groupId>
-        <artifactId>cloud-driver-platforms</artifactId>
+        <groupId>de.lino.cloud.multiplatform</groupId>
+        <artifactId>cloud-driver-multiplatform</artifactId>
         <version>1.0.5</version>
     </parent>
 
-    <groupId>de.lino.cloud.platforms.rest</groupId>
-    <artifactId>cloud-driver-platforms-rest</artifactId>
+    <groupId>de.lino.cloud.multiplatform.java</groupId>
+    <artifactId>cloud-driver-multiplatform-java</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>

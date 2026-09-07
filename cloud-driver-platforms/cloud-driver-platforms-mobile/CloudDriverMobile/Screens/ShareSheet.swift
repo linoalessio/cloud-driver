@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import SwiftUI
 
 /// A batch of files/folders being shared (owner side) via `ShareSheet` - wraps `[SelectableEntry]`

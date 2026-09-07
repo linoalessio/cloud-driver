@@ -1,21 +1,32 @@
-# cloud-driver-python
+# cloud-driver-multiplatform-python
 
 A full-coverage Python SDK for `cloud-driver`'s JWT-authenticated REST/WebSocket API, so a Python
 microservice can talk to the exact same server every other client in this repo
-(`cloud-driver-platforms-rest`/`-desktop`/`-mobile`) talks to, without hand-rolling HTTP calls.
+(`cloud-driver-multiplatform-java`/`cloud-driver-multiplatform-swift`/`-desktop`/`-mobile`) talks to, without hand-rolling
+HTTP calls.
+
+**Moved, then renamed (2026-09-07)**: this module used to live at the repo root as
+`cloud-driver-python`; it first moved to `cloud-driver-multiplatform/cloud-driver-python`
+(alongside its new Java/Swift siblings), then - the same day - was renamed again to its current
+name/path, `cloud-driver-multiplatform/cloud-driver-multiplatform-python`, alongside its Java
+(`cloud-driver-multiplatform-java`) and Swift (`cloud-driver-multiplatform-swift`) siblings — one
+client SDK per ecosystem, all three talking to the same REST/WebSocket API. Nothing about the
+package itself changed (same importable package name, `cloud_driver_client`, same PyPI
+distribution name `cloud-driver-client`, same `pyproject.toml`), only its location/directory name
+in the repo.
 
 **Not part of the Maven reactor** - like `cloud-driver-platforms-desktop`/`-mobile`, this is a
 client-side module in a different ecosystem (Python, not Java/Kotlin/Swift) with its own build
-tooling (`pyproject.toml`/`pip`, not Maven). It is deliberately **not** listed in the root
-`pom.xml`'s `<modules>`, so `mvn clean install` never touches it. It talks to the server purely
-over HTTP/WebSocket - it does not depend on, and cannot depend on, `cloud-driver-api`/`-auth`/
-`-plugin` (those are JVM-only), the same boundary `cloud-driver-platforms-rest` documents for
-itself.
+tooling (`pyproject.toml`/`pip`, not Maven). It is deliberately **not** listed in
+`cloud-driver-multiplatform/pom.xml`'s `<modules>`, so `mvn clean install` never touches it. It
+talks to the server purely over HTTP/WebSocket - it does not depend on, and cannot depend on,
+`cloud-driver-api`/`-auth`/`-plugin` (those are JVM-only), the same boundary `cloud-driver-multiplatform-java`
+documents for itself.
 
 ## Install
 
 ```bash
-cd cloud-driver-python
+cd cloud-driver-multiplatform/cloud-driver-multiplatform-python
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .                 # core SDK (httpx + pydantic only)
 pip install -e ".[live]"         # + GET /ws/updates live-push support
@@ -77,7 +88,7 @@ cloud-driver-client[live]`).
   (see `async_client.py`'s own docstring for why duplicating ~40 endpoints across two independent
   implementations was rejected in favor of a `asyncio.to_thread` wrapper).
 - **Automatic token refresh.** A `401` on any authenticated call transparently triggers one
-  `POST /auth/refresh` + retry, mirroring `cloud-driver-platforms-rest`'s `ApiClient` - see
+  `POST /auth/refresh` + retry, mirroring `cloud-driver-multiplatform-java`'s `ApiClient` - see
   CLAUDE.md's "Refresh tokens" section for the server-side contract (single-use, rotated on every
   refresh) this relies on.
 - **Typed errors.** Every non-2xx response raises a status-code-specific `ApiException` subclass
@@ -87,7 +98,7 @@ cloud-driver-client[live]`).
   file is never fully materialized as a Python object unless `download_bytes`/`upload_bytes` is
   used deliberately.
 - **Hand-mirrored models, not generated.** `models.py` mirrors the server's JSON DTOs by hand, the
-  same convention `cloud-driver-platforms-rest`'s `Dtos.java` documents for itself (there is no
+  same convention `cloud-driver-multiplatform-java`'s `Dtos.java` documents for itself (there is no
   OpenAPI spec to generate from) - keep it in sync by hand when a server-side DTO shape changes.
 
 ## Testing

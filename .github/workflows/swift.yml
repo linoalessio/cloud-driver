@@ -8,11 +8,13 @@ on:
     branches: [ "master" ]
     paths:
       - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-swift/**'
       - '.github/workflows/swift.yml'
   pull_request:
     branches: [ "master" ]
     paths:
       - 'cloud-driver-platforms/cloud-driver-platforms-mobile/**'
+      - 'cloud-driver-multiplatform/cloud-driver-multiplatform-swift/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
@@ -20,6 +22,11 @@ on:
 # Package Manager executable/library - so this builds it with xcodebuild against a generated
 # Xcode project rather than `swift build`/`swift test`. See that module's own README/the root
 # CLAUDE.md ("cloud-driver-platforms-mobile") for the full picture.
+#
+# Its networking/session layer, cloud-driver-multiplatform-swift, is a *local* Swift Package
+# Manager path dependency (declared in project.yml, resolved straight off this same checkout, no
+# separate `swift build`/`swift test` step needed here) - a change to either module's source
+# should re-run this same build, hence both being listed in the `paths:` filter above.
 
 jobs:
   build:

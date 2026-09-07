@@ -13,19 +13,25 @@
     <artifactId>cloud-driver-platforms</artifactId>
     <packaging>pom</packaging>
 
-    <modules>
-        <module>cloud-driver-platforms-rest</module>
-    </modules>
+    <!-- No <modules> left: cloud-driver-platforms-rest, this aggregator's one-time Maven child,
+         moved out to cloud-driver-multiplatform/cloud-driver-multiplatform-java (renamed in the move) - see
+         that module's own README/CLAUDE.md's own "cloud-driver-multiplatform" section for why.
+         This pom is left in place, packaging=pom with no children, purely as a directory anchor
+         for its two remaining (non-Maven) grandchildren below; it contributes nothing to the
+         reactor build itself anymore. -->
 
     <!-- cloud-driver-platforms-desktop lives in this same parent directory but is a Gradle
          (Kotlin Multiplatform/Compose Desktop) build, not a Maven module - it is deliberately
          NOT listed here. Build it separately: `cd cloud-driver-platforms-desktop && ./gradlew run`.
-         It depends on cloud-driver-platforms-rest, so `mvn install` that module first. -->
+         It depends on cloud-driver-multiplatform-java (cloud-driver-multiplatform/cloud-driver-multiplatform-java), so
+         `mvn install` that module first. -->
 
     <!-- cloud-driver-platforms-mobile lives in this same parent directory but is a native iOS
          (Swift/SwiftUI, Xcode) app - not Maven, not Gradle, not Kotlin at all, and deliberately
-         NOT listed here. It has its own hand-written HTTP client and depends on no other module
-         in this repo (Maven-built or otherwise). Build/run it via Xcode - see its own README. -->
+         NOT listed here. Its networking/session layer now lives in the sibling Swift package
+         cloud-driver-multiplatform/cloud-driver-multiplatform-swift (a local SPM path dependency, declared in
+         project.yml) rather than being hand-written inside this module - this module itself is
+         GUI (SwiftUI screens/view models) only. Build/run it via Xcode - see its own README. -->
 
 
 </project>

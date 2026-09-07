@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import SwiftUI
 
 /// Read-only browsing inside a folder reached via a share (pushed from `SharedWithMeView`, or

@@ -12,6 +12,15 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.20
+  # This app's networking/session layer (APIClient, Dtos, SessionManager, KeychainTokenStore) -
+  # extracted 2026-09-07 out of this app's own "Networking" folder into a standalone local Swift
+  # package, so this module stays GUI-only (the same "networking library lives outside the GUI
+  # app" split cloud-driver-platforms-desktop already has via cloud-driver-multiplatform-java).
+  # A local path dependency, not a git URL - xcodegen/Xcode resolve it directly from disk, no
+  # separate install step needed (unlike cloud-driver-multiplatform-java, which needs `mvn
+  # install` first).
+  CloudDriverSwift:
+    path: ../../cloud-driver-multiplatform/cloud-driver-multiplatform-swift
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -26,6 +35,7 @@ targets:
       - path: CloudDriverMobile
     dependencies:
       - package: ZIPFoundation
+      - package: CloudDriverSwift
     settings:
       base:
         PRODUCT_NAME: CloudDriverMobile

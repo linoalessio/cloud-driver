@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// The access + refresh token pair persisted between launches - the iOS counterpart to
-/// `cloud-driver-platforms-rest`'s `SessionManager`/`TokenStore`, which on desktop shells out to
+/// `cloud-driver-maven`'s `SessionManager`/`TokenStore`, which on desktop shells out to
 /// the OS keychain (`security`/`secret-tool`/DPAPI). Here there's a first-class API for that: the
 /// `Security` framework's keychain services, no subprocess involved.
 struct StoredSession: Codable {

@@ -170,8 +170,9 @@ same commit - an extension jar is unshaded and resolves shared types off the hos
 own classpath (see the root `CLAUDE.md`'s "Deployment" section).
 
 Once registered and running, a client talks to it purely over HTTP - see
-`cloud-driver-platforms-rest`'s `ApiClient` for a full Java HTTP client built against these exact
-routes, or call the two-step registration flow directly:
+`cloud-driver-multiplatform/cloud-driver-multiplatform-java`'s `ApiClient` (formerly `cloud-driver-platforms-rest`)
+for a full Java HTTP client built against these exact routes, or call the two-step registration
+flow directly:
 
 ```
 curl -X POST https://api.cloud-driver.de/auth/register \

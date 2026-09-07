@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import Foundation
 
 /// Whether `contentType` (a file's server-assigned content type) identifies a ZIP archive -

@@ -29,7 +29,9 @@
 # app image itself (see step 2's own output path) is still there to install/run by hand.
 #
 # Two build steps, always in this order, before any installing happens:
-#   1. Maven builds and installs this app's one in-repo dependency, cloud-driver-platforms-rest,
+#   1. Maven builds and installs this app's one in-repo dependency, cloud-driver-multiplatform-java
+#      (cloud-driver-multiplatform/cloud-driver-multiplatform-java, formerly cloud-driver-platforms-rest,
+#      then briefly cloud-driver-maven),
 #      into the local Maven repository (~/.m2) - the Gradle build below resolves it from there
 #      (see settings.gradle.kts's mavenLocal()), since that module is Maven-built, not part of
 #      any Gradle build.
@@ -56,12 +58,12 @@ MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$MODULE_DIR/../.." && pwd)"
 APP_NAME="CloudDriver"
 
-echo "==> [1/3] Building cloud-driver-platforms-rest with Maven..."
+echo "==> [1/3] Building cloud-driver-multiplatform-java with Maven..."
 if ! command -v mvn >/dev/null 2>&1; then
     echo "error: Maven ('mvn') not found on PATH - install it first (see this repo's CLAUDE.md, 'Build' section)." >&2
     exit 1
 fi
-( cd "$REPO_ROOT" && mvn -q -pl cloud-driver-platforms/cloud-driver-platforms-rest -am install -DskipTests )
+( cd "$REPO_ROOT" && mvn -q -pl cloud-driver-multiplatform/cloud-driver-multiplatform-java -am install -DskipTests )
 
 echo "==> [2/3] Building the native app image with Gradle..."
 cd "$MODULE_DIR"

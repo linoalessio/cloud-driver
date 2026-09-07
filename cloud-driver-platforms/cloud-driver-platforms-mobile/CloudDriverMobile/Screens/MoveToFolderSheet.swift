@@ -1,3 +1,4 @@
+import CloudDriverSwift
 import SwiftUI
 
 /// A batch of files/folders awaiting a destination in `MoveToFolderSheet` - wraps `[SelectableEntry]`

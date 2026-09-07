@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.lino.cloud</groupId>
+        <artifactId>cloud-driver</artifactId>
+        <version>1.0.5</version>
+    </parent>
+
+    <groupId>de.lino.cloud.multiplatform</groupId>
+    <artifactId>cloud-driver-multiplatform</artifactId>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>cloud-driver-multiplatform-java</module>
+    </modules>
+
+    <!-- cloud-driver-multiplatform-python lives in this same directory but is a plain Python/pip
+         package (pyproject.toml, no pom.xml) - not a Maven module, deliberately NOT listed here.
+         See its own README.md; versioned independently of this reactor
+         (shell/release-and-package.sh bumps its pyproject.toml/__init__.py directly, not via the
+         versions-maven-plugin pass that bumps every module actually listed above). -->
+
+    <!-- cloud-driver-multiplatform-swift lives in this same directory but is a plain Swift
+         Package Manager library (Package.swift, no pom.xml) - not a Maven module, deliberately
+         NOT listed here. Consumed by cloud-driver-platforms-mobile as a local SPM package
+         dependency (see that module's project.yml), not resolved through Maven/mavenLocal() the
+         way cloud-driver-platforms-desktop resolves cloud-driver-multiplatform-java. -->
+
+</project>

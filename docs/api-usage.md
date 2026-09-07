@@ -12,10 +12,11 @@ two don't have to be cross-referenced by hand just to write a first working call
 |---|---|
 | Build a new backend feature that runs inside the `cloud-driver-bootstrap` process | The in-process Java API — [§1](#1-in-process-java-api-same-jvm) |
 | Talk to a running deployment from any language, over the network | The REST API — [§2](#2-the-rest-api-over-http) |
-| Talk to it from a JVM app without hand-rolling HTTP | `cloud-driver-platforms-rest`'s `ApiClient` — [§3](#3-java-client-library-cloud-driver-platforms-rest) |
+| Talk to it from a JVM app without hand-rolling HTTP | `cloud-driver-multiplatform-java`'s `ApiClient` — [§3](#3-java-client-library-cloud-driver-multiplatform-java) |
 | Talk to it from the Kotlin/Compose desktop app's own code | `CloudDriverClient` — [§4](#4-kotlin-desktop-client) |
-| Talk to it from the Swift/iOS app's own code | `APIClient` — [§5](#5-swift-ios-client) |
+| Talk to it from the Swift/iOS app's own code | `cloud-driver-multiplatform-swift`'s `APIClient` — [§5](#5-swift-ios-client) |
 | Inspect/administer a running deployment as an operator | The interactive terminal — [§6](#6-operator-terminal-commands) |
+| Talk to it from a Python microservice | `cloud-driver-multiplatform-python`'s `CloudDriverClient` — see [that module's README](../cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) |
 
 Everything in §3–§5 ultimately calls the same REST routes described in §2; they exist so three very
 different runtimes (plain JVM, Kotlin Multiplatform/Compose Desktop, Swift/SwiftUI) don't each have
@@ -311,10 +312,12 @@ one, e.g. a browser) pushes `{"table","operation","id"}` whenever the connected 
 changes elsewhere — another device, a share, a live-push-triggering database write. See
 `cloud-driver-extensions-watcher/README.md` for what triggers it server-side.
 
-## 3. Java client library (`cloud-driver-platforms-rest`)
+## 3. Java client library (`cloud-driver-multiplatform-java`)
 
 For any JVM app that would rather not hand-roll HTTP, retry-on-401, and OS keychain access. Depends
-on nothing else in this repo (see `cloud-driver-platforms-rest/README.md`).
+on nothing else in this repo (see `cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md`). Lives
+under `cloud-driver-multiplatform` — the Maven-built sibling of `cloud-driver-multiplatform-swift` (Swift) and
+`cloud-driver-multiplatform-python` (Python), formerly named `cloud-driver-platforms-rest`.
 
 ```java
 import de.lino.cloud.platform.rest.api.ApiClient;
@@ -349,9 +352,9 @@ try (ApiClient apiClient = new ApiClient("https://api.cloud-driver.de", "https:/
 ```
 
 Every method above also has an `*Async` form returning `CompletableFuture<T>` (`loginAsync`,
-`uploadFileAsync`, `listFilesAsync`, ...) — see `cloud-driver-platforms-rest/README.md`'s full
-method list for uploads/downloads streamed to/from disk with progress callbacks, cursor-paginated
-listings, and the admin/audit-log routes.
+`uploadFileAsync`, `listFilesAsync`, ...) — see `cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md`'s
+full method list for uploads/downloads streamed to/from disk with progress callbacks,
+cursor-paginated listings, and the admin/audit-log routes.
 
 ## 4. Kotlin desktop client
 
@@ -386,8 +389,10 @@ admin, metrics).
 
 ## 5. Swift iOS client
 
-`cloud-driver-platforms-mobile` has its own, independent networking layer (a Swift `actor`, no
-shared code with the JVM client — see that module's README for why) built on `async`/`await`:
+`cloud-driver-platforms-mobile`'s networking/session layer is `cloud-driver-multiplatform-swift`
+(`cloud-driver-multiplatform/cloud-driver-multiplatform-swift`, a local Swift Package Manager dependency — no
+shared code with the JVM client, see that module's README for why), a Swift `actor` built on
+`async`/`await`:
 
 ```swift
 let client = APIClient(baseURL: URL(string: "https://api.cloud-driver.de")!)

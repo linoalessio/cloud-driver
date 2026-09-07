@@ -12,9 +12,11 @@ that module's own `README.md` (linked from the [root README](../README.md)'s mod
 | `cloud-driver-plugin` | Backend implementations | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-plugin/README.md`](../cloud-driver-plugin/README.md) |
 | `cloud-driver-bootstrap` | Backend entry point | One shaded, runnable jar (`java -jar`) | [`cloud-driver-bootstrap/README.md`](../cloud-driver-bootstrap/README.md) |
 | `cloud-driver-extensions-*` | Backend feature modules (REST API, Postgres change watcher, terminal, backup, metrics) | Unshaded jars, loaded into the bootstrap process from a folder at startup | [`cloud-driver-extensions/README.md`](../cloud-driver-extensions/README.md) |
-| `cloud-driver-platforms-rest` | Client networking library | Consumed by the desktop app only | [README](../cloud-driver-platforms/cloud-driver-platforms-rest/README.md) |
 | `cloud-driver-platforms-desktop` | Desktop client app | Native installer (macOS/Windows/Linux) | [README](../cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
-| `cloud-driver-platforms-mobile` | Mobile client app (iOS) | iOS app build | [README](../cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
+| `cloud-driver-platforms-mobile` | Mobile client app (iOS) — GUI only | iOS app build | [README](../cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
+| `cloud-driver-multiplatform-java` | Client networking library (Java) | Consumed by the desktop app only | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) |
+| `cloud-driver-multiplatform-swift` | Client networking library (Swift) | Consumed by the mobile app only | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-swift/README.md) |
+| `cloud-driver-multiplatform-python` | Client SDK (Python) | Standalone `pip` package | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) |
 
 ## How the backend actually runs
 
@@ -89,9 +91,11 @@ cloud-driver-api  ←  cloud-driver-auth  ←  cloud-driver-plugin  ←  cloud-d
 
 Never add a dependency the other way — `cloud-driver-api` must never depend on `cloud-driver-auth`
 or `cloud-driver-plugin`, and `cloud-driver-auth` must never depend on `cloud-driver-plugin`.
-`cloud-driver-platforms-rest`/`cloud-driver-platforms-desktop`/`cloud-driver-platforms-mobile` sit
-entirely outside this chain — none of them depend on any server-side module, only on each other
-(desktop depends on the REST client library; mobile has its own, independent networking layer).
+`cloud-driver-multiplatform-java`/`cloud-driver-multiplatform-swift`/`cloud-driver-multiplatform-python`/`cloud-driver-platforms-desktop`/
+`cloud-driver-platforms-mobile` sit entirely outside this chain — none of them depend on any
+server-side module, only on each other (desktop depends on `cloud-driver-multiplatform-java`; mobile depends on
+`cloud-driver-multiplatform-swift`; the Python SDK depends on neither, being a separate-ecosystem client of the
+same HTTP/WebSocket API).
 
 ## Data handling
 

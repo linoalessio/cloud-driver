@@ -46,10 +46,11 @@ separate `extensions/` folder placed next to the jar at runtime — build those 
 ## 3. Run the desktop app
 
 The desktop app is a Gradle project (Kotlin Multiplatform / Compose Desktop), not a Maven module,
-and depends on the REST client library resolved from the local Maven repository:
+and depends on `cloud-driver-multiplatform-java` (the Java REST client library) resolved from the local Maven
+repository:
 
 ```
-mvn -pl cloud-driver-platforms/cloud-driver-platforms-rest -am install
+mvn -pl cloud-driver-multiplatform/cloud-driver-multiplatform-java -am install
 cd cloud-driver-platforms/cloud-driver-platforms-desktop
 ./gradlew run
 ```
@@ -65,7 +66,11 @@ See the desktop app's own README for platform-specific installer notes.
 ## 4. Run the mobile app
 
 The mobile app is a plain Xcode project, generated (not hand-maintained) from a committed
-specification file:
+specification file. Its networking/session layer is `cloud-driver-multiplatform-swift`
+(`cloud-driver-multiplatform/cloud-driver-multiplatform-swift`), a local Swift Package Manager library
+dependency declared by path in `project.yml` — `xcodegen generate`/Xcode resolve it automatically,
+no separate install step needed (unlike `cloud-driver-multiplatform-java`, there is nothing to `mvn install`
+first):
 
 ```
 cd cloud-driver-platforms/cloud-driver-platforms-mobile
@@ -74,7 +79,8 @@ open CloudDriverMobile.xcodeproj
 ```
 
 Build and run from Xcode against a simulator or a real device. Requires full Xcode; regenerate the
-project (`xcodegen generate`) after adding, removing, or renaming any source file.
+project (`xcodegen generate`) after adding, removing, or renaming any source file in either this
+module or `cloud-driver-multiplatform-swift`.
 
 ## Verifying the backend is reachable
 
