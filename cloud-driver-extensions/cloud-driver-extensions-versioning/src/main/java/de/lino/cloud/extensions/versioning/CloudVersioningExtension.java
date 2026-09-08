@@ -48,13 +48,16 @@ public class CloudVersioningExtension extends Extension {
     /** Prints a confirmation once {@link #onLoading()} has published the versioning service and started the purge scheduler. */
     @Override
     public void onRunning(final String[] args) {
-        this.cloudDriver().getTerminal().displayApproved("&dFile versioning &bready &7- capturing a version on every content replacement");
+        this.cloudDriver().getTerminal().displayApproved("&3File versioning &bready &7- capturing a version on every content replacement");
     }
 
     /** Shuts {@link #purgeScheduler} down, if it was ever built. */
     @Override
     public void onEnding() {
-        if (this.purgeScheduler != null) this.purgeScheduler.shutdown();
+        if (this.purgeScheduler != null) {
+            this.purgeScheduler.shutdown();
+            this.cloudDriver().getTerminal().displayApproved("&3File versioning endpoint &7successfully &cclosed&7.");
+        }
     }
 
     /**

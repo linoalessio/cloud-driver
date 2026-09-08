@@ -98,7 +98,7 @@ public class CloudThumbnailsExtension extends Extension {
     /** Prints a confirmation once {@link #onLoading()} has registered {@link #listener}. */
     @Override
     public void onRunning(final String[] args) {
-        this.cloudDriver().getTerminal().displayApproved("&dThumbnail generation &bready &7- watching for new image/PDF uploads");
+        this.cloudDriver().getTerminal().displayApproved("&3Thumbnail generation &bready &7- watching for new image/PDF uploads");
     }
 
     /** Unregisters {@link #listener} and shuts {@link #executor} down. */

@@ -73,7 +73,7 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onRunning(String[] args) {
 
-        this.cloudDriver().getTerminal().displayApproved("&dRest endpoint &bopened &7and listening on port &b&l%s", REST_SERVER_PORT);
+        this.cloudDriver().getTerminal().displayApproved("&3Rest endpoint &bopened &7and listening on port &b&l%s", REST_SERVER_PORT);
 
     }
 
@@ -95,8 +95,10 @@ public class CloudRestExtension extends Extension {
     @Override
     public void onEnding() {
 
-        if (REST_FACTORY != null) REST_FACTORY.stop();
-        this.cloudDriver().getTerminal().displayApproved("&dRest server &7connection successfully &cclosed&7.");
+        if (REST_FACTORY != null) {
+            this.cloudDriver().getTerminal().displayApproved("&3Rest endpoint &7successfully &cclosed&7.");
+            REST_FACTORY.stop();
+        }
 
     }
 

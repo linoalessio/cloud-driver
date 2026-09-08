@@ -78,7 +78,7 @@ public class CloudScanExtension extends Extension {
     /** Prints a confirmation once {@link #onLoading()} has registered {@link #listener}. */
     @Override
     public void onRunning(final String[] args) {
-        this.cloudDriver().getTerminal().displayApproved("&dContent scanning &bready &7- watching for new uploads to scan via clamd");
+        this.cloudDriver().getTerminal().displayApproved("&3Content scanning &bready &7- watching for new uploads to scan via clamd");
     }
 
     /** Unregisters {@link #listener} and shuts {@link #contentScanService} down. */
@@ -104,6 +104,7 @@ public class CloudScanExtension extends Extension {
         }
         if (this.contentScanService != null) {
             this.contentScanService.shutdown();
+            this.cloudDriver().getTerminal().displayApproved("&3Scanning endpoint &7successfully &cclosed&7.");
         }
     }
 

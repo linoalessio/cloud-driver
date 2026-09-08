@@ -134,14 +134,16 @@ public class CloudMetricsExtension extends Extension {
      */
     @Override
     public void onRunning(String[] args) {
-        this.cloudDriver().getTerminal().displayApproved(
-                "&dMetrics endpoint &bopened &7and listening on port &b&l%s &7(&b/metrics&7)", this.metricsPort);
+        this.cloudDriver().getTerminal().displayApproved("&3Metrics endpoint &bopened &7and listening on port &b&l%s &7(&b/metrics&7)", this.metricsPort);
     }
 
     /** Stops {@link MetricsHttpServer}, if it was ever started. */
     @Override
     public void onEnding() {
-        if (this.httpServer != null) this.httpServer.stop();
+        if (this.httpServer != null) {
+            this.httpServer.stop();
+            this.cloudDriver().getTerminal().displayApproved("&3Metrics endpoint &7successfully &cclosed&7.");
+        }
     }
 
     /**

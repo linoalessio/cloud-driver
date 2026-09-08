@@ -909,6 +909,18 @@ public final class CloudUserService implements ICloudUserService {
         this.updateCloudUserBytesUsage(authUserId, realSizeBytes);
         recordMetric(MetricsRecorder::recordUploadSuccess);
 
+        // Fixed a real bug (2026-09-08, reported as "uploaded file never shows up in Search"):
+        // this method used to skip every one of uploadFile(...)'s own audit/search/webhook hooks
+        // entirely - a presigned upload (what the desktop/mobile clients always try first, see
+        // AWS_S3_IMPL.md section 8) persisted and counted against quota correctly, but was
+        // permanently invisible to the audit log, the search index, and any registered webhook.
+        // Content itself is never available here (it went straight to S3, this server never saw
+        // the bytes) - indexFileForSearch is called with content = null, so the file is still
+        // indexed by name/folder, just without a text extract.
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, fileId, null));
+        indexFileForSearch(authUserId, storedFile, folderId, null);
+        dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, fileId);
+
         // Direct-transfer (presigned) content is never scanned - see ContentScanService's own
         // Javadoc: content scanning only triggers off a server-mediated upload's own INSERT.
         return new StoredFileSummary(fileId, fileName, storedFile.contentType(), realSizeBytes,
@@ -2183,13 +2195,16 @@ public final class CloudUserService implements ICloudUserService {
      * @param authUserId the owning account
      * @param storedFile the file's current state, already persisted
      * @param folderId the folder the file was placed in, or {@code null} for the root
-     * @param content the file's raw, uncompressed bytes, to extract indexable text from
+     * @param content the file's raw, uncompressed bytes, to extract indexable text from - {@code
+     * null} if this server never had the bytes in hand at all (a direct-transfer/presigned upload,
+     * see {@link #completePresignedUpload}), in which case the file is still indexed by name/
+     * folder, just with no text extract
      */
     private static void indexFileForSearch(final String authUserId, final StoredFile storedFile, final String folderId, final byte[] content) {
         try {
             final SearchIndexService searchIndexService = CloudDriver.getInstance().getServiceContainer().getSearchIndexService();
             if (searchIndexService == null) return;
-            final String extractedText = extractIndexableText(storedFile.contentType(), content);
+            final String extractedText = content == null ? null : extractIndexableText(storedFile.contentType(), content);
             searchIndexService.indexFile(new SearchDocument(authUserId, storedFile.fileId(), storedFile.fileName(), folderId, extractedText));
         } catch (final RuntimeException ignored) {
             // Best-effort only - see this method's own Javadoc.

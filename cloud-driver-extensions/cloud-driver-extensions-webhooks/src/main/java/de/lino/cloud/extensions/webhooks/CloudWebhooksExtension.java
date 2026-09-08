@@ -29,13 +29,16 @@ public class CloudWebhooksExtension extends Extension {
     /** Prints a confirmation once {@link #onLoading()} has published the webhook service. */
     @Override
     public void onRunning(final String[] args) {
-        this.cloudDriver().getTerminal().displayApproved("&dWebhooks &bready &7- dispatching upload/delete/share events to subscribed URLs");
+        this.cloudDriver().getTerminal().displayApproved("&3Webhooks &bready &7- dispatching upload/delete/share events to subscribed URLs");
     }
 
     /** Shuts {@link #webhookService}'s dispatch workers down, if it was ever built. */
     @Override
     public void onEnding() {
-        if (this.webhookService != null) this.webhookService.shutdown();
+        if (this.webhookService != null) {
+            this.cloudDriver().getTerminal().displayApproved("&3Webhooks endpoint &7successfully &cclosed&7.");
+            this.webhookService.shutdown();
+        }
     }
 
     /**
