@@ -54,7 +54,7 @@ private fun AuthCard(title: String, content: @Composable ColumnScope.() -> Unit)
                 modifier = Modifier.size(72.dp),
             )
             Text(
-                "cloud-driver",
+                "CloudDriver",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onBackground,

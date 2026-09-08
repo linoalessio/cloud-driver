@@ -311,6 +311,13 @@ public struct ErrorResponse: Decodable {
     public let title: String
 }
 
+/// Response of `GET /cloudUsers/exists?email=` - answers "does any account exist under this
+/// address", not scoped to the caller's own account. Used to live-check a grantee's address
+/// before sharing, the same way `cloud-driver-platforms-desktop`'s `ShareDialog` does.
+public struct EmailExistsResponse: Decodable {
+    public let exists: Bool
+}
+
 /// Shape of one entry in `GET /search`'s response array - a filename/content match against the
 /// caller's own account, scoped per-account (a search never matches another account's files).
 public struct SearchResultResponse: Decodable, Identifiable, Hashable {

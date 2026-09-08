@@ -2518,6 +2518,172 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/public-link/" + encodedToken), true).DELETE().build();
     }
 
+    /**
+     * {@code GET /public/files/{token}}: downloads a publicly-linked file's content straight to
+     * {@code destination}, the same {@link BodyHandlers#ofFile}-based streaming shape {@link
+     * #downloadFileToPath(String, Path)} uses for an owned file. <b>Completely unauthenticated -
+     * no {@code Authorization} header is attached</b>, since this route needs none and this
+     * client may not even have an active session; reachable by anyone holding {@code token},
+     * the same as pasting the link into a browser.
+     *
+     * <p>{@code destination} must not already exist - same contract as {@link
+     * #downloadFileToPath(String, Path)}.
+     *
+     * @param token       a token from a {@link PublicFileLinkSummaryResponse}, or handed to this
+     *                    client by some other means (e.g. pasted from a shared URL)
+     * @param destination the local path to write the file to; must not already exist
+     * @return {@code destination}, unchanged, once the file has been fully written
+     * @throws ApiException {@code 404} if {@code token} doesn't exist, has expired, or its
+     *                       underlying file was deleted, or any other failure
+     */
+    public Path downloadPublicFile(final String token, final Path destination) throws ApiException {
+        final HttpRequest request = this.downloadPublicFileRequest(token);
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofFile(destination));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return requireSuccessfulFileDownload(response);
+    }
+
+    /** Async form of {@link #downloadPublicFile(String, Path)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Path> downloadPublicFileAsync(final String token, final Path destination) {
+        final HttpRequest request = this.downloadPublicFileRequest(token);
+        return this.httpClient.sendAsync(request, BodyHandlers.ofFile(destination))
+                .thenApply(response -> {
+                    try {
+                        return requireSuccessfulFileDownload(response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    /** Builds the unauthenticated {@code GET /public/files/{token}} request against {@link #apiBaseUrl}. */
+    private HttpRequest downloadPublicFileRequest(final String token) {
+        final String encodedToken = URLEncoder.encode(token, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/public/files/" + encodedToken), false)
+                .timeout(TRANSFER_TIMEOUT)
+                .GET()
+                .build();
+    }
+
+    // --- file content replace (versioning capture + optional sync precondition) -----------------
+
+    /**
+     * {@code PUT /files/{id}/content}: replaces {@code fileId}'s content outright. The server
+     * automatically captures whatever content was live immediately beforehand as a fresh,
+     * restorable version first (see {@link #listFileVersions(String)}) - a version is never lost,
+     * only ever superseded.
+     *
+     * <p>{@code expectedUpdatedAtEpochMillis}, if given, is an optimistic-concurrency precondition
+     * against the file's own {@link StoredFileSummaryResponse#updatedAtEpochMilli()} at the time
+     * this write was planned. If the file has genuinely been updated by someone else since (a
+     * different device, another share grantee with {@code EDIT} access) - i.e. the precondition no
+     * longer holds - the canonical file is left completely untouched and {@code content} is instead
+     * persisted as a brand-new "conflicted copy" file in the same folder, surfaced via {@link
+     * SyncConflictException#conflictedCopy()} rather than silently overwriting or discarding either
+     * side. Passing {@code null} skips this check entirely (unconditional overwrite, the same
+     * behavior every route in this class had before this precondition existed).
+     *
+     * @param fileId                        the file whose content to replace
+     * @param content                       the new content, sent as the request body verbatim
+     * @param expectedUpdatedAtEpochMillis  the version token to write against, or {@code null} to
+     *                                      overwrite unconditionally
+     * @return the file's updated summary - the canonical file's, unless a {@link
+     * SyncConflictException} is thrown instead
+     * @throws SyncConflictException a subtype of {@link ApiException} ({@code 409}) thrown instead
+     *                                of returning normally when {@code expectedUpdatedAtEpochMillis}
+     *                                didn't match - see above
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't reachable by the
+     *                       caller, {@code 401} if not logged in / token expired, {@code 413} if
+     *                       this would exceed the account's quota, {@code 403} if a share grantee
+     *                       attempts this without {@code EDIT} permission, or any other failure
+     */
+    public StoredFileSummaryResponse replaceFileContent(final String fileId, final byte[] content,
+                                                         final Long expectedUpdatedAtEpochMillis) throws ApiException {
+        final HttpRequest request = this.replaceFileContentRequest(fileId, content, expectedUpdatedAtEpochMillis);
+        final HttpResponse<InputStream> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return parseReplaceFileContentResponse(request, response);
+    }
+
+    /** Async form of {@link #replaceFileContent(String, byte[], Long)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileSummaryResponse> replaceFileContentAsync(final String fileId, final byte[] content,
+                                                                                 final Long expectedUpdatedAtEpochMillis) {
+        final HttpRequest request = this.replaceFileContentRequest(fileId, content, expectedUpdatedAtEpochMillis);
+        return this.httpClient.sendAsync(request, BodyHandlers.ofInputStream())
+                .thenApply(response -> {
+                    try {
+                        return parseReplaceFileContentResponse(request, response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    /**
+     * Builds the {@code PUT /files/{id}/content} request against {@link #apiBaseUrl}, with {@code
+     * content} as a raw byte-array body - deliberately not routed through {@link #send(HttpRequest,
+     * Class)}/{@link #sendAsync(HttpRequest, Class)}, since a {@code 409} here carries a structured
+     * {@link StoredFileSummaryResponse} body {@link #parseReplaceFileContentResponse} needs to
+     * surface via {@link SyncConflictException} rather than have {@link #extractErrorMessage}
+     * discard it - the same "bypass the shared send path for custom status handling" precedent
+     * {@link #getThumbnail(String)} already established (and, like that method, this therefore does
+     * not get the transparent 401-refresh-and-retry {@link #send(HttpRequest, Type)} provides).
+     */
+    private HttpRequest replaceFileContentRequest(final String fileId, final byte[] content, final Long expectedUpdatedAtEpochMillis) {
+        final String query = "/files/" + fileId + "/content"
+                + (expectedUpdatedAtEpochMillis == null ? "" : "?expectedUpdatedAt=" + expectedUpdatedAtEpochMillis);
+        return this.requestBuilder(this.apiBaseUrl.resolve(query), true)
+                .header("Content-Type", "application/octet-stream")
+                .timeout(TRANSFER_TIMEOUT)
+                .method("PUT", BodyPublishers.ofByteArray(content))
+                .build();
+    }
+
+    /**
+     * Shared status-code handling for {@link #replaceFileContent}/{@link #replaceFileContentAsync} -
+     * see {@link #replaceFileContentRequest} for why this doesn't go through {@link #parseResponse}.
+     */
+    private static StoredFileSummaryResponse parseReplaceFileContentResponse(final HttpRequest request,
+                                                                              final HttpResponse<InputStream> response) throws ApiException {
+        final int status = response.statusCode();
+        try (InputStream body = response.body()) {
+            if (status >= 200 && status < 300) {
+                try (Reader reader = new InputStreamReader(body, StandardCharsets.UTF_8)) {
+                    return GSON.fromJson(reader, StoredFileSummaryResponse.class);
+                }
+            }
+            if (status == 409) {
+                final StoredFileSummaryResponse conflictedCopy;
+                try (Reader reader = new InputStreamReader(body, StandardCharsets.UTF_8)) {
+                    conflictedCopy = GSON.fromJson(reader, StoredFileSummaryResponse.class);
+                }
+                throw new SyncConflictException(
+                        "content write conflicted with a newer version already on the server - "
+                                + "the submitted content was preserved as a new file instead of being applied",
+                        conflictedCopy);
+            }
+            throw new ApiException(status, extractErrorMessage(body), null);
+        } catch (final IOException e) {
+            throw new ApiException(0, "I/O error reading response from " + request.uri(), e);
+        }
+    }
+
     // --- file version history ---------------------------------------------
 
     /**
@@ -3204,8 +3370,13 @@ public final class ApiClient implements AutoCloseable {
         this.executor.shutdown();
     }
 
-    /** Thrown for any non-2xx response or transport failure; {@link #statusCode} is {@code 0} for the latter. */
-    public static final class ApiException extends Exception {
+    /**
+     * Thrown for any non-2xx response or transport failure; {@link #statusCode} is {@code 0} for
+     * the latter. Not {@code final} solely so {@link SyncConflictException} can extend it - every
+     * other exception this class throws is a plain {@link ApiException} instance, not a further
+     * subtype.
+     */
+    public static class ApiException extends Exception {
 
         /** The HTTP status code, or {@code 0} for a transport-level failure with no response received. */
         private final int statusCode;
@@ -3228,6 +3399,36 @@ public final class ApiClient implements AutoCloseable {
         /** @return {@code true} if this was a {@code 401 Unauthorized} - the caller should prompt for login again */
         public boolean isUnauthorized() {
             return this.statusCode == 401;
+        }
+
+    }
+
+    /**
+     * Thrown by {@link #replaceFileContent}/{@link #replaceFileContentAsync} instead of the generic
+     * {@link ApiException} when a {@code PUT /files/{id}/content}'s {@code ?expectedUpdatedAt=}
+     * optimistic-concurrency precondition didn't match - always carries {@link #statusCode()}
+     * {@code 409}. The canonical file was left untouched; {@code content} was instead persisted
+     * server-side as a brand-new, separately named "conflicted copy" file, whose summary is
+     * available via {@link #conflictedCopy()} so the caller can navigate straight to the preserved
+     * edit rather than just being told a conflict happened.
+     */
+    public static final class SyncConflictException extends ApiException {
+
+        /** The new file the server created to preserve the caller's own edit, instead of applying it to the canonical file. */
+        private final StoredFileSummaryResponse conflictedCopy;
+
+        /**
+         * @param message        a human-readable description of the conflict
+         * @param conflictedCopy the new file's summary, as returned by the server's {@code 409} body
+         */
+        SyncConflictException(final String message, final StoredFileSummaryResponse conflictedCopy) {
+            super(409, message, null);
+            this.conflictedCopy = conflictedCopy;
+        }
+
+        /** @return the new, separately named file the caller's content was preserved as, instead of overwriting the canonical file */
+        public StoredFileSummaryResponse conflictedCopy() {
+            return this.conflictedCopy;
         }
 
     }

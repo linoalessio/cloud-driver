@@ -8,6 +8,11 @@ public enum APIError: Error, LocalizedError {
     case server(status: Int, message: String)
     case decoding(Error)
     case notAuthenticated
+    /// Thrown by `replaceFileContent` when an `expectedUpdatedAtEpochMillis` precondition no
+    /// longer matches - the server left the original file untouched and instead persisted the
+    /// caller's own bytes as a new "conflicted copy" file, returned here rather than folded into
+    /// the generic `.server` case, since a caller needs the new file's own id/name to navigate to it.
+    case syncConflict(conflictedCopy: StoredFileSummaryResponse)
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +24,8 @@ public enum APIError: Error, LocalizedError {
             return "Failed to read the server's response: \(error.localizedDescription)"
         case .notAuthenticated:
             return "You're signed out - please sign in again."
+        case .syncConflict(let conflictedCopy):
+            return "Someone else changed this file first - your edit was saved as \"\(conflictedCopy.fileName)\"."
         }
     }
 }
@@ -185,6 +192,15 @@ public actor APIClient {
         return try decode(data)
     }
 
+    /// Answers "does any account exist under this address" - not scoped to the caller's own
+    /// account. A missing/blank `email` isn't possible to construct here since `email` is required.
+    public func checkCloudUserExists(email: String) async throws -> Bool {
+        let request = plainRequest("/cloudUsers/exists?email=\(email.queryEncoded())", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        let response: EmailExistsResponse = try decode(data)
+        return response.exists
+    }
+
     /// Starts an e-mail change for the caller's own (already-authenticated) account - `newEmail`
     /// isn't live yet, only `confirmEmailChange` actually applies it.
     public func requestEmailChange(newEmailAddress: String) async throws -> MessageResponse {
@@ -263,6 +279,35 @@ public actor APIClient {
     public func renameFile(fileId: String, newFileName: String) async throws {
         let request = try jsonRequest("/files/\(fileId)/rename", method: "PUT", body: RenameFileRequest(fileName: newFileName), authenticated: true)
         _ = try await execute(request)
+    }
+
+    /// Replaces `fileId`'s live content outright - the server automatically captures whatever was
+    /// live immediately beforehand as a fresh version first (section 2, `GET /files/{id}/versions`),
+    /// so this never discards history.
+    ///
+    /// `expectedUpdatedAtEpochMillis`, if given, is an optimistic-concurrency precondition (section
+    /// 10): if the file's current `updatedAtEpochMilli` no longer matches it (some other write - a
+    /// sync from another device, say - already landed first), the server leaves the original file
+    /// completely untouched and instead persists `data` as a new "conflicted copy" file in the same
+    /// folder, responding `409` with that new file's own summary - surfaced here as
+    /// `APIError.syncConflict(conflictedCopy:)` rather than a generic `.server` failure, so a caller
+    /// can navigate straight to the preserved edit instead of just being told something went wrong.
+    /// Passing `nil` (the default) always overwrites unconditionally, exactly like before this
+    /// precondition existed.
+    public func replaceFileContent(fileId: String, data: Data, expectedUpdatedAtEpochMillis: Int64? = nil) async throws -> StoredFileSummaryResponse {
+        var path = "/files/\(fileId)/content"
+        if let expectedUpdatedAtEpochMillis {
+            path += "?expectedUpdatedAt=\(expectedUpdatedAtEpochMillis)"
+        }
+        var request = plainRequest(path, method: "PUT", authenticated: true)
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        let (responseData, httpResponse) = try await execute(request, passthroughStatusCodes: [409])
+        if httpResponse.statusCode == 409 {
+            let conflictedCopy: StoredFileSummaryResponse = try decode(responseData)
+            throw APIError.syncConflict(conflictedCopy: conflictedCopy)
+        }
+        return try decode(responseData)
     }
 
     /// Fetches `fileId`'s JPEG preview thumbnail, if one has already been generated - `nil` both
@@ -716,7 +761,13 @@ public actor APIClient {
     /// authenticated request that still holds a refresh token - see this actor's own top-level
     /// documentation. `allowRefreshRetry: false` is used by every call that itself mints/rotates
     /// tokens, so a failing login/refresh/reset never recurses into its own retry path.
-    private func execute(_ request: URLRequest, allowRefreshRetry: Bool = true) async throws -> (Data, HTTPURLResponse) {
+    ///
+    /// `passthroughStatusCodes` lets a specific caller (e.g. `replaceFileContent`'s `409`
+    /// sync-conflict response) receive a non-2xx response's raw body/status instead of this method
+    /// mapping it to a generic `APIError.server` - the caller is responsible for decoding that body
+    /// itself into whatever structured shape it actually carries. Empty by default, so every other
+    /// call site's error handling is completely unchanged.
+    private func execute(_ request: URLRequest, allowRefreshRetry: Bool = true, passthroughStatusCodes: Set<Int> = []) async throws -> (Data, HTTPURLResponse) {
         let data: Data
         let response: URLResponse
         do {
@@ -736,9 +787,9 @@ public actor APIClient {
             if let accessToken {
                 retried.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             }
-            return try await execute(retried, allowRefreshRetry: false)
+            return try await execute(retried, allowRefreshRetry: false, passthroughStatusCodes: passthroughStatusCodes)
         }
-        guard (200..<300).contains(httpResponse.statusCode) else {
+        guard (200..<300).contains(httpResponse.statusCode) || passthroughStatusCodes.contains(httpResponse.statusCode) else {
             let message = (try? decoder.decode(ErrorResponse.self, from: data))?.title
                 ?? "Request failed (\(httpResponse.statusCode))"
             throw APIError.server(status: httpResponse.statusCode, message: message)

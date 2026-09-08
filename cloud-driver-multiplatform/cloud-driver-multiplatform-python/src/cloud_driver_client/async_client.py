@@ -11,6 +11,9 @@ non-blocking, the same expectation any thread-offloaded callback carries.
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .client import CloudDriverClient
@@ -18,6 +21,7 @@ from .token_store import TokenStore
 
 if TYPE_CHECKING:
     from .live_updates import LiveUpdateClient
+    from .models import SearchResult
 
 
 class _AsyncResourceProxy:
@@ -40,7 +44,8 @@ class _AsyncResourceProxy:
 
 class AsyncCloudDriverClient:
     """The async counterpart to CloudDriverClient - same resource namespaces (`.auth`,
-    `.cloud_users`, `.files`, `.folders`, `.trash`, `.admin`), every method `await`-able."""
+    `.cloud_users`, `.files`, `.folders`, `.trash`, `.admin`, `.activity`), every method
+    `await`-able."""
 
     def __init__(self, base_url: str, *, token_store: TokenStore | None = None, timeout: float = 30.0) -> None:
         self._sync = CloudDriverClient(base_url, token_store=token_store, timeout=timeout)
@@ -50,6 +55,7 @@ class AsyncCloudDriverClient:
         self.folders = _AsyncResourceProxy(self._sync.folders)
         self.trash = _AsyncResourceProxy(self._sync.trash)
         self.admin = _AsyncResourceProxy(self._sync.admin)
+        self.activity = _AsyncResourceProxy(self._sync.activity)
 
     @property
     def base_url(self) -> str:
@@ -64,6 +70,28 @@ class AsyncCloudDriverClient:
 
     def live_updates(self, *, reconnect_delay: float = 5.0) -> "LiveUpdateClient":
         return self._sync.live_updates(reconnect_delay=reconnect_delay)
+
+    async def search(self, query: str, *, limit: int = 25) -> "list[SearchResult]":
+        return await asyncio.to_thread(self._sync.search, query, limit=limit)
+
+    async def download_public_file_to_path(
+        self,
+        token: str,
+        destination: str | os.PathLike[str],
+        *,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Path:
+        return await asyncio.to_thread(
+            self._sync.download_public_file_to_path,
+            token,
+            destination,
+            on_progress=on_progress,
+            chunk_size=chunk_size,
+        )
+
+    async def download_public_file_bytes(self, token: str, *, chunk_size: int = 1024 * 1024) -> bytes:
+        return await asyncio.to_thread(self._sync.download_public_file_bytes, token, chunk_size=chunk_size)
 
     async def close(self) -> None:
         await asyncio.to_thread(self._sync.close)

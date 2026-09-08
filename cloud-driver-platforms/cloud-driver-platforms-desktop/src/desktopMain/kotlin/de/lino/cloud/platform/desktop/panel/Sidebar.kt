@@ -197,7 +197,7 @@ fun Sidebar(viewModel: AppViewModel) {
             ) {
                 Image(painterResource(Res.drawable.app_icon), contentDescription = null, modifier = Modifier.size(30.dp))
                 Spacer(Modifier.width(10.dp))
-                Text("cloud-driver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("CloudDriver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
 
             Spacer(Modifier.height(24.dp))

@@ -53,6 +53,10 @@ class StoredFileSummary(_Model):
     created_at_epoch_milli: int = Field(alias="createdAtEpochMilli")
     updated_at_epoch_milli: int = Field(alias="updatedAtEpochMilli")
     folder_id: str | None = Field(default=None, alias="folderId")
+    # The server always resolves a real value ("CLEAN"/"PENDING"/"FLAGGED", see CLAUDE.md's
+    # "Content scanning" section) - the default here only guards against parsing a response from
+    # an older server build that predates this field entirely.
+    scan_status: str = Field(default="CLEAN", alias="scanStatus")
 
 
 class StoredFile(_Model):
@@ -161,3 +165,43 @@ class LiveUpdateEvent(_Model):
     table: str
     operation: str
     id: str
+
+
+class FileVersionSummary(_Model):
+    """One entry in GET /files/{id}/versions - `architecture/MICRO.md` section 2 (versioning)."""
+
+    version_number: int = Field(alias="versionNumber")
+    captured_at_epoch_millis: int = Field(alias="capturedAtEpochMillis")
+    size_bytes: int = Field(alias="sizeBytes")
+
+
+class ActivityEntry(_Model):
+    """One raw AuditEvent entry, as returned by GET /files/{id}/activity, GET /folders/{id}/activity,
+    and GET /activity - `architecture/MICRO.md` section 3. Distinct from AuditLogEntry (which is
+    the /admin/audit-log shape, with an already-resolved actor_email instead of a raw
+    actor_auth_user_id)."""
+
+    id: str
+    actor_auth_user_id: str | None = Field(default=None, alias="actorAuthUserId")
+    action: str
+    target_id: str | None = Field(default=None, alias="targetId")
+    timestamp_epoch_millis: int = Field(alias="timestampEpochMillis")
+    metadata: str | None = None
+
+
+class SearchResult(_Model):
+    """One match returned by GET /search - `architecture/MICRO.md` section 5 (search/indexing)."""
+
+    stored_file_id: str = Field(alias="storedFileId")
+    file_name: str = Field(alias="fileName")
+    folder_id: str | None = Field(default=None, alias="folderId")
+
+
+class PublicFileLinkSummary(_Model):
+    """An unauthenticated public share link on a file - `architecture/MICRO.md` section 6. `token`
+    is the whole of what's needed to resolve the file's content through the anonymous
+    GET /public/files/{token} route (see CloudDriverClient.download_public_file_to_path/_bytes)."""
+
+    token: str
+    created_at_epoch_millis: int = Field(alias="createdAtEpochMillis")
+    expires_at_epoch_millis: int | None = Field(default=None, alias="expiresAtEpochMillis")

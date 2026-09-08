@@ -20,6 +20,7 @@ from .exceptions import (
     NotFoundError,
     PayloadTooLargeError,
     ServiceUnavailableError,
+    SyncConflictError,
     TooManyRequestsError,
     UnauthorizedError,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "ForbiddenError",
     "NotFoundError",
     "ConflictError",
+    "SyncConflictError",
     "PayloadTooLargeError",
     "TooManyRequestsError",
     "ServiceUnavailableError",

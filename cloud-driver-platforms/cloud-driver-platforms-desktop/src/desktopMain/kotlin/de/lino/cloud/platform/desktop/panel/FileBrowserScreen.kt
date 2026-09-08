@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
-import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
@@ -39,6 +38,7 @@ import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonRemove
@@ -345,20 +345,6 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
             Spacer(Modifier.height(16.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                // Re-fetches this folder's listing straight from the server (so, transitively,
-                // straight from the database) rather than trusting whatever this client last
-                // saw - useful after a change made from elsewhere (another device, a teammate,
-                // the terminal package's own Command implementations) that this client's own
-                // listFolders/listFiles calls wouldn't otherwise have a reason to re-run.
-                OutlinedButton(
-                    onClick = { viewModel.loadCurrentFolder() },
-                    enabled = !viewModel.busy,
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Refresh")
-                }
-
                 OutlinedButton(
                     onClick = { promptForName("New folder", "Folder name")?.let { viewModel.createFolder(it) } },
                     enabled = !viewModel.busy,
@@ -369,8 +355,6 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 }
 
                 UploadMenuButton(viewModel)
-
-                SortMenuButton(viewModel)
 
                 // Opens a small overlay to search every file the caller owns by name/content,
                 // always global rather than scoped to the current folder - matching the server
@@ -390,6 +374,27 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 if (viewModel.selected.isNotEmpty()) {
                     SelectionOptionsMenuButton(viewModel)
                 }
+
+                // Pushes Refresh/Sort to the toolbar's trailing edge, per Lino's own request -
+                // both were previously leading, inline with every other action button.
+                Spacer(Modifier.weight(1f))
+
+                // Re-fetches this folder's listing straight from the server (so, transitively,
+                // straight from the database) rather than trusting whatever this client last
+                // saw - useful after a change made from elsewhere (another device, a teammate,
+                // the terminal package's own Command implementations) that this client's own
+                // listFolders/listFiles calls wouldn't otherwise have a reason to re-run. Pinned
+                // directly beside the Sort button, on its left, per Lino's own request.
+                OutlinedButton(
+                    onClick = { viewModel.loadCurrentFolder() },
+                    enabled = !viewModel.busy,
+                ) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Refresh")
+                }
+
+                SortMenuButton(viewModel)
             }
 
             viewModel.errorMessage?.let {
@@ -702,6 +707,10 @@ private enum class SortTarget { FILES, FOLDERS }
  * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.computingFolderSizes] is walking a folder
  * tree for [SortOption.SIZE], the same signal the old two-button layout showed on its folder
  * button only.
+ *
+ * The trigger itself is a compact "3-dot" [IconButton] (not a labeled [OutlinedButton]) pinned to
+ * the toolbar's trailing edge, per Lino's own request - smaller than every other toolbar button,
+ * matching the overflow-menu convention `Icons.Filled.MoreVert` is normally used for elsewhere.
  */
 @Composable
 private fun SortMenuButton(viewModel: AppViewModel) {
@@ -714,11 +723,8 @@ private fun SortMenuButton(viewModel: AppViewModel) {
     }
 
     Column {
-        OutlinedButton(onClick = { expanded = true }, enabled = !viewModel.busy) {
-            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Sort")
-            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        IconButton(onClick = { expanded = true }, enabled = !viewModel.busy) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "Sort")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = ::closeMenu) {
             when (activeTarget) {

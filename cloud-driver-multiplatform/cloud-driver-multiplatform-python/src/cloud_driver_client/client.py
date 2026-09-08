@@ -2,11 +2,16 @@
 
 Mirrors cloud-driver-platforms-rest's ApiClient (Java) endpoint-for-endpoint: every route
 documented under CLAUDE.md's "RestFactory" / "JWT authentication for end-user clients" / "Folder
-organization" / "File/folder sharing between accounts" / "Metrics/observability exporter" sections
-is reachable through one of the resource namespaces below (`.auth`, `.cloud_users`, `.files`,
-`.folders`, `.trash`, `.admin`). See `async_client.AsyncCloudDriverClient` for an async facade
-built on top of this one via a thread-pool offload, and `live_updates.LiveUpdateClient` for the
-GET /ws/updates push channel.
+organization" / "File/folder sharing between accounts" / "Metrics/observability exporter" sections,
+plus every server-side capability added since under `architecture/MICRO.md` (thumbnails, content
+versioning, the activity feed, search, sharing permission levels + public links, content-scan
+status, and the sync optimistic-concurrency precondition) is reachable through one of the resource
+namespaces below (`.auth`, `.cloud_users`, `.files`, `.folders`, `.trash`, `.admin`, `.activity`)
+or a top-level method (`.search`, `.download_public_file_to_path`/`_bytes`). See
+`async_client.AsyncCloudDriverClient` for an async facade built on top of this one via a
+thread-pool offload, and `live_updates.LiveUpdateClient` for the GET /ws/updates push channel.
+Webhooks (`architecture/MICRO.md` section 8) are deliberately not mirrored here - CLAUDE.md
+documents that capability as Java-only.
 """
 
 from __future__ import annotations
@@ -20,7 +25,9 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 import httpx
 
 from ._http import raise_for_status
+from .exceptions import ConflictError, NotFoundError, ServiceUnavailableError, SyncConflictError
 from .models import (
+    ActivityEntry,
     AuditLogEntry,
     AuthTokens,
     AuthUser,
@@ -28,11 +35,14 @@ from .models import (
     BeginUploadUrl,
     CloudUser,
     EmailExists,
+    FileVersionSummary,
     Folder,
     MessageResponse,
     MeResponse,
     MetricsSnapshot,
     Page,
+    PublicFileLinkSummary,
+    SearchResult,
     SharedByMeCount,
     SharedFileSummary,
     SharedFolderContents,
@@ -96,6 +106,7 @@ class CloudDriverClient:
         self.folders = _FoldersResource(self)
         self.trash = _TrashResource(self)
         self.admin = _AdminResource(self)
+        self.activity = _ActivityResource(self)
 
     # -- lifecycle --------------------------------------------------------------------------
 
@@ -177,9 +188,10 @@ class CloudDriverClient:
         on_chunk: Callable[[bytes], None],
         on_progress: Callable[[int], None] | None,
         chunk_size: int,
+        auth_required: bool = True,
     ) -> httpx.Response:
         def _do() -> httpx.Response:
-            headers = self._headers(True)
+            headers = self._headers(auth_required)
             with self._client.stream("GET", path, headers=headers, timeout=TRANSFER_TIMEOUT) as resp:
                 if resp.status_code >= 400:
                     # Must fully read the body *before* the `with` block exits (a streaming
@@ -196,7 +208,7 @@ class CloudDriverClient:
                 return resp
 
         resp = _do()
-        if resp.status_code == 401 and self._try_refresh():
+        if auth_required and resp.status_code == 401 and self._try_refresh():
             resp = _do()
         return raise_for_status(resp)
 
@@ -208,6 +220,52 @@ class CloudDriverClient:
         from .live_updates import LiveUpdateClient
 
         return LiveUpdateClient(self.base_url, lambda: self._access_token, reconnect_delay=reconnect_delay)
+
+    # -- search (architecture/MICRO.md section 5) ----------------------------------------------
+
+    def search(self, query: str, *, limit: int = 25) -> list[SearchResult]:
+        """GET /search?q=&limit= - filename/indexed-text-content search over the caller's own
+        files, top-level rather than nested under `.files` (matching how the server itself treats
+        this as a standalone capability, not a files sub-resource). Returns an empty list for a
+        blank query, or if `cloud-driver-extensions-search` isn't running on this deployment
+        (raises ServiceUnavailableError instead if a non-blank query is rejected for that reason -
+        an empty/blank query short-circuits server-side before that check even runs)."""
+        resp = self._request("GET", "/search", params={"q": query, "limit": limit})
+        return [SearchResult.model_validate(x) for x in resp.json()]
+
+    # -- public share links (architecture/MICRO.md section 6) ---------------------------------
+
+    def download_public_file_to_path(
+        self,
+        token: str,
+        destination: str | os.PathLike[str],
+        *,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Path:
+        """GET /public/files/{token} - streams a publicly-shared file's content to `destination`.
+        Genuinely unauthenticated: works even on a CloudDriverClient with no stored/valid session
+        at all, since a public link's whole point is requiring no login. `token` comes from
+        `client.files.create_public_link(...)`/`.list_public_links(...)`."""
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as out:
+            self._stream_download(
+                f"/public/files/{token}",
+                on_chunk=out.write,
+                on_progress=on_progress,
+                chunk_size=chunk_size,
+                auth_required=False,
+            )
+        return destination
+
+    def download_public_file_bytes(self, token: str, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bytes:
+        """The in-memory counterpart to `download_public_file_to_path` - see its docstring."""
+        buffer = bytearray()
+        self._stream_download(
+            f"/public/files/{token}", on_chunk=buffer.extend, on_progress=None, chunk_size=chunk_size, auth_required=False
+        )
+        return bytes(buffer)
 
 
 class _Resource:
@@ -401,6 +459,136 @@ class _FilesResource(_Resource):
         )
         return bytes(buffer)
 
+    def get_thumbnail(self, file_id: str) -> bytes | None:
+        """GET /files/{id}/thumbnail - raw JPEG bytes, or None if no thumbnail exists (the file
+        isn't a previewable type, its content is too large to have been thumbnailed, or
+        `cloud-driver-extensions-thumbnails` isn't running on this deployment). Both a 404 and a
+        503 mean exactly the same thing here - "no thumbnail available" - so neither is treated as
+        an error worth propagating, unlike every other route in this SDK."""
+        try:
+            resp = self._c._request("GET", f"/files/{file_id}/thumbnail")
+        except (NotFoundError, ServiceUnavailableError):
+            return None
+        return resp.content
+
+    def replace_content(
+        self,
+        file_id: str,
+        data: bytes,
+        *,
+        expected_updated_at_epoch_millis: int | None = None,
+    ) -> StoredFileSummary:
+        """PUT /files/{id}/content - overwrites file_id's content in place, capturing whatever was
+        live beforehand as a new retained version (see .list_versions/.restore_version;
+        `architecture/MICRO.md` section 2). Pass `expected_updated_at_epoch_millis` (from a prior
+        .get()/.list() call's `updated_at_epoch_milli`) for optimistic concurrency (section 10): if
+        another write already changed the file since that timestamp, the canonical file is left
+        completely untouched and this raises SyncConflictError instead of silently overwriting a
+        concurrent edit - `SyncConflictError.conflicted_copy` is the brand-new StoredFileSummary
+        your own content was saved into. Omit it to unconditionally overwrite, matching this
+        route's pre-section-10 behavior."""
+        params: dict[str, Any] = {}
+        if expected_updated_at_epoch_millis is not None:
+            params["expectedUpdatedAt"] = expected_updated_at_epoch_millis
+        try:
+            resp = self._c._request(
+                "PUT",
+                f"/files/{file_id}/content",
+                params=params,
+                content=data,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=TRANSFER_TIMEOUT,
+            )
+        except ConflictError as exc:
+            if isinstance(exc.body, dict) and "fileId" in exc.body:
+                raise SyncConflictError(
+                    exc.status_code, exc.message, exc.body, StoredFileSummary.model_validate(exc.body)
+                ) from exc
+            raise
+        return StoredFileSummary.model_validate(resp.json())
+
+    def list_versions(self, file_id: str) -> list[FileVersionSummary]:
+        """GET /files/{id}/versions - every currently-retained prior version, oldest first."""
+        return [
+            FileVersionSummary.model_validate(x) for x in self._c._request("GET", f"/files/{file_id}/versions").json()
+        ]
+
+    def download_version_to_path(
+        self,
+        file_id: str,
+        version_number: int,
+        destination: str | os.PathLike[str],
+        *,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Path:
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as out:
+            self._c._stream_download(
+                f"/files/{file_id}/versions/{version_number}/content",
+                on_chunk=out.write,
+                on_progress=on_progress,
+                chunk_size=chunk_size,
+            )
+        return destination
+
+    def download_version_bytes(self, file_id: str, version_number: int, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bytes:
+        buffer = bytearray()
+        self._c._stream_download(
+            f"/files/{file_id}/versions/{version_number}/content",
+            on_chunk=buffer.extend,
+            on_progress=None,
+            chunk_size=chunk_size,
+        )
+        return bytes(buffer)
+
+    def restore_version(self, file_id: str, version_number: int) -> StoredFileSummary:
+        """POST /files/{id}/versions/{n}/restore - restores a prior version by replacing the
+        file's current content with it (which itself captures the about-to-be-superseded content
+        as yet another new version first - nothing is ever lost)."""
+        resp = self._c._request("POST", f"/files/{file_id}/versions/{version_number}/restore")
+        return StoredFileSummary.model_validate(resp.json())
+
+    def list_activity(
+        self, file_id: str, *, limit: int | None = None, cursor: str | None = None
+    ) -> Page[ActivityEntry]:
+        """GET /files/{id}/activity - always paginated (unlike .list()), newest first."""
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = self._c._request("GET", f"/files/{file_id}/activity", params=params).json()
+        return Page[ActivityEntry].model_validate(data)
+
+    def iter_activity(self, file_id: str, *, page_size: int = 50) -> Iterator[ActivityEntry]:
+        cursor: str | None = None
+        while True:
+            page = self.list_activity(file_id, limit=page_size, cursor=cursor)
+            yield from page.items
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
+
+    def create_public_link(self, file_id: str, *, expires_at_epoch_millis: int | None = None) -> PublicFileLinkSummary:
+        """POST /files/{id}/public-link - owner-only. See CloudDriverClient.download_public_file_to_path/_bytes for consuming the resulting token."""
+        resp = self._c._request(
+            "POST", f"/files/{file_id}/public-link", json={"expiresAtEpochMillis": expires_at_epoch_millis}
+        )
+        return PublicFileLinkSummary.model_validate(resp.json())
+
+    def list_public_links(self, file_id: str) -> list[PublicFileLinkSummary]:
+        """GET /files/{id}/public-link - every currently-active public link on file_id, owner-only."""
+        return [
+            PublicFileLinkSummary.model_validate(x)
+            for x in self._c._request("GET", f"/files/{file_id}/public-link").json()
+        ]
+
+    def revoke_public_link(self, file_id: str, token: str) -> None:
+        """DELETE /files/{id}/public-link/{token} - idempotent, owner-only."""
+        self._c._request("DELETE", f"/files/{file_id}/public-link/{urllib.parse.quote(token, safe='')}")
+
     def delete(self, file_id: str) -> None:
         self._c._request("DELETE", f"/files/{file_id}")
 
@@ -416,8 +604,28 @@ class _FilesResource(_Resource):
     def list_trash(self) -> list[TrashedFileSummary]:
         return [TrashedFileSummary.model_validate(x) for x in self._c._request("GET", "/files/trash").json()]
 
-    def share(self, file_id: str, grantee_email: str) -> None:
-        self._c._request("POST", f"/files/{file_id}/share", json={"granteeEmail": grantee_email})
+    def share(
+        self,
+        file_id: str,
+        grantee_email: str,
+        *,
+        permission_level: str = "VIEW",
+        expires_at_epoch_millis: int | None = None,
+    ) -> None:
+        """POST /files/{id}/share. `permission_level` is "VIEW" (default) or "EDIT" - EDIT lets
+        the grantee call .replace_content on this exact file (a direct grant only, never
+        folder-inherited); `expires_at_epoch_millis` defaults to never-expiring
+        (`architecture/MICRO.md` section 6). Existing callers passing neither keyword argument get
+        the exact pre-section-6 behavior."""
+        self._c._request(
+            "POST",
+            f"/files/{file_id}/share",
+            json={
+                "granteeEmail": grantee_email,
+                "permissionLevel": permission_level,
+                "expiresAtEpochMillis": expires_at_epoch_millis,
+            },
+        )
 
     def revoke_share(self, file_id: str, grantee_email: str) -> None:
         self._c._request("DELETE", f"/files/{file_id}/share/{urllib.parse.quote(grantee_email, safe='')}")
@@ -502,8 +710,26 @@ class _FoldersResource(_Resource):
     def list_trash(self) -> list[TrashedFolderSummary]:
         return [TrashedFolderSummary.model_validate(x) for x in self._c._request("GET", "/folders/trash").json()]
 
-    def share(self, folder_id: str, grantee_email: str) -> None:
-        self._c._request("POST", f"/folders/{folder_id}/share", json={"granteeEmail": grantee_email})
+    def share(
+        self,
+        folder_id: str,
+        grantee_email: str,
+        *,
+        permission_level: str = "VIEW",
+        expires_at_epoch_millis: int | None = None,
+    ) -> None:
+        """POST /folders/{id}/share. See `_FilesResource.share`'s docstring for the two new
+        keyword arguments (`architecture/MICRO.md` section 6) - note EDIT permission has no
+        defined meaning on a folder grant server-side (VIEW-only access is honored either way)."""
+        self._c._request(
+            "POST",
+            f"/folders/{folder_id}/share",
+            json={
+                "granteeEmail": grantee_email,
+                "permissionLevel": permission_level,
+                "expiresAtEpochMillis": expires_at_epoch_millis,
+            },
+        )
 
     def revoke_share(self, folder_id: str, grantee_email: str) -> None:
         self._c._request("DELETE", f"/folders/{folder_id}/share/{urllib.parse.quote(grantee_email, safe='')}")
@@ -520,10 +746,55 @@ class _FoldersResource(_Resource):
         resp = self._c._request("GET", f"/folders/{folder_id}/shared-contents")
         return SharedFolderContents.model_validate(resp.json())
 
+    def list_activity(
+        self, folder_id: str, *, limit: int | None = None, cursor: str | None = None
+    ) -> Page[ActivityEntry]:
+        """GET /folders/{id}/activity - always paginated, newest first."""
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = self._c._request("GET", f"/folders/{folder_id}/activity", params=params).json()
+        return Page[ActivityEntry].model_validate(data)
+
+    def iter_activity(self, folder_id: str, *, page_size: int = 50) -> Iterator[ActivityEntry]:
+        cursor: str | None = None
+        while True:
+            page = self.list_activity(folder_id, limit=page_size, cursor=cursor)
+            yield from page.items
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
+
 
 class _TrashResource(_Resource):
     def empty(self) -> None:
         self._c._request("POST", "/trash/empty")
+
+
+class _ActivityResource(_Resource):
+    """GET /activity - the caller's global activity feed across every file/folder they own or have
+    been shared, newest first (`architecture/MICRO.md` section 3). For a single file/folder's own
+    history, use `.files.list_activity`/`.folders.list_activity` instead."""
+
+    def list(self, *, limit: int | None = None, cursor: str | None = None) -> Page[ActivityEntry]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = self._c._request("GET", "/activity", params=params).json()
+        return Page[ActivityEntry].model_validate(data)
+
+    def iter_all(self, *, page_size: int = 50) -> Iterator[ActivityEntry]:
+        cursor: str | None = None
+        while True:
+            page = self.list(limit=page_size, cursor=cursor)
+            yield from page.items
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
 
 class _AdminResource(_Resource):
