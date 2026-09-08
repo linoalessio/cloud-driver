@@ -27,7 +27,7 @@ import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.Webhook
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -222,7 +222,7 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
                         )
                         DropdownMenuItem(
                             text = { Text("Webhooks") },
-                            leadingIcon = { Icon(Icons.Filled.Webhook, contentDescription = null) },
+                            leadingIcon = { Icon(Icons.Filled.Extension, contentDescription = null) },
                             onClick = {
                                 settingsMenuExpanded = false
                                 viewModel.showWebhooks()

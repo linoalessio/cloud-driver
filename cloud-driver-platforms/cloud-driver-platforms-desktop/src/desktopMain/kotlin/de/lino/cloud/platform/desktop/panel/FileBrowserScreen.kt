@@ -45,8 +45,8 @@ import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -1524,6 +1524,7 @@ private fun EntryRow(
     var contextMenuExpanded by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
     var lastClickTimeMillis by remember { mutableStateOf(0L) }
+    val scanStatus = (entry as? Entry.FileEntry)?.summary?.scanStatus()
 
     DisposableEffect(entry.id) {
         onDispose { onUnregisterBounds() }
@@ -1686,7 +1687,7 @@ private fun EntryRow(
             }
             DropdownMenuItem(
                 text = { Text("Activity") },
-                leadingIcon = { Icon(Icons.Filled.Timeline, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
                 enabled = enabled,
                 onClick = { contextMenuExpanded = false; onActivityRequest() },
             )

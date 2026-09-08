@@ -113,11 +113,10 @@ enum AppScreen: Equatable {
 }
 
 /// All mutable app state plus every user-triggered action - the mobile counterpart to
-/// cloud-driver-platforms-desktop's `AppViewModel.kt`. Deliberately not a 1:1 port: this first
-/// pass covers auth and a single-folder-at-a-time file browser
-/// (list/upload/download/delete/create-folder/navigate) - sharing, trash, admin, live push, and
-/// thumbnails/previews are not implemented yet. See this module's own README for the full list of
-/// what's deferred and why.
+/// cloud-driver-platforms-desktop's `AppViewModel.kt`. Deliberately not a 1:1 port: sharing, trash,
+/// search, thumbnails, versioning, and an activity feed are all implemented; a live-push
+/// (WebSocket) connection and an admin panel are still not built on this platform. See this
+/// module's own README for the current list of what's deferred and why.
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var screen: AppScreen = .login

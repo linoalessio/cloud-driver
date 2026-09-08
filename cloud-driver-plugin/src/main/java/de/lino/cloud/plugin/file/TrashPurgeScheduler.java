@@ -7,6 +7,7 @@ import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
@@ -191,8 +192,48 @@ public final class TrashPurgeScheduler {
      * Permanently removes {@code ownership}'s own {@code StoredFile} content, then the ownership
      * row itself, then decrements the owner's usage total (if the row's size is known) - the
      * final, irreversible step {@code CloudUserService#deleteFile}'s soft delete deferred.
+     *
+     * <p><b>Delegates to {@link ICloudUserService#purgeExpiredFile(String, String)} whenever that
+     * service happens to be published, since a deduplicated (see {@code StoredFile#dedupOfFileId()})
+     * file needs its canonical's reference count decremented - and, once it reaches zero, that
+     * canonical's own content actually freed - rather than a plain unconditional {@link
+     * FileFactory#delete(String)} call.</b> A fixed bug: this method used to call {@link
+     * FileFactory#delete(String)} directly and unconditionally, which is correct for an ordinary
+     * file but wrong for deduplicated content two ways - deleting an alias never actually freed its
+     * now-possibly-orphaned canonical's object storage content (since an alias carries no object
+     * storage key of its own to delete in the first place), and deleting a canonical whose aliases
+     * were still live would have deleted content those aliases still needed. This class is
+     * deliberately built to keep working even without {@code cloud-driver-rest} running (see this
+     * class's own top-level Javadoc), so the pre-existing direct sequence remains as a fallback for
+     * that case - real deduplication-aware cleanup only requires {@link ICloudUserService} once an
+     * account actually uses deduplicated uploads, and every real deployment running this scheduler
+     * also runs the REST extension.</p>
      */
     private void purgeFile(final StoredFileOwnership ownership) {
+        final ICloudUserService cloudUserService;
+        try {
+            cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+        } catch (final RuntimeException noCloudDriverYet) {
+            purgeFileDirectly(ownership);
+            return;
+        }
+        if (cloudUserService != null) {
+            try {
+                cloudUserService.purgeExpiredFile(ownership.getAuthUserId(), ownership.getStoredFileId());
+                return;
+            } catch (final RuntimeException dedupAwarePurgeFailed) {
+                // Fall through to the direct sequence below rather than leaving this row
+                // permanently stuck in the trash past its own retention window.
+            }
+        }
+        purgeFileDirectly(ownership);
+    }
+
+    /**
+     * The pre-{@link ICloudUserService} purge sequence - not dedup-aware, see {@link
+     * #purgeFile(StoredFileOwnership)}'s own Javadoc for when this fallback is actually reached.
+     */
+    private void purgeFileDirectly(final StoredFileOwnership ownership) {
         try {
             this.fileFactory.delete(ownership.getStoredFileId());
         } catch (final DatabaseClientException alreadyGoneOrOther) {

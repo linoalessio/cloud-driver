@@ -237,6 +237,22 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
+    /** {@inheritDoc} */
+    @Override
+    public void purgeExpiredFile(@NotNull final String authUserId, @NotNull final String storedFileId) {
+        final String ownershipKey = StoredFileOwnership.compositeKey(authUserId, storedFileId);
+        final Optional<StoredFileOwnership> ownership;
+        try {
+            ownership = this.dataFactory.findById(ownershipKey, StoredFileOwnership.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.purgeExpiredFile: failed to look up ownership record " + ownershipKey, e);
+        }
+        if (ownership.isEmpty()) {
+            return; // already removed by an earlier purge tick
+        }
+        this.hardDeleteFile(authUserId, ownership.get());
+    }
+
     /**
      * Deletes every {@link StoredFile}/{@link Folder} owned by {@code authUserId} (via {@link
      * #resetCloudUser(String)}) and additionally removes the {@link CloudUser} record itself -

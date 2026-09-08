@@ -97,6 +97,21 @@ public interface ICloudUserService {
     void updateCachedFileScanStatus(@NotNull String storedFileId, @NotNull String scanStatus);
 
     /**
+     * Permanently removes {@code storedFileId}'s content and ownership tracking for {@code
+     * authUserId}, the same dedup-aware (see {@link StoredFile#dedupOfFileId()}/{@link
+     * StoredFile#dedupRefCount()}) delete/decrement sequence {@link #resetCloudUser(String)}/{@link
+     * #deleteCloudUser(String)} already use to actually empty an account, exposed here so any
+     * caller that only knows a file's id/owner (not a full ownership record) - concretely, a
+     * trash-retention purge job running outside this class - can trigger the exact same, correct
+     * removal instead of reimplementing it without dedup awareness. A no-op if no ownership row
+     * is found for the given pair (e.g. it was already removed by an earlier purge tick).
+     *
+     * @param authUserId the account that owns (or owned) the file
+     * @param storedFileId the {@link StoredFile#fileId()} to permanently remove
+     */
+    void purgeExpiredFile(@NotNull String authUserId, @NotNull String storedFileId);
+
+    /**
      * Deletes every {@link StoredFile} and {@link Folder} owned by {@code authUserId} (the
      * same wipe {@link #resetCloudUser(String)} performs) and additionally removes {@code
      * authUserId}'s own {@link ICloudUser} record itself - after this call the user is no
