@@ -16,6 +16,7 @@ import de.lino.cloud.auth.audit.AuditLogServiceImpl;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.jwt.JjwtSigner;
 import de.lino.cloud.auth.mail.LoggingEmailSender;
+import de.lino.cloud.auth.mail.SesEmailSender;
 import de.lino.cloud.auth.mail.SmtpEmailSender;
 import de.lino.cloud.plugin.factory.DefaultRestFactory;
 import de.lino.cloud.plugin.security.password.Argon2idPasswordHasher;
@@ -185,39 +186,101 @@ public class CloudRestExtension extends Extension {
 
     /**
      * Builds the {@link EmailSender} {@link AuthService#register} sends its verification codes
-     * through, from {@code configuration.json}'s {@code "smtp-host"}/{@code "smtp-port"}/{@code
-     * "smtp-username"}/{@code "smtp-password"}/{@code "smtp-from-address"} keys. If {@code
-     * "smtp-host"} is blank or absent - including on a deployment whose {@code configuration.json}
-     * predates this feature and simply doesn't have the key yet - or if any of the other four
-     * keys is missing, logs a warning and falls back to a {@link LoggingEmailSender} instead of
-     * failing to start the REST API entirely: every other subsystem, and every route except
-     * registration, works the same either way, and a fallback that only logs the code is enough
-     * to keep local development/testing working without a real mail server. Every key is read via
-     * {@link #configString(JsonDocument, String)}/checked via {@code contains} first, rather than
-     * calling {@code JsonDocument#getString}/{@code #getInteger} directly - both throw a bare
-     * {@link NullPointerException} on a missing key, which previously crashed this whole extension
-     * (not just registration) the moment {@code smtp-host} was configured without also setting
-     * {@code smtp-port} or one of the other three keys.
+     * through. Tries AWS SES first (via {@link #resolveSesEmailSender(JsonDocument)}, {@code
+     * "aws-ses-region"}/{@code "aws-ses-from-address"}), then falls back to SMTP (via {@link
+     * #resolveSmtpEmailSender(JsonDocument)}, the original {@code "smtp-*"} keys), then falls back
+     * to a {@link LoggingEmailSender} if neither is configured - never fails to start the REST API
+     * entirely just because no real mail transport is configured: every other subsystem, and
+     * every route except registration, works the same either way, and a fallback that only logs
+     * the code is enough to keep local development/testing working without a real mail server.
+     * SES is checked first (not SMTP) since it needs no long-lived credential stored in {@code
+     * configuration.json} at all - only a region and a verified sending address, with the actual
+     * AWS credentials resolved via the SDK's own default credential provider chain, the same
+     * convention every other AWS-backed service in this codebase already follows.
      *
-     * @return a {@link SmtpEmailSender} if SMTP is fully configured, a {@link LoggingEmailSender} otherwise
+     * @return a {@link SesEmailSender} if SES is configured, else a {@link SmtpEmailSender} if
+     *     SMTP is fully configured, else a {@link LoggingEmailSender}
      */
     private EmailSender buildEmailSender() {
 
         final JsonDocument configuration = this.cloudDriver().getConfiguration();
+
+        final EmailSender sesEmailSender = this.resolveSesEmailSender(configuration);
+        if (sesEmailSender != null) {
+            return sesEmailSender;
+        }
+
+        final EmailSender smtpEmailSender = this.resolveSmtpEmailSender(configuration);
+        if (smtpEmailSender != null) {
+            return smtpEmailSender;
+        }
+
+        this.getLogger().warning(
+                "@CloudRestExtension.buildEmailSender: neither 'aws-ses-region'/'aws-ses-from-address' nor "
+                        + "'smtp-host' is set in configuration.json - verification codes will only be logged, "
+                        + "not actually e-mailed. Not suitable for production.");
+        return new LoggingEmailSender(this.getLogger());
+    }
+
+    /**
+     * Resolves a {@link SesEmailSender} from {@code configuration.json}'s {@code
+     * "aws-ses-region"}/{@code "aws-ses-from-address"} keys - {@code null} (SES not configured,
+     * including on a {@code configuration.json} that predates this feature) if {@code
+     * "aws-ses-region"} is missing/blank. If {@code "aws-ses-region"} is set but {@code
+     * "aws-ses-from-address"} is missing/blank, logs a warning and returns {@code null} too,
+     * rather than constructing a {@link SesEmailSender} that could never actually send anything.
+     * AWS credentials themselves are never read from here - the SDK's own default credential
+     * provider chain resolves them, the same convention {@code AwsKmsKeyEncryptionService}/{@code
+     * S3ObjectStorageService} already established for every AWS-backed service in this codebase.
+     *
+     * @param configuration this deployment's loaded {@code configuration.json}
+     * @return a configured {@link SesEmailSender}, or {@code null} if SES isn't configured
+     */
+    private EmailSender resolveSesEmailSender(final JsonDocument configuration) {
+        final String regionName = this.configString(configuration, "aws-ses-region");
+        if (regionName.isBlank()) {
+            return null;
+        }
+
+        final String fromAddress = this.configString(configuration, "aws-ses-from-address");
+        if (fromAddress.isBlank()) {
+            this.getLogger().warning(
+                    "@CloudRestExtension.resolveSesEmailSender: 'aws-ses-region' is set but "
+                            + "'aws-ses-from-address' is missing/blank in configuration.json - falling back to "
+                            + "SMTP/logging instead of AWS SES.");
+            return null;
+        }
+
+        return new SesEmailSender(Region.of(regionName), fromAddress);
+    }
+
+    /**
+     * Resolves a {@link SmtpEmailSender} from {@code configuration.json}'s {@code
+     * "smtp-host"}/{@code "smtp-port"}/{@code "smtp-username"}/{@code "smtp-password"}/{@code
+     * "smtp-from-address"} keys - {@code null} (SMTP not configured, including on a {@code
+     * configuration.json} that predates this feature) if {@code "smtp-host"} is missing/blank or
+     * any of the other four keys is missing. Every key is read via {@link
+     * #configString(JsonDocument, String)}/checked via {@code contains} first, rather than calling
+     * {@code JsonDocument#getString}/{@code #getInteger} directly - both throw a bare {@link
+     * NullPointerException} on a missing key, which previously crashed this whole extension (not
+     * just registration) the moment {@code smtp-host} was configured without also setting {@code
+     * smtp-port} or one of the other three keys.
+     *
+     * @param configuration this deployment's loaded {@code configuration.json}
+     * @return a configured {@link SmtpEmailSender}, or {@code null} if SMTP isn't fully configured
+     */
+    private EmailSender resolveSmtpEmailSender(final JsonDocument configuration) {
         final String host = this.configString(configuration, "smtp-host");
 
         if (host.isBlank()) {
-            this.getLogger().warning(
-                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is not set in configuration.json - "
-                            + "verification codes will only be logged, not actually e-mailed. Not suitable for production.");
-            return new LoggingEmailSender(this.getLogger());
+            return null;
         }
 
         if (!configuration.contains("smtp-port")) {
             this.getLogger().warning(
-                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is set but 'smtp-port' is missing from "
-                            + "configuration.json - verification codes will only be logged, not actually e-mailed.");
-            return new LoggingEmailSender(this.getLogger());
+                    "@CloudRestExtension.resolveSmtpEmailSender: 'smtp-host' is set but 'smtp-port' is missing "
+                            + "from configuration.json - falling back to logging instead of SMTP.");
+            return null;
         }
 
         final String username = this.configString(configuration, "smtp-username");
@@ -226,10 +289,10 @@ public class CloudRestExtension extends Extension {
 
         if (username.isBlank() || password.isBlank() || fromAddress.isBlank()) {
             this.getLogger().warning(
-                    "@CloudRestExtension.buildEmailSender: 'smtp-host' is set but 'smtp-username'/'smtp-password'/"
-                            + "'smtp-from-address' is missing or blank in configuration.json - verification codes "
-                            + "will only be logged, not actually e-mailed.");
-            return new LoggingEmailSender(this.getLogger());
+                    "@CloudRestExtension.resolveSmtpEmailSender: 'smtp-host' is set but 'smtp-username'/"
+                            + "'smtp-password'/'smtp-from-address' is missing or blank in configuration.json - "
+                            + "falling back to logging instead of SMTP.");
+            return null;
         }
 
         return new SmtpEmailSender(host, configuration.getInteger("smtp-port"), username, password, fromAddress);

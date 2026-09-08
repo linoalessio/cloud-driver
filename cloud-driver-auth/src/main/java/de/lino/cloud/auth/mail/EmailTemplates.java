@@ -11,21 +11,21 @@ package de.lino.cloud.auth.mail;
  * renders consistently across e-mail clients, unlike a plain CSS stylesheet.
  *
  * <p>The header logo is referenced as {@code cid:} + {@link #LOGO_CONTENT_ID} - {@link
- * SmtpEmailSender} is the one place that actually attaches the underlying image bytes (loaded
+ * MimeMessageFactory} is the one place that actually attaches the underlying image bytes (loaded
  * from {@link #LOGO_RESOURCE_PATH}) to the outgoing message as an inline part with that same
- * Content-ID.
+ * Content-ID, shared by both {@link SmtpEmailSender} and {@link SesEmailSender}.
  */
 public final class EmailTemplates {
 
     /**
-     * The Content-ID {@link SmtpEmailSender} attaches the logo image under - referenced from the
-     * generated HTML as {@code cid:cloud-driver-icon}. Must match on both sides; nothing enforces
-     * that at compile time, since the HTML is a plain string and the MIME header is a plain
-     * string.
+     * The Content-ID {@link MimeMessageFactory} attaches the logo image under - referenced from
+     * the generated HTML as {@code cid:cloud-driver-icon}. Must match on both sides; nothing
+     * enforces that at compile time, since the HTML is a plain string and the MIME header is a
+     * plain string.
      */
     public static final String LOGO_CONTENT_ID = "cloud-driver-icon";
 
-    /** Classpath location of the logo image {@link SmtpEmailSender} attaches inline. */
+    /** Classpath location of the logo image {@link MimeMessageFactory} attaches inline. */
     public static final String LOGO_RESOURCE_PATH = "/mail/cloud-driver-icon.png";
 
     private static final String PAGE_BACKGROUND = "#eef1f6";

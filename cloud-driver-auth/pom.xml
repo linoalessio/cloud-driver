@@ -89,6 +89,17 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- SesEmailSender: the AWS SES-backed EmailSender alternative to SmtpEmailSender above.
+             Version pinned to match cloud-driver-plugin's own kms/s3/s3-transfer-manager AWS SDK v2
+             release. Lives here (not cloud-driver-plugin, where the other AWS-backed services live)
+             since cloud-driver-auth must never depend on cloud-driver-plugin, and EmailSender's
+             other implementations already live in this module. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sesv2</artifactId>
+            <version>2.46.7</version>
+        </dependency>
+
     </dependencies>
 
 </project>
