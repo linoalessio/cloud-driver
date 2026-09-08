@@ -18,8 +18,7 @@ import java.util.logging.Logger;
  * entity.
  *
  * <p><b>Redaction without a {@code cloud-driver-plugin} dependency.</b> {@code
- * cloud-driver-auth} must never depend on {@code cloud-driver-plugin} (see {@code CLAUDE.md}'s
- * "Module layout and dependency direction"), so this class cannot call {@code
+ * cloud-driver-auth} must never depend on {@code cloud-driver-plugin}, so this class cannot call {@code
  * de.lino.cloud.plugin.security.secrets.SecretRedactor} directly the way most other logged text
  * in this codebase does. Instead, the caller building this instance (today, only {@code
  * cloud-driver-extensions-rest}'s {@code CloudRestExtension}, which already depends on both

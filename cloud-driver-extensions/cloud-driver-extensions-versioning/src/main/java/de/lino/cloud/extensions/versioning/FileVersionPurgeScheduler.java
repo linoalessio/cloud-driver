@@ -26,9 +26,8 @@ import java.util.stream.Collectors;
 /**
  * Permanently prunes a {@link FileVersion} once it falls outside <b>either</b> configured
  * retention cap - more than {@link #maxVersionsPerFile} versions already newer than it exist for
- * the same source file, <b>or</b> it was captured more than {@link #retentionPeriod} ago -
- * matching {@code architecture/MICRO.md} section 2's own "keep last N versions or last N days"
- * instruction. Modeled directly on {@code cloud-driver-plugin}'s {@code TrashPurgeScheduler}: its
+ * the same source file, <b>or</b> it was captured more than {@link #retentionPeriod} ago - a
+ * "keep last N versions or last N days" policy. Modeled directly on {@code cloud-driver-plugin}'s {@code TrashPurgeScheduler}: its
  * own daemon thread, ticking on a fixed period, scanning every {@link FileVersion} across every
  * account in one pass (this needs to sweep everyone, not one account at a time, so it talks to
  * {@link DataFactory}/{@link FileFactory} directly rather than through {@code CloudUserService}).

@@ -2,7 +2,7 @@ package de.lino.cloud.api.file.exception;
 
 /**
  * Thrown by {@code CloudUserService#resolvePublicFileLink} when a token doesn't resolve to a
- * currently-usable public share link (section 6, {@code architecture/MICRO.md}) - missing,
+ * currently-usable public share link - missing,
  * expired, or pointing at a file its owner has since trashed/deleted. One message for all three
  * cases, deliberately - the same "don't leak which" idiom {@code InvalidVerificationCodeException}
  * already uses, since distinguishing "wrong token" from "expired token" would hand an

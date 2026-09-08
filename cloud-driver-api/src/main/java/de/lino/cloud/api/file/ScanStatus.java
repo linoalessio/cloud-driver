@@ -1,10 +1,10 @@
 package de.lino.cloud.api.file;
 
 /**
- * A {@link StoredFile}'s malware-scan status - section 9 of {@code architecture/MICRO.md}. {@link
+ * A {@link StoredFile}'s malware-scan status. {@link
  * StoredFile#scanStatus()} is nullable, and a {@code null} value is always read back as {@link
- * #CLEAN} (see that method's own Javadoc) - "nullable/default-clean so existing files are
- * unaffected", per the handoff doc's own instruction, and so is every new upload made while this
+ * #CLEAN} (see that method's own Javadoc) - nullable/default-clean so existing files are
+ * unaffected, and so is every new upload made while this
  * deployment doesn't run {@code cloud-driver-extensions-scan} at all.
  */
 public enum ScanStatus {

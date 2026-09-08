@@ -5,8 +5,7 @@ import de.lino.cloud.api.file.StoredFile;
 import org.jetbrains.annotations.NotNull;
 
 /**
- * Malware-scans a {@link StoredFile}'s content after upload - section 9 of {@code
- * architecture/MICRO.md}, reached via {@link IServiceContainer#getContentScanService()} - {@code
+ * Malware-scans a {@link StoredFile}'s content after upload, reached via {@link IServiceContainer#getContentScanService()} - {@code
  * null} until {@code cloud-driver-extensions-scan}'s {@code CloudScanExtension} has published one
  * (not started, or this deployment doesn't run that extension at all).
  *
@@ -17,11 +16,11 @@ import org.jetbrains.annotations.NotNull;
  * needs its own virus-definition database kept current (via {@code freshclam}) for scanning to be
  * meaningful at all.
  *
- * <p><b>Triggered via {@code FileChangeListener} (section 1), unlike sections 5/8</b> - deliberately:
- * unlike search indexing or webhook dispatch, a scan only ever needs to react to a brand-new
- * {@code StoredFile} row appearing (an {@code INSERT}), which is exactly what that mechanism
- * already watches; it never needs to react to a soft-delete/share (different tables entirely),
- * so the gaps that ruled it out for sections 5/8 don't apply here.
+ * <p><b>Triggered via {@code FileChangeListener}, unlike search indexing/webhook dispatch</b> -
+ * deliberately: unlike search indexing or webhook dispatch, a scan only ever needs to react to a
+ * brand-new {@code StoredFile} row appearing (an {@code INSERT}), which is exactly what that
+ * mechanism already watches; it never needs to react to a soft-delete/share (different tables
+ * entirely), so the gaps that rule that mechanism out for search/webhooks don't apply here.
  */
 public interface ContentScanService {
 

@@ -1,9 +1,8 @@
 package de.lino.cloud.api.webhook;
 
 /**
- * The file events a {@link WebhookService} subscription can be registered for - section 8 of
- * {@code architecture/MICRO.md}. Deliberately just these three (matching exactly what the
- * handoff doc itself named: "upload, delete, share") - extend alongside a real new need, the same
+ * The file events a {@link WebhookService} subscription can be registered for.
+ * Deliberately just these three (upload, delete, share) - extend alongside a real new need, the same
  * "don't add speculatively ahead of a real call site" convention {@code AuditAction} already
  * follows.
  */

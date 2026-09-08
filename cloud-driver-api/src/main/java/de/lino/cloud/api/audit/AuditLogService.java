@@ -5,8 +5,7 @@ import lombok.NonNull;
 /**
  * Records a persisted, structured trail of security-relevant actions - see {@link AuditEvent}'s
  * own Javadoc for the schema and why it lives in {@code cloud-driver-api} alongside this
- * interface, and {@code CLAUDE.md}'s "Audit log service" section for the full picture (which
- * actions are recorded, from where, and how to read the trail back).
+ * interface.
  *
  * <p>One method, deliberately: a caller builds a fully-formed {@link AuditEvent} itself (it knows
  * the actor/action/target far better than a generic logging facade could) and hands it here purely

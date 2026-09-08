@@ -16,7 +16,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * One account's webhook subscription - section 8 of {@code architecture/MICRO.md}. Persisted the
+ * One account's webhook subscription. Persisted the
  * same envelope-encrypted way as any other {@link Serialized} entity, so {@link #secret} is
  * protected at rest by this codebase's usual guarantee - never mounted through {@code
  * DefaultRestFactory}'s generic {@link Owned}-based routes (the same reasoning {@code

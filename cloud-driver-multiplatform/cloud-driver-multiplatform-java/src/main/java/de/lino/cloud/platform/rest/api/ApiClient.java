@@ -3,6 +3,7 @@ package de.lino.cloud.platform.rest.api;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.gson.stream.JsonReader;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
@@ -17,16 +18,21 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmChangeEmailRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmPasswordResetRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ConfirmRegistrationRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.CreateFolderRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.CreatePublicFileLinkRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.EmailExistsResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ErrorResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.FileVersionSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.MoveFileRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.PublicFileLinkSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.RegisterWebhookRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RenameFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedByMeCountResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse;
@@ -40,6 +46,9 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderColorRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateFolderRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateThemeRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookDeliveryAttemptResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionCreatedResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionSummaryResponse;
 
 import java.io.Closeable;
 import java.io.FileNotFoundException;
@@ -263,9 +272,8 @@ public final class ApiClient implements AutoCloseable {
     /**
      * The main REST API's base URL - the same host {@code /files}/{@code /folders}/{@code
      * /cloudUsers} calls go to. Exposed for {@link de.lino.cloud.platform.rest.api.push.LiveUpdateClient}
-     * (item 10, live push via WebSocket - see {@code architecture/SERVICES.md}), which derives
-     * its {@code wss://}/{@code ws://} URL from it rather than duplicating this client's own
-     * base-URL configuration.
+     * (live push via WebSocket), which derives its {@code wss://}/{@code ws://} URL from it rather
+     * than duplicating this client's own base-URL configuration.
      */
     public URI apiBaseUrl() {
         return this.apiBaseUrl;
@@ -974,8 +982,8 @@ public final class ApiClient implements AutoCloseable {
 
     /**
      * Uploads {@code filePath} directly to the object store, bypassing this app's own server for
-     * the data path entirely (see {@code architecture/AWS_S3_IMPL.md}) - orchestrates all three
-     * steps: {@link #beginUploadUrl}, a raw {@code PUT} to the returned URL, then {@link
+     * the data path entirely - orchestrates all three steps: {@link #beginUploadUrl}, a raw {@code
+     * PUT} to the returned URL, then {@link
      * #completeUpload}. Computes the SHA-256 checksum {@link #completeUpload} needs via a
      * dedicated pre-pass reading {@code filePath} once before the upload itself reads it a second
      * time - a deliberate, accepted trade-off over a custom digesting {@link BodyPublisher}
@@ -2116,9 +2124,9 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-     * {@code GET /admin/metrics} on the main REST API - admin-gated. Reads item 13's
-     * counters/gauges (upload outcomes, quota rejections, pending-upload queue depth, extensions
-     * by status) straight from the server's in-process Prometheus registry.
+     * {@code GET /admin/metrics} on the main REST API - admin-gated. Reads the metrics
+     * extension's counters/gauges (upload outcomes, quota rejections, pending-upload queue depth,
+     * extensions by status) straight from the server's in-process Prometheus registry.
      *
      * @throws ApiException {@code 403} if the caller's own account isn't flagged admin, {@code
      *                       401} if not logged in / token expired, {@code 503} if {@code
@@ -2138,7 +2146,7 @@ public final class ApiClient implements AutoCloseable {
         return this.requestBuilder(this.apiBaseUrl.resolve("/admin/metrics"), true).GET().build();
     }
 
-    // --- sharing (item 9) --------------------------------------------------
+    // --- sharing -------------------------------------------------------------
 
     /**
      * {@code POST /files/{id}/share}: grants {@code granteeEmail}'s account read-only access to
@@ -2159,7 +2167,39 @@ public final class ApiClient implements AutoCloseable {
 
     /** Builds the {@code POST /files/{id}/share} request against {@link #apiBaseUrl}, with a JSON {@link ShareRequest} body. */
     private HttpRequest shareFileRequest(final String fileId, final String granteeEmail) {
-        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/share"), new ShareRequest(granteeEmail), true);
+        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/share"), new ShareRequest(granteeEmail, null, null), true);
+    }
+
+    /**
+     * Same route as {@link #shareFile(String, String)}, with an explicit permission level and/or
+     * expiry instead of the server's defaults (read-only, never expires).
+     *
+     * @param fileId               the file to share
+     * @param granteeEmail         the account to grant access to
+     * @param permissionLevel      {@code "VIEW"} or {@code "EDIT"}, or {@code null} for the
+     *                             server's default ({@code "VIEW"}) - {@code "EDIT"} lets the
+     *                             grantee call {@code PUT /files/{id}/content} on this exact file
+     * @param expiresAtEpochMillis when the grant stops being honored, or {@code null} to never expire
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, is currently
+     *                       trashed, or {@code granteeEmail} has no registered account, {@code
+     *                       401} if not logged in / token expired
+     */
+    public void shareFile(final String fileId, final String granteeEmail, final String permissionLevel,
+                           final Long expiresAtEpochMillis) throws ApiException {
+        this.send(this.shareFileRequest(fileId, granteeEmail, permissionLevel, expiresAtEpochMillis), Void.class);
+    }
+
+    /** Async form of {@link #shareFile(String, String, String, Long)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> shareFileAsync(final String fileId, final String granteeEmail, final String permissionLevel,
+                                                   final Long expiresAtEpochMillis) {
+        return this.sendAsync(this.shareFileRequest(fileId, granteeEmail, permissionLevel, expiresAtEpochMillis), Void.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/share} request against {@link #apiBaseUrl}, with a full JSON {@link ShareRequest} body. */
+    private HttpRequest shareFileRequest(final String fileId, final String granteeEmail, final String permissionLevel,
+                                          final Long expiresAtEpochMillis) {
+        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/share"),
+                new ShareRequest(granteeEmail, permissionLevel, expiresAtEpochMillis), true);
     }
 
     /**
@@ -2267,7 +2307,40 @@ public final class ApiClient implements AutoCloseable {
 
     /** Builds the {@code POST /folders/{id}/share} request against {@link #apiBaseUrl}, with a JSON {@link ShareRequest} body. */
     private HttpRequest shareFolderRequest(final String folderId, final String granteeEmail) {
-        return this.postRequest(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"), new ShareRequest(granteeEmail), true);
+        return this.postRequest(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"), new ShareRequest(granteeEmail, null, null), true);
+    }
+
+    /**
+     * Same route as {@link #shareFolder(String, String)}, with an explicit permission level and/or
+     * expiry instead of the server's defaults. {@code permissionLevel} has no effect for a folder
+     * share today - {@code "EDIT"} is only honored on a direct file share (see {@link
+     * #shareFile(String, String, String, Long)}) - but is still accepted here so a caller can pass
+     * one consistent shape for both file and folder shares.
+     *
+     * @param folderId             the folder to share
+     * @param granteeEmail         the account to grant access to
+     * @param permissionLevel      {@code "VIEW"} or {@code "EDIT"}, or {@code null} for the server's default ({@code "VIEW"})
+     * @param expiresAtEpochMillis when the grant stops being honored, or {@code null} to never expire
+     * @throws ApiException {@code 404} if {@code folderId} isn't owned by the caller, is currently
+     *                       trashed, or {@code granteeEmail} has no registered account, {@code
+     *                       401} if not logged in / token expired
+     */
+    public void shareFolder(final String folderId, final String granteeEmail, final String permissionLevel,
+                             final Long expiresAtEpochMillis) throws ApiException {
+        this.send(this.shareFolderRequest(folderId, granteeEmail, permissionLevel, expiresAtEpochMillis), Void.class);
+    }
+
+    /** Async form of {@link #shareFolder(String, String, String, Long)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> shareFolderAsync(final String folderId, final String granteeEmail, final String permissionLevel,
+                                                     final Long expiresAtEpochMillis) {
+        return this.sendAsync(this.shareFolderRequest(folderId, granteeEmail, permissionLevel, expiresAtEpochMillis), Void.class);
+    }
+
+    /** Builds the {@code POST /folders/{id}/share} request against {@link #apiBaseUrl}, with a full JSON {@link ShareRequest} body. */
+    private HttpRequest shareFolderRequest(final String folderId, final String granteeEmail, final String permissionLevel,
+                                            final Long expiresAtEpochMillis) {
+        return this.postRequest(this.apiBaseUrl.resolve("/folders/" + folderId + "/share"),
+                new ShareRequest(granteeEmail, permissionLevel, expiresAtEpochMillis), true);
     }
 
     /**
@@ -2373,6 +2446,453 @@ public final class ApiClient implements AutoCloseable {
     private HttpRequest checkCloudUserExistsRequest(final String email) {
         final String encodedEmail = URLEncoder.encode(email, StandardCharsets.UTF_8);
         return this.requestBuilder(this.apiBaseUrl.resolve("/cloudUsers/exists?email=" + encodedEmail), true).GET().build();
+    }
+
+    // --- public file links -----------------------------------------------
+
+    /**
+     * {@code POST /files/{id}/public-link}: creates a new unauthenticated, read-only link to
+     * {@code fileId}'s content - owner-only.
+     *
+     * @param fileId             the file to create a public link for
+     * @param expiresAtEpochMillis when the link stops working, or {@code null} to never expire
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, {@code 401} if
+     *                       not logged in / token expired
+     */
+    public PublicFileLinkSummaryResponse createPublicFileLink(final String fileId, final Long expiresAtEpochMillis) throws ApiException {
+        return this.send(this.createPublicFileLinkRequest(fileId, expiresAtEpochMillis), PublicFileLinkSummaryResponse.class);
+    }
+
+    /** Async form of {@link #createPublicFileLink(String, Long)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<PublicFileLinkSummaryResponse> createPublicFileLinkAsync(final String fileId, final Long expiresAtEpochMillis) {
+        return this.sendAsync(this.createPublicFileLinkRequest(fileId, expiresAtEpochMillis), PublicFileLinkSummaryResponse.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/public-link} request against {@link #apiBaseUrl}, with a JSON {@link CreatePublicFileLinkRequest} body. */
+    private HttpRequest createPublicFileLinkRequest(final String fileId, final Long expiresAtEpochMillis) {
+        return this.postRequest(this.apiBaseUrl.resolve("/files/" + fileId + "/public-link"),
+                new CreatePublicFileLinkRequest(expiresAtEpochMillis), true);
+    }
+
+    /**
+     * {@code GET /files/{id}/public-link}: lists every currently active public link for {@code
+     * fileId} - owner-only.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, {@code 401} if
+     *                       not logged in / token expired
+     */
+    public List<PublicFileLinkSummaryResponse> listPublicFileLinks(final String fileId) throws ApiException {
+        final PublicFileLinkSummaryResponse[] links = this.send(this.listPublicFileLinksRequest(fileId), PublicFileLinkSummaryResponse[].class);
+        return List.of(links);
+    }
+
+    /** Async form of {@link #listPublicFileLinks(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<PublicFileLinkSummaryResponse>> listPublicFileLinksAsync(final String fileId) {
+        return this.sendAsync(this.listPublicFileLinksRequest(fileId), PublicFileLinkSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/{id}/public-link} request against {@link #apiBaseUrl}. */
+    private HttpRequest listPublicFileLinksRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/public-link"), true).GET().build();
+    }
+
+    /**
+     * {@code DELETE /files/{id}/public-link/{token}}: revokes a previously-created public link.
+     * Idempotent - also succeeds if {@code token} no longer exists.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} isn't owned by the caller, {@code 401} if
+     *                       not logged in / token expired
+     */
+    public void revokePublicFileLink(final String fileId, final String token) throws ApiException {
+        this.send(this.revokePublicFileLinkRequest(fileId, token), Void.class);
+    }
+
+    /** Async form of {@link #revokePublicFileLink(String, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokePublicFileLinkAsync(final String fileId, final String token) {
+        return this.sendAsync(this.revokePublicFileLinkRequest(fileId, token), Void.class);
+    }
+
+    /** Builds the {@code DELETE /files/{id}/public-link/{token}} request against {@link #apiBaseUrl}. */
+    private HttpRequest revokePublicFileLinkRequest(final String fileId, final String token) {
+        final String encodedToken = URLEncoder.encode(token, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/public-link/" + encodedToken), true).DELETE().build();
+    }
+
+    // --- file version history ---------------------------------------------
+
+    /**
+     * {@code GET /files/{id}/versions}: lists every version currently retained for {@code fileId},
+     * oldest to newest, as captured by the server whenever the file's content was overwritten via
+     * {@code PUT /files/{id}/content}.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't reachable by the
+     *                       caller (owned, or shared with them), {@code 401} if not logged in /
+     *                       token expired, {@code 503} if the versioning extension isn't running
+     *                       on this deployment
+     */
+    public List<FileVersionSummaryResponse> listFileVersions(final String fileId) throws ApiException {
+        final FileVersionSummaryResponse[] versions = this.send(this.listFileVersionsRequest(fileId), FileVersionSummaryResponse[].class);
+        return List.of(versions);
+    }
+
+    /** Async form of {@link #listFileVersions(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<FileVersionSummaryResponse>> listFileVersionsAsync(final String fileId) {
+        return this.sendAsync(this.listFileVersionsRequest(fileId), FileVersionSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/{id}/versions} request against {@link #apiBaseUrl}. */
+    private HttpRequest listFileVersionsRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/versions"), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/{id}/versions/{versionNumber}/content}: streams one prior version's content
+     * straight to {@code destination}, the same {@link BodyHandlers#ofFile}-based mechanism {@link
+     * #downloadFileToPath(String, Path)} uses for a file's current content.
+     *
+     * <p>{@code destination} must not already exist - same contract as {@link
+     * #downloadFileToPath(String, Path)}.
+     *
+     * @param fileId        the file the version belongs to
+     * @param versionNumber the 1-based version number, from a {@link FileVersionSummaryResponse}
+     * @param destination   the local path to write the version's content to; must not already exist
+     * @return {@code destination}, unchanged, once the file has been fully written
+     * @throws ApiException {@code 404} if {@code fileId}/{@code versionNumber} doesn't exist or
+     *                       isn't reachable by the caller, {@code 401} if not logged in / token
+     *                       expired, or any other failure
+     */
+    public Path downloadFileVersion(final String fileId, final int versionNumber, final Path destination) throws ApiException {
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber);
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofFile(destination));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return requireSuccessfulFileDownload(response);
+    }
+
+    /** Async form of {@link #downloadFileVersion(String, int, Path)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Path> downloadFileVersionAsync(final String fileId, final int versionNumber, final Path destination) {
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber);
+        return this.httpClient.sendAsync(request, BodyHandlers.ofFile(destination))
+                .thenApply(response -> {
+                    try {
+                        return requireSuccessfulFileDownload(response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    /** Builds the {@code GET /files/{id}/versions/{versionNumber}/content} request against {@link #apiBaseUrl}. */
+    private HttpRequest downloadFileVersionRequest(final String fileId, final int versionNumber) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/versions/" + versionNumber + "/content"), true)
+                .timeout(TRANSFER_TIMEOUT)
+                .GET()
+                .build();
+    }
+
+    /**
+     * {@code POST /files/{id}/versions/{versionNumber}/restore}: replaces {@code fileId}'s current
+     * content with a previously captured version's content - itself captures whatever was live as
+     * a fresh version first, so restoring is never destructive.
+     *
+     * @param fileId        the file to restore a version of
+     * @param versionNumber the 1-based version number, from a {@link FileVersionSummaryResponse}
+     * @return the file's updated summary
+     * @throws ApiException {@code 404} if {@code fileId}/{@code versionNumber} doesn't exist or
+     *                       isn't owned by the caller, {@code 401} if not logged in / token
+     *                       expired, or any other failure
+     */
+    public StoredFileSummaryResponse restoreFileVersion(final String fileId, final int versionNumber) throws ApiException {
+        return this.send(this.restoreFileVersionRequest(fileId, versionNumber), StoredFileSummaryResponse.class);
+    }
+
+    /** Async form of {@link #restoreFileVersion(String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<StoredFileSummaryResponse> restoreFileVersionAsync(final String fileId, final int versionNumber) {
+        return this.sendAsync(this.restoreFileVersionRequest(fileId, versionNumber), StoredFileSummaryResponse.class);
+    }
+
+    /** Builds the {@code POST /files/{id}/versions/{versionNumber}/restore} request against {@link #apiBaseUrl}. */
+    private HttpRequest restoreFileVersionRequest(final String fileId, final int versionNumber) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/versions/" + versionNumber + "/restore"), true)
+                .POST(BodyPublishers.noBody())
+                .build();
+    }
+
+    // --- search ------------------------------------------------------------
+
+    /**
+     * {@code GET /search?q=...&limit=...}: a per-account filename/text-content search over every
+     * file the caller owns. An empty/blank {@code query} still succeeds, returning no results.
+     *
+     * @param query the search text
+     * @param limit the maximum number of results to return
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 503} if the search
+     *                       extension isn't running on this deployment
+     */
+    public List<SearchResultResponse> search(final String query, final int limit) throws ApiException {
+        final SearchResultResponse[] results = this.send(this.searchRequest(query, limit), SearchResultResponse[].class);
+        return List.of(results);
+    }
+
+    /** Async form of {@link #search(String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<SearchResultResponse>> searchAsync(final String query, final int limit) {
+        return this.sendAsync(this.searchRequest(query, limit), SearchResultResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /search?q=...&limit=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest searchRequest(final String query, final int limit) {
+        final String encodedQuery = URLEncoder.encode(query == null ? "" : query, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/search?q=" + encodedQuery + "&limit=" + limit), true).GET().build();
+    }
+
+    // --- thumbnails ----------------------------------------------------------
+
+    /**
+     * {@code GET /files/{id}/thumbnail}: fetches a small JPEG preview thumbnail previously
+     * generated for {@code fileId}, if one exists - raw bytes, not JSON, so this bypasses {@link
+     * #send(HttpRequest, Class)} and reads the response directly.
+     *
+     * <p>Returns {@code null} rather than throwing for both a {@code 404} (no thumbnail generated
+     * for this file - e.g. an unsupported content type, or generation still in flight) and a
+     * {@code 503} (the thumbnails extension isn't running on this deployment) - neither is a real
+     * error worth surfacing to a caller that just wants "is there a thumbnail to show right now."
+     *
+     * @param fileId the file to fetch a thumbnail for
+     * @return the thumbnail's raw JPEG bytes, or {@code null} if none is currently available
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other unexpected failure
+     */
+    public byte[] getThumbnail(final String fileId) throws ApiException {
+        final HttpRequest request = this.getThumbnailRequest(fileId);
+        final HttpResponse<byte[]> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofByteArray());
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return parseThumbnailResponse(request, response);
+    }
+
+    /** Async form of {@link #getThumbnail(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<byte[]> getThumbnailAsync(final String fileId) {
+        final HttpRequest request = this.getThumbnailRequest(fileId);
+        return this.httpClient.sendAsync(request, BodyHandlers.ofByteArray())
+                .thenApply(response -> {
+                    try {
+                        return parseThumbnailResponse(request, response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    /** Builds the {@code GET /files/{id}/thumbnail} request against {@link #apiBaseUrl}. */
+    private HttpRequest getThumbnailRequest(final String fileId) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/thumbnail"), true).GET().build();
+    }
+
+    /**
+     * Shared status-code handling for {@link #getThumbnail(String)}/{@link #getThumbnailAsync(String)} -
+     * see {@link #getThumbnail(String)}'s own Javadoc for why {@code 404}/{@code 503} both map to
+     * {@code null} rather than an exception.
+     */
+    private static byte[] parseThumbnailResponse(final HttpRequest request, final HttpResponse<byte[]> response) throws ApiException {
+        final int status = response.statusCode();
+        if (status == 404 || status == 503) {
+            return null;
+        }
+        if (status >= 200 && status < 300) {
+            return response.body();
+        }
+        throw new ApiException(status, "failed to fetch thumbnail for " + request.uri(), null);
+    }
+
+    // --- activity feed -------------------------------------------------------
+
+    /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<ActivityEntryResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
+    private static final Type ACTIVITY_PAGE_TYPE = new TypeToken<Page<ActivityEntryResponse>>() {
+    }.getType();
+
+    /**
+     * {@code GET /activity}: a cursor-paginated feed of every action recorded against a file or
+     * folder the caller owns or has been shared - spans files and folders together, newest first.
+     *
+     * @param cursor the previous page's {@link Page#nextCursor()}, or {@code null} for the first page
+     * @param limit  the maximum number of entries to return; must be positive
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Page<ActivityEntryResponse> listActivity(final String cursor, final int limit) throws ApiException {
+        return this.send(this.listActivityRequest(cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listActivity(String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<ActivityEntryResponse>> listActivityAsync(final String cursor, final int limit) {
+        return this.sendAsync(this.listActivityRequest(cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Builds the {@code GET /activity?limit=...&cursor=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest listActivityRequest(final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/activity?limit=").append(limit);
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/{id}/activity}: same as {@link #listActivity(String, int)}, scoped to one
+     * file's own history.
+     *
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't reachable by the
+     *                       caller, {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Page<ActivityEntryResponse> listFileActivity(final String fileId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFileActivityRequest(fileId, cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFileActivity(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<ActivityEntryResponse>> listFileActivityAsync(final String fileId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFileActivityRequest(fileId, cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Builds the {@code GET /files/{id}/activity?limit=...&cursor=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest listFileActivityRequest(final String fileId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/files/").append(fileId).append("/activity?limit=").append(limit);
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
+    /**
+     * {@code GET /folders/{id}/activity}: same as {@link #listActivity(String, int)}, scoped to one
+     * folder's own history.
+     *
+     * @throws ApiException {@code 404} if {@code folderId} doesn't exist or isn't reachable by the
+     *                       caller, {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Page<ActivityEntryResponse> listFolderActivity(final String folderId, final String cursor, final int limit) throws ApiException {
+        return this.send(this.listFolderActivityRequest(folderId, cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Async form of {@link #listFolderActivity(String, String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Page<ActivityEntryResponse>> listFolderActivityAsync(final String folderId, final String cursor, final int limit) {
+        return this.sendAsync(this.listFolderActivityRequest(folderId, cursor, limit), ACTIVITY_PAGE_TYPE);
+    }
+
+    /** Builds the {@code GET /folders/{id}/activity?limit=...&cursor=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest listFolderActivityRequest(final String folderId, final String cursor, final int limit) {
+        final StringBuilder query = new StringBuilder("/folders/").append(folderId).append("/activity?limit=").append(limit);
+        if (cursor != null) {
+            query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        return this.requestBuilder(this.apiBaseUrl.resolve(query.toString()), true).GET().build();
+    }
+
+    // --- webhooks --------------------------------------------------------
+
+    /**
+     * {@code POST /webhooks}: registers a new webhook subscription - {@code url} must be {@code
+     * https://} and must not resolve to a private/loopback/link-local address. {@code
+     * eventTypes} names which event types (e.g. {@code "FILE_UPLOADED"}, {@code "FILE_DELETED"},
+     * {@code "FILE_SHARED"}) this subscription receives.
+     *
+     * <p>The returned {@link de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionCreatedResponse#secret()}
+     * is shown only this once - store it immediately, since {@link #listWebhooks()} never returns
+     * it again.
+     *
+     * @throws ApiException {@code 400} if {@code url} isn't {@code https://}, resolves to a
+     *                       disallowed address, or {@code eventTypes} is empty/unrecognized, {@code
+     *                       401} if not logged in / token expired, {@code 503} if the webhooks
+     *                       extension isn't running on this deployment
+     */
+    public WebhookSubscriptionCreatedResponse registerWebhook(final String url, final List<String> eventTypes) throws ApiException {
+        return this.send(this.registerWebhookRequest(url, eventTypes), WebhookSubscriptionCreatedResponse.class);
+    }
+
+    /** Async form of {@link #registerWebhook(String, List)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<WebhookSubscriptionCreatedResponse> registerWebhookAsync(final String url, final List<String> eventTypes) {
+        return this.sendAsync(this.registerWebhookRequest(url, eventTypes), WebhookSubscriptionCreatedResponse.class);
+    }
+
+    /** Builds the {@code POST /webhooks} request against {@link #apiBaseUrl}, with a JSON {@link RegisterWebhookRequest} body. */
+    private HttpRequest registerWebhookRequest(final String url, final List<String> eventTypes) {
+        return this.postRequest(this.apiBaseUrl.resolve("/webhooks"), new RegisterWebhookRequest(url, eventTypes), true);
+    }
+
+    /**
+     * {@code GET /webhooks}: lists every webhook subscription the caller has registered, without
+     * their secrets.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 503} if the
+     *                       webhooks extension isn't running on this deployment
+     */
+    public List<WebhookSubscriptionSummaryResponse> listWebhooks() throws ApiException {
+        final WebhookSubscriptionSummaryResponse[] webhooks = this.send(this.listWebhooksRequest(), WebhookSubscriptionSummaryResponse[].class);
+        return List.of(webhooks);
+    }
+
+    /** Async form of {@link #listWebhooks()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<WebhookSubscriptionSummaryResponse>> listWebhooksAsync() {
+        return this.sendAsync(this.listWebhooksRequest(), WebhookSubscriptionSummaryResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /webhooks} request against {@link #apiBaseUrl}. */
+    private HttpRequest listWebhooksRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/webhooks"), true).GET().build();
+    }
+
+    /**
+     * {@code DELETE /webhooks/{id}}: revokes a previously-registered webhook subscription.
+     * Idempotent - also succeeds if {@code id} no longer exists.
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired
+     */
+    public void revokeWebhook(final String id) throws ApiException {
+        this.send(this.revokeWebhookRequest(id), Void.class);
+    }
+
+    /** Async form of {@link #revokeWebhook(String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> revokeWebhookAsync(final String id) {
+        return this.sendAsync(this.revokeWebhookRequest(id), Void.class);
+    }
+
+    /** Builds the {@code DELETE /webhooks/{id}} request against {@link #apiBaseUrl}. */
+    private HttpRequest revokeWebhookRequest(final String id) {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/webhooks/" + id), true).DELETE().build();
+    }
+
+    /**
+     * {@code GET /webhooks/deliveries}: lists recent delivery attempts across every webhook the
+     * caller has registered - purely informational, not a durable audit trail (see the server's
+     * own webhook-delivery-history Javadoc for why this is capped/in-memory).
+     *
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 503} if the
+     *                       webhooks extension isn't running on this deployment
+     */
+    public List<WebhookDeliveryAttemptResponse> listWebhookDeliveries() throws ApiException {
+        final WebhookDeliveryAttemptResponse[] deliveries = this.send(this.listWebhookDeliveriesRequest(), WebhookDeliveryAttemptResponse[].class);
+        return List.of(deliveries);
+    }
+
+    /** Async form of {@link #listWebhookDeliveries()} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<WebhookDeliveryAttemptResponse>> listWebhookDeliveriesAsync() {
+        return this.sendAsync(this.listWebhookDeliveriesRequest(), WebhookDeliveryAttemptResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /webhooks/deliveries} request against {@link #apiBaseUrl}. */
+    private HttpRequest listWebhookDeliveriesRequest() {
+        return this.requestBuilder(this.apiBaseUrl.resolve("/webhooks/deliveries"), true).GET().build();
     }
 
     // --- internals -------------------------------------------------------

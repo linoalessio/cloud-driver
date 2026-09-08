@@ -1,5 +1,6 @@
 package de.lino.cloud.extensions.scan;
 
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.ScanStatus;
@@ -9,6 +10,7 @@ import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.user.ICloudUserService;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -28,7 +30,7 @@ import java.util.logging.Logger;
  * generation worker already established - never the Postgres notification thread {@link
  * #scanAsync} is ultimately triggered from.
  *
- * <p><b>Dedup aliases (section 4) are scanned independently, not resolved through their canonical
+ * <p><b>Deduplication aliases are scanned independently, not resolved through their canonical
  * file's own result</b> - a deliberate simplicity-over-optimization trade-off: an alias's content
  * is always byte-identical to its canonical's (guaranteed by how a dedup match is found), so
  * re-scanning it always reproduces the same verdict - genuinely redundant work, but it keeps
@@ -176,6 +178,30 @@ final class DefaultContentScanService implements ContentScanService {
             this.dataFactory.update(file.withScanStatus(status));
         } catch (final DatabaseClientException | KeyWrapException | RuntimeException e) {
             this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to persist scan status for " + storedFileId, e);
+            return;
+        }
+        refreshCachedListingStatus(storedFileId, status);
+    }
+
+    /**
+     * Pushes the just-persisted status into {@code StoredFileOwnership}'s own cached mirror (see
+     * {@link ICloudUserService#updateCachedFileScanStatus(String, String)}'s own Javadoc) so a
+     * listing (which never reads {@link StoredFile} directly) reflects the real, finished scan
+     * result instead of staying pinned at its initial-upload-time value. Reached directly off
+     * {@link CloudDriver#getInstance()} rather than a constructor-injected collaborator - this
+     * module has no dependency on {@code cloud-driver-auth} (only the {@code cloud-driver-api}
+     * contract), and the service may not have been published yet (a deployment starting this
+     * extension before {@code cloud-driver-rest} has run) - so this is deliberately best-effort,
+     * never allowed to affect the scan result itself.
+     */
+    private void refreshCachedListingStatus(final String storedFileId, final ScanStatus status) {
+        try {
+            final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+            if (cloudUserService != null) {
+                cloudUserService.updateCachedFileScanStatus(storedFileId, status.name());
+            }
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
         }
     }
 

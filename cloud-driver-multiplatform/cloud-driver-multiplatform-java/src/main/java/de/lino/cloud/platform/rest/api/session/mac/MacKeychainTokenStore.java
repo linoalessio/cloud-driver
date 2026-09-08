@@ -17,9 +17,8 @@ public final class MacKeychainTokenStore implements TokenStore {
 
     /**
      * The keychain item's service identifier. Deliberately still the literal string from a
-     * deleted earlier JavaFX module (see {@code cloud-driver}'s own CLAUDE.md) rather than this
-     * package's current name - renaming it would orphan any token a user already has stored
-     * under the old identifier.
+     * deleted earlier JavaFX module rather than this package's current name - renaming it would
+     * orphan any token a user already has stored under the old identifier.
      */
     private static final String SERVICE = "de.lino.cloud.platform.desktop";
 

@@ -28,9 +28,8 @@ import java.util.logging.Level;
 
 /**
  * Hosts the JWT-authenticated {@code RestFactory} - the actual place {@code RestFactory#start}
- * is called from in this repo (not {@code CloudBootstrap}, despite what older comments/docs
- * elsewhere may still say). See {@code CLAUDE.md}'s "RestFactory"/"JWT authentication for
- * end-user clients" sections for the full picture.
+ * is called from in this repo (not {@code CloudBootstrap}, despite what older comments elsewhere
+ * may still say).
  */
 public class CloudRestExtension extends Extension {
 
@@ -126,10 +125,9 @@ public class CloudRestExtension extends Extension {
         final JwtSigner jwtSigner = new JjwtSigner(signingKey);
 
         final EmailSender emailSender = this.buildEmailSender();
-        // Item 11 (audit log, see architecture/SERVICES.md): built here, not in cloud-driver-auth
-        // itself, since redacting AuditEvent#getMetadata() needs SecretRedactor
-        // (cloud-driver-plugin) - a dependency cloud-driver-auth must never take on directly (see
-        // CLAUDE.md's "Module layout and dependency direction"). This extension already depends on
+        // The audit log service is built here, not in cloud-driver-auth itself, since redacting
+        // AuditEvent#getMetadata() needs SecretRedactor (cloud-driver-plugin) - a dependency
+        // cloud-driver-auth must never take on directly. This extension already depends on
         // both modules, so it's the natural place to close that gap via constructor injection.
         final AuditLogService auditLogService = new AuditLogServiceImpl(dataFactory, SecretRedactor::redact);
         final PresignedTransferService presignedTransferService = this.resolvePresignedTransferService(this.cloudDriver().getConfiguration());
@@ -154,7 +152,7 @@ public class CloudRestExtension extends Extension {
         final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService, objectStorageService);
         REST_FACTORY = restFactory;
 
-        // Item 10 (live push via WebSocket, see architecture/SERVICES.md): DefaultRestFactory
+        // Live push via WebSocket: DefaultRestFactory
         // itself implements LiveUpdatePublisher (it owns the WebSocket route's connected-session
         // registry) - published here the same way authService/cloudUserService are, so
         // DatabaseWatchEvent#handle (cloud-driver-api, no dependency on this module) can reach it
@@ -169,8 +167,8 @@ public class CloudRestExtension extends Extension {
         // takeover vector for AuthUser (spoofed passwordHash under a victim's id) and a way to
         // silently overwrite another user's file content for StoredFile, bypassing the ownership
         // tracking CloudUserService/the /files routes above provide. AuthUser accounts are only
-        // ever created via CreateUserCli (see CLAUDE.md's "JWT authentication" section - deliberately
-        // not a public self-registration endpoint); StoredFile uploads/reads/deletes go exclusively
+        // ever created through the dedicated registration flow, never a generic write route;
+        // StoredFile uploads/reads/deletes go exclusively
         // through the /files routes above, which enforce per-user ownership via CloudUserService.
 
         // register()/update() are deliberately NOT mounted for CloudUser either: its primary key

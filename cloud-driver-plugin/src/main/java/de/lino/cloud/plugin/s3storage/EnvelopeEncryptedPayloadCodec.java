@@ -19,8 +19,8 @@ import java.nio.charset.StandardCharsets;
  * (De)serializes an {@link EnvelopeEncryptedPayload} to/from a compact binary layout, so it can be
  * written to/read from an {@link ObjectStorageService} object.
  *
- * <p><b>Why this exists at all - a real deviation from {@code architecture/AWS_S3_IMPL.md}'s own
- * assumption.</b> That handoff document assumed the same ciphertext bytes a {@code StoredFile}'s
+ * <p><b>Why this exists at all - not simply redirecting an already-existing ciphertext to S3.</b>
+ * A naive design might have assumed the same ciphertext bytes a {@code StoredFile}'s
  * {@code contentBase64} would otherwise have carried are already produced somewhere on the
  * existing persistence path and can simply be redirected to S3. In reality, {@code
  * SecureEntityChannel} envelope-encrypts an entity's <em>entire</em> serialized JSON (via {@code

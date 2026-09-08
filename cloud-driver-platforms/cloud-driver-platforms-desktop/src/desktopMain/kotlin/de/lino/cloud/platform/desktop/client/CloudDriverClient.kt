@@ -61,8 +61,8 @@ class CloudDriverClient(
     private val sessionManager: SessionManager = SessionManager(this.apiClient, this.tokenStoreResult.store())
 
     /**
-     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - the currently-open
-     * connection, or `null` before [startLiveUpdates]/after [stopLiveUpdates]/[close].
+     * The currently-open live-push WebSocket connection, or `null` before
+     * [startLiveUpdates]/after [stopLiveUpdates]/[close].
      */
     private var liveUpdateClient: LiveUpdateClient? = null
 
@@ -169,7 +169,7 @@ class CloudDriverClient(
 
     /**
      * Uploads [filePath] directly to the configured object store, bypassing this app's own server
-     * for the data path entirely (see `architecture/AWS_S3_IMPL.md`) - throws [ApiClient.ApiException]
+     * for the data path entirely - throws [ApiClient.ApiException]
      * with [ApiClient.ApiException.statusCode] `503` if this deployment hasn't configured presigned
      * transfer, in which case the caller should fall back to [uploadFile] instead.
      */
@@ -306,10 +306,10 @@ class CloudDriverClient(
     suspend fun listAdminAuditLog(all: Boolean = false, emailFilter: String? = null): List<AuditLogEntryResponse> =
         this.apiClient.listAdminAuditLogAsync(all, emailFilter).await()
 
-    /** Item 13's counters/gauges (admin-only) - throws (`ApiException`, `503`) if `cloud-driver-extensions-metrics` isn't running on this deployment. */
+    /** The metrics extension's counters/gauges (admin-only) - throws (`ApiException`, `503`) if `cloud-driver-extensions-metrics` isn't running on this deployment. */
     suspend fun getAdminMetrics(): MetricsSnapshotResponse = this.apiClient.getAdminMetricsAsync().await()
 
-    // --- sharing (item 9) -------------------------------------------------
+    // --- sharing -------------------------------------------------------------
 
     /** Grants [granteeEmail]'s account read-only access to [fileId]. Idempotent. */
     suspend fun shareFile(fileId: String, granteeEmail: String) {
@@ -354,7 +354,7 @@ class CloudDriverClient(
     suspend fun checkCloudUserExists(email: String): Boolean = this.apiClient.checkCloudUserExistsAsync(email).await()
 
     /**
-     * Opens the item-10 live-push WebSocket connection (see `architecture/SERVICES.md`) - call
+     * Opens the live-push WebSocket connection - call
      * once authenticated (see [de.lino.cloud.platform.desktop.viewmodel.AppViewModel.onAuthenticated]/
      * `onSessionRestored`). [onUpdate] fires for every pushed change notification, on whatever
      * internal HTTP-client thread delivered it - the caller must dispatch back onto its own

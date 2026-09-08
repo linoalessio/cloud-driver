@@ -12,9 +12,9 @@ import kotlin.io.path.isDirectory
 /**
  * Zips [sourceDirectory]'s contents (recursively) into a fresh temp file, for uploading a whole
  * local folder as one file - the server has no folder-tree upload endpoint, only single-file
- * `POST /files` (see CLAUDE.md's "`RestFactory`" section), so a client-side zip is how "upload a
- * folder" is represented on the wire, per this app's spec. The caller is responsible for deleting
- * the returned temp file once the upload completes.
+ * `POST /files`, so a client-side zip is how "upload a folder" is represented on the wire, per
+ * this app's own design. The caller is responsible for deleting the returned temp file once the
+ * upload completes.
  *
  * `suspend`, dispatched on [Dispatchers.IO] - walking, reading, and writing an entire local
  * directory tree is blocking filesystem I/O (with some DEFLATE compression alongside it, but the

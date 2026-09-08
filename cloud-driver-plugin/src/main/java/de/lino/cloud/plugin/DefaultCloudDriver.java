@@ -120,8 +120,8 @@ public final class DefaultCloudDriver extends CloudDriver {
     /**
      * Same as {@link #setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker)},
      * with an explicit {@link ObjectStorageService} backing {@link DefaultFileFactory}'s optional
-     * S3-backed {@code StoredFile} content path (see {@code architecture/AWS_S3_IMPL.md}) - {@code
-     * null} keeps every file's content inline, exactly as the three-argument overload does.
+     * S3-backed {@code StoredFile} content path - {@code null} keeps every file's content inline,
+     * exactly as the three-argument overload does.
      *
      * @param databaseProvider the backing {@code database-driver-plugin} provider
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence, and - if

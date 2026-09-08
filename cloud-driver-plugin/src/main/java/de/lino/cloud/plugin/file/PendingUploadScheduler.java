@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * still-failing file into the very cache this scheduler is draining;
  * {@code register} either persists or throws.
  *
- * <p><b>S3-backed content (architecture/AWS_S3_IMPL.md).</b> If constructed with a non-{@code
+ * <p><b>S3-backed content.</b> If constructed with a non-{@code
  * null} {@link #fileFactory}, every retry first runs {@code file} through {@link
  * DefaultFileFactory#prepareForPersistence} - the same S3-then-metadata sequence {@code
  * DefaultFileFactory#upload} itself applies - before handing the (possibly now metadata-only)

@@ -4,8 +4,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * A public, unauthenticated share link on a {@link StoredFile} - section 6 of {@code
- * architecture/MICRO.md}. {@code token} is the whole of what's needed to resolve the file's
+ * A public, unauthenticated share link on a {@link StoredFile}. {@code token} is the whole of what's needed to resolve the file's
  * content through the public {@code GET /public/files/{token}} route (no login at all) - it is
  * never split into a separate raw/hash pair the way {@code ApiKey} is, the same "the token itself
  * is its own primary key, envelope-encrypted at rest, never redisplayed a second time after

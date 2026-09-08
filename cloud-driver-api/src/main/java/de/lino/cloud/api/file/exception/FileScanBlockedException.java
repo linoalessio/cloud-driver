@@ -5,11 +5,10 @@ import org.jetbrains.annotations.NotNull;
 
 /**
  * Thrown when content access to a {@link de.lino.cloud.api.file.StoredFile} is refused because of
- * its {@link ScanStatus} - section 9 of {@code architecture/MICRO.md}. {@link
+ * its {@link ScanStatus}. {@link
  * ScanStatus#PENDING} means "not ready yet, try again later"; {@link ScanStatus#FLAGGED} means
  * "permanently refused". {@code DefaultRestFactory} maps the two to different HTTP statuses (see
- * that class's own handling) rather than collapsing them into one generic error, matching the
- * handoff doc's own "blocked with a clear status response, not a generic error" instruction.
+ * that class's own handling) rather than collapsing them into one generic error.
  */
 public final class FileScanBlockedException extends RuntimeException {
 

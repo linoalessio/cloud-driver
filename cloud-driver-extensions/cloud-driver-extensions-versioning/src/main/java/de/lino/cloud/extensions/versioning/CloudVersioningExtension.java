@@ -8,16 +8,15 @@ import java.time.Duration;
 import java.util.logging.Level;
 
 /**
- * Section 2 (Versioning, {@code architecture/MICRO.md}) - publishes a {@link
+ * Versioning - publishes a {@link
  * DefaultFileVersioningService} into {@code IServiceContainer#setFileVersioningService} and
  * starts a {@link FileVersionPurgeScheduler} enforcing the configured retention policy. See
  * {@code FileVersioningService}'s own Javadoc for the full design, including why {@code
- * de.lino.cloud.auth.CloudUserService} gained a new {@code replaceFileContent} primitive as part
- * of this section - this app had no content-overwrite operation for versions to attach to before.
+ * de.lino.cloud.auth.CloudUserService} gained a new {@code replaceFileContent} primitive - this
+ * app had no content-overwrite operation for versions to attach to before.
  *
  * <p>Built as an in-process extension, not a genuinely standalone deployable service, for the
- * same reason {@code cloud-driver-extensions-thumbnails} was - see {@code
- * architecture/MICRO.md}'s "Reconciliation Notes".
+ * same reason {@code cloud-driver-extensions-thumbnails} was.
  */
 public class CloudVersioningExtension extends Extension {
 

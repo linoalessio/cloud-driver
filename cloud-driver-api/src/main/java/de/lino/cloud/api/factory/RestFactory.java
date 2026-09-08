@@ -139,10 +139,8 @@ public abstract class RestFactory {
      * "127.0.0.1"} instead makes the server reachable only from the same
      * machine - the intended shape once a TLS-terminating reverse proxy
      * (e.g. Caddy) sits in front, proxying its own public, HTTPS port to
-     * this one locally. See the {@code cloud-driver-platform-desktop} section of
-     * this repo's {@code CLAUDE.md} for the actual reverse-proxy setup this
-     * is used with in production (configured directly on the deployment
-     * server's own Caddyfile, which is not checked into this repo).
+     * this one locally (configured directly on the deployment server's own
+     * Caddyfile, which is not checked into this repo).
      *
      * @param host the interface to bind to, e.g. {@code "0.0.0.0"} (every interface) or {@code "127.0.0.1"} (loopback only)
      * @param port the port to listen on

@@ -97,8 +97,8 @@ public final class StoredFileOwnership extends Serialized implements Owned {
      * {@code storedFileId}'s {@link StoredFile#checksum()} algorithm name (e.g. {@code "SHA_256"}),
      * captured at upload time alongside {@link #fileName} - what lets {@link
      * de.lino.cloud.auth.CloudUserService#uploadFile} find a per-account deduplication candidate
-     * (see {@code architecture/MICRO.md}, section 4) straight off this already-scanned row, with no
-     * extra fetch of the full {@link StoredFile}. {@code null} for a row written before per-account
+     * straight off this already-scanned row, with no extra fetch of the full {@link StoredFile}.
+     * {@code null} for a row written before per-account
      * deduplication existed, or one that predates {@link #fileName} itself - see {@link
      * #hasChecksum()}.
      */
@@ -121,6 +121,24 @@ public final class StoredFileOwnership extends Serialized implements Owned {
      */
     @Nullable
     private final String dedupCanonicalFileId;
+
+    /**
+     * {@code storedFileId}'s malware-scan status - the {@link de.lino.cloud.api.file.ScanStatus}
+     * name as a plain {@code String} (this class doesn't otherwise depend on that enum type),
+     * captured
+     * at upload time and kept in sync afterward by {@code
+     * de.lino.cloud.extensions.scan.DefaultContentScanService} via {@link
+     * de.lino.cloud.api.user.ICloudUserService#updateCachedFileScanStatus} once an async scan
+     * actually completes - see that method's own Javadoc for why this row, not just {@code
+     * StoredFile}'s own field, has to be kept current: every listing ({@link
+     * CloudUserService#listFileSummaries}) reads this cached copy, never the underlying {@code
+     * StoredFile} directly, the same reasoning every other cached field on this class already
+     * documents. {@code null} for a row written before content scanning existed, or on
+     * a deployment that has never run {@code cloud-driver-extensions-scan} - see {@link
+     * #resolvedScanStatus()} for the "absent = clean" default.
+     */
+    @Nullable
+    private final String scanStatus;
 
     /**
      * Same as {@link #StoredFileOwnership(String, String, String)}, placing the file at the root
@@ -221,6 +239,25 @@ public final class StoredFileOwnership extends Serialized implements Owned {
                                 final long createdAtEpochMilli, final long updatedAtEpochMilli,
                                 @Nullable final Long deletedAtEpochMillis, @Nullable final String checksumAlgorithm,
                                 @Nullable final String checksumHex, @Nullable final String dedupCanonicalFileId) {
+        this(authUserId, storedFileId, folderId, fileName, contentType, sizeBytes, createdAtEpochMilli,
+                updatedAtEpochMilli, deletedAtEpochMillis, checksumAlgorithm, checksumHex, dedupCanonicalFileId, null);
+    }
+
+    /**
+     * Full constructor, additionally carrying {@link #scanStatus} - the actual field-setting
+     * constructor every other constructor above delegates to. Prefer {@link #of(String,
+     * StoredFile, String)} when a {@link StoredFile} instance is directly in hand.
+     *
+     * @param scanStatus {@code storedFileId}'s malware-scan status ({@link
+     *     de.lino.cloud.api.file.ScanStatus} name), or {@code null} if unknown/not yet scanned
+     */
+    public StoredFileOwnership(@NotNull final String authUserId, @NotNull final String storedFileId,
+                                @Nullable final String folderId, @Nullable final String fileName,
+                                @Nullable final String contentType, final long sizeBytes,
+                                final long createdAtEpochMilli, final long updatedAtEpochMilli,
+                                @Nullable final Long deletedAtEpochMillis, @Nullable final String checksumAlgorithm,
+                                @Nullable final String checksumHex, @Nullable final String dedupCanonicalFileId,
+                                @Nullable final String scanStatus) {
         this.authUserId = Objects.requireNonNull(authUserId, "@StoredFileOwnership.init: authUserId cannot be null");
         this.storedFileId = Objects.requireNonNull(storedFileId, "@StoredFileOwnership.init: storedFileId cannot be null");
         this.folderId = folderId;
@@ -233,6 +270,7 @@ public final class StoredFileOwnership extends Serialized implements Owned {
         this.checksumAlgorithm = checksumAlgorithm;
         this.checksumHex = checksumHex;
         this.dedupCanonicalFileId = dedupCanonicalFileId;
+        this.scanStatus = scanStatus;
     }
 
     /**
@@ -250,8 +288,8 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     }
 
     /**
-     * Same as the full constructor, reading every metadata/checksum field directly off {@code file}
-     * instead of requiring the caller to unpack it first.
+     * Same as the full constructor, reading every metadata/checksum/scan-status field directly off
+     * {@code file} instead of requiring the caller to unpack it first.
      *
      * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param file the file being tracked as owned - {@link StoredFile#fileId()} becomes {@link #storedFileId}
@@ -265,7 +303,8 @@ public final class StoredFileOwnership extends Serialized implements Owned {
                                           @Nullable final String folderId, @Nullable final String dedupCanonicalFileId) {
         return new StoredFileOwnership(authUserId, file.fileId(), folderId, file.fileName(), file.contentType(),
                 file.sizeBytes(), file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), null,
-                file.checksum().algorithm().name(), file.checksum().hexDigest(), dedupCanonicalFileId);
+                file.checksum().algorithm().name(), file.checksum().hexDigest(), dedupCanonicalFileId,
+                file.scanStatus().name());
     }
 
     /**
@@ -276,7 +315,7 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     public StoredFileOwnership movedTo(@Nullable final String newFolderId) {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, newFolderId, this.fileName, this.contentType,
                 this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, this.deletedAtEpochMillis,
-                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId, this.scanStatus);
     }
 
     /** @return {@code true} if this file is currently soft-deleted (in the trash) from {@link #authUserId}'s point of view */
@@ -289,7 +328,7 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     public StoredFileOwnership markedDeleted() {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
                 this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, System.currentTimeMillis(),
-                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId, this.scanStatus);
     }
 
     /** @return a copy of this row, restored out of the trash - every other field carried over unchanged */
@@ -297,7 +336,30 @@ public final class StoredFileOwnership extends Serialized implements Owned {
     public StoredFileOwnership restored() {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
                 this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, null,
-                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId);
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId, this.scanStatus);
+    }
+
+    /**
+     * @return this row's cached {@link de.lino.cloud.api.file.ScanStatus} name, or {@code "CLEAN"}
+     * if never captured (a row written before content scanning existed, or on a deployment that has
+     * never run {@code cloud-driver-extensions-scan}) - the same "absent = default" reading {@link
+     * StoredFile#scanStatus()} itself already applies to a {@code null} field.
+     */
+    @NotNull
+    public String resolvedScanStatus() {
+        return this.scanStatus != null ? this.scanStatus : "CLEAN";
+    }
+
+    /**
+     * @param newScanStatus the new {@link de.lino.cloud.api.file.ScanStatus} name to cache
+     * @return a copy of this row with {@link #scanStatus} changed to {@code newScanStatus}; every
+     *     other field is left unchanged
+     */
+    @NotNull
+    public StoredFileOwnership withScanStatus(@NotNull final String newScanStatus) {
+        return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId, this.fileName, this.contentType,
+                this.sizeBytes, this.createdAtEpochMilli, this.updatedAtEpochMilli, this.deletedAtEpochMillis,
+                this.checksumAlgorithm, this.checksumHex, this.dedupCanonicalFileId, newScanStatus);
     }
 
     /**
@@ -344,7 +406,8 @@ public final class StoredFileOwnership extends Serialized implements Owned {
         return new StoredFileOwnership(this.authUserId, this.storedFileId, this.folderId,
                 file.fileName(), file.contentType(), file.sizeBytes(),
                 file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), this.deletedAtEpochMillis,
-                file.checksum().algorithm().name(), file.checksum().hexDigest(), this.dedupCanonicalFileId);
+                file.checksum().algorithm().name(), file.checksum().hexDigest(), this.dedupCanonicalFileId,
+                file.scanStatus().name());
     }
 
     /**

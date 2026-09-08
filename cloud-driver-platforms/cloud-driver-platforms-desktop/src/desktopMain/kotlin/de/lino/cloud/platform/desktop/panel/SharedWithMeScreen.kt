@@ -58,8 +58,8 @@ private fun chooseDirectory(title: String, initialDirectory: Path? = null): Path
 }
 
 /**
- * Files/folders other accounts have directly shared with the signed-in account (item 9, see
- * `architecture/SERVICES.md`) - read-only, much simpler than `FileBrowserScreen`: no selection,
+ * Files/folders other accounts have directly shared with the signed-in account - read-only,
+ * much simpler than `FileBrowserScreen`: no selection,
  * drag-and-drop, previews, or upload/create/move/delete/share. A shared folder row is now (added
  * 2026-09-02, finally implementing the "browsing a shared folder's contents" extension this
  * codebase's own docs used to describe as out of scope) clickable - opens

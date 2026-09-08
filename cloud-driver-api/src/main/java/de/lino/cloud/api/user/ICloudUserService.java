@@ -69,8 +69,7 @@ public interface ICloudUserService {
     /**
      * Looks up which account owns {@code storedFileId}, via the same full-{@code
      * StoredFileOwnership}-section scan {@link #getCloudUserByEmail(String)} performs over
-     * {@code AuthUser} - added for item 10 (live push via WebSocket, see {@code
-     * architecture/SERVICES.md}) so a {@code DatabaseWatchEvent} (which only ever learns a
+     * {@code AuthUser} - added for live push via WebSocket, so a {@code DatabaseWatchEvent} (which only ever learns a
      * changed file's id, never its owner) can resolve which connected session(s) to notify.
      *
      * @param storedFileId the {@link StoredFile#fileId()} to resolve an owner for
@@ -78,6 +77,24 @@ public interface ICloudUserService {
      */
     @NonNull
     Optional<String> resolveOwnerAuthUserId(@NotNull String storedFileId);
+
+    /**
+     * Refreshes the cached {@code scanStatus} mirror a listing (see {@link StoredFileSummary#scanStatus()})
+     * reads, once an out-of-band content scan ({@code
+     * de.lino.cloud.extensions.scan.DefaultContentScanService}) has actually finished and updated
+     * the real {@link StoredFile#scanStatus()} field. A listing never reads {@link StoredFile}
+     * directly (see {@code StoredFileOwnership}'s own "cache a String mirror" reasoning), so
+     * without this call a file's listed scan status would stay pinned at its initial-upload-time
+     * value (always {@code PENDING}) forever, even after the real scan completes. Resolves the
+     * owning account the same way {@link #resolveOwnerAuthUserId(String)} does; a no-op if no
+     * {@code StoredFileOwnership} row is found (e.g. the file was hard-deleted before the scan
+     * finished) - never throws, matching this whole call chain's "a scan result must never fail
+     * loudly against a file that has since moved on" convention.
+     *
+     * @param storedFileId the {@link StoredFile#fileId()} whose cached scan status changed
+     * @param scanStatus the new {@link de.lino.cloud.api.file.ScanStatus} name
+     */
+    void updateCachedFileScanStatus(@NotNull String storedFileId, @NotNull String scanStatus);
 
     /**
      * Deletes every {@link StoredFile} and {@link Folder} owned by {@code authUserId} (the
@@ -192,8 +209,7 @@ public interface ICloudUserService {
     StoredFile uploadFile(@NotNull String authUserId, @NotNull String fileName, byte[] content, @Nullable String folderId);
 
     /**
-     * Begins a presigned, direct-to-client upload (see {@code architecture/AWS_S3_IMPL.md}'s
-     * "Explicitly deferred" section, now implemented): checks {@code authUserId}'s quota against
+     * Begins a presigned, direct-to-client upload: checks {@code authUserId}'s quota against
      * the declared {@code sizeBytes} and that {@code folderId} (if given) is actually owned by
      * {@code authUserId}, then returns a fresh {@link PresignedUploadTicket} the caller uploads its
      * content to directly, bypassing this server for the data path entirely. <b>Persists nothing</b>
@@ -373,7 +389,7 @@ public interface ICloudUserService {
 
     /**
      * Overwrites {@code storedFileId}'s content in place, but only if {@code authUserId} actually
-     * owns it - the primitive underlying section 2 (Versioning, {@code architecture/MICRO.md}).
+     * owns it - the primitive underlying this codebase's versioning feature.
      * Unlike every other write in this codebase before this method existed, this genuinely
      * replaces an existing {@link StoredFile}'s bytes under its own, unchanged id - {@link
      * #uploadFile}/{@code duplicateFileInto}-style operations always mint a fresh id instead.
@@ -399,7 +415,7 @@ public interface ICloudUserService {
 
     /**
      * Same as {@link #replaceFileContent(String, String, byte[])}, with an optimistic-concurrency
-     * precondition - section 10 (Sync, {@code architecture/MICRO.md}). {@link #replaceFileContent(String,
+     * precondition. {@link #replaceFileContent(String,
      * String, byte[])} itself delegates here with {@code expectedUpdatedAtEpochMillis} {@code null}
      * (unconditional overwrite, unchanged behavior for every existing caller).
      *
@@ -409,8 +425,7 @@ public interface ICloudUserService {
      * refused and a {@link de.lino.cloud.api.file.exception.SyncConflictException} is thrown
      * instead: the canonical file is left completely untouched, and {@code newContent} is
      * persisted as a new "conflicted copy" file in the same folder (the same Drive/Dropbox-style
-     * UX the handoff doc names explicitly) - "last write wins" for the canonical name, but nothing
-     * is ever silently discarded.
+     * UX) - "last write wins" for the canonical name, but nothing is ever silently discarded.
      *
      * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the {@link StoredFile#fileId()} to overwrite
@@ -569,8 +584,8 @@ public interface ICloudUserService {
     void restoreFolder(@NotNull String authUserId, @NotNull String folderId);
 
     /**
-     * Lists every {@link AuditEvent} recorded against {@code storedFileId}, newest first - section
-     * 3 (Activity/Audit-Feed, {@code architecture/MICRO.md}), a presentation layer over {@link
+     * Lists every {@link AuditEvent} recorded against {@code storedFileId}, newest first - a
+     * presentation layer over {@link
      * de.lino.cloud.api.audit.AuditLogService}'s existing data, not a new audit system.
      * Owner-or-share access-checked the same way {@link #checkFileAccess} already is - whoever can
      * currently view a file can see its change history too, matching this codebase's existing
@@ -652,8 +667,7 @@ public interface ICloudUserService {
      * actual owner) may create or revoke a share on it, a grantee can never re-share what was
      * shared with them. Idempotent - sharing with the same grantee again just refreshes the
      * grant's timestamp. See {@code CloudUserService#getFile} for how a grantee actually exercises
-     * this grant, and this interface's own "which operations honor a share" summary (in {@code
-     * CLAUDE.md}'s "JWT authentication for end-user clients" section) for the complete picture.
+     * this grant.
      *
      * @param ownerAuthUserId the file's actual owner, who must already own {@code fileId}
      * @param fileId the file to share
@@ -667,7 +681,7 @@ public interface ICloudUserService {
 
     /**
      * Same as {@link #shareFile(String, String, String)}, with an explicit access level and
-     * optional expiry (section 6, {@code architecture/MICRO.md}) - {@link #shareFile(String,
+     * optional expiry - {@link #shareFile(String,
      * String, String)} itself delegates here with {@link SharePermission#VIEW}/{@code null}.
      * Re-sharing with the same grantee replaces the existing grant's permission level/expiry, not
      * just its timestamp.
@@ -707,7 +721,7 @@ public interface ICloudUserService {
      * #listFileSummaries(String)} returns for the caller's own files. Does <b>not</b> include a
      * file only reachable through a folder-level share ({@link #shareFolder}) - browsing a shared
      * folder's own contents is a documented future extension, not implemented in this first
-     * sharing pass (see {@code CLAUDE.md}). A grant whose underlying file has since been deleted or
+     * sharing pass. A grant whose underlying file has since been deleted or
      * trashed by its owner is silently omitted, rather than surfaced as an error.
      *
      * @param authUserId the account whose incoming file shares to list
@@ -733,7 +747,7 @@ public interface ICloudUserService {
 
     /**
      * Same as {@link #shareFolder(String, String, String)}, with an explicit access level and
-     * optional expiry (section 6, {@code architecture/MICRO.md}) - {@link #shareFolder(String,
+     * optional expiry - {@link #shareFolder(String,
      * String, String)} itself delegates here with {@link SharePermission#VIEW}/{@code null}. See
      * {@link SharePermission}'s own Javadoc for why {@link SharePermission#EDIT} currently carries
      * no behavior change on a folder grant.
@@ -780,8 +794,7 @@ public interface ICloudUserService {
     List<SharedFolderSummary> listSharedFoldersWithMe(@NotNull String authUserId);
 
     /**
-     * Creates a public, unauthenticated share link on {@code fileId} - section 6 of {@code
-     * architecture/MICRO.md}. Unlike {@link #shareFile}, this grants access to <b>anyone who has
+     * Creates a public, unauthenticated share link on {@code fileId}. Unlike {@link #shareFile}, this grants access to <b>anyone who has
      * the returned token</b>, no account or login required at all - resolved via the public {@code
      * GET /public/files/{token}} route, always read-only ({@link SharePermission#VIEW} only - there
      * is no unauthenticated write path in this codebase, and none is added here). Owner-only.

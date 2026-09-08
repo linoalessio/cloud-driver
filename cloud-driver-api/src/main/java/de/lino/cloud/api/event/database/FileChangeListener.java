@@ -14,9 +14,8 @@ import de.lino.cloud.api.file.StoredFile;
  * {@link FileChangeListenerRegistry}, are the fan-out point: {@code DatabaseWatchEvent} (the
  * one registered {@code Event} handler) notifies every registered {@code FileChangeListener} in
  * turn, so any number of addons can independently observe the same underlying notification
- * stream without touching {@code EventFactory}'s own one-handler-per-class contract at all. See
- * {@code architecture/MICRO.md}'s "Reconciliation Notes" for the full reasoning behind this
- * choice over changing {@code EventFactory} itself.
+ * stream without touching {@code EventFactory}'s own one-handler-per-class contract at all - this
+ * was chosen over changing {@code EventFactory} itself.
  *
  * <p>{@code storedFileId} is the changed {@link StoredFile}'s id; {@code operation} is the raw
  * Postgres trigger operation - {@code "INSERT"} for a brand-new file, {@code "UPDATE"} for

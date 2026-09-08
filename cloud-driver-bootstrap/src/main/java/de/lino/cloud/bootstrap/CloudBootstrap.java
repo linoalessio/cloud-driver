@@ -143,8 +143,8 @@ public final class CloudBootstrap {
 
     /**
      * Resolves an optional {@link S3ObjectStorageService} from {@code configuration.json}'s {@code
-     * "aws-s3-region"}/{@code "aws-s3-bucket"}/{@code "aws-s3-key-prefix"} keys - see {@code
-     * architecture/AWS_S3_IMPL.md}. <b>Not wired in by default</b>: this deployment's S3-backed
+     * "aws-s3-region"}/{@code "aws-s3-bucket"}/{@code "aws-s3-key-prefix"} keys.
+     * <b>Not wired in by default</b>: this deployment's S3-backed
      * {@code StoredFile} content path is opt-in, the same "operator explicitly provisions a bucket
      * and IAM credentials before this activates" convention {@link AwsKmsKeyEncryptionService}
      * already established for KMS - a missing/blank {@code "aws-s3-bucket"} (including on a {@code
@@ -233,8 +233,7 @@ public final class CloudBootstrap {
     /**
      * Starts a {@link PendingUploadScheduler} on its own ticker thread - passing this process's
      * own {@link DefaultFileFactory} so a retried upload also applies the S3-then-metadata
-     * sequence {@link DefaultFileFactory#upload} itself uses, if S3-backed s3storage is configured
-     * (see {@code architecture/AWS_S3_IMPL.md}).
+     * sequence {@link DefaultFileFactory#upload} itself uses, if S3-backed s3storage is configured.
      *
      * @return the scheduler's shutdown action
      */

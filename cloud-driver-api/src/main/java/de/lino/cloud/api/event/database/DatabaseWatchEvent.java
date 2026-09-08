@@ -80,7 +80,7 @@ public class DatabaseWatchEvent extends Event {
     }
 
     /**
-     * Item 10 (live push via WebSocket, see {@code architecture/SERVICES.md}): resolves which
+     * Live push via WebSocket: resolves which
      * account owns {@code id} (via {@link ICloudUserService#resolveOwnerAuthUserId}, only
      * reachable once {@code CloudRestExtension} has published one into {@code IServiceContainer} -
      * see that interface's own Javadoc) and forwards this notification's raw {@code

@@ -101,9 +101,9 @@ public struct RenameFileRequest: Encodable {
     }
 }
 
-/// Body for `POST /files/upload-url` - the first step of a presigned, direct-to-client upload
-/// (see cloud-driver's `architecture/AWS_S3_IMPL.md`). `sizeBytes` is checked against quota now
-/// and again (against the real uploaded size) at `CompleteUploadRequest`.
+/// Body for `POST /files/upload-url` - the first step of a presigned, direct-to-client upload.
+/// `sizeBytes` is checked against quota now and again (against the real uploaded size) at
+/// `CompleteUploadRequest`.
 public struct BeginUploadUrlRequest: Encodable {
     public let fileName: String
     public let sizeBytes: Int64
@@ -178,12 +178,18 @@ public struct ConfirmChangeEmailRequest: Encodable {
 }
 
 /// Body for `POST /files/{id}/share` and `POST /folders/{id}/share` - grants `granteeEmail`'s
-/// account read-only access.
+/// account access. `permissionLevel` (`"VIEW"`/`"EDIT"`, `nil` defaults to `VIEW` server-side) and
+/// `expiresAtEpochMillis` (`nil` never expires) are both optional, so an existing call passing only
+/// `granteeEmail` keeps compiling and behaving exactly as before either field existed.
 public struct ShareRequest: Encodable {
     public let granteeEmail: String
+    public let permissionLevel: String?
+    public let expiresAtEpochMillis: Int64?
 
-    public init(granteeEmail: String) {
+    public init(granteeEmail: String, permissionLevel: String? = nil, expiresAtEpochMillis: Int64? = nil) {
         self.granteeEmail = granteeEmail
+        self.permissionLevel = permissionLevel
+        self.expiresAtEpochMillis = expiresAtEpochMillis
     }
 }
 
@@ -201,6 +207,10 @@ public struct AuthResponse: Decodable {
 /// Shape of one entry in `GET /files`'s response array, and of `POST /files`'s own response body
 /// (upload responses carry no content - see cloud-driver's "Large-file upload/download streaming"
 /// notes). Deliberately without content; fetch bytes separately via `GET /files/{id}/content`.
+///
+/// `scanStatus` mirrors the server's content-scan verdict (`"CLEAN"`/`"PENDING"`/`"FLAGGED"`) -
+/// treated as opaque text here, not a Swift enum, the same "kept as a plain string, real meaning
+/// lives server-side" convention this file already applies to `FolderResponse.color`.
 public struct StoredFileSummaryResponse: Decodable, Identifiable, Hashable {
     public var id: String { fileId }
     public let fileId: String
@@ -210,6 +220,7 @@ public struct StoredFileSummaryResponse: Decodable, Identifiable, Hashable {
     public let createdAtEpochMilli: Int64
     public let updatedAtEpochMilli: Int64
     public let folderId: String?
+    public let scanStatus: String
 }
 
 /// Shape of one entry in `GET /folders`'s response array, and of what `POST /folders`/`PUT
@@ -298,4 +309,56 @@ public struct CloudUserResponse: Decodable {
 /// Body Javalin's default error responses use (`BadRequestResponse` etc. all share this shape).
 public struct ErrorResponse: Decodable {
     public let title: String
+}
+
+/// Shape of one entry in `GET /search`'s response array - a filename/content match against the
+/// caller's own account, scoped per-account (a search never matches another account's files).
+public struct SearchResultResponse: Decodable, Identifiable, Hashable {
+    public var id: String { storedFileId }
+    public let storedFileId: String
+    public let fileName: String
+    public let folderId: String?
+}
+
+/// Body for `POST /files/{id}/public-link` - `expiresAtEpochMillis` `nil` creates a link that
+/// never expires.
+public struct CreatePublicFileLinkRequest: Encodable {
+    public let expiresAtEpochMillis: Int64?
+
+    public init(expiresAtEpochMillis: Int64? = nil) {
+        self.expiresAtEpochMillis = expiresAtEpochMillis
+    }
+}
+
+/// Shape of one entry in `GET /files/{id}/public-link`'s response array, and of what `POST
+/// /files/{id}/public-link` returns on success - an unauthenticated, read-only link to one file's
+/// content, reachable via `GET /public/files/{token}` with no bearer token at all.
+public struct PublicFileLinkSummaryResponse: Decodable, Identifiable, Hashable {
+    public var id: String { token }
+    public let token: String
+    public let createdAtEpochMillis: Int64
+    public let expiresAtEpochMillis: Int64?
+}
+
+/// Shape of one entry in `GET /files/{id}/versions`'s response array - a previously-captured
+/// version of a file's content (captured automatically whenever `PUT /files/{id}/content`
+/// overwrites it). Deliberately narrower than `StoredFileSummaryResponse` - a version carries no
+/// `fileName`/`contentType` of its own in this response, only what changed release to release.
+public struct FileVersionSummaryResponse: Decodable, Identifiable, Hashable {
+    public var id: Int { versionNumber }
+    public let versionNumber: Int
+    public let capturedAtEpochMillis: Int64
+    public let sizeBytes: Int64
+}
+
+/// One entry in an activity feed page (`GET /activity`, `GET /files/{id}/activity`, `GET
+/// /folders/{id}/activity`) - a narrowed view of the server's audit-log entry, decoding only the
+/// fields this app actually displays (`Decodable` silently ignores the rest, e.g. `actorAuthUserId`/
+/// `metadata`). `id` is synthesized from timestamp+target rather than decoded, since the server's
+/// own entry id isn't one of the fields read here.
+public struct ActivityEntryResponse: Decodable, Identifiable, Hashable {
+    public var id: String { "\(timestampEpochMillis)-\(targetId ?? "")" }
+    public let timestampEpochMillis: Int64
+    public let action: String
+    public let targetId: String?
 }

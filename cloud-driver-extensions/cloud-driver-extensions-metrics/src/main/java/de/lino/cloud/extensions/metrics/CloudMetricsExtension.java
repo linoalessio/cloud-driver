@@ -13,7 +13,7 @@ import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.util.logging.Level;
 
 /**
- * Item 13 (Metrics/observability exporter, {@code architecture/SERVICES.md}) - registers a
+ * Metrics/observability exporter - registers a
  * {@link PrometheusMeterRegistry}, wires it to both push-style events ({@link
  * MicrometerMetricsRecorder}, published into {@code IServiceContainer#setMetricsRecorder} for
  * {@code DefaultFileFactory#upload}/{@code CloudUserService#uploadFile} to push counts through -

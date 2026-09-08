@@ -8,8 +8,8 @@ import de.lino.cloud.api.utility.Asserts;
 
 /**
  * Generates random {@link DataEncryptionKey data-encryption keys} for
- * envelope encryption, per section 4: "A randomly generated data-encryption
- * key (DEK) SHALL encrypt the data."
+ * envelope encryption - a randomly generated data-encryption key (DEK)
+ * encrypts the data.
  */
 public final class DataEncryptionKeyGenerator {
 

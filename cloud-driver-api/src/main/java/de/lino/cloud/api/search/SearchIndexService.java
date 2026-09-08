@@ -7,8 +7,8 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 
 /**
- * A derived, per-account, filename-plus-text-content search index over {@link StoredFile}s -
- * section 5 of {@code architecture/MICRO.md}, reached via {@link IServiceContainer#getSearchIndexService()}
+ * A derived, per-account, filename-plus-text-content search index over {@link StoredFile}s,
+ * reached via {@link IServiceContainer#getSearchIndexService()}
  * - {@code null} until {@code cloud-driver-extensions-search}'s {@code CloudSearchExtension} has
  * published one (not started, or this deployment doesn't run that extension at all), the same
  * "may not exist yet" contract every other {@link IServiceContainer} facet already carries.
@@ -17,9 +17,8 @@ import java.util.List;
  * from {@code de.lino.cloud.auth.CloudUserService}'s own upload/rename/move/content-replace/delete
  * methods (the same "reach the optional service directly from the call site, no-op if unpublished,
  * never let a failure here block the real operation" shape {@code FileVersioningService}/{@code
- * MetricsRecorder} already use), never from an async watch-event - see {@code
- * architecture/MICRO.md}'s own "Reconciliation Notes" on why {@code FileChangeListener} (built for
- * section 1) isn't the right mechanism here: it only fires on an {@code INSERT}/{@code UPDATE} of
+ * MetricsRecorder} already use), never from an async watch-event: {@code FileChangeListener}
+ * isn't the right mechanism here since it only fires on an {@code INSERT}/{@code UPDATE} of
  * the {@code StoredFile} table, which misses a soft-delete/restore (an {@code UPDATE} of {@code
  * StoredFileOwnership}, a different table entirely) and a genuine hard delete (no notification at
  * all) - both of which this index must react to correctly. Since it's fully derived from data
@@ -29,8 +28,7 @@ import java.util.List;
  * <p><b>Scoped to a single account, per file/folder, never across accounts</b> - {@link
  * #search(String, String, int)} only ever matches documents indexed under the same {@code
  * authUserId} passed to it. A grantee reading a shared file does not see it in their own search
- * results (out of scope for v1, per the doc's own instruction not to over-engineer this pass -
- * a natural follow-up, not a bug).
+ * results (out of scope for v1 - a natural follow-up, not a bug).
  */
 public interface SearchIndexService {
 

@@ -5,16 +5,15 @@ import de.lino.cloud.api.extension.Extension;
 import java.util.logging.Level;
 
 /**
- * Section 8 (Webhooks, {@code architecture/MICRO.md}) - publishes a {@link DefaultWebhookService}
+ * Webhooks - publishes a {@link DefaultWebhookService}
  * into {@code IServiceContainer#setWebhookService}. See {@code WebhookService}'s own Javadoc for
  * the full design, in particular why dispatch is driven synchronously (but cheaply - real HTTP
  * delivery always happens on the service's own background workers) from {@code
  * de.lino.cloud.auth.CloudUserService}'s own mutation methods rather than the async {@code
- * FileChangeListener} mechanism section 1 introduced.
+ * FileChangeListener} mechanism.
  *
  * <p>Built as an in-process extension, not a genuinely standalone deployable service, for the
- * same reason {@code cloud-driver-extensions-thumbnails}/{@code -versioning} were - see {@code
- * architecture/MICRO.md}'s "Reconciliation Notes".
+ * same reason {@code cloud-driver-extensions-thumbnails}/{@code -versioning} were.
  */
 public class CloudWebhooksExtension extends Extension {
 

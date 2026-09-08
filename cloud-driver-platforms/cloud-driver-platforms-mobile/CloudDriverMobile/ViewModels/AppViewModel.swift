@@ -709,7 +709,7 @@ final class AppViewModel: ObservableObject {
     /// **Fixed a real bug (2026-09-04): deleting a non-empty folder failed with the server's raw,
     /// unfriendly error message, `"@CloudUserService.deleteFolder: <id> is not empty"`.** The
     /// server's own `deleteFolder` deliberately 409s on a non-empty folder - a folder is never
-    /// deleted recursively server-side (see cloud-driver's own `CLAUDE.md`) - so a client that
+    /// deleted recursively server-side - so a client that
     /// wants "delete this folder and everything inside it" has to empty it client-side first, the
     /// same cascade `cloud-driver-platforms-desktop`'s own `deleteEntries`/`planDelete` already
     /// perform; this app's mobile client never did, and just called `client.deleteFolder` directly,
@@ -1056,7 +1056,7 @@ final class AppViewModel: ObservableObject {
     /// Uploads `sourceURL` as `fileName` into `folderId` (`nil` for the root), preferring the
     /// presigned direct-to-client path - `APIClient.uploadFileViaPresignedURL`, which streams
     /// straight from disk via `URLSession.upload(for:fromFile:)`, bypassing this app's own server
-    /// for the data path entirely (see cloud-driver's `architecture/AWS_S3_IMPL.md`) - and
+    /// for the data path entirely - and
     /// transparently falling back to the ordinary server-mediated `uploadFile(fileName:data:folderId:)`
     /// the moment the server reports (`503`) it hasn't configured presigned transfer, so this works
     /// unchanged against an older or non-S3-configured deployment too.

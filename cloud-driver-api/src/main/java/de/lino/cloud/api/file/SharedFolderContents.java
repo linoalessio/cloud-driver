@@ -5,8 +5,8 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 
 /**
- * The contents of a folder reachable via a share (added 2026-09-02, item 9's own documented
- * future extension - "browsing a shared folder's contents" - finally implemented): every
+ * The contents of a folder reachable via a share (added 2026-09-02, finally implementing
+ * "browsing a shared folder's contents," previously a documented future extension): every
  * non-trashed file directly inside it (as {@link StoredFileSummary}s, no content) and every
  * non-trashed subfolder directly inside it, both still owned by the folder's actual owner (a
  * grantee never becomes an "owner" of anything by virtue of a share). Returned by {@code

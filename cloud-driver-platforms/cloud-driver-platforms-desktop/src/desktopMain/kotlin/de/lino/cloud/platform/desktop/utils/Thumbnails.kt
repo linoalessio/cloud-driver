@@ -17,9 +17,9 @@ import javax.imageio.ImageIO
 
 /**
  * Source-image size ceiling above which [rememberThumbnail] falls back to the generic [iconFor]
- * icon instead of downloading the whole file - there is no thumbnail endpoint server-side (see
- * `CLAUDE.md`'s "file" package section), so a real thumbnail always means fetching the file's full
- * content; a 20dp row icon has no business paying for a multi-hundred-MB download to do that.
+ * icon instead of downloading the whole file - there is no thumbnail endpoint server-side, so a
+ * real thumbnail always means fetching the file's full content; a 20dp row icon has no business
+ * paying for a multi-hundred-MB download to do that.
  */
 private const val MAX_THUMBNAIL_SOURCE_BYTES = 20L * 1024 * 1024
 

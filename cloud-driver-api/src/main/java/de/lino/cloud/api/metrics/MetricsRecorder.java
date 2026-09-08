@@ -3,7 +3,7 @@ package de.lino.cloud.api.metrics;
 import de.lino.cloud.api.factory.service.IServiceContainer;
 
 /**
- * Item 13 (Metrics/observability exporter, {@code architecture/SERVICES.md}) - the vendor-agnostic
+ * The vendor-agnostic
  * sink a small number of existing call sites push event-style counts through, once one has actually
  * been published into {@link IServiceContainer}. Lives in {@code cloud-driver-api} (not {@code
  * cloud-driver-plugin}/a new {@code cloud-driver-extensions-metrics} module) for the same reason
@@ -12,7 +12,7 @@ import de.lino.cloud.api.factory.service.IServiceContainer;
  * cloud-driver-plugin}, {@code CloudUserService#uploadFile} in {@code cloud-driver-auth}) cannot
  * depend on the extension that actually implements this, or on Micrometer at all.
  *
- * <p><b>Only for event-style counts, not gauges.</b> A few of the numbers item 13 asks for (queue
+ * <p><b>Only for event-style counts, not gauges.</b> A few of the requested numbers (queue
  * depth, per-{@code ExtensionStatus} counts) are naturally poll-based rather than push-based - the
  * metrics extension reads those directly off {@code CloudDriver} (e.g. {@code
  * DefaultFileFactory#getPendingUploadCache()#size()}, {@code ExtensionFactory#getExtensions()})
@@ -49,9 +49,8 @@ public interface MetricsRecorder {
      * Records one file deferred into the pending-upload queue instead of being persisted
      * immediately - either because connectivity was unavailable up front, or because a persist
      * attempt failed and connectivity had since dropped. Not itself a failure from the uploading
-     * caller's perspective ({@code DefaultFileFactory#upload} returns normally either way) - see
-     * {@code CLAUDE.md}'s "`connectivity` and pending-upload resilience" section for the full
-     * offline-queueing contract this is counting instances of.
+     * caller's perspective ({@code DefaultFileFactory#upload} returns normally either way) - this
+     * is counting instances of the existing offline-queueing contract.
      */
     void recordUploadQueued();
 

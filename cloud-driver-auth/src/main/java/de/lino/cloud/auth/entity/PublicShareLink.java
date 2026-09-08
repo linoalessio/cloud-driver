@@ -14,9 +14,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * A public, unauthenticated share link on one {@link StoredFile} - section 6 of {@code
- * architecture/MICRO.md}. Resolved via the public {@code GET /public/files/{token}} route with no
- * bearer token/login at all, unlike every other file-access path in this codebase.
+ * A public, unauthenticated share link on one {@link StoredFile}. Resolved via the public {@code
+ * GET /public/files/{token}} route with no bearer token/login at all, unlike every other
+ * file-access path in this codebase.
  *
  * <p><b>{@link #token} is this entity's own primary key, stored raw, mirroring {@link
  * RefreshToken}'s exact shape - see that class's own Javadoc for the full "why not a raw+hash

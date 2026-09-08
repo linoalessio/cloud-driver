@@ -18,8 +18,8 @@ import java.time.Duration;
  * this application's own {@code EnvelopeEncryptionService} - the whole point is that content
  * never reaches this server, so there is nothing here to encrypt. Confidentiality at rest instead
  * comes from the object store's own server-side encryption (see {@code S3PresignedTransferService}'s
- * own Javadoc for exactly which mode) - a deliberate, explicit deviation from {@code
- * architecture/SECURITY_REQUIREMENTS.md}'s documented app-controlled DEK/KEK guarantee, scoped
+ * own Javadoc for exactly which mode) - a deliberate, explicit deviation from this codebase's
+ * documented app-controlled DEK/KEK guarantee, scoped
  * only to files that took this specific path.
  */
 public interface PresignedTransferService {

@@ -23,16 +23,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
- * Section 1 (Thumbnail/Preview Service, {@code architecture/MICRO.md}) - generates a preview
+ * Thumbnail/Preview Service - generates a preview
  * thumbnail for a newly uploaded JPEG/PNG image or PDF, so a client can render a grid view
- * without downloading a full file (see that section's own Javadoc, and {@code
- * ThumbnailService}'s, for the client-facing contract).
+ * without downloading a full file (see {@code
+ * ThumbnailService}'s own Javadoc for the client-facing contract).
  *
- * <p><b>Built as an in-process extension, not a genuinely standalone deployable service</b> - a
- * deliberate departure from the handoff doc's "microservice" framing, matching this repo's actual
- * single-server deployment reality and the "graceful degradation if disabled" requirement every
- * item in the doc already has to satisfy; see {@code architecture/MICRO.md}'s "Reconciliation
- * Notes" for the full reasoning.
+ * <p><b>Built as an in-process extension, not a genuinely standalone deployable service</b> -
+ * matching this repo's actual
+ * single-server deployment reality and the requirement that every optional capability degrade
+ * gracefully when disabled rather than being required infrastructure.
  *
  * <p><b>Reacts to uploads via {@link FileChangeListener}, not a synchronous hook on the upload
  * path</b> - registered against {@link de.lino.cloud.api.event.database.FileChangeListenerRegistry}
@@ -48,9 +47,9 @@ import java.util.logging.Level;
  * nothing to regenerate.
  *
  * <p>Generation itself runs on {@link #executor} - a small, bounded, daemon-threaded pool -
- * never on the Postgres notification thread this is ultimately triggered from. {@code
- * architecture/MICRO.md}'s own instruction is "start in-process with a bounded executor; document
- * how to swap in a real queue later - do not over-engineer this in v1": a follow-up wanting to
+ * never on the Postgres notification thread this is ultimately triggered from. Deliberately kept
+ * simple for v1 - start in-process with a bounded executor, document how to swap in a real queue
+ * later: a follow-up wanting to
  * survive a process restart mid-generation, or to distribute generation across more than one
  * process, would replace this executor with a real persisted queue (e.g. a new {@code
  * PendingThumbnailCache}, mirroring {@code PendingUploadCache}'s own shape) - not attempted here.
@@ -60,7 +59,7 @@ public class CloudThumbnailsExtension extends Extension {
     /** The only Postgres trigger operation this extension reacts to - a file's bytes never change on an {@code "UPDATE"}. */
     private static final String INSERT_OPERATION = "INSERT";
 
-    /** Bounded pool size for {@link #executor} - small and fixed, matching the doc's own "do not over-engineer this in v1" instruction. */
+    /** Bounded pool size for {@link #executor} - small and fixed, deliberately not over-engineered for v1. */
     private static final int THUMBNAIL_EXECUTOR_THREADS = 2;
 
     /** How long {@link #onEnding()}/{@link #onException(RuntimeException)} wait for an in-flight generation to finish before forcing shutdown. */

@@ -221,11 +221,11 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     }
 
     /**
-     * Item 10 (live push via WebSocket, see `architecture/SERVICES.md`) - opens the connection via
+     * Opens the live-push WebSocket connection via
      * [CloudDriverClient.startLiveUpdates] and reacts to a pushed notification by refreshing
      * whichever of the file browser/[Dashboard] is currently showing, instead of requiring the
      * user to hit "Refresh" to see a change made from elsewhere (another device, or a file shared
-     * with this account - see item 9). The push callback fires on an internal HTTP-client thread
+     * with this account). The push callback fires on an internal HTTP-client thread
      * (see [de.lino.cloud.platform.rest.api.push.LiveUpdateClient.Listener]'s own Javadoc), so it
      * is immediately re-dispatched onto [scope] before touching any Compose state or calling
      * [loadCurrentFolder]/[loadDashboardStats] - both already re-entrant-safe (each goes through
@@ -327,7 +327,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     /** Every file directly shared with the signed-in account, each paired with the sharing account's email - counterpart to [sharedWithMeFolders]. */
     val sharedWithMeFiles = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse>()
 
-    // --- shared folder browsing (item 9, added 2026-09-02) ------------------
+    // --- shared folder browsing (added 2026-09-02) ------------------
 
     /** The path from the originally-opened shared folder down to [sharedBrowseCurrentFolderId], root-first - mirrors [breadcrumbs]' own shape for the caller's own folders, but there is no "shared root" below index 0 (the shared folder itself is the topmost reachable node). */
     val sharedBrowseBreadcrumbs = mutableStateListOf<FolderResponse>()
@@ -356,7 +356,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         private set
 
     /**
-     * Item 13's counters/gauges (admin-only), or `null` if `cloud-driver-extensions-metrics` isn't
+     * The metrics extension's counters/gauges (admin-only), or `null` if `cloud-driver-extensions-metrics` isn't
      * running on this deployment (or the last [refreshAdmin] call's own fetch simply failed) - see
      * [refreshAdmin]'s own try/catch. `AdminScreen` renders an "unavailable" notice for `null`
      * rather than treating it as a loading error that should fail the whole panel.
@@ -745,7 +745,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         data class Folder(val id: String) : RestoreTarget
     }
 
-    // --- shared with me (item 9) ------------------------------------------
+    // --- shared with me ------------------------------------------
 
     fun showSharedWithMe() {
         this.screen = Screen.SharedWithMe
@@ -763,7 +763,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.sharedWithMeFiles.addAll(this.client.listSharedWithMe())
     }
 
-    // --- shared folder browsing (item 9, added 2026-09-02) ------------------
+    // --- shared folder browsing (added 2026-09-02) ------------------
 
     /** Opens [folder] (a top-level entry from [sharedWithMeFolders]) for browsing - the context menu/row click backing "click a shared folder to browse into it". Resets [sharedBrowseBreadcrumbs] to just this one folder. */
     fun openSharedFolder(folder: FolderResponse, ownerEmail: String) = run {
@@ -949,8 +949,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
 
     /**
      * Uploads [filePath] as [fileName] into [folderId], preferring the presigned direct-to-client
-     * path (bypassing this app's own server for the data path entirely - see
-     * `architecture/AWS_S3_IMPL.md`) and transparently falling back to the ordinary
+     * path (bypassing this app's own server for the data path entirely) and transparently falling back to the ordinary
      * server-mediated [CloudDriverClient.uploadFile] the moment the server reports (`503`) it
      * hasn't configured presigned transfer - so every upload call site below works unchanged
      * against an older or non-S3-configured deployment too, with no capability negotiation of its

@@ -1,8 +1,8 @@
 package de.lino.cloud.api.file;
 
 /**
- * The access level a {@code SharedFileGrant}/{@code SharedFolderGrant} carries - section 6 of
- * {@code architecture/MICRO.md}, added alongside expiry on top of what was, until then, a strictly
+ * The access level a {@code SharedFileGrant}/{@code SharedFolderGrant} carries, added alongside
+ * expiry on top of what was, until then, a strictly
  * read-only sharing model (see {@code SharedFileGrant}'s own historical Javadoc).
  *
  * <p><b>{@link #VIEW} remains the only level a {@code SharedFolderGrant} meaningfully supports in

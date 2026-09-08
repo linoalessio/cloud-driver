@@ -73,9 +73,9 @@ private final class ProgressForwardingDelegate: NSObject, URLSessionTaskDelegate
 /// with manual locking, so every token read/write is already serialized without extra ceremony.
 ///
 /// Every authenticated call transparently retries once after a `401` by exchanging the held
-/// refresh token first (`execute`'s own retry branch) - mirroring the same contract the Java
-/// client and the server's refresh-token design document (see cloud-driver's CLAUDE.md, "Refresh
-/// tokens") describe. A caller only ever sees the original `401` if that retry also fails.
+/// refresh token first (`execute`'s own retry branch) - mirroring the same refresh-token contract
+/// the Java client and the server both implement. A caller only ever sees the original `401` if
+/// that retry also fails.
 ///
 /// Lives in the `CloudDriverSwift` package (extracted out of `cloud-driver-platforms-mobile`'s own
 /// "Networking" folder, 2026-09-07, so that app can stay GUI-only) - every member an app target
@@ -265,7 +265,21 @@ public actor APIClient {
         _ = try await execute(request)
     }
 
-    // MARK: - Presigned direct-to-client transfer (architecture/AWS_S3_IMPL.md)
+    /// Fetches `fileId`'s JPEG preview thumbnail, if one has already been generated - `nil` both
+    /// for "no thumbnail available yet" (404, e.g. the file isn't an image/PDF, or generation
+    /// hasn't finished) and "this deployment doesn't run the thumbnails extension at all" (503),
+    /// since either way there's simply nothing to show. Any other failure is rethrown.
+    public func getThumbnail(fileId: String) async throws -> Data? {
+        let request = plainRequest("/files/\(fileId)/thumbnail", method: "GET", authenticated: true)
+        do {
+            let (data, _) = try await execute(request)
+            return data
+        } catch APIError.server(let status, _) where status == 404 || status == 503 {
+            return nil
+        }
+    }
+
+    // MARK: - Presigned direct-to-client transfer
 
     /// Uploads `fileURL` directly to the configured object store, bypassing this app's own server
     /// for the data path entirely - orchestrates `beginUploadURL`, a raw `PUT` to the returned
@@ -406,6 +420,81 @@ public actor APIClient {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    // MARK: - Search
+
+    /// Searches the caller's own account for a filename/content match - an empty or blank `query`
+    /// still succeeds, just with an empty result. Throws `APIError.server(status: 503, ...)` if
+    /// this deployment doesn't run the search extension.
+    public func search(query: String, limit: Int) async throws -> [SearchResultResponse] {
+        let request = plainRequest("/search?q=\(query.queryEncoded())&limit=\(limit)", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    // MARK: - File version history
+
+    /// Lists every captured version of `fileId`'s content, newest first - a version is captured
+    /// automatically each time `PUT /files/{id}/content` overwrites the file, never on upload.
+    public func listFileVersions(fileId: String) async throws -> [FileVersionSummaryResponse] {
+        let request = plainRequest("/files/\(fileId)/versions", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Downloads one specific version's content, exactly as it existed at the moment it was
+    /// captured - independent of whatever the file's current, live content is.
+    public func downloadFileVersion(fileId: String, versionNumber: Int) async throws -> Data {
+        let request = plainRequest("/files/\(fileId)/versions/\(versionNumber)/content", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return data
+    }
+
+    /// Restores `versionNumber` as the file's live content - this itself captures whatever was live
+    /// immediately beforehand as a fresh version first, so restoring never discards history.
+    public func restoreFileVersion(fileId: String, versionNumber: Int) async throws -> StoredFileSummaryResponse {
+        let request = plainRequest("/files/\(fileId)/versions/\(versionNumber)/restore", method: "POST", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    // MARK: - Activity feed
+
+    /// The account-wide activity feed - every recorded action across every file/folder the caller
+    /// owns or has been shared, newest first. Cursor-paginated the same way `listFilesPage` is:
+    /// pass `cursor: nil` for the first page, then each page's own `nextCursor` for the next.
+    public func listActivity(cursor: String?, limit: Int) async throws -> Page<ActivityEntryResponse> {
+        var path = "/activity?limit=\(limit)"
+        if let cursor {
+            path += "&cursor=\(cursor.queryEncoded())"
+        }
+        let request = plainRequest(path, method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// The activity feed scoped to one file - owner-or-share access-checked the same way `getFile`
+    /// itself is, so whoever can currently view the file can see its history too.
+    public func listFileActivity(fileId: String, cursor: String?, limit: Int) async throws -> Page<ActivityEntryResponse> {
+        var path = "/files/\(fileId)/activity?limit=\(limit)"
+        if let cursor {
+            path += "&cursor=\(cursor.queryEncoded())"
+        }
+        let request = plainRequest(path, method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// The activity feed scoped to one folder - same access rules as `listFileActivity`.
+    public func listFolderActivity(folderId: String, cursor: String?, limit: Int) async throws -> Page<ActivityEntryResponse> {
+        var path = "/folders/\(folderId)/activity?limit=\(limit)"
+        if let cursor {
+            path += "&cursor=\(cursor.queryEncoded())"
+        }
+        let request = plainRequest(path, method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
     // MARK: - Folders
 
     public func listFolders(parentFolderId: String?) async throws -> [FolderResponse] {
@@ -484,6 +573,15 @@ public actor APIClient {
         _ = try await execute(request)
     }
 
+    /// Shares `fileId` with `granteeEmail`, with an explicit permission level (`"VIEW"`/`"EDIT"`,
+    /// `nil` defaults to `"VIEW"` server-side) and/or expiry (`nil` never expires). `"EDIT"` is the
+    /// only permission that lets the grantee overwrite the file's own content via `PUT
+    /// /files/{id}/content` - every other mutation stays owner-only regardless of permission level.
+    public func shareFile(fileId: String, granteeEmail: String, permissionLevel: String?, expiresAtEpochMillis: Int64?) async throws {
+        let request = try jsonRequest("/files/\(fileId)/share", method: "POST", body: ShareRequest(granteeEmail: granteeEmail, permissionLevel: permissionLevel, expiresAtEpochMillis: expiresAtEpochMillis), authenticated: true)
+        _ = try await execute(request)
+    }
+
     public func revokeFileShare(fileId: String, granteeEmail: String) async throws {
         let request = plainRequest("/files/\(fileId)/share/\(granteeEmail.queryEncoded())", method: "DELETE", authenticated: true)
         _ = try await execute(request)
@@ -502,6 +600,15 @@ public actor APIClient {
         _ = try await execute(request)
     }
 
+    /// Shares `folderId` with `granteeEmail`, with an explicit permission level and/or expiry - see
+    /// `shareFile(fileId:granteeEmail:permissionLevel:expiresAtEpochMillis:)`'s own doc comment.
+    /// Unlike a file share, `"EDIT"` on a folder grant carries no extra capability today - it's
+    /// accepted and stored, but every folder mutation stays owner-only regardless.
+    public func shareFolder(folderId: String, granteeEmail: String, permissionLevel: String?, expiresAtEpochMillis: Int64?) async throws {
+        let request = try jsonRequest("/folders/\(folderId)/share", method: "POST", body: ShareRequest(granteeEmail: granteeEmail, permissionLevel: permissionLevel, expiresAtEpochMillis: expiresAtEpochMillis), authenticated: true)
+        _ = try await execute(request)
+    }
+
     public func revokeFolderShare(folderId: String, granteeEmail: String) async throws {
         let request = plainRequest("/folders/\(folderId)/share/\(granteeEmail.queryEncoded())", method: "DELETE", authenticated: true)
         _ = try await execute(request)
@@ -511,6 +618,31 @@ public actor APIClient {
         let request = plainRequest("/folders/\(folderId)/share", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return try decode(data)
+    }
+
+    // MARK: - Public file links
+
+    /// Creates a new unauthenticated, read-only link to `fileId`'s content - owner-only.
+    /// `expiresAtEpochMillis` `nil` creates a link that never expires. The returned token is
+    /// reachable via `GET /public/files/{token}` with no bearer token at all - not implemented by
+    /// this client, since that route is meant for an anonymous browser, not this app.
+    public func createPublicFileLink(fileId: String, expiresAtEpochMillis: Int64?) async throws -> PublicFileLinkSummaryResponse {
+        let request = try jsonRequest("/files/\(fileId)/public-link", method: "POST", body: CreatePublicFileLinkRequest(expiresAtEpochMillis: expiresAtEpochMillis), authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Lists every currently active public link on `fileId` - owner-only.
+    public func listPublicFileLinks(fileId: String) async throws -> [PublicFileLinkSummaryResponse] {
+        let request = plainRequest("/files/\(fileId)/public-link", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Revokes one public link - owner-only, idempotent (a no-op if the token is already gone).
+    public func revokePublicFileLink(fileId: String, token: String) async throws {
+        let request = plainRequest("/files/\(fileId)/public-link/\(token.queryEncoded())", method: "DELETE", authenticated: true)
+        _ = try await execute(request)
     }
 
     // MARK: - Trash

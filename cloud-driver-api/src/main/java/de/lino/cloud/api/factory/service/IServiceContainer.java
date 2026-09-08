@@ -67,8 +67,7 @@ public interface IServiceContainer {
     void setAuthService(@NonNull IAuthService authService);
 
     /**
-     * Returns the live-update push transport (item 10, live push via WebSocket - see {@code
-     * architecture/SERVICES.md}), or {@code null} if {@code CloudRestExtension} hasn't published
+     * Returns the live-update push transport (live push via WebSocket), or {@code null} if {@code CloudRestExtension} hasn't published
      * one yet (not started, the REST API is disabled for this deployment, or this deployment's
      * {@code cloud-driver-plugin} version predates this feature). {@link
      * de.lino.cloud.api.event.database.DatabaseWatchEvent#handle} must null-check this the same
@@ -87,8 +86,7 @@ public interface IServiceContainer {
     void setLiveUpdatePublisher(@NonNull LiveUpdatePublisher liveUpdatePublisher);
 
     /**
-     * Returns the audit-log service (item 11, audit log - see {@code architecture/SERVICES.md}),
-     * or {@code null} if {@code CloudRestExtension} hasn't published one yet (not started, the
+     * Returns the audit-log service, or {@code null} if {@code CloudRestExtension} hasn't published one yet (not started, the
      * REST API is disabled for this deployment, or this deployment's {@code cloud-driver-plugin}
      * version predates this feature). A caller reached before/without that extension (e.g. a
      * terminal {@code Command}) must null-check this the same way it already does for {@link
@@ -106,8 +104,7 @@ public interface IServiceContainer {
     void setAuditLogService(@NonNull AuditLogService auditLogService);
 
     /**
-     * Returns the metrics sink (item 13, metrics/observability exporter - see {@code
-     * architecture/SERVICES.md}), or {@code null} if {@code cloud-driver-extensions-metrics}'s
+     * Returns the metrics sink, or {@code null} if {@code cloud-driver-extensions-metrics}'s
      * {@code CloudMetricsExtension} hasn't published one yet (not started, or this deployment
      * doesn't run that extension at all). A caller reached before/without that extension (e.g.
      * {@code DefaultFileFactory#upload}, {@code CloudUserService#uploadFile}) must null-check
@@ -125,8 +122,7 @@ public interface IServiceContainer {
     void setMetricsRecorder(@NonNull MetricsRecorder metricsRecorder);
 
     /**
-     * Returns the metrics read side (item 13, metrics/observability exporter - see {@code
-     * architecture/SERVICES.md}), or {@code null} if {@code cloud-driver-extensions-metrics}'s
+     * Returns the metrics read side, or {@code null} if {@code cloud-driver-extensions-metrics}'s
      * {@code CloudMetricsExtension} hasn't published one yet (not started, or this deployment
      * doesn't run that extension at all). {@code DefaultRestFactory}'s admin-gated {@code GET
      * /admin/metrics} route (backing the desktop app's Admin panel metrics section) must
@@ -144,8 +140,7 @@ public interface IServiceContainer {
     void setMetricsSnapshotProvider(@NonNull MetricsSnapshotProvider metricsSnapshotProvider);
 
     /**
-     * Returns the thumbnail lookup service (section 1, Thumbnail/Preview, {@code
-     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-thumbnails}'s
+     * Returns the thumbnail lookup service, or {@code null} if {@code cloud-driver-extensions-thumbnails}'s
      * {@code CloudThumbnailsExtension} hasn't published one yet (not started, or this deployment
      * doesn't run that extension at all). {@code DefaultRestFactory}'s {@code GET
      * /files/{id}/thumbnail} route must null-check this the same way it already does for {@link
@@ -163,8 +158,7 @@ public interface IServiceContainer {
     void setThumbnailService(@NonNull ThumbnailService thumbnailService);
 
     /**
-     * Returns the file-versioning service (section 2, Versioning, {@code
-     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-versioning}'s
+     * Returns the file-versioning service, or {@code null} if {@code cloud-driver-extensions-versioning}'s
      * {@code CloudVersioningExtension} hasn't published one yet (not started, or this deployment
      * doesn't run that extension at all). {@code de.lino.cloud.auth.CloudUserService#replaceFileContent}
      * and {@code DefaultRestFactory}'s {@code /files/{id}/versions*} routes must null-check this
@@ -182,7 +176,7 @@ public interface IServiceContainer {
     void setFileVersioningService(@NonNull FileVersioningService fileVersioningService);
 
     /**
-     * Returns the search index (section 5, Search/Indexing, {@code architecture/MICRO.md}), or
+     * Returns the search index, or
      * {@code null} if {@code cloud-driver-extensions-search}'s {@code CloudSearchExtension} hasn't
      * published one yet (not started, or this deployment doesn't run that extension at all). {@code
      * de.lino.cloud.auth.CloudUserService}'s upload/rename/move/delete/restore/content-replace
@@ -201,7 +195,7 @@ public interface IServiceContainer {
     void setSearchIndexService(@NonNull SearchIndexService searchIndexService);
 
     /**
-     * Returns the webhook dispatcher (section 8, Webhooks, {@code architecture/MICRO.md}), or
+     * Returns the webhook dispatcher, or
      * {@code null} if {@code cloud-driver-extensions-webhooks}'s {@code CloudWebhooksExtension}
      * hasn't published one yet (not started, or this deployment doesn't run that extension at
      * all). {@code de.lino.cloud.auth.CloudUserService}'s upload/delete/share methods and {@code
@@ -220,8 +214,7 @@ public interface IServiceContainer {
     void setWebhookService(@NonNull WebhookService webhookService);
 
     /**
-     * Returns the content-scan trigger (section 9, Content-Scanning, {@code
-     * architecture/MICRO.md}), or {@code null} if {@code cloud-driver-extensions-scan}'s {@code
+     * Returns the content-scan trigger, or {@code null} if {@code cloud-driver-extensions-scan}'s {@code
      * CloudScanExtension} hasn't published one yet (not started, or this deployment doesn't run
      * that extension at all). {@code de.lino.cloud.auth.CloudUserService#uploadFile} and {@code
      * DefaultRestFactory}'s content-serving routes must null-check this the same way they already

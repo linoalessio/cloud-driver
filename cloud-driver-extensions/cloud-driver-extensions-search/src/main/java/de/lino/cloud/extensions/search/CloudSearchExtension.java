@@ -3,15 +3,15 @@ package de.lino.cloud.extensions.search;
 import de.lino.cloud.api.extension.Extension;
 
 /**
- * Section 5 (Search/Indexing, {@code architecture/MICRO.md}) - publishes an {@link
+ * Search/Indexing - publishes an {@link
  * InMemorySearchIndexService} into {@code IServiceContainer#setSearchIndexService}. See {@code
  * SearchIndexService}'s own Javadoc for the full design, in particular why indexing is driven
  * synchronously from {@code de.lino.cloud.auth.CloudUserService}'s own mutation methods rather
- * than the async {@code FileChangeListener} mechanism section 1 introduced.
+ * than the async {@code FileChangeListener} mechanism.
  *
  * <p>Built as an in-process extension, not a genuinely standalone deployable service, for the
- * same reason {@code cloud-driver-extensions-thumbnails}/{@code -versioning} were - see {@code
- * architecture/MICRO.md}'s "Reconciliation Notes". No background thread of its own - unlike {@code
+ * same reason {@code cloud-driver-extensions-thumbnails}/{@code -versioning} were. No background
+ * thread of its own - unlike {@code
  * CloudVersioningExtension}'s purge scheduler, there is nothing here to tick: {@link
  * InMemorySearchIndexService} is a plain in-memory structure, updated only in direct response to a
  * real file mutation.

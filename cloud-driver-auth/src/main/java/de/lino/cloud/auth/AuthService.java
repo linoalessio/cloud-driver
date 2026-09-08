@@ -120,9 +120,9 @@ public final class AuthService implements IAuthService {
 
     /**
      * Records security-relevant actions (login success/failure, registration, password reset,
-     * e-mail change) to the persisted audit trail - see {@code architecture/SERVICES.md} item 11
-     * and {@code AuditLogService}'s own Javadoc. Never throws, so every call site below invokes it
-     * directly with no defensive try/catch of its own.
+     * e-mail change) to the persisted audit trail - see {@code AuditLogService}'s own Javadoc.
+     * Never throws, so every call site below invokes it directly with no defensive try/catch of
+     * its own.
      */
     private final AuditLogService auditLogService;
 
@@ -779,8 +779,8 @@ public final class AuthService implements IAuthService {
      * calls can ever succeed at that delete - the second observes the row already gone and is
      * rejected the same way a genuinely unknown token would be. {@code DataFactory} offers no
      * compare-and-swap/conditional-update primitive this could instead be built on, and this
-     * single-process deployment (see {@code CLAUDE.md}) has no cross-process transaction to lean
-     * on either - this is the strongest guarantee actually available on this stack.
+     * single-process deployment has no cross-process transaction to lean on either - this is the
+     * strongest guarantee actually available on this stack.
      *
      * @param refreshToken a refresh token previously returned by {@link #login}/{@link
      *     #confirmRegistration}/{@link #confirmPasswordReset}/a prior call to this method

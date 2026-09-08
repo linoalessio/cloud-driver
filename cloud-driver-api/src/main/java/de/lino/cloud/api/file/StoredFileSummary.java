@@ -17,7 +17,12 @@ import org.jetbrains.annotations.Nullable;
  * @param createdAtEpochMilli when the file was first uploaded
  * @param updatedAtEpochMilli when the file's content was last changed
  * @param folderId the {@link Folder#getFolderId()} the file currently sits in, or {@code null} for the root
+ * @param scanStatus the file's content-scan {@link ScanStatus} name - always resolved (never the
+ *     literal absence a {@code null} {@link StoredFile#scanStatus()} field would otherwise
+ *     represent), the same "absent = CLEAN" reading every scan-status accessor in this codebase
+ *     already applies
  */
 public record StoredFileSummary(String fileId, String fileName, String contentType, long sizeBytes,
-                                 long createdAtEpochMilli, long updatedAtEpochMilli, @Nullable String folderId) {
+                                 long createdAtEpochMilli, long updatedAtEpochMilli, @Nullable String folderId,
+                                 String scanStatus) {
 }

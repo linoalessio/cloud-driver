@@ -13,21 +13,21 @@ import java.util.Objects;
 
 /**
  * A small linking row pairing a source {@link StoredFile} with the {@link StoredFile} holding
- * its generated thumbnail's actual bytes, for one {@link ThumbnailSize} variant - the {@code
- * StoredFileOwnership}-style pattern {@code architecture/MICRO.md}'s own constraints call for
- * ("do not reintroduce O(n) scan-based ownership checks"), applied here to a lookup rather than
+ * its generated thumbnail's actual bytes, for one {@link ThumbnailSize} variant - the same {@code
+ * StoredFileOwnership}-style pattern this codebase already uses to avoid reintroducing O(n)
+ * scan-based ownership checks, applied here to a lookup rather than
  * an ownership check.
  *
- * <p><b>Deliberate deviation from the handoff doc's literal wording</b> ("nullable {@code
- * parentFileId} + {@code thumbnailOf} relation" on {@code StoredFile} itself): {@code StoredFile}
+ * <p><b>Deliberately a separate linking row rather than a field on {@code StoredFile} itself</b>:
+ * {@code StoredFile}
  * is this codebase's single most heavily-scrutinized entity (envelope encryption, S3-backing,
- * direct-transfer mode, compression, ~8 constructor overloads, extensively audited elsewhere in
- * {@code CLAUDE.md}) - adding a field to it for a single, optional addon would widen its blast
+ * direct-transfer mode, compression, ~8 constructor overloads) - adding a field to it for a
+ * single, optional addon would widen its blast
  * radius for no real benefit. A separate row achieves the same "not a separate storage path"
  * requirement (a thumbnail's actual bytes are still an ordinary {@link StoredFile}, going through
  * the exact same envelope-encryption/compression pipeline as any other file) while touching
- * {@code StoredFile}'s own schema not at all - strictly less invasive than what the doc suggested,
- * and easier to remove cleanly if this addon is ever disabled/uninstalled.
+ * {@code StoredFile}'s own schema not at all,
+ * and is easier to remove cleanly if this addon is ever disabled/uninstalled.
  *
  * <p>Primary-keyed on {@link #compositeKey(String, String)} (source file id + size name) rather
  * than the source file id alone, so a second {@link ThumbnailSize} variant can be added later

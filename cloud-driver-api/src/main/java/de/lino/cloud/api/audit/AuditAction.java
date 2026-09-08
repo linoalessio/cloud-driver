@@ -2,7 +2,7 @@ package de.lino.cloud.api.audit;
 
 /**
  * A security-relevant action worth recording in an {@link AuditEvent} - see that class's Javadoc
- * and {@code architecture/SERVICES.md} item 11 for the full audit-log design. Deliberately only
+ * for the full audit-log design. Deliberately only
  * lists actions this codebase actually calls {@link AuditLogService#record} for today (see {@code
  * de.lino.cloud.auth.AuthService}/{@code de.lino.cloud.auth.CloudUserService}'s call sites) rather
  * than every action the original brainstorm named - extend this enum alongside a real new call
@@ -31,10 +31,10 @@ public enum AuditAction {
     /** A {@code CloudUserService#deleteCloudUser} call (permanently empties and removes an account). */
     ACCOUNT_DELETE,
 
-    /** A {@code CloudUserService#replaceFileContent} call (overwrites a file's content in place - see {@code architecture/MICRO.md} section 2, versioning). */
+    /** A {@code CloudUserService#replaceFileContent} call (overwrites a file's content in place - see the versioning feature). */
     FILE_CONTENT_REPLACED,
 
-    /** A {@code CloudUserService#uploadFile} call - added for section 3 (Activity/Audit-Feed, {@code architecture/MICRO.md}), the first pass to instrument this codebase's core file/folder lifecycle operations rather than only deletes/replaces. */
+    /** A {@code CloudUserService#uploadFile} call - the first pass to instrument this codebase's core file/folder lifecycle operations rather than only deletes/replaces. */
     FILE_UPLOAD,
 
     /** A {@code CloudUserService#renameFile} call. */

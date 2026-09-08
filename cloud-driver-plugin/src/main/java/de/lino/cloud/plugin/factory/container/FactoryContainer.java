@@ -42,7 +42,7 @@ public class FactoryContainer implements IFactoryContainer {
      * call, short enough that a rarely-run, full-content scan (e.g. the terminal's {@code stats}
      * command, which calls {@code getEntities(StoredFile.class)} - content included, unlike the
      * {@code StoredFileOwnership} scan the GUI's own listing calls) doesn't linger in memory
-     * indefinitely. See CLAUDE.md's "`EntityDatabaseClient`" section for the incident this fixes.
+     * indefinitely.
      */
     private static final Duration ENTITY_LIST_CACHE_TTL = Duration.ofMinutes(5);
 
@@ -105,7 +105,7 @@ public class FactoryContainer implements IFactoryContainer {
      * @param databaseProvider the backing {@code database-driver-plugin} provider every entity/file is persisted through
      * @param envelopeEncryptionService encrypts/decrypts entities before persistence - also what
      *     {@link #fileFactory} uses to encrypt a file's content independently before handing it to
-     *     {@code objectStorageService}, if configured (see {@code architecture/AWS_S3_IMPL.md})
+     *     {@code objectStorageService}, if configured
      * @param connectivityChecker backs {@link #fileFactory}'s offline-safe upload deferral
      * @param objectStorageService backs {@link #fileFactory}'s optional S3-backed content path, or
      *     {@code null} to keep every file inline

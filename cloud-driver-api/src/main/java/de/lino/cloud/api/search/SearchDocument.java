@@ -6,12 +6,11 @@ import org.jetbrains.annotations.Nullable;
 /**
  * One file's searchable state, as {@link SearchIndexService} indexes/updates it - the caller's
  * own metadata already in hand (nothing here is fetched by the index itself), plus an optional
- * text extract for content indexing (v1 scope: plain-text-ish files only - see {@code
- * architecture/MICRO.md} section 5).
+ * text extract for content indexing (v1 scope: plain-text-ish files only).
  *
  * @param authUserId the owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - a document is
  *     only ever matched against a search performed by this same account (per-account index, the
- *     same scoping {@code architecture/MICRO.md} section 4's deduplication already established)
+ *     same scoping this codebase's deduplication feature already established)
  * @param storedFileId the {@link de.lino.cloud.api.file.StoredFile#fileId()} this document describes
  * @param fileName the file's current display name - always indexed
  * @param folderId the {@link de.lino.cloud.api.file.Folder#getFolderId()} the file currently sits

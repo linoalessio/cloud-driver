@@ -23,7 +23,7 @@ fun sanitizedForLocalPath(name: String): String = name.replace("/", "_")
  * Downloads [fileId] (whose current name is [fileName]) straight to disk under
  * [destinationDirectory], preferring the presigned direct-to-client path
  * ([CloudDriverClient.downloadFileViaPresignedUrl], bypassing this app's own server for the data
- * path entirely - see `architecture/AWS_S3_IMPL.md`) and transparently falling back to the
+ * path entirely) and transparently falling back to the
  * ordinary server-mediated [CloudDriverClient.downloadFileToPath] the moment the server reports
  * (`503`) presigned transfer isn't available for this file/deployment - so this works unchanged
  * against an older, non-S3-configured, or app-encrypted-content deployment too. Either way, the

@@ -741,8 +741,8 @@ private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss:
 }
 
 /**
- * The context menu's "Share" action (item 9, file/folder sharing - see `architecture/SERVICES.md`)
- * - lets the caller grant another account (by email) read-only access to [entry], see who it's
+ * The context menu's "Share" action (file/folder sharing) - lets the caller grant another
+ * account (by email) read-only access to [entry], see who it's
  * currently shared with, and revoke any of those grants. Deliberately a plain email text field, not
  * a live-searching account picker: the server has no endpoint to search/list other accounts' emails
  * (and building one would be a real account-enumeration risk this codebase avoids elsewhere, e.g.

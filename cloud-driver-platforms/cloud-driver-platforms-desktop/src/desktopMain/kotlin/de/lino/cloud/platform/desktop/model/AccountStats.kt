@@ -15,8 +15,8 @@ import java.util.concurrent.atomic.AtomicLong
  * [totalBytes] - a trashed file still occupies real storage until it's purged, see
  * `CloudUserService`'s own "Recycle bin / soft delete" Javadoc server-side), summed separately
  * from the live-tree walk below since trashed files aren't part of it. [sharedFileCount] is the
- * number of the signed-in account's *own* files that currently have at least one active share
- * (item 9) - i.e. how many files this account has shared *with* someone else, not how many files
+ * number of the signed-in account's *own* files that currently have at least one active share -
+ * i.e. how many files this account has shared *with* someone else, not how many files
  * are shared *with* this account (that would be [CloudDriverClient.listSharedWithMe]'s own count -
  * fixed 2026-09-03, this field used to hold that count instead, the wrong direction entirely). Not
  * a subset of [fileCount]/[totalBytes] - a shared file is still counted there too, since it's still
@@ -33,8 +33,7 @@ data class AccountStats(
 /**
  * Walks the caller's entire folder tree from the root, summing file counts/folder counts/byte
  * sizes as it goes. There is no server-side "give me totals" endpoint - `GET /files`/`GET
- * /folders` are both scoped to one folder at a time (see CLAUDE.md's "Folder organization"
- * section) - so this is a client-side recursive walk.
+ * /folders` are both scoped to one folder at a time - so this is a client-side recursive walk.
  *
  * **One flat, bounded-concurrency walk (fixed 2026-09-05; previously fully sequential, fixed
  * 2026-09-01 from an even worse concurrency bug before that).** The original implementation

@@ -9,7 +9,7 @@ import java.util.Set;
 
 /**
  * Lets an account subscribe an {@code https://} URL to file events, delivered as an HMAC-signed
- * HTTP POST - section 8 of {@code architecture/MICRO.md}, reached via {@link
+ * HTTP POST, reached via {@link
  * IServiceContainer#getWebhookService()} - {@code null} until {@code
  * cloud-driver-extensions-webhooks}'s {@code CloudWebhooksExtension} has published one (not
  * started, or this deployment doesn't run that extension at all), the same "may not exist yet"
@@ -18,8 +18,8 @@ import java.util.Set;
  * <p><b>{@link #dispatchEvent} is called synchronously, directly from {@code
  * de.lino.cloud.auth.CloudUserService}'s own upload/delete/share methods</b> - the same "reach the
  * optional service directly from the call site, no-op if unpublished, never throw" shape {@code
- * FileVersioningService}/{@code SearchIndexService} already established (section 5's own
- * Javadoc explains why the async {@code FileChangeListener} mechanism isn't used here either: a
+ * FileVersioningService}/{@code SearchIndexService} already established ({@code
+ * SearchIndexService}'s own Javadoc explains why the async {@code FileChangeListener} mechanism isn't used here either: a
  * soft-delete is an {@code UPDATE} of {@code StoredFileOwnership}, not {@code StoredFile}, and a
  * share grant touches neither table that mechanism watches at all). {@link #dispatchEvent} itself
  * must be cheap and must never block the calling request thread on network I/O - the real HTTP

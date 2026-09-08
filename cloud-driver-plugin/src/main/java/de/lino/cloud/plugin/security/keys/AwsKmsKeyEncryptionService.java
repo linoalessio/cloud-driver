@@ -48,8 +48,7 @@ import java.time.Instant;
  * should resolve the region/key id from new {@code configuration.json} keys
  * (e.g. {@code "aws-kms-region"}/{@code "aws-kms-key-id"}), following the same
  * "optional key, {@code JsonDocument#contains}-checked" convention {@code
- * CloudUser}'s {@code "cloud-user-max-bytes-to-upload"} already uses - see
- * {@code CLAUDE.md}'s "Local dev secrets" section. The AWS access
+ * CloudUser}'s {@code "cloud-user-max-bytes-to-upload"} already uses. The AWS access
  * key/secret-key pair itself is deliberately <strong>not</strong> read from
  * {@code configuration.json} at all - this class relies on the AWS SDK's own
  * default credential provider chain (environment variables, {@code

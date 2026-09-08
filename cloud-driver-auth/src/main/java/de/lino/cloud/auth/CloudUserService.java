@@ -87,9 +87,8 @@ public final class CloudUserService implements ICloudUserService {
 
     /**
      * Records security-relevant actions ({@link #deleteFile}/{@link #deleteCloudUser}) to the
-     * persisted audit trail - see {@code architecture/SERVICES.md} item 11 and {@code
-     * AuditLogService}'s own Javadoc. Never throws, so both call sites below invoke it directly
-     * with no defensive try/catch of their own.
+     * persisted audit trail - see {@code AuditLogService}'s own Javadoc. Never throws, so both
+     * call sites below invoke it directly with no defensive try/catch of their own.
      */
     private final AuditLogService auditLogService;
 
@@ -198,7 +197,7 @@ public final class CloudUserService implements ICloudUserService {
      * Scans every {@link StoredFileOwnership} row (same full-section-scan trade-off {@link
      * #getCloudUserByEmail(String)}/{@link #listFiles} already accept) for the one tracking
      * {@code storedFileId}, and returns its {@code authUserId}. Deliberately does not filter out
-     * a trashed row (item 3, soft delete) - the owner of a file that was just moved to trash (or
+     * a trashed row (soft delete) - the owner of a file that was just moved to trash (or
      * restored, or hard-deleted) is exactly who a live-push notification about that change should
      * still reach.
      *
@@ -216,6 +215,25 @@ public final class CloudUserService implements ICloudUserService {
 
         } catch (final DatabaseClientException | AuthenticationFailedException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.resolveOwnerAuthUserId: failed to look up owner for " + storedFileId, e);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void updateCachedFileScanStatus(@NotNull final String storedFileId, @NotNull final String scanStatus) {
+        try {
+            final Optional<String> ownerAuthUserId = resolveOwnerAuthUserId(storedFileId);
+            if (ownerAuthUserId.isEmpty()) {
+                return;
+            }
+            final String ownershipKey = StoredFileOwnership.compositeKey(ownerAuthUserId.get(), storedFileId);
+            final Optional<StoredFileOwnership> ownership = this.dataFactory.findById(ownershipKey, StoredFileOwnership.class);
+            if (ownership.isEmpty()) {
+                return;
+            }
+            this.dataFactory.update(ownership.get().withScanStatus(scanStatus));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException e) {
+            // Best-effort only - see this method's own Javadoc on ICloudUserService.
         }
     }
 
@@ -270,7 +288,7 @@ public final class CloudUserService implements ICloudUserService {
     private void hardDeleteFile(final String authUserId, final StoredFileOwnership ownership) {
         final String storedFileId = ownership.getStoredFileId();
 
-        // architecture/MICRO.md, section 4 (per-account deduplication). A row is either a
+        // Per-account deduplication: a row is either a
         // deduplication alias of another of this account's own files (dedupCanonicalFileId set) or
         // "the payer" carrying real content of its own - see deleteDeduplicatedFile's own Javadoc
         // for how content and usage accounting are kept correct across either shape.
@@ -283,14 +301,14 @@ public final class CloudUserService implements ICloudUserService {
                     "@CloudUserService.hardDeleteFile: failed to untrack ownership of " + storedFileId + " for " + authUserId, e
             );
         }
-        // Item 9 (sharing), fixed 2026-09-02 - a no-op scan if deleteFile already revoked these
+        // Sharing - a no-op scan if deleteFile already revoked these
         // (the normal trash-then-purge path), but resetCloudUser/deleteCloudUser call this
         // directly on a possibly still-live file (bypassing the trash entirely), so this must not
         // assume deleteFile's own revocation already ran.
         this.revokeAllFileShares(storedFileId);
-        // architecture/MICRO.md, section 6 - same idempotency reasoning as revokeAllFileShares above.
+        // Same idempotency reasoning as revokeAllFileShares above.
         this.revokeAllPublicFileLinks(storedFileId);
-        // architecture/MICRO.md, section 5 - same idempotency reasoning as revokeAllFileShares
+        // Same idempotency reasoning as revokeAllFileShares
         // above: a no-op if deleteFile already removed this id from the index (the normal
         // trash-then-purge path), but resetCloudUser/deleteCloudUser call hardDeleteFile directly
         // on a possibly still-live (never-trashed) file, so this must not assume it already ran.
@@ -545,7 +563,7 @@ public final class CloudUserService implements ICloudUserService {
                 } catch (final DatabaseClientException e) {
                     throw new RuntimeException("@CloudUserService.deleteAllOwnedFolders: failed to delete folder " + leaf.getFolderId(), e);
                 }
-                // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment.
+                // Fixed 2026-09-02 - see deleteFile's own comment.
                 this.revokeAllFolderShares(leaf.getFolderId());
             }
             remaining.removeAll(leaves);
@@ -618,7 +636,7 @@ public final class CloudUserService implements ICloudUserService {
                 } catch (final DatabaseClientException e) {
                     throw new RuntimeException("@CloudUserService.deleteAllTrashedFolders: failed to delete folder " + leaf.getFolderId(), e);
                 }
-                // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment.
+                // Fixed 2026-09-02 - see deleteFile's own comment.
                 this.revokeAllFolderShares(leaf.getFolderId());
             }
             remainingTrashed.removeAll(leaves);
@@ -661,7 +679,7 @@ public final class CloudUserService implements ICloudUserService {
     public StoredFile uploadFile(@NonNull final String authUserId, @NonNull final String fileName, final byte[] content,
                                   @Nullable final String folderId) {
 
-        // architecture/MICRO.md, section 4 (per-account deduplication, confirmed with Lino as
+        // Per-account deduplication (confirmed with Lino as
         // per-account only - never across accounts). Computed up front (cheap - a single SHA-256
         // pass, unlike the StoredFile constructor below, which also DEFLATE-compresses and
         // base64-encodes) so a match can skip both the quota check and the real upload entirely.
@@ -678,10 +696,10 @@ public final class CloudUserService implements ICloudUserService {
                         authUserId, cloudUser.getCurrentUploadedBytes(), content.length, cloudUser.getMaxBytesToUpload());
             }
         }
-        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
+        // Sharing: deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
-        // architecture/MICRO.md, section 9 (content scanning) - checked once, up front: cheap (a
+        // Content scanning - checked once, up front: cheap (a
         // null check on an already-resolved service reference), and decides whether this upload
         // (either branch below, dedup alias included - see uploadFile's own dedup-alias-scanning
         // trade-off documented on ContentScanService/DefaultContentScanService) starts out
@@ -746,9 +764,9 @@ public final class CloudUserService implements ICloudUserService {
      * that method's own Javadoc) - this adds one more scan per upload, on top of whatever else a
      * caller already pays for uploading a file.
      *
-     * <p>Scoped to a single account, deliberately - see {@code architecture/MICRO.md} section 4's
-     * own "Open Decisions" write-up on the cross-account blob-sharing privacy tradeoff this
-     * sidesteps entirely by never matching against another account's files.
+     * <p>Scoped to a single account, deliberately, per Lino's own explicit sign-off - this
+     * sidesteps the cross-account blob-sharing privacy tradeoff entirely by never matching against
+     * another account's files.
      *
      * @param authUserId the uploading user's id - only their own files are considered
      * @param checksum the freshly-computed checksum of the content being uploaded
@@ -821,7 +839,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new UploadQuotaExceededException(
                     authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
         }
-        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
+        // Sharing: deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final String fileId = UUID.randomUUID().toString();
@@ -849,7 +867,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new UploadQuotaExceededException(
                     authUserId, cloudUser.getCurrentUploadedBytes(), realSizeBytes, cloudUser.getMaxBytesToUpload());
         }
-        // Item 9 (sharing): deliberately owner-only - a grantee can never upload into a shared folder.
+        // Sharing: deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final Instant now = Instant.now();
@@ -875,8 +893,10 @@ public final class CloudUserService implements ICloudUserService {
         this.updateCloudUserBytesUsage(authUserId, realSizeBytes);
         recordMetric(MetricsRecorder::recordUploadSuccess);
 
+        // Direct-transfer (presigned) content is never scanned - see ContentScanService's own
+        // Javadoc: content scanning only triggers off a server-mediated upload's own INSERT.
         return new StoredFileSummary(fileId, fileName, storedFile.contentType(), realSizeBytes,
-                now.toEpochMilli(), now.toEpochMilli(), folderId);
+                now.toEpochMilli(), now.toEpochMilli(), folderId, ScanStatus.CLEAN.name());
     }
 
     /** {@inheritDoc} */
@@ -1034,7 +1054,7 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public List<StoredFileSummary> listFileSummaries(@NonNull final String authUserId) {
-        // Item 9 (sharing): deliberately does NOT include files shared with authUserId - a caller
+        // Sharing: deliberately does NOT include files shared with authUserId - a caller
         // listing "my files" should never be silently surprised by someone else's file appearing
         // here. Use listSharedWithMe(authUserId) for the separate, explicit "shared with me" list.
         return this.resolveFileSummaries(this.ownedFileOwnerships(authUserId));
@@ -1142,7 +1162,8 @@ public final class CloudUserService implements ICloudUserService {
             }
         }
         return new StoredFileSummary(resolved.getStoredFileId(), resolved.getFileName(), resolved.getContentType(),
-                resolved.getSizeBytes(), resolved.getCreatedAtEpochMilli(), resolved.getUpdatedAtEpochMilli(), resolved.getFolderId());
+                resolved.getSizeBytes(), resolved.getCreatedAtEpochMilli(), resolved.getUpdatedAtEpochMilli(), resolved.getFolderId(),
+                resolved.resolvedScanStatus());
     }
 
     /**
@@ -1155,9 +1176,8 @@ public final class CloudUserService implements ICloudUserService {
      * <p><b>Share-aware, deliberately - the one read path in this class that is.</b> If {@code
      * authUserId} doesn't own {@code storedFileId} outright, this falls back to {@link
      * #requireSharedFileAccess}, which honors both a direct {@link SharedFileGrant} on this file
-     * and an inherited {@link SharedFolderGrant} on any of its ancestor folders (see item 9's
-     * design in {@code architecture/SERVICES.md} and this project's {@code CLAUDE.md} for the full
-     * "which operations honor a share" table). This is the <em>only</em> place sharing is honored -
+     * and an inherited {@link SharedFolderGrant} on any of its ancestor folders. This is the
+     * <em>only</em> place sharing is honored -
      * every mutating method below ({@link #moveFile}, {@link #deleteFile}, folder methods, etc.)
      * deliberately keeps calling {@link #requireOwnedFile}/{@link #requireOwnedFolder} directly,
      * never this shared-access fallback, since a read-only grant must never permit mutation. Both
@@ -1211,7 +1231,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new IllegalArgumentException(
                     "@CloudUserService." + callerMethodName + ": " + authUserId + " does not own or have shared access to " + storedFileId);
         }
-        // architecture/MICRO.md, section 9 (content scanning) - a cheap metadata-only fetch (no
+        // Content scanning - a cheap metadata-only fetch (no
         // content resolution/decompression), checked after ownership/trash but before this method
         // returns, so every caller (getFile, checkFileAccess - and therefore every route built on
         // either, thumbnail generation included) uniformly refuses content access to a
@@ -1601,7 +1621,7 @@ public final class CloudUserService implements ICloudUserService {
 
     /**
      * Deletes every {@link PublicShareLink} still pointing at {@code fileId} - the public-link
-     * (section 6, {@code architecture/MICRO.md}) counterpart to {@link #revokeAllFileShares},
+     * counterpart to {@link #revokeAllFileShares},
      * called from the exact same two places (soft delete via {@link #deleteFile}, permanent
      * removal via {@link #hardDeleteFile}) and for the same reason: {@link #resolvePublicFileLink}
      * already denies access to a trashed/removed file's link defensively, but leaving the row
@@ -1724,7 +1744,7 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         try {
-            // architecture/MICRO.md, section 6 (expiring shares) - an expired grant is treated as
+            // Expiring shares - an expired grant is treated as
             // if it doesn't exist at all, the same "don't distinguish, just deny" idiom a trashed
             // StoredFileOwnership row already gets.
             if (this.dataFactory.findById(SharedFileGrant.compositeKey(authUserId, storedFileId), SharedFileGrant.class)
@@ -1765,7 +1785,7 @@ public final class CloudUserService implements ICloudUserService {
         try {
             String currentFolderId = folderId;
             while (currentFolderId != null) {
-                // architecture/MICRO.md, section 6 (expiring shares) - see requireSharedFileAccess's own comment.
+                // Expiring shares - see requireSharedFileAccess's own comment.
                 if (this.dataFactory.findById(SharedFolderGrant.compositeKey(authUserId, currentFolderId), SharedFolderGrant.class)
                         .filter(grant -> !grant.isExpired()).isPresent()) {
                     return;
@@ -1836,7 +1856,7 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public void moveFile(@NonNull final String authUserId, @NonNull final String storedFileId, @Nullable final String folderId) {
 
-        // Item 9 (sharing): deliberately owner-only - requireOwnedFile, never requireSharedFileAccess.
+        // Sharing: deliberately owner-only - requireOwnedFile, never requireSharedFileAccess.
         // A read-only grant must never let a grantee move a file it doesn't own.
         final StoredFileOwnership existing = this.requireOwnedFile(authUserId, storedFileId);
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
@@ -1871,7 +1891,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void renameFile(@NonNull final String authUserId, @NonNull final String storedFileId, @NonNull final String newFileName) {
-        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never rename it.
+        // Sharing: deliberately owner-only - a grantee can read a shared file but never rename it.
         final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
 
         final StoredFile renamed;
@@ -1907,7 +1927,7 @@ public final class CloudUserService implements ICloudUserService {
      * @return a {@link StoredFileSummary} of the updated file
      * @throws IllegalArgumentException if {@code storedFileId} isn't tracked as belonging to {@code authUserId}
      * @throws IllegalStateException if {@code storedFileId} is a per-account deduplication alias
-     *     (architecture/MICRO.md section 4) or is itself aliased by another of the account's own
+     *     or is itself aliased by another of the account's own
      *     files - overwriting either would silently corrupt content another "file" still relies on;
      *     duplicate the file first (breaking the alias relationship) if it genuinely needs its own,
      *     independent content
@@ -1926,7 +1946,7 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId,
                                                  final byte[] newContent, @Nullable final Long expectedUpdatedAtEpochMillis) {
-        // Item 9 (sharing) + architecture/MICRO.md section 6 (EDIT-level shares): the owner, or a
+        // Sharing (EDIT-level shares): the owner, or a
         // grantee holding a direct, non-expired SharePermission.EDIT grant on this exact file, may
         // overwrite its content - see requireEditableFileAccess's own Javadoc. The returned
         // ownership row always belongs to the file's real owner, never the calling grantee -
@@ -1944,7 +1964,7 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.replaceFileContent: failed to look up " + storedFileId, e);
         }
 
-        // architecture/MICRO.md, section 10 (Sync) - optimistic concurrency. Checked before the
+        // Optimistic concurrency. Checked before the
         // dedup guard/quota check/version capture below, since a detected conflict skips all of
         // that entirely: the canonical file is never touched, only a new "conflicted copy" is
         // created (via the ordinary uploadFile path, in the same folder). Uploaded under
@@ -1958,10 +1978,10 @@ public final class CloudUserService implements ICloudUserService {
             final StoredFile conflictFile = this.uploadFile(ownerAuthUserId, conflictName, newContent, ownership.getFolderId());
             throw new SyncConflictException(new StoredFileSummary(conflictFile.fileId(), conflictFile.fileName(),
                     conflictFile.contentType(), conflictFile.sizeBytes(), conflictFile.createdAt().toEpochMilli(),
-                    conflictFile.updatedAt().toEpochMilli(), ownership.getFolderId()));
+                    conflictFile.updatedAt().toEpochMilli(), ownership.getFolderId(), conflictFile.scanStatus().name()));
         }
 
-        // architecture/MICRO.md, section 4 (per-account deduplication) - see this method's own
+        // Per-account deduplication - see this method's own
         // @throws Javadoc above for why neither shape is safe to overwrite in place.
         if (existing.isDedupAlias() || existing.dedupRefCount() > 0) {
             throw new IllegalStateException(
@@ -2006,7 +2026,8 @@ public final class CloudUserService implements ICloudUserService {
         indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), newContent);
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
-                replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId());
+                replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId(),
+                replaced.scanStatus().name());
     }
 
     /** {@code yyyy-MM-dd HHmmss}, system default zone - matches this codebase's own client-side date-formatting convention (e.g. {@code cloud-driver-platforms-desktop}'s "Restore all"/"Deleted on" timestamps), just applied server-side for {@link #conflictedCopyFileName}. */
@@ -2103,10 +2124,10 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Content types indexed as text (section 5, Search/Indexing, {@code architecture/MICRO.md}) -
+     * Content types indexed as text (search indexing) -
      * mirrors {@code cloud-driver-platforms-desktop}'s own {@code PreviewSupport.kt#previewKindFor}
      * {@code TEXT} classification (any {@code text/*} content type, plus {@code application/json}/
-     * {@code xml}/{@code yaml}/{@code toml}) - v1 scope, per the doc's own instruction: OCR for
+     * {@code xml}/{@code yaml}/{@code toml}) - v1 scope: OCR for
      * images and PDF/DOCX text extraction are explicit follow-ups, not attempted here.
      */
     private static final Set<String> NON_TEXT_PREFIX_INDEXABLE_CONTENT_TYPES =
@@ -2285,7 +2306,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void deleteFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
-        // Item 9 (sharing): deliberately owner-only - a grantee can read a shared file but never trash it.
+        // Sharing: deliberately owner-only - a grantee can read a shared file but never trash it.
         final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
         if (ownership.isDeleted()) {
             return;
@@ -2295,17 +2316,17 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.deleteFile: failed to trash " + storedFileId, e);
         }
-        // Item 9 (sharing), fixed 2026-09-02: revoke every outstanding share on this file the
+        // Sharing, fixed 2026-09-02: revoke every outstanding share on this file the
         // moment it's deleted (trashed), not merely relying on getFile's own isDeleted() check to
         // block access - that check alone left the grant itself dangling, so a later restoreFile
         // would silently re-grant every previously-shared recipient access again, without the
         // owner ever having chosen to re-share. See revokeAllFileShares's own Javadoc.
         this.revokeAllFileShares(storedFileId);
-        // architecture/MICRO.md, section 6 - same reasoning as revokeAllFileShares immediately above.
+        // Same reasoning as revokeAllFileShares immediately above.
         this.revokeAllPublicFileLinks(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
         removeFromSearchIndex(authUserId, storedFileId);
-        // architecture/MICRO.md, section 8 - fired once, at soft-delete (when a user actually
+        // Webhook dispatch - fired once, at soft-delete (when a user actually
         // experiences "my file is gone"), not again at the later permanent purge of the same file.
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_DELETED, storedFileId);
     }
@@ -2321,7 +2342,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void restoreFile(@NonNull final String authUserId, @NonNull final String storedFileId) {
-        // Item 9 (sharing): deliberately owner-only.
+        // Sharing: deliberately owner-only.
         final StoredFileOwnership ownership = this.requireOwnedFile(authUserId, storedFileId);
         if (!ownership.isDeleted()) {
             throw new IllegalStateException("@CloudUserService.restoreFile: " + storedFileId + " is not in the trash");
@@ -2375,7 +2396,7 @@ public final class CloudUserService implements ICloudUserService {
     public Folder createFolder(@NonNull final String authUserId, @NonNull final String name, @Nullable final String parentFolderId) {
 
         this.getOrCreate(authUserId);
-        // Item 9 (sharing): deliberately owner-only - a grantee with folder-level read access
+        // Sharing: deliberately owner-only - a grantee with folder-level read access
         // can never create content inside a folder shared with them.
         if (parentFolderId != null) this.requireOwnedFolder(authUserId, parentFolderId);
 
@@ -2401,7 +2422,7 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public List<Folder> listFolders(@NonNull final String authUserId, @Nullable final String parentFolderId) {
-        // Item 9 (sharing): deliberately owner-only, does NOT include folders shared with
+        // Sharing: deliberately owner-only, does NOT include folders shared with
         // authUserId - see listFileSummaries's own comment for the same reasoning; use
         // listSharedFoldersWithMe(authUserId) instead.
         try {
@@ -2458,7 +2479,7 @@ public final class CloudUserService implements ICloudUserService {
     public Folder updateFolder(@NonNull final String authUserId, @NonNull final String folderId,
                                 @NonNull final String newName, @Nullable final String newParentFolderId) {
 
-        // Item 9 (sharing): deliberately owner-only - a grantee can browse a shared folder but never rename/move it.
+        // Sharing: deliberately owner-only - a grantee can browse a shared folder but never rename/move it.
         final Folder existing = this.requireOwnedFolder(authUserId, folderId);
 
         if (newParentFolderId != null) {
@@ -2537,7 +2558,7 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public void deleteFolder(@NonNull final String authUserId, @NonNull final String folderId) {
 
-        // Item 9 (sharing): deliberately owner-only.
+        // Sharing: deliberately owner-only.
         final Folder existing = this.requireOwnedFolder(authUserId, folderId);
         if (existing.isDeleted()) {
             return;
@@ -2559,7 +2580,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@CloudUserService.deleteFolder: failed to trash " + folderId, e);
         }
-        // Item 9 (sharing), fixed 2026-09-02 - see deleteFile's own comment on why this must be
+        // Fixed 2026-09-02 - see deleteFile's own comment on why this must be
         // explicit rather than relying on Folder#isDeleted() alone.
         this.revokeAllFolderShares(folderId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FOLDER_DELETE, folderId, null));
@@ -2578,7 +2599,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     @Override
     public void restoreFolder(@NonNull final String authUserId, @NonNull final String folderId) {
-        // Item 9 (sharing): deliberately owner-only.
+        // Sharing: deliberately owner-only.
         final Folder existing = this.requireOwnedFolder(authUserId, folderId);
         if (!existing.isDeleted()) {
             throw new IllegalStateException("@CloudUserService.restoreFolder: " + folderId + " is not in the trash");
@@ -2795,8 +2816,7 @@ public final class CloudUserService implements ICloudUserService {
      *
      * <p><b>Necessarily duplicated, not shared, with {@code TrashPurgeScheduler}'s own resolution
      * logic</b> - that class lives in {@code cloud-driver-plugin}, which this module ({@code
-     * cloud-driver-auth}) must never depend on (see {@code CLAUDE.md}'s "Module layout and
-     * dependency direction"). Reading {@code configuration.json} directly from this module is an
+     * cloud-driver-auth}) must never depend on. Reading {@code configuration.json} directly from this module is an
      * already-established pattern here, though - see {@code CloudUser#resolveMaxBytesToUpload}'s
      * own {@link JsonDocument#contains}-first read of a different optional key, the same shape
      * this method uses. Keep the key name/default in sync with {@code TrashPurgeScheduler}'s own

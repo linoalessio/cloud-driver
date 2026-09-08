@@ -45,7 +45,7 @@ import java.util.logging.Level;
  * later. A {@link DatabaseClientException} thrown mid-call is treated the
  * same way if connectivity has since dropped, otherwise it is rethrown.
  *
- * <p><b>Optional S3-backed content ({@code architecture/AWS_S3_IMPL.md}).</b> If {@code
+ * <p><b>Optional S3-backed content.</b> If {@code
  * objectStorageService} is non-{@code null} (an operator has opted into it - see {@link
  * #DefaultFileFactory(DataFactory, PendingUploadCache, ConnectivityChecker, ObjectStorageService,
  * EnvelopeEncryptionService)}), {@link #upload} moves a file's content out of {@link
@@ -152,8 +152,8 @@ public final class DefaultFileFactory extends FileFactory {
             if (this.connectivityChecker.isAvailable()) {
                 if (toRegister != file) {
                     // the S3 write above succeeded but the database write didn't - clean up the
-                    // now-orphaned object rather than leaving it behind forever (architecture/AWS_S3_IMPL.md
-                    // section 6.2, step 4: best-effort, never masks the original DatabaseClientException).
+                    // now-orphaned object rather than leaving it behind forever (best-effort,
+                    // never masks the original DatabaseClientException).
                     deleteObjectQuietly(file.fileId());
                 }
                 recordMetric(MetricsRecorder::recordUploadFailure);
@@ -353,7 +353,7 @@ public final class DefaultFileFactory extends FileFactory {
      * configured - best-effort deletes {@code fileId}'s object too ({@link
      * #deleteObjectQuietly}). Order matters: the database row goes first, the object second - an
      * orphaned S3 object is a cheap cleanup problem, a database row pointing at a deleted S3
-     * object is a broken download (architecture/AWS_S3_IMPL.md section 6.2). Unconditional rather
+     * object is a broken download. Unconditional rather
      * than checked against {@code isS3Backed()} first - {@code ObjectStorageService#deleteObject}
      * is itself a no-op for a file that was never S3-backed, so the extra check would just cost a
      * round trip for nothing.
@@ -375,7 +375,7 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Delegates to {@link DataFactory#clear}. <b>Does not purge S3-backed objects</b> - out of
-     * scope for {@code architecture/AWS_S3_IMPL.md} (Section 6.2 only covers {@link #upload}/
+     * scope for this class's S3-backed-content support (which only covers {@link #upload}/
      * {@link #download}/{@link #findById}/{@link #getEntities}/{@link #delete}), a known,
      * deliberately unaddressed gap: a {@code DefaultCloudDriver#reset()} (which calls this) leaves
      * any already-uploaded S3 object behind. Flagged here rather than silently expanding this
@@ -394,10 +394,9 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Resolves {@code file}'s content from {@link #objectStorageService} if it is {@link
-     * StoredFile#isS3Backed()}, otherwise returns it unchanged - the S3 half of {@code
-     * architecture/AWS_S3_IMPL.md} section 6.2's "download/findById/getEntities... for each such
-     * file call objectStorageService.getObject(...) and attach the result via withResolvedContent
-     * before verifyIntegrity runs" instruction.
+     * StoredFile#isS3Backed()}, otherwise returns it unchanged - for each such file, fetches via
+     * {@code objectStorageService.getObject(...)} and attaches the result via
+     * {@code withResolvedContent} before {@code verifyIntegrity} runs.
      *
      * <p>Branches on {@link StoredFile#isDirectTransfer()}: a direct-transfer file's object is
      * already plaintext (uploaded raw by the client itself, decrypted transparently by S3's own
@@ -434,7 +433,7 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Resolves {@code file}'s content end to end - first as a per-account deduplication alias (see
-     * {@link #resolveDedupAlias}, architecture/MICRO.md section 4), then as S3-backed content (see
+     * {@link #resolveDedupAlias}), then as S3-backed content (see
      * {@link #resolveFromObjectStorage}) - either step is a no-op if it doesn't apply to {@code
      * file}. A file is never both at once (an alias carries no {@link StoredFile#objectStorageKey()}
      * of its own), but resolving the alias first is what lets {@link #resolveFromObjectStorage}'s
@@ -450,8 +449,8 @@ public final class DefaultFileFactory extends FileFactory {
     }
 
     /**
-     * Resolves {@code file}'s content from the canonical file it aliases (architecture/MICRO.md
-     * section 4) if {@link StoredFile#isDedupAlias()}, otherwise returns it unchanged. The canonical
+     * Resolves {@code file}'s content from the canonical file it aliases
+     * if {@link StoredFile#isDedupAlias()}, otherwise returns it unchanged. The canonical
      * file's own content is resolved the same way any other read of it would be ({@link
      * #resolveFromObjectStorage}, in case the canonical itself is S3-backed) before being handed to
      * {@link StoredFile#withResolvedContent(byte[])} - a dedup alias is never itself chained to

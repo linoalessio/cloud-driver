@@ -56,12 +56,11 @@ private val ADMIN_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss
 private fun formatEpochMilli(epochMilli: Long): String = ADMIN_DATE_FORMAT.format(Instant.ofEpochMilli(epochMilli))
 
 /**
- * Read-only admin panel (item 5's `GET /admin/authUsers` plus item 11's audit trail and item 13's
- * `GET /admin/metrics`, all admin-gated server-side) - only reachable while
- * [AppViewModel.currentUserIsAdmin] (the sidebar hides the entry otherwise; the server itself is
- * the real enforcement point via its `requireAdmin` filter, this is only UI-level convenience).
- * Deliberately view-only: granting/revoking the admin flag itself is not exposed here, or anywhere
- * over REST - see `CLAUDE.md`'s "Admin flag and `/admin/authUsers` routes" section - it stays a
+ * Read-only admin panel (`GET /admin/authUsers` plus the audit trail and `GET /admin/metrics`, all
+ * admin-gated server-side) - only reachable while [AppViewModel.currentUserIsAdmin] (the sidebar
+ * hides the entry otherwise; the server itself is the real enforcement point via its
+ * `requireAdmin` filter, this is only UI-level convenience). Deliberately view-only:
+ * granting/revoking the admin flag itself is not exposed here, or anywhere over REST - it stays a
  * terminal-only operation (the `admin`/`isAdmin` command), specifically to avoid reopening a
  * privilege-escalation hole that decision closed.
  */
@@ -180,7 +179,7 @@ private fun AuthUserRow(user: AuthUserResponse) {
 }
 
 /**
- * Item 13's counters/gauges - `metrics` is `null` while `cloud-driver-extensions-metrics` isn't
+ * The metrics extension's counters/gauges - `metrics` is `null` while `cloud-driver-extensions-metrics` isn't
  * running on the connected deployment (or the last fetch simply failed - see
  * [AppViewModel.refreshAdmin]'s own try/catch), rendered as a plain unavailability notice rather
  * than an error, since a deployment that never runs that extension is a normal, supported state.

@@ -19,13 +19,12 @@ import org.jetbrains.annotations.NotNull;
  * DefaultRestFactory(DataFactory, AuthService)} being two separate instances rather than one
  * instance serving two auth schemes.
  *
- * <p><b>Deliberately unauthenticated.</b> Per {@code architecture/SERVICES.md} item 13's own
- * prompt, this endpoint should be reached by a scrape job, not a person - restrict who can reach it
- * via network placement instead (bind host, firewall, reverse-proxy IP allowlist - see {@link
- * CloudMetricsExtension}'s own Javadoc for the config keys controlling bind host/port). This is a
- * real decision worth revisiting with Lino if this deployment's threat model changes; not
- * re-litigated here beyond flagging it, matching {@code CLAUDE.md}'s existing "flag, don't decide
- * silently" convention for security-relevant trade-offs (e.g. the AWS KMS {@code
+ * <p><b>Deliberately unauthenticated.</b> This endpoint should be reached by a scrape job, not a
+ * person - restrict who can reach it via network placement instead (bind host, firewall,
+ * reverse-proxy IP allowlist - see {@link CloudMetricsExtension}'s own Javadoc for the config keys
+ * controlling bind host/port). This is a real decision worth revisiting with Lino if this
+ * deployment's threat model changes; flagged rather than decided silently, matching this
+ * codebase's existing convention for security-relevant trade-offs (e.g. the AWS KMS {@code
  * KeyEncryptionService} not being wired in as {@code CloudBootstrap}'s default).
  */
 final class MetricsHttpServer {

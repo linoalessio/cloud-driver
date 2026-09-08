@@ -11,15 +11,13 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One entry in the persisted, structured audit trail - who did what, when. See {@code
- * architecture/SERVICES.md} item 11 for the original design brief and {@code CLAUDE.md}'s "Audit
- * log service" section for the full picture (schema, exactly which actions are recorded and from
+ * One entry in the persisted, structured audit trail - who did what, when. See the "Audit
+ * log service" documentation for the full picture (schema, exactly which actions are recorded and from
  * where, and how to read the trail back).
  *
- * <p><b>Deliberately placed in {@code cloud-driver-api}, not {@code cloud-driver-auth}</b> - the
- * doc's own suggested placement (alongside {@link AuditLogService}, in {@code cloud-driver-auth})
- * would violate this codebase's hard one-way dependency rule (see {@code CLAUDE.md}'s "Module
- * layout and dependency direction": {@code cloud-driver-api} must never depend on {@code
+ * <p><b>Deliberately placed in {@code cloud-driver-api}, not {@code cloud-driver-auth}</b> - placing
+ * this alongside {@link AuditLogService}, in {@code cloud-driver-auth},
+ * would violate this codebase's hard one-way dependency rule ({@code cloud-driver-api} must never depend on {@code
  * cloud-driver-auth}). {@link AuditLogService#record(AuditEvent)} needs this type visible from
  * {@code cloud-driver-api} itself (so {@code IServiceContainer} can expose an {@code
  * AuditLogService} getter without {@code cloud-driver-api} gaining a new dependency), so this

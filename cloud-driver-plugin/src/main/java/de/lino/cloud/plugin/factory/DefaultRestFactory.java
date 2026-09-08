@@ -148,8 +148,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final String TRASH_EMPTY_PATH = "/trash/empty";
     /**
-     * Path mounted by {@link #start} for {@link #handleListActivity} (section 3, Activity/
-     * Audit-Feed, {@code architecture/MICRO.md}) - a standalone top-level resource, the same
+     * Path mounted by {@link #start} for {@link #handleListActivity} - a standalone top-level
+     * resource, the same
      * "no single natural owner between {@code /files}/{@code /folders} to nest under" reasoning
      * {@link #TRASH_EMPTY_PATH} already documents, since one call spans both files' and folders'
      * activity together via a single {@link CloudUserService#listActivity} call.
@@ -158,8 +158,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** Default page size for {@link #handleListFileActivity}/{@link #handleListFolderActivity}/{@link #handleListActivity} when {@link #LIMIT_QUERY_PARAM} is absent - unlike {@link #handleListFiles}/{@link #handleListFolders}, pagination here is never optional (an unbounded activity feed has no natural size ceiling the way a single folder's contents do), so a request with no {@code ?limit=} still gets a bounded, paginated response rather than one unbounded bare array. */
     private static final int DEFAULT_ACTIVITY_PAGE_LIMIT = 50;
     /**
-     * Path mounted by {@link #start} for {@link #handleSearch} (section 5, Search/Indexing, {@code
-     * architecture/MICRO.md}) - a standalone top-level resource, the same "no single natural owner
+     * Path mounted by {@link #start} for {@link #handleSearch} - a standalone top-level
+     * resource, the same "no single natural owner
      * between {@code /files}/{@code /folders} to nest under" reasoning {@link #ACTIVITY_PATH}
      * already documents, since a search matches files regardless of which folder they sit in.
      */
@@ -168,7 +168,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String SEARCH_QUERY_QUERY_PARAM = "q";
     /**
      * Query parameter {@link #handleReplaceFileContent} reads an optimistic-concurrency
-     * precondition from (section 10, Sync, {@code architecture/MICRO.md}) - the caller's last-seen
+     * precondition from - the caller's last-seen
      * {@link StoredFile#updatedAt()}, as epoch millis. Absent means an unconditional overwrite,
      * unchanged behavior from before this section existed.
      */
@@ -176,8 +176,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** Default result count for {@link #handleSearch} when {@link #LIMIT_QUERY_PARAM} is absent - generous enough for a typical query, small enough to keep a client's results list from growing unbounded. */
     private static final int DEFAULT_SEARCH_RESULT_LIMIT = 25;
     /**
-     * Path prefix mounted for every public, unauthenticated share-link route (section 6, {@code
-     * architecture/MICRO.md}) - checked by {@link #requireValidBearerToken} the same {@code
+     * Path prefix mounted for every public, unauthenticated share-link route - checked by {@link
+     * #requireValidBearerToken} the same {@code
      * ctx.path().startsWith(...)} way {@link #ADMIN_PATH_PREFIX}/{@link #AUTH_PATH_PREFIX} already
      * are, since the dynamic {@code {token}} segment can't be exempted via an exact-path match the
      * way {@link #LOGIN_PATH}/etc. are. A route under this prefix carries its own authority
@@ -187,7 +187,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String PUBLIC_PATH_PREFIX = "/public/";
     /** Path mounted by {@link #start} for {@link #handleResolvePublicFileLink} - see {@link #PUBLIC_PATH_PREFIX}'s own Javadoc. */
     private static final String PUBLIC_FILES_PATH = "/public/files";
-    /** Path mounted by {@link #start} for {@link #handleRegisterWebhook}/{@link #handleListWebhooks} (section 8, {@code architecture/MICRO.md}). */
+    /** Path mounted by {@link #start} for {@link #handleRegisterWebhook}/{@link #handleListWebhooks}. */
     private static final String WEBHOOKS_PATH = "/webhooks";
     /**
      * Path mounted by {@link #start} for {@link #handleListWebhookDeliveries} - one call spans
@@ -199,7 +199,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final String WEBHOOKS_DELIVERIES_PATH = "/webhooks/deliveries";
     /**
-     * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (item 9, file/folder
+     * Path mounted by {@link #start} for {@link #handleListFilesSharedWithMe} (file/folder
      * sharing). <b>Must be registered before {@code GET /files/{id}}</b> - see {@link
      * #FILES_TRASH_PATH}'s own Javadoc for why registration order (not any Javalin routing
      * precedence) is what decides this. <b>Fixed a real, confirmed bug (2026-09-02):</b> this route
@@ -209,7 +209,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * /files/shared-with-me} request was silently captured by {@link #handleDownloadFile} treating
      * {@code "shared-with-me"} as a file id, 404ing with {@code "No StoredFile with id
      * shared-with-me"} instead of ever reaching {@link #handleListFilesSharedWithMe}. This broke
-     * the read side of sharing for every recipient on every deployment since item 9 first shipped -
+     * the read side of sharing for every recipient on every deployment since sharing first shipped -
      * the write side ({@code POST /files/{id}/share}, a differently-shaped 3-segment path with no
      * collision) worked the whole time, which is what made this bug so easy to miss: a share looked
      * successful (confirmable via {@code GET /files/{id}/share} listing the grant back), but the
@@ -233,8 +233,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String FILES_SHARED_BY_ME_COUNT_PATH = FILES_PATH + "/shared-by-me/count";
     /**
      * Path mounted by {@link #start} for {@link #handleBeginPresignedUpload} (presigned
-     * direct-to-client transfer - see {@code architecture/AWS_S3_IMPL.md} section 8, now
-     * implemented). A {@code POST} route, unlike every other constant on this page - no {@code
+     * direct-to-client transfer). A {@code POST} route, unlike every other constant on this page - no {@code
      * FILES_PATH + "/{id}"} route exists for {@code POST}, only {@code GET}, so this 2-segment
      * path has no registration-order collision risk regardless of where it's registered (the
      * {@code FILES_TRASH_PATH}/{@code FILES_SHARED_WITH_ME_PATH} pitfall only ever applies within
@@ -312,8 +311,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final long AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
     /**
-     * {@code configuration.json} key for {@link #resolveApiRateLimitReadMaxRequests} - section 7,
-     * {@code architecture/MICRO.md}. See {@link #requireWithinApiRateLimit}'s own Javadoc for the
+     * {@code configuration.json} key for {@link #resolveApiRateLimitReadMaxRequests}. See {@link
+     * #requireWithinApiRateLimit}'s own Javadoc for the
      * general per-user/IP limiter this backs, complementing (never replacing) {@link
      * #requireWithinAuthRateLimit}'s own dedicated, tighter {@code /auth/*} limiter.
      */
@@ -361,8 +360,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** How many entries {@link #handleListAuditLog} returns by default (no {@link #AUDIT_LOG_ALL_QUERY_PARAM}), newest first - mirrors {@code AuditLogCommand}'s own terminal default. */
     private static final int DEFAULT_AUDIT_LOG_LIMIT = 20;
     /**
-     * Path mounted by {@link #start} for the item-10 (live push via WebSocket, see {@code
-     * architecture/SERVICES.md}) WebSocket route, configured by {@link #configureLiveUpdatesWebSocket}.
+     * Path mounted by {@link #start} for the live-push-via-WebSocket route, configured by {@link
+     * #configureLiveUpdatesWebSocket}.
      * Only mounted when {@link #authService} is set - the same bearer-token identity the HTTP
      * routes use also gates this connection (see that method's own Javadoc for how, since a
      * WebSocket handshake can't carry a custom {@code Authorization} header the way a normal HTTP
@@ -426,8 +425,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * <p><b>Stale reasoning, corrected:</b> this constant's value (256 MB) was originally sized
      * around base64-encoded JSON bodies read whole via {@link Context#body()}/{@link
      * Context#bodyAsBytes()} (~1.37x the raw file size) - the client has sent a raw {@code
-     * application/octet-stream} body instead for some time, and as of Phase 3 of {@code
-     * architecture/OPTIMIZE_UPLOAD.md}, {@link #handleUploadFile} streams that body straight to a
+     * application/octet-stream} body instead for some time, and
+     * {@link #handleUploadFile} streams that body straight to a
      * scratch file rather than buffering it in heap at all. The constraint that originally sized
      * this number - JVM heap - no longer applies to the receive step; what this number should be
      * today is a deliberate disk/quota decision (available scratch-disk space, how large a single
@@ -499,7 +498,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * Per-{@code (RequestClass, identity)} fixed-window request counters backing {@link
-     * #requireWithinApiRateLimit} (section 7, {@code architecture/MICRO.md}) - a separate map from
+     * #requireWithinApiRateLimit} - a separate map from
      * {@link #authRateLimitBuckets}, deliberately: the two limiters have different scoping
      * (per-user-or-IP here vs. always-per-IP there) and different configured limits, and keeping
      * them independent means neither can be perturbed by touching the other's already-working,
@@ -538,8 +537,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * The two coarse endpoint classes {@link #requireWithinApiRateLimit} distinguishes - see
-     * {@link #classifyRequest}. Deliberately just two, not three: the doc's own "uploads vs. reads
-     * vs. auth" framing already has {@code auth} covered by the separate, pre-existing {@link
+     * {@link #classifyRequest}. Deliberately just two, not three: {@code auth} is already covered
+     * by the separate, pre-existing {@link
      * #requireWithinAuthRateLimit}, so this only needs to split what's left into "cheap to serve,
      * generously limited" vs. "expensive/consequential, tightly limited" - classifying by HTTP
      * method alone (GET/HEAD vs. everything else) covers that split without needing to enumerate
@@ -767,7 +766,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.post(LOGOUT_PATH, this::handleLogout);
                 config.routes.get(ME_PATH, this::handleGetMe);
                 config.routes.before(this::requireValidBearerToken);
-                // Section 7 (architecture/MICRO.md) - registered directly after requireValidBearerToken
+                // Registered directly after requireValidBearerToken
                 // so USER_ID_ATTRIBUTE is already set by the time this runs; see its own Javadoc.
                 config.routes.before(this::requireWithinApiRateLimit);
 
@@ -793,13 +792,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 // registered GET routes IN REGISTRATION ORDER and returns the first one whose
                 // path template matches, with NO "prefer a static segment over a path param"
                 // precedence of its own - unlike what an earlier revision of this file's own
-                // Javadoc (and CLAUDE.md) claimed. Registered after "/files/{id}" (a real,
+                // Javadoc claimed. Registered after "/files/{id}" (a real,
                 // confirmed bug, fixed 2026-09-02), every GET /files/shared-with-me request was
                 // silently swallowed by handleDownloadFile treating "shared-with-me" as a file id -
                 // 404ing with "No StoredFile with id shared-with-me" - so a share's *write* side
                 // worked (confirmed via GET /files/{id}/share showing the grant) while its *read*
-                // side for the recipient never worked at all, on any deployment, since item 9 first
-                // shipped. FILES_TRASH_PATH above only ever worked by the same registration-order
+                // side for the recipient never worked at all, on any deployment, since sharing was
+                // first shipped. FILES_TRASH_PATH above only ever worked by the same registration-order
                 // coincidence, not because of any framework guarantee.
                 config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
                 config.routes.get(FILES_SHARED_BY_ME_COUNT_PATH, this::handleCountFilesSharedByMe);
@@ -921,7 +920,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * obtaining a fresh access token once the old one has already expired, and a logout call must
      * still work with an already-expired access token, so neither can require one - all seven
      * must stay reachable without one. Also exempts anything under {@link #PUBLIC_PATH_PREFIX} -
-     * see that constant's own Javadoc (section 6, {@code architecture/MICRO.md}, public share
+     * see that constant's own Javadoc (public share
      * links) - via a prefix check rather than an exact-path match, since its dynamic {@code
      * {token}} path segment can't be listed as a fixed path the way the other exemptions above
      * are. The token itself is resolved by {@link
@@ -1043,8 +1042,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * Javalin {@code before} filter capping general REST API request volume - section 7, {@code
-     * architecture/MICRO.md}, complementing the existing per-account <em>upload byte quota</em>
+     * Javalin {@code before} filter capping general REST API request volume, complementing the
+     * existing per-account <em>upload byte quota</em>
      * ({@code CloudUser#getMaxBytesToUpload()}), which bounds how much storage an account
      * accumulates but not how often it can call this API at all. Scoped per authenticated caller
      * ({@link #USER_ID_ATTRIBUTE}, set by {@link #requireValidBearerToken}, which this filter is
@@ -1066,9 +1065,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * <p>Excludes {@link #AUTH_PATH_PREFIX} entirely (already covered by {@link
      * #requireWithinAuthRateLimit}'s own dedicated, tighter limiter - not duplicated here) and
      * {@link #PUBLIC_PATH_PREFIX} (a public share link's own request volume is bounded by its
-     * token's 384-bit search space making brute-forcing infeasible regardless - see {@code
-     * CLAUDE.md}'s "Sharing" section for that reasoning; a dedicated limiter for that surface is
-     * flagged there as this section's own out-of-scope follow-up, not silently forgotten).
+     * token's 384-bit search space making brute-forcing infeasible regardless; a dedicated limiter
+     * for that surface is a known, flagged, out-of-scope follow-up, not silently forgotten).
      *
      * <p>Classifies every other request into {@link RequestClass#READ}/{@link RequestClass#WRITE}
      * (see {@link #classifyRequest}) and applies that class's own configured fixed-window cap -
@@ -1241,7 +1239,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * Item 10 (live push via WebSocket, see {@code architecture/SERVICES.md}): configures the
+     * Live push via WebSocket: configures the
      * {@link #LIVE_UPDATES_PATH} WebSocket route. Unlike every HTTP route, authentication cannot
      * go through {@link #requireValidBearerToken} - Javalin's {@code before} filters only run
      * ahead of the HTTP upgrade request, and a browser {@code WebSocket} client cannot set a
@@ -1403,7 +1401,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * reflects its folder exactly like every other route does. {@link #handleListFiles} does not
      * need this - its {@link StoredFileSummary} entries already carry their own {@code folderId}.
      *
-     * <p><b>S3-backed content correction (architecture/AWS_S3_IMPL.md):</b> {@code
+     * <p><b>S3-backed content correction:</b> {@code
      * this.gson.toJsonTree(file)} reflects {@code file}'s own fields, so for an {@link
      * StoredFile#isS3Backed()} file this would otherwise emit a {@code "contentBase64": null} -
      * that field only ever carries content for an <em>inline</em> file; an S3-backed one has it
@@ -1929,7 +1927,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code GET /admin/metrics}: returns the current {@link de.lino.cloud.api.metrics.MetricsSnapshot}
-     * (item 13's counters/gauges), read in-process off {@code
+     * (the metrics extension's counters/gauges), read in-process off {@code
      * cloud-driver-extensions-metrics}'s own {@code MicrometerMetricsSnapshotProvider} - gated by
      * {@link #requireAdmin} the same way {@link #handleListAuthUsers}/{@link #handleListAuditLog}
      * are. This route deliberately never makes an HTTP call to that extension's own separate,
@@ -1970,8 +1968,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * size, rather than one giant {@code byte[]}, and an oversized upload is rejected (via {@link
      * #receiveUploadToScratchFile} throwing {@link ContentTooLargeResponse} mid-stream) before
      * the rest of the body is even read. Only the scratch file's <em>own</em> read (into the
-     * {@code byte[]} {@link CloudUserService#uploadFile} still needs - see Phase 3 Option 1 in
-     * {@code architecture/OPTIMIZE_UPLOAD.md}) plus the real database/encryption I/O are
+     * {@code byte[]} {@link CloudUserService#uploadFile} still needs)
+     * plus the real database/encryption I/O are
      * dispatched off the Jetty worker thread, via {@link MultiTaskingFactory}, as before.
      *
      * <p>Responds with a {@link StoredFileSummary} of the uploaded file - not the full {@link
@@ -2085,7 +2083,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static StoredFileSummary toSummary(final StoredFile file, @Nullable final String folderId) {
         return new StoredFileSummary(file.fileId(), file.fileName(), file.contentType(), file.sizeBytes(),
-                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), folderId);
+                file.createdAt().toEpochMilli(), file.updatedAt().toEpochMilli(), folderId, file.scanStatus().name());
     }
 
     /**
@@ -2305,9 +2303,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      *
      * <p>{@link StoredFile#content()} still fully materializes the decrypted plaintext in memory
      * before this method runs for an inline or app-encrypted-S3 file - {@code
-     * EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot, not chunked (see {@code
-     * architecture/OPTIMIZE_UPLOAD.md}'s "Open decision" - a real, deliberately out-of-scope
-     * limitation, not an oversight here). What this route eliminates for those files is everything
+     * EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot, not chunked - a real,
+     * deliberately out-of-scope limitation, not an oversight here. What this route eliminates for those files is everything
      * downstream of that plaintext: the ~1.37x base64 string, the enclosing JSON document, and the
      * UTF-8 re-encoding {@link Context#result(String)} would otherwise perform on top of it - {@link
      * Context#writeSeekableStream(java.io.InputStream, String, long)} streams the already-resolved
@@ -2393,8 +2390,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * StoredFile} as raw JPEG bytes, or {@code 404} if none exists yet (still generating,
      * unsupported content type, or generation failed - see {@code
      * de.lino.cloud.api.thumbnail.ThumbnailService#getThumbnail}'s own Javadoc for why those three
-     * are indistinguishable from the outside). Section 1 (Thumbnail/Preview Service, {@code
-     * architecture/MICRO.md}) - access-checked the same ownership-or-share way {@link
+     * are indistinguishable from the outside). Access-checked the same ownership-or-share way {@link
      * #handleDownloadFileContent} already is, via {@link CloudUserService#checkFileAccess}, before
      * this route ever asks {@code ThumbnailService} for anything - a caller with no access to the
      * source file must never learn whether a thumbnail exists for it either.
@@ -2433,8 +2429,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code PUT /files/{id}/content}: overwrites a {@link StoredFile}'s content in place, via
-     * {@link CloudUserService#replaceFileContent} - section 2 (Versioning, {@code
-     * architecture/MICRO.md}). Streams the raw {@code application/octet-stream} request body to a
+     * {@link CloudUserService#replaceFileContent} (versioning). Streams the raw {@code application/octet-stream} request body to a
      * scratch file first, the same {@link #receiveUploadToScratchFile} primitive {@link
      * #handleUploadFile} already uses, for the same "never buffer an arbitrarily large body in
      * heap" reasoning. Responds {@code 200} (not {@code 201} - this replaces an existing resource,
@@ -2464,7 +2459,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(summary));
                         return null;
                     }
-                    // architecture/MICRO.md, section 10 (Sync) - a detected conflict is 409, but
+                    // Sync: a detected conflict is 409, but
                     // (unlike every other 409 case in this file) carries the conflicted copy's own
                     // StoredFileSummary as its JSON body, not just a message - the client needs
                     // that to actually show/navigate to the preserved edit, not merely know a
@@ -2576,9 +2571,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code POST /files/{id}/versions/{versionNumber}/restore}: restores a prior version by
-     * calling {@link CloudUserService#replaceFileContent} with that version's own content - per
-     * {@code architecture/MICRO.md} section 2's own instruction, this "creates a fresh version
-     * from the old content rather than mutating history in place": since {@link
+     * calling {@link CloudUserService#replaceFileContent} with that version's own content - this
+     * creates a fresh version from the old content rather than mutating history in place: since {@link
      * CloudUserService#replaceFileContent} always captures whatever is currently live as a new
      * version before overwriting, restoring version {@code N} automatically captures the
      * (about-to-be-superseded) current content as its own new version too - nothing is ever lost.
@@ -2631,8 +2625,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /**
      * {@code GET /files/{id}/activity}: lists every {@link de.lino.cloud.api.audit.AuditEvent}
      * recorded against one {@link StoredFile}, newest first, via {@link
-     * CloudUserService#listFileActivity} - section 3 (Activity/Audit-Feed, {@code
-     * architecture/MICRO.md}). Always paginated (see {@link #DEFAULT_ACTIVITY_PAGE_LIMIT}'s own
+     * CloudUserService#listFileActivity}. Always paginated (see {@link #DEFAULT_ACTIVITY_PAGE_LIMIT}'s own
      * Javadoc for why, unlike {@link #handleListFiles}).
      */
     private void handleListFileActivity(@NotNull final Context ctx) {
@@ -2694,8 +2687,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code GET /search?q=<query>&limit=<n>}: searches the caller's own files by filename/
-     * indexed text content, via {@link de.lino.cloud.api.search.SearchIndexService#search} -
-     * section 5 (Search/Indexing, {@code architecture/MICRO.md}). Reached directly off {@link
+     * indexed text content, via {@link de.lino.cloud.api.search.SearchIndexService#search}.
+     * Reached directly off {@link
      * CloudDriver#getInstance()}'s {@link de.lino.cloud.api.factory.service.IServiceContainer},
      * the same shape {@link #handleGetThumbnail}/{@link #handleListFileVersions} already use for
      * their own optional facets - {@code 503} (via {@link ServiceUnavailableResponse}) if {@code
@@ -2733,7 +2726,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         return limit != null ? limit : DEFAULT_SEARCH_RESULT_LIMIT;
     }
 
-    /** The {@code {"url", "eventTypes"}} JSON body shape read by {@code POST /webhooks} (section 8, {@code architecture/MICRO.md}). */
+    /** The {@code {"url", "eventTypes"}} JSON body shape read by {@code POST /webhooks}. */
     private record RegisterWebhookRequest(String url, java.util.List<String> eventTypes) {
     }
 
@@ -3171,8 +3164,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * The JSON body shape read by {@code POST /files/{id}/share} and {@code POST
-     * /folders/{id}/share} (item 9, file/folder sharing; {@code permissionLevel}/{@code
-     * expiresAtEpochMillis} added section 6, {@code architecture/MICRO.md}).
+     * /folders/{id}/share} (file/folder sharing, including {@code permissionLevel}/{@code
+     * expiresAtEpochMillis}).
      *
      * @param granteeEmail the email address of the account to grant access to
      * @param permissionLevel {@code "VIEW"}/{@code "EDIT"} (case-insensitive), or {@code null}/absent for {@link de.lino.cloud.api.file.SharePermission#VIEW}
@@ -3264,7 +3257,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 }));
     }
 
-    /** The {@code {"expiresAtEpochMillis"}} JSON body shape read by {@code POST /files/{id}/public-link} (section 6, {@code architecture/MICRO.md}). */
+    /** The {@code {"expiresAtEpochMillis"}} JSON body shape read by {@code POST /files/{id}/public-link}. */
     private record CreatePublicFileLinkRequest(Long expiresAtEpochMillis) {
     }
 
@@ -3717,10 +3710,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * Translates a {@link de.lino.cloud.api.file.exception.FileScanBlockedException} (section 9,
-     * Content-Scanning, {@code architecture/MICRO.md}) into a status distinguishing "not ready
-     * yet" from "permanently refused", per the handoff doc's own "blocked with a clear status
-     * response, not a generic error" instruction: {@link de.lino.cloud.api.file.ScanStatus#PENDING}
+     * Translates a {@link de.lino.cloud.api.file.exception.FileScanBlockedException} into a status
+     * distinguishing "not ready yet" from "permanently refused" with a clear status
+     * response, not a generic error: {@link de.lino.cloud.api.file.ScanStatus#PENDING}
      * → {@link ConflictResponse} (409, a transient/retryable state), {@link
      * de.lino.cloud.api.file.ScanStatus#FLAGGED} → {@link ForbiddenResponse} (403, permanent).
      */
@@ -3767,12 +3759,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
         }
         if (cause instanceof de.lino.cloud.api.file.exception.PublicShareLinkInvalidException publicLinkInvalid) {
-            // architecture/MICRO.md, section 6 (public share links) - see that exception's own
+            // Public share links - see that exception's own
             // Javadoc for why this carries one message for every "not usable" reason.
             return new NotFoundResponse(publicLinkInvalid.getMessage());
         }
         if (cause instanceof de.lino.cloud.api.file.exception.FileScanBlockedException scanBlocked) {
-            // architecture/MICRO.md, section 9 (content scanning) - see scanBlockedResponse's own Javadoc.
+            // Content scanning - see scanBlockedResponse's own Javadoc.
             return scanBlockedResponse(scanBlocked);
         }
         if (cause instanceof IllegalStateException illegalState) {

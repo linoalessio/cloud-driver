@@ -5,9 +5,8 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
 
 /**
  * Unifies a folder and a file summary into one row shape for the file browser's list - both
- * carry a name/created/updated timestamp, but only a file has a byte size (see
- * `FolderResponse`'s own Javadoc in CLAUDE.md: a folder tracks no membership list, so it has
- * nothing to sum a size from).
+ * carry a name/created/updated timestamp, but only a file has a byte size (a folder tracks no
+ * membership list, so it has nothing to sum a size from).
  */
 sealed interface Entry {
     val id: String

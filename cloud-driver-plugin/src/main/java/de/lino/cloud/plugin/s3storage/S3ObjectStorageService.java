@@ -44,9 +44,9 @@ import java.util.concurrent.CompletionException;
  * <p><strong>Multipart transfer.</strong> Uses the AWS SDK v2 S3 Transfer Manager ({@code
  * software.amazon.awssdk:s3-transfer-manager}) rather than {@link S3AsyncClient} alone - it
  * automatically splits a large {@link #putObject(String, InputStream, long)}/{@link
- * #getObjectStream(String)} transfer into parallel multipart requests above a size threshold, the
- * concrete mechanism behind the "streaming, no heap buffering, high throughput" benefit {@code
- * architecture/AWS_S3_IMPL.md} describes. The convenience constructor's {@link S3AsyncClient} is
+ * #getObjectStream(String)} transfer into parallel multipart requests above a size threshold - the
+ * concrete mechanism behind this class's "streaming, no heap buffering, high throughput" benefit.
+ * The convenience constructor's {@link S3AsyncClient} is
  * built with {@code multipartEnabled(true)} (the pure-Java multipart uploader introduced in
  * recent AWS SDK v2 releases) rather than the CRT-based client ({@code S3AsyncClient#crtBuilder()})
  * - the CRT client needs an additional native-library dependency ({@code aws-crt-client}) this

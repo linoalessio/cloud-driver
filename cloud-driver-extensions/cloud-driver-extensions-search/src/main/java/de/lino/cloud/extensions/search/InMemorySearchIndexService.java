@@ -14,11 +14,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
- * The one {@link SearchIndexService} implementation for v1 (section 5, {@code
- * architecture/MICRO.md}) - a plain, in-process, per-account {@code Map<storedFileId,
+ * The one {@link SearchIndexService} implementation for v1 - a plain, in-process, per-account
+ * {@code Map<storedFileId,
  * SearchDocument>} searched by a linear scan over the querying account's own documents, rather
- * than a real inverted-index library (Lucene, etc.) - the doc's own "do not over-engineer this in
- * v1" instruction, and this codebase's existing precedent of accepting an O(n)-per-account scan
+ * than a real inverted-index library (Lucene, etc.) - deliberately not over-engineered for v1,
+ * and this codebase's existing precedent of accepting an O(n)-per-account scan
  * for a derived/bounded-size collection (the exact same trade-off {@code StoredFileOwnership}'s
  * own full-section scans already make, just held in memory here instead of re-decrypted from the
  * database on every call).

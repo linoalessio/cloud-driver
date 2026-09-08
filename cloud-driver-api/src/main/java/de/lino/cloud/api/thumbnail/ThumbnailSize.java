@@ -3,9 +3,8 @@ package de.lino.cloud.api.thumbnail;
 /**
  * A thumbnail size variant a caller can request from {@link ThumbnailService#getThumbnail}.
  *
- * <p>Exactly one variant exists in v1 ({@link #SMALL}), deliberately - {@code
- * architecture/MICRO.md} section 1's own instruction is "do not over-engineer this in v1", and
- * nothing in this codebase yet requests more than one size. The type is still a real enum (not a
+ * <p>Exactly one variant exists in v1 ({@link #SMALL}), deliberately - do not over-engineer this
+ * in v1, and nothing in this codebase yet requests more than one size. The type is still a real enum (not a
  * hardcoded constant) so a second size can be added later without a REST/entity schema change -
  * {@code FileThumbnail}'s primary key already includes {@link #name()}, not just the source
  * file's id.

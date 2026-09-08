@@ -8,16 +8,16 @@ import java.time.Duration;
 import java.util.logging.Level;
 
 /**
- * Section 9 (Content-Scanning, {@code architecture/MICRO.md}) - publishes a {@link
+ * Content scanning - publishes a {@link
  * DefaultContentScanService} into {@code IServiceContainer#setContentScanService} and registers a
  * {@link FileChangeListener} that triggers a scan on every newly-uploaded {@link
  * de.lino.cloud.api.file.StoredFile}. See {@code ContentScanService}'s own Javadoc for the full
- * design, including why this is triggered via {@link FileChangeListener} (unlike sections 5/8) and
- * the confirmed-with-Lino ClamAV/{@code clamd} engine choice.
+ * design, including why this is triggered via {@link FileChangeListener} rather than a synchronous
+ * hook, and the confirmed-with-Lino ClamAV/{@code clamd} engine choice.
  *
  * <p>Built as an in-process extension, not a genuinely standalone deployable service, for the same
- * reason {@code cloud-driver-extensions-thumbnails} was - see {@code architecture/MICRO.md}'s
- * "Reconciliation Notes". Reacts to <b>every</b> {@code "INSERT"} notification, unlike {@code
+ * reason {@code cloud-driver-extensions-thumbnails} was. Reacts to <b>every</b> {@code "INSERT"}
+ * notification, unlike {@code
  * CloudThumbnailsExtension} (which only reacts to image/PDF content types) - every uploaded file,
  * regardless of type, needs a scan verdict, not just the ones with a preview to generate.
  */

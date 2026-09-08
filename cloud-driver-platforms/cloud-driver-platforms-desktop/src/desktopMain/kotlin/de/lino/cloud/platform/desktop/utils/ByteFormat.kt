@@ -5,8 +5,8 @@ private val BYTE_UNITS = arrayOf("B", "KB", "MB", "GB", "TB")
 /**
  * Client-side port of the server's `Constraints#resolveBytesToUnit` (`cloud-driver-api`, package
  * `de.lino.cloud.api.utility`) - this module deliberately never depends on `cloud-driver-api`
- * (see CLAUDE.md's "client must never see the database" boundary), so this small, pure formatting
- * routine is reimplemented here identically rather than imported.
+ * (a client must never see the database directly), so this small, pure formatting routine is
+ * reimplemented here identically rather than imported.
  *
  * Formats [bytes] in its largest whole unit, e.g. `2048` -> `"2.00 KB"`.
  */

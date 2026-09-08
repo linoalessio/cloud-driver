@@ -15,10 +15,9 @@ import java.util.Optional;
  * started, or this deployment doesn't run that extension at all), the same "may not exist yet"
  * contract every other {@code IServiceContainer} facet already carries.
  *
- * <p>Section 2 of {@code architecture/MICRO.md} - see that document (and {@code CLAUDE.md}'s own
- * writeup of what shipped) for the full design, including why a new {@code replaceFileContent}
+ * <p>A new {@code replaceFileContent}
  * primitive had to be added to {@code CloudUserService} first (this app had no "overwrite a
- * file's content" operation at all before this section).
+ * file's content" operation at all before this feature).
  */
 public interface FileVersioningService {
 

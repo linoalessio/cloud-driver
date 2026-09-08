@@ -51,9 +51,8 @@ public final class AuthUser extends Serialized {
      * field existed (Gson leaves an absent JSON property at its type's default, and a freshly
      * registered account only ever goes through the 3-arg {@link #AuthUser(String, String,
      * String)} constructor below, which fixes it at {@code false} too). Deliberately a single
-     * boolean rather than a roles/permissions system - see {@code architecture/SERVICES.md}
-     * item 5's own reasoning for why a fuller RBAC model isn't warranted at this codebase's
-     * scale. Settable only via {@link #withAdmin(boolean)} (never a REST route - see {@code
+     * boolean rather than a roles/permissions system - a fuller RBAC model isn't warranted at this
+     * codebase's scale. Settable only via {@link #withAdmin(boolean)} (never a REST route - see {@code
      * DefaultRestFactory}'s {@code /admin/authUsers} routes, which only ever read this field);
      * the only writer is a new terminal {@code Command}, granting/revoking it from the operator
      * console.

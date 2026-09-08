@@ -16,11 +16,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Item 10 (live push via WebSocket/SSE for change notifications, see {@code
- * architecture/SERVICES.md}) - connects to the server's {@code /ws/updates} route and forwards
- * each pushed change notification to a {@link Listener}, so a long-running client (the desktop
- * app) can react to a change made from elsewhere (another device, a teammate sharing a file - see
- * item 9) instead of only ever refreshing on explicit user action.
+ * Live push via WebSocket/SSE for change notifications - connects to the server's {@code
+ * /ws/updates} route and forwards each pushed change notification to a {@link Listener}, so a
+ * long-running client (the desktop app) can react to a change made from elsewhere (another
+ * device, a teammate sharing a file) instead of only ever refreshing on explicit user action.
  *
  * <p><b>A deliberate sibling class to {@link ApiClient}, not an extension of it.</b> {@code
  * ApiClient}'s whole documented shape is "one request, one response, blocking or {@code

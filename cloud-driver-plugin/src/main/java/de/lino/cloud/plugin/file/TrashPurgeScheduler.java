@@ -32,8 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * nothing on a tick with nothing past the window.
  *
  * <p><b>Deliberately not wired into {@code CloudBootstrap}, or started anywhere automatically -
- * a real, explicit decision</b> (see {@code architecture/SERVICES.md} item 3, and this class's
- * mention in {@code CLAUDE.md}'s "Folder organization" section). An operator must explicitly
+ * a real, explicit decision.</b> An operator must explicitly
  * construct this scheduler with a retention window they have actually chosen and call {@link
  * #start(Duration)} themselves. Getting that window wrong (too short) causes real, permanent,
  * silent data loss the moment this scheduler starts ticking - unlike most bugs in this codebase,

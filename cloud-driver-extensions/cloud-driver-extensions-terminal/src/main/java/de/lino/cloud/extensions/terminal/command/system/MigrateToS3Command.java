@@ -27,10 +27,9 @@ import java.util.Optional;
 
 /**
  * One-off, operator-triggered migration of every not-yet-S3-backed {@link StoredFile}'s content
- * onto the configured {@link ObjectStorageService} - {@code architecture/AWS_S3_IMPL.md} section
- * 7. Modeled on {@link RecomputeStorageCommand}'s "operator-triggered, not automatic, print
+ * onto the configured {@link ObjectStorageService}. Modeled on {@link RecomputeStorageCommand}'s "operator-triggered, not automatic, print
  * progress via {@link Terminal#displayApproved}" shape; never wired to run on startup or on any
- * schedule, matching the handoff document's explicit instruction to ship this as a separate,
+ * schedule, deliberately shipped as a separate,
  * independently-verifiable unit of work from the code that starts using S3 for new uploads.
  *
  * <p><b>Why this module now depends on {@code cloud-driver-plugin}/{@code database-driver-plugin}
@@ -43,7 +42,7 @@ import java.util.Optional;
  * any {@code cloud-driver-api} facade), and {@link SQLExecution} to page through every {@code
  * StoredFile} id without loading full, still-encrypted content into memory for rows this run
  * doesn't even need to touch (see {@link #resolveStoredFileTableName}/{@link #fetchIdPage} - the
- * same {@code DatabaseBackupScheduler}-style keyset-pagination the handoff document calls for,
+ * same {@code DatabaseBackupScheduler}-style keyset-pagination,
  * deliberately not {@code DataFactory#getEntities}, which would defeat the whole point).
  * {@code cloud-driver-extensions-backup}/{@code -rest}/{@code -metrics} already established this
  * "an extension module depends on {@code cloud-driver-plugin} when it genuinely needs a
@@ -195,7 +194,7 @@ public class MigrateToS3Command implements Command {
      * Migrates one file: encrypts its raw storable bytes via {@code contentChannel}, writes the
      * result to {@code objectStorageService} under its own id, and only then - the S3 write
      * already confirmed successful - persists the metadata-only copy via {@link
-     * DataFactory#update} (architecture/AWS_S3_IMPL.md section 7, step 4: never null out {@code
+     * DataFactory#update} (never null out {@code
      * contentBase64} before the S3 write it depends on has actually succeeded).
      *
      * @return the number of raw bytes moved to object s3storage

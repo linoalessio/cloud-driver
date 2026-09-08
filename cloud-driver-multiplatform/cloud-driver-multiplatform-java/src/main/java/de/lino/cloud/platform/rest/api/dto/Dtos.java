@@ -112,6 +112,11 @@ public final class Dtos {
      * StoredFileSummary}). Fetch a specific file's full content afterwards via {@code
      * GET /files/{id}} ({@link ApiClient#downloadFile}), which returns a {@link
      * StoredFileResponse} instead.
+     *
+     * <p>{@code scanStatus} mirrors the server's content-scan verdict for this file - one of
+     * {@code "CLEAN"}/{@code "PENDING"}/{@code "FLAGGED"}, treated here as an opaque string. A
+     * file uploaded on a deployment with no content-scanning extension running never carries
+     * anything but {@code "CLEAN"}.
      */
     public record StoredFileSummaryResponse(
             String fileId,
@@ -120,7 +125,8 @@ public final class Dtos {
             long sizeBytes,
             long createdAtEpochMilli,
             long updatedAtEpochMilli,
-            String folderId
+            String folderId,
+            String scanStatus
     ) {
     }
 
@@ -180,8 +186,8 @@ public final class Dtos {
 
     /**
      * Body for {@code POST /files/upload-url} - the first step of a presigned, direct-to-client
-     * upload (see {@code architecture/AWS_S3_IMPL.md}). {@code sizeBytes} is checked against
-     * quota now and again (against the real uploaded size) at {@link CompleteUploadRequest}.
+     * upload. {@code sizeBytes} is checked against quota now and again (against the real uploaded
+     * size) at {@link CompleteUploadRequest}.
      */
     public record BeginUploadUrlRequest(String fileName, long sizeBytes, String folderId) {
     }
@@ -289,9 +295,14 @@ public final class Dtos {
 
     /**
      * Body for {@code POST /files/{id}/share} and {@code POST /folders/{id}/share} - grants
-     * {@code granteeEmail}'s account read-only access.
+     * {@code granteeEmail}'s account access. {@code permissionLevel} ({@code "VIEW"}/{@code
+     * "EDIT"}, {@code null} defaults to {@code "VIEW"} server-side) and {@code
+     * expiresAtEpochMillis} ({@code null} means the grant never expires) are both optional -
+     * omitting them (the original two-field shape this record used to be) behaves exactly as
+     * before. {@code EDIT} only ever takes effect on a direct file share, never a folder share or
+     * a folder-inherited grant.
      */
-    public record ShareRequest(String granteeEmail) {
+    public record ShareRequest(String granteeEmail, String permissionLevel, Long expiresAtEpochMillis) {
     }
 
     /**
@@ -346,6 +357,76 @@ public final class Dtos {
      * and "download this shared folder" actions.
      */
     public record SharedFolderContentsResponse(java.util.List<StoredFileSummaryResponse> files, java.util.List<FolderResponse> subfolders) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /search} response array - a matched file's id/name plus
+     * its folder placement. Content is never included, matching {@link StoredFileSummaryResponse}'s
+     * own "listing never carries content" convention.
+     */
+    public record SearchResultResponse(String storedFileId, String fileName, String folderId) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/{id}/public-link} response array, and of the
+     * object {@code POST /files/{id}/public-link} returns on success - an unauthenticated,
+     * read-only link to one file's content. {@code expiresAtEpochMillis} is {@code null} if the
+     * link never expires.
+     */
+    public record PublicFileLinkSummaryResponse(String token, long createdAtEpochMillis, Long expiresAtEpochMillis) {
+    }
+
+    /** Body for {@code POST /files/{id}/public-link} - {@code expiresAtEpochMillis} {@code null} creates a link that never expires. */
+    public record CreatePublicFileLinkRequest(Long expiresAtEpochMillis) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/{id}/versions} response array - a captured prior
+     * version of a file's content, identified by its 1-based {@code versionNumber}. Deliberately
+     * carries no {@code fileName}/{@code contentType} - the server's own version-history record has
+     * neither, since a version only ever preserves content, not the file's descriptive metadata at
+     * the time it was captured.
+     */
+    public record FileVersionSummaryResponse(int versionNumber, long capturedAtEpochMillis, long sizeBytes) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /activity}/{@code GET /files/{id}/activity}/
+     * {@code GET /folders/{id}/activity} response envelopes' {@code items} array - a single
+     * audit-log entry. The server's own audit event carries more fields ({@code id}, {@code
+     * actorAuthUserId}, {@code metadata}) that this record deliberately omits, since Gson simply
+     * ignores any JSON field with no matching record component on deserialization.
+     */
+    public record ActivityEntryResponse(long timestampEpochMillis, String action, String targetId) {
+    }
+
+    /** Body for {@code POST /webhooks} - {@code eventTypes} names which event types (e.g. {@code "FILE_UPLOADED"}) this subscription receives. */
+    public record RegisterWebhookRequest(String url, java.util.List<String> eventTypes) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /webhooks} response array - a registered webhook
+     * subscription, without its secret (only ever handed back once, at creation - see {@link
+     * WebhookSubscriptionCreatedResponse}).
+     */
+    public record WebhookSubscriptionSummaryResponse(String id, String url, java.util.Set<String> eventTypes, long createdAtEpochMillis) {
+    }
+
+    /**
+     * Shape of the object {@code POST /webhooks} returns on success - the same fields as {@link
+     * WebhookSubscriptionSummaryResponse} plus {@code secret}, the value used to sign every
+     * delivery's {@code X-Webhook-Signature} header. Shown only this once; store it immediately,
+     * since no later call ever returns it again.
+     */
+    public record WebhookSubscriptionCreatedResponse(String id, String url, java.util.Set<String> eventTypes, String secret, long createdAtEpochMillis) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /webhooks/deliveries} response array - one attempt to
+     * deliver one event to one subscription, successful or not.
+     */
+    public record WebhookDeliveryAttemptResponse(String webhookId, String eventType, String targetId, long attemptedAtEpochMillis,
+                                                  int attemptNumber, boolean succeeded, Integer responseStatusCode) {
     }
 
 }

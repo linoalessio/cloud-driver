@@ -4,7 +4,7 @@ import de.lino.cloud.api.factory.service.IServiceContainer;
 import lombok.NonNull;
 
 /**
- * The read side of item 13 (Metrics/observability exporter) - the counterpart to {@link
+ * The read side of the metrics/observability exporter - the counterpart to {@link
  * MetricsRecorder} (the write side). Published into {@link IServiceContainer#setMetricsSnapshotProvider}
  * by {@code cloud-driver-extensions-metrics}'s {@code CloudMetricsExtension} alongside the {@link
  * MetricsRecorder} it already publishes, backed by the exact same {@code PrometheusMeterRegistry} -

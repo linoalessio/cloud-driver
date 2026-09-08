@@ -5,15 +5,14 @@ import de.lino.cloud.api.factory.service.IServiceContainer;
 import lombok.NonNull;
 
 /**
- * Item 10 (Live push via WebSocket/SSE for change notifications, {@code architecture/SERVICES.md}) -
+ * Live push via WebSocket/SSE for change notifications -
  * the vendor-agnostic contract {@link DatabaseWatchEvent#handle} pushes a change notification
  * through, once one has actually been published into {@link IServiceContainer}. Lives in
  * {@code cloud-driver-api} (not {@code cloud-driver-plugin}) for the same reason {@link
  * de.lino.cloud.api.security.keys.KeyEncryptionService}/{@link de.lino.cloud.api.security.password.PasswordHasher}
  * do: {@code DatabaseWatchEvent} runs inside {@code cloud-driver-api}'s own {@code event} package
  * and cannot depend on {@code cloud-driver-plugin} (the actual WebSocket transport, backed by
- * Javalin, lives in that module's {@code DefaultRestFactory} - see {@code CLAUDE.md}'s "Postgres
- * change notifications" section) - or Javalin at all.
+ * Javalin, lives in that module's {@code DefaultRestFactory}) - or Javalin at all.
  *
  * <p>{@code CloudRestExtension} (mirroring how it already publishes {@code AuthService}/{@code
  * CloudUserService}) publishes the real, Javalin-backed implementation into {@link

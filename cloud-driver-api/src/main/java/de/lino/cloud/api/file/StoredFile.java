@@ -58,8 +58,7 @@ import java.util.zip.Inflater;
  *
  * <p><b>Content can also be a per-account deduplication alias of another file's content - see
  * {@link #dedupOfFileId}.</b> An alias (created only by {@code CloudUserService#uploadFile} when
- * an account uploads content it already owns elsewhere - see {@code
- * architecture/MICRO.md}, section 4) carries no {@link #contentBase64}/{@link #objectStorageKey}
+ * an account uploads content it already owns elsewhere) carries no {@link #contentBase64}/{@link #objectStorageKey}
  * of its own; {@code DefaultFileFactory} resolves it the same "fetch, then {@link
  * #withResolvedContent(byte[])}" way it resolves S3-backed content.
  */
@@ -205,8 +204,8 @@ public final class StoredFile extends Serialized {
      * is read back. Set to {@link ScanStatus#PENDING} at upload time only if {@code
      * CloudUserService#uploadFile} finds a {@code ContentScanService} actually published (see
      * {@link #withScanStatus(ScanStatus)}) - left {@code null} on every other upload, matching the
-     * "must keep working with every microservice turned off" architectural constraint {@code
-     * architecture/MICRO.md} itself states.
+     * "must keep working with every microservice turned off" architectural constraint this
+     * codebase applies throughout.
      */
     private final ScanStatus scanStatus;
 

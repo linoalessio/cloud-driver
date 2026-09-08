@@ -20,9 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Read-only browser over the persisted audit trail ({@link AuditEvent}) - see {@code
- * architecture/SERVICES.md} item 11 and {@code CLAUDE.md}'s "Audit log service" section for the
- * full schema/call-site picture. Modeled on {@link StatisticsCommand}'s read-only shape - this
+ * Read-only browser over the persisted audit trail ({@link AuditEvent}). Modeled on {@link StatisticsCommand}'s read-only shape - this
  * command never writes anything, only lists what {@code AuthService}/{@code CloudUserService}
  * have already recorded via {@code AuditLogService#record}.
  */

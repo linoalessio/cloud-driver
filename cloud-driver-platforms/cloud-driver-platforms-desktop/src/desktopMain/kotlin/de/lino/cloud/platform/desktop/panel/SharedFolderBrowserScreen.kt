@@ -62,9 +62,9 @@ private fun chooseDirectory(title: String, initialDirectory: Path? = null): Path
 }
 
 /**
- * Browsing inside a folder reached via a share (item 9, added 2026-09-02 - finally implementing
- * the "browsing a shared folder's contents" extension this codebase's own docs used to describe as
- * out of scope). Reached by clicking a shared folder row in `SharedWithMeScreen`
+ * Browsing inside a folder reached via a share (added 2026-09-02 - finally implementing
+ * "browsing a shared folder's contents," previously out of scope). Reached by clicking a shared
+ * folder row in `SharedWithMeScreen`
  * ([AppViewModel.openSharedFolder]); clicking a subfolder here navigates one level deeper
  * ([AppViewModel.openSharedSubfolder]), tracked via [AppViewModel.sharedBrowseBreadcrumbs] the same
  * "current folder + breadcrumb list on the view model" shape `FileBrowserScreen` uses for the

@@ -61,7 +61,7 @@ public final class Constraints {
                           https://github.com/linoalessio/cloud-driver       \s""";
 
     /**
-     * Fixed {@code fileId} {@code CloudBootstrap} uploads {@code SECURITY_REQUIREMENTS.md}
+     * Fixed {@code fileId} {@code CloudBootstrap} uploads its startup smoke-test file
      * under on every startup - hardcoded so the upload is idempotent across restarts.
      */
     public static final UUID REQUIREMENTS_UUID = UUID.fromString("e54d8aab-cfa0-426c-b40a-1a703db293d4");
