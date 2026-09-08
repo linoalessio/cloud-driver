@@ -349,13 +349,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * flight at once - never capped in <em>total count</em>), and this codebase's own documented
      * usage (a "~2,500-file upload", folders with hundreds of entries) routinely needs well over
      * 60 write requests inside a single minute for a completely legitimate, single-account batch
-     * operation. Raised 10x, to {@code 600} - still meaningfully bounded (a genuine
-     * credential-abuse/DoS attempt against one already-authenticated account has to sustain ~10
-     * writes/second to hit it, and every write is separately gated by this account's own byte
-     * quota and content-scan pipeline regardless), but no longer throttles this app's own normal
-     * batch upload/delete/extract/duplicate flows partway through.
+     * operation. A first bump to {@code 600} (10x) still wasn't enough, confirmed the same day
+     * against a real desktop-app batch (extracting/uploading/deleting a large folder tree at
+     * {@code DEFAULT_MAX_CONCURRENT_TRANSFERS} - 8 - concurrent transfers can realistically clear
+     * several hundred small-file requests within one minute on its own) - raised again, to {@code
+     * 5000}. Deliberately generous rather than precisely tuned: unlike the {@code /auth/*} limiter
+     * (guarding genuinely cheap, anonymous-reachable, credential-guessing-prone routes), every
+     * write this class gates is already behind real, independent cost controls - a valid JWT for
+     * an existing account (see {@link #requireValidBearerToken}), that account's own upload byte
+     * quota ({@code ICloudUser#isUploadLimitReached}), and (for a file write) the content-scan
+     * pipeline - so this counter's actual job is only to catch a runaway/scripted loop, not to
+     * meaningfully constrain a real user's own bulk operations on their own data.
      */
-    private static final int DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS = 600;
+    private static final int DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS = 5000;
     /** Default {@code WRITE}-class rate-limit window, in seconds. */
     private static final long DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS = 60L;
     /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
