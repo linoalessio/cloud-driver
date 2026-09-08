@@ -1,6 +1,7 @@
 import CloudDriverSwift
 import Foundation
 import PhotosUI
+import UIKit
 // `PhotosPickerItem` (used by `uploadPickedPhotos` below) lives in PhotosUI's SwiftUI cross-import
 // overlay, which only auto-loads in a file that imports *both* `PhotosUI` and `SwiftUI` together -
 // confirmed the hard way via a real `xcodebuild` failure ("cannot find type 'PhotosPickerItem' in
@@ -198,6 +199,10 @@ final class AppViewModel: ObservableObject {
                 try await action()
             } catch is CancellationError {
                 // Cancelled deliberately (e.g. the view disappearing) - not a user-facing failure.
+            } catch APIError.server(429, _) {
+                // Auto-retrying here would just add more load right when the server asked for
+                // backoff - surface a friendly, specific message instead of the raw server text.
+                errorMessage = "Too many requests - please wait a moment and try again."
             } catch let error as APIError {
                 errorMessage = error.errorDescription
             } catch {
@@ -433,6 +438,227 @@ final class AppViewModel: ObservableObject {
             total += try await computeFolderTotalSize(subFolder.folderId)
         }
         return total
+    }
+
+    // MARK: - Search
+
+    @Published var searchResults: [SearchResultResponse] = []
+    @Published var isSearchLoading = false
+    /// `false` once a search attempt has told us this deployment isn't running the search
+    /// extension - `FileBrowserView`'s search field hides its results list in that case instead
+    /// of silently showing nothing on every keystroke.
+    @Published var isSearchAvailable = true
+
+    /// Runs a global search across every file the caller owns, debounced by the caller
+    /// (`FileBrowserView`'s `.task(id:)` on the search text) rather than here, so a fast typist
+    /// doesn't fire one request per keystroke. Deliberately not routed through `run` - a search
+    /// happening while the file browser's own listing is mid-refresh shouldn't be blocked by, or
+    /// block, that unrelated `busy` state.
+    func search(query: String) async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            isSearchLoading = false
+            return
+        }
+        isSearchLoading = true
+        defer { isSearchLoading = false }
+        do {
+            searchResults = try await client.search(query: trimmed, limit: 25)
+            isSearchAvailable = true
+        } catch APIError.server(503, _) {
+            isSearchAvailable = false
+            searchResults = []
+        } catch is CancellationError {
+            // A newer keystroke superseded this search - not a user-facing failure.
+        } catch {
+            errorMessage = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Navigates the file browser to a tapped search result's containing folder (or the root, for
+    /// a result with no `folderId`) - the same destination a normal folder-row tap would reach,
+    /// just resolved directly from the result instead of by browsing there.
+    func openSearchResult(_ result: SearchResultResponse) {
+        guard let folderId = result.folderId else {
+            goToHomeRoot()
+            return
+        }
+        guard folderId != currentFolderId else { return }
+        run {
+            self.currentFolderId = folderId
+            self.breadcrumbs = [Breadcrumb(folderId: nil, name: "Home"), Breadcrumb(folderId: folderId, name: "Search result")]
+            try await self.refreshCurrentFolder()
+        }
+    }
+
+    // MARK: - Thumbnails
+
+    /// Fetched row thumbnails, keyed by file id - net-new, mirroring cloud-driver-platforms-desktop's
+    /// own per-row thumbnail cache. `FileBrowserView` only ever asks for a visible row's thumbnail
+    /// (`List`/`ScrollView` only render on-screen rows to begin with), so no separate visibility
+    /// tracking is needed here beyond that.
+    @Published private(set) var thumbnails: [String: UIImage] = [:]
+    private var thumbnailLoadsInFlight: Set<String> = []
+    /// Files a thumbnail fetch already failed for (no thumbnail generated yet, unsupported type,
+    /// or the extension isn't running) - remembered so a row doesn't retry on every re-render.
+    private var thumbnailFailuresSeen: Set<String> = []
+
+    /// Fetches `file`'s thumbnail if it's a plausible candidate (image or PDF) and hasn't already
+    /// been fetched/failed - a no-op otherwise. Never routed through `run`; a missing thumbnail
+    /// falls back to `fileIcon(for:)`'s generic per-type glyph, so a failure here is never a
+    /// user-facing error.
+    func loadThumbnailIfNeeded(for file: StoredFileSummaryResponse) {
+        guard file.scanStatus == "CLEAN" else { return }
+        guard file.contentType.hasPrefix("image/") || file.contentType == "application/pdf" else { return }
+        guard thumbnails[file.fileId] == nil,
+              !thumbnailLoadsInFlight.contains(file.fileId),
+              !thumbnailFailuresSeen.contains(file.fileId) else { return }
+        thumbnailLoadsInFlight.insert(file.fileId)
+        Task {
+            defer { self.thumbnailLoadsInFlight.remove(file.fileId) }
+            do {
+                if let data = try await self.client.getThumbnail(fileId: file.fileId), let image = UIImage(data: data) {
+                    self.thumbnails[file.fileId] = image
+                } else {
+                    self.thumbnailFailuresSeen.insert(file.fileId)
+                }
+            } catch {
+                self.thumbnailFailuresSeen.insert(file.fileId)
+            }
+        }
+    }
+
+    // MARK: - Content scanning
+
+    /// `true` once a file's own scan has cleared it for download/preview - `PENDING`/`FLAGGED`
+    /// files disable those actions instead. Files scanned before this feature existed (or on a
+    /// deployment not running the scan extension) always report `CLEAN`, matching the server's
+    /// own "absent = CLEAN" convention.
+    func isFileAccessible(_ file: StoredFileSummaryResponse) -> Bool {
+        file.scanStatus == "CLEAN"
+    }
+
+    // MARK: - Version history
+
+    /// The file `VersionHistorySheet` is currently open for - `nil` closes it. Set from a file
+    /// row's "Version history" quick action.
+    @Published var versioningTarget: StoredFileSummaryResponse?
+    @Published var fileVersions: [FileVersionSummaryResponse] = []
+    @Published var isVersionHistoryAvailable = true
+
+    func loadFileVersions(_ file: StoredFileSummaryResponse) {
+        run {
+            do {
+                self.fileVersions = try await self.client.listFileVersions(fileId: file.fileId)
+                self.isVersionHistoryAvailable = true
+            } catch APIError.server(503, _) {
+                self.isVersionHistoryAvailable = false
+                self.fileVersions = []
+            }
+        }
+    }
+
+    func downloadFileVersion(_ file: StoredFileSummaryResponse, versionNumber: Int) {
+        run {
+            let data = try await self.client.downloadFileVersion(fileId: file.fileId, versionNumber: versionNumber)
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(UUID().uuidString)_v\(versionNumber)_\(sanitizedForLocalPath(file.fileName))")
+            try data.write(to: destination)
+            self.fileToShare = IdentifiableURL(url: destination)
+        }
+    }
+
+    func restoreFileVersion(_ file: StoredFileSummaryResponse, versionNumber: Int) {
+        run {
+            _ = try await self.client.restoreFileVersion(fileId: file.fileId, versionNumber: versionNumber)
+            try await self.refreshCurrentFolder()
+            self.versioningTarget = nil
+        }
+    }
+
+    // MARK: - Activity feed
+
+    /// The file `FileActivitySheet` is currently open for, if any - a per-file scoped feed reached
+    /// from a file row's quick-action menu, distinct from the account-wide feed folded into
+    /// `DashboardView`.
+    @Published var activityTarget: StoredFileSummaryResponse?
+    @Published var fileActivity: [ActivityEntryResponse] = []
+    @Published var isFileActivityAvailable = true
+    private var fileActivityNextCursor: String?
+    var fileActivityHasMore: Bool { fileActivityNextCursor != nil }
+
+    func presentFileActivity(_ file: StoredFileSummaryResponse) {
+        activityTarget = file
+        loadFileActivity(file)
+    }
+
+    func loadFileActivity(_ file: StoredFileSummaryResponse) {
+        run {
+            do {
+                let page = try await self.client.listFileActivity(fileId: file.fileId, cursor: nil, limit: 50)
+                self.fileActivity = page.items
+                self.fileActivityNextCursor = page.nextCursor
+                self.isFileActivityAvailable = true
+            } catch APIError.server(503, _) {
+                self.isFileActivityAvailable = false
+                self.fileActivity = []
+            }
+        }
+    }
+
+    func loadMoreFileActivity() {
+        guard let file = activityTarget, let cursor = fileActivityNextCursor else { return }
+        run {
+            let page = try await self.client.listFileActivity(fileId: file.fileId, cursor: cursor, limit: 50)
+            self.fileActivity += page.items
+            self.fileActivityNextCursor = page.nextCursor
+        }
+    }
+
+    @Published var accountActivity: [ActivityEntryResponse] = []
+    @Published var isAccountActivityAvailable = true
+    private var accountActivityNextCursor: String?
+    var accountActivityHasMore: Bool { accountActivityNextCursor != nil }
+
+    /// The account-wide feed - `DashboardView`'s own "Recent Activity" section calls this for its
+    /// first, unpaginated page; `ActivityFeedView` (reached via "View All") calls `loadMoreActivity`
+    /// to page further.
+    func loadRecentActivity() {
+        run {
+            do {
+                let page = try await self.client.listActivity(cursor: nil, limit: 10)
+                self.accountActivity = page.items
+                self.accountActivityNextCursor = page.nextCursor
+                self.isAccountActivityAvailable = true
+            } catch APIError.server(503, _) {
+                self.isAccountActivityAvailable = false
+                self.accountActivity = []
+            }
+        }
+    }
+
+    func loadFullActivity() {
+        run {
+            do {
+                let page = try await self.client.listActivity(cursor: nil, limit: 50)
+                self.accountActivity = page.items
+                self.accountActivityNextCursor = page.nextCursor
+                self.isAccountActivityAvailable = true
+            } catch APIError.server(503, _) {
+                self.isAccountActivityAvailable = false
+                self.accountActivity = []
+            }
+        }
+    }
+
+    func loadMoreActivity() {
+        guard let cursor = accountActivityNextCursor else { return }
+        run {
+            let page = try await self.client.listActivity(cursor: cursor, limit: 50)
+            self.accountActivity += page.items
+            self.accountActivityNextCursor = page.nextCursor
+        }
     }
 
     // MARK: - Shared with me
@@ -786,16 +1012,19 @@ final class AppViewModel: ObservableObject {
     /// `busy` guard (see that sheet's own doc comment for why). Attempts every item regardless of
     /// an earlier failure, then rethrows the first one encountered - the caller decides how to
     /// surface it.
-    func shareEntries(_ entries: [SelectableEntry], granteeEmail: String) async throws {
+    func shareEntries(
+        _ entries: [SelectableEntry], granteeEmail: String,
+        permissionLevel: String? = nil, expiresAtEpochMillis: Int64? = nil
+    ) async throws {
         // No ordering dependency between entries being shared - capped concurrent batch (added
         // 2026-09-05, see `runConcurrently`'s own doc comment).
         let firstError = await runConcurrently(entries, maxConcurrency: 5) { entry in
             do {
                 switch entry {
                 case .file(let file):
-                    try await self.client.shareFile(fileId: file.fileId, granteeEmail: granteeEmail)
+                    try await self.client.shareFile(fileId: file.fileId, granteeEmail: granteeEmail, permissionLevel: permissionLevel, expiresAtEpochMillis: expiresAtEpochMillis)
                 case .folder(let folder):
-                    try await self.client.shareFolder(folderId: folder.folderId, granteeEmail: granteeEmail)
+                    try await self.client.shareFolder(folderId: folder.folderId, granteeEmail: granteeEmail, permissionLevel: permissionLevel, expiresAtEpochMillis: expiresAtEpochMillis)
                 }
                 return nil
             } catch {
@@ -803,6 +1032,14 @@ final class AppViewModel: ObservableObject {
             }
         }
         if let firstError { throw firstError }
+    }
+
+    /// The full, externally-reachable URL for a public file link - the server response only ever
+    /// carries the bare token, since the server has no reliable way to know its own
+    /// externally-facing base URL (a reverse proxy/CDN may front it under a different host).
+    /// Built from the same base URL `APIClient.shared` itself talks to.
+    func publicLinkURL(token: String) -> String {
+        "https://api.cloud-driver.de/public/files/\(token)"
     }
 
     /// `url` is a security-scoped URL handed back by `.fileImporter` - see `uploadFileStreaming`

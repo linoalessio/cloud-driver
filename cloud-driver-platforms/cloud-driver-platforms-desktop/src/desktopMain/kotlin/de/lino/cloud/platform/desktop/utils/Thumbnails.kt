@@ -12,16 +12,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
-import java.nio.file.Files
+import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 
 /**
- * Source-image size ceiling above which [rememberThumbnail] falls back to the generic [iconFor]
- * icon instead of downloading the whole file - there is no thumbnail endpoint server-side, so a
- * real thumbnail always means fetching the file's full content; a 20dp row icon has no business
- * paying for a multi-hundred-MB download to do that.
+ * Content types the server's own thumbnail-generation extension actually supports (JPEG/PNG
+ * images, a PDF's rendered first page) - anything else is never worth a round trip, since
+ * `GET /files/{id}/thumbnail` would just 404 for it. Video thumbnails aren't generated server-side
+ * yet, per that extension's own documented v1 scope.
  */
-private const val MAX_THUMBNAIL_SOURCE_BYTES = 20L * 1024 * 1024
+private val THUMBNAILABLE_CONTENT_TYPES = setOf("image/jpeg", "image/png", "application/pdf")
 
 /**
  * Longest edge, in pixels, a decoded thumbnail is downscaled to before being cached - generous
@@ -38,28 +38,24 @@ private const val THUMBNAIL_TARGET_SIZE_PX = 96
  */
 private const val MAX_CACHED_THUMBNAILS = 300
 
-/** Whether [entry] is a candidate for a real thumbnail (an image, under [MAX_THUMBNAIL_SOURCE_BYTES]) rather than a generic type icon. */
+/** Whether [entry] is a candidate for a real, server-generated thumbnail rather than a generic type icon. */
 fun isThumbnailable(entry: Entry): Boolean =
-    entry is Entry.FileEntry &&
-        entry.summary.contentType()?.lowercase()?.startsWith("image/") == true &&
-        entry.sizeBytes <= MAX_THUMBNAIL_SOURCE_BYTES
+    entry is Entry.FileEntry && entry.summary.contentType()?.lowercase() in THUMBNAILABLE_CONTENT_TYPES
 
 /**
  * Process-wide, in-memory thumbnail cache keyed by file id - a Compose snapshot-state map, so a
  * row observing it recomposes the moment its own thumbnail finishes loading. [failed] remembers a
- * decode/download failure so a broken image isn't re-fetched on every recomposition/re-visit.
+ * fetch/decode failure (including a `404`/`503` - no thumbnail generated yet, or the thumbnails
+ * extension not running on this deployment) so it isn't retried on every recomposition/re-visit.
  *
- * **Bounded and downscaled (fixed a real bug, 2026-09-05).** Previously cached the decoded image
- * at full source resolution (up to [MAX_THUMBNAIL_SOURCE_BYTES]) with no eviction at all - a
- * session that scrolled through a few thousand photos accumulated that many full-size decoded
- * bitmaps in heap indefinitely, risking an `OutOfMemoryError`. Every bitmap is now downscaled to
- * [THUMBNAIL_TARGET_SIZE_PX] before being stored (see [downscaleForThumbnail]), and [recordAccess]
- * bounds the cache to [MAX_CACHED_THUMBNAILS] entries via a private [LinkedHashMap]-backed LRU
- * tracker (access-ordered, evicting the least-recently-added key once the cap is exceeded) - a
- * plain, non-Compose-state structure, since it exists purely to decide what to evict, never to
- * drive recomposition itself. [recordAccess] is `@Synchronized` since [rememberThumbnail]'s
- * callers can invoke it concurrently from more than one background `Dispatchers.IO` thread (one
- * per currently-loading row), and a plain [LinkedHashMap] isn't safe under concurrent mutation.
+ * Bounded and downscaled: every bitmap is downscaled to [THUMBNAIL_TARGET_SIZE_PX] before being
+ * stored (see [downscaleForThumbnail]), and [recordAccess] bounds the cache to
+ * [MAX_CACHED_THUMBNAILS] entries via a private [LinkedHashMap]-backed LRU tracker (access-ordered,
+ * evicting the least-recently-added key once the cap is exceeded) - a plain, non-Compose-state
+ * structure, since it exists purely to decide what to evict, never to drive recomposition itself.
+ * [recordAccess] is `@Synchronized` since [rememberThumbnail]'s callers can invoke it concurrently
+ * from more than one background `Dispatchers.IO` thread (one per currently-loading row), and a
+ * plain [LinkedHashMap] isn't safe under concurrent mutation.
  */
 private object ThumbnailCache {
     val bitmaps = mutableStateMapOf<String, ImageBitmap>()
@@ -109,13 +105,17 @@ private fun downscaleForThumbnail(source: BufferedImage, maxDimensionPx: Int): B
 }
 
 /**
- * Resolves [entry]'s thumbnail if it's [isThumbnailable], triggering a background download+decode
- * on first use and caching the downscaled result process-wide in [ThumbnailCache] - a later
+ * Resolves [entry]'s thumbnail if it's [isThumbnailable], triggering a background fetch+decode on
+ * first use and caching the downscaled result process-wide in [ThumbnailCache] - a later
  * recomposition (or re-visiting the same folder) reuses the cached bitmap with no repeat network
- * call. Returns `null` while not yet loaded, not applicable, or on a failed decode - the caller
- * falls back to [iconFor] in that case. Downloads via [CloudDriverClient.downloadFileToPath]
- * (streamed to a throwaway temp file, never buffered as a whole HTTP response) rather than the
- * JSON+base64 route, matching this app's other file transfers.
+ * call. Returns `null` while not yet loaded, not applicable, or on a failed fetch/decode - the
+ * caller falls back to [iconFor] in that case.
+ *
+ * Fetches the server's own pre-generated, small JPEG thumbnail via
+ * [CloudDriverClient.getThumbnail] rather than downloading the whole file and decoding it
+ * client-side (the previous workaround, before a dedicated thumbnail-generation extension
+ * existed) - cheaper (a small, already-downscaled JPEG instead of the file's full original
+ * content) and works for a PDF's rendered first page too, not just images.
  */
 @Composable
 fun rememberThumbnail(entry: Entry, client: CloudDriverClient): ImageBitmap? {
@@ -126,22 +126,15 @@ fun rememberThumbnail(entry: Entry, client: CloudDriverClient): ImageBitmap? {
         if (ThumbnailCache.bitmaps.containsKey(fileId) || ThumbnailCache.failed.containsKey(fileId)) return@LaunchedEffect
         try {
             withContext(Dispatchers.IO) {
-                val tempDir = Files.createTempDirectory("cloud-driver-thumbnail")
-                val tempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
-                try {
-                    client.downloadFileToPath(fileId, tempFile)
-                    val bufferedImage = ImageIO.read(tempFile.toFile())
-                    if (bufferedImage != null) {
-                        val thumbnail = downscaleForThumbnail(bufferedImage, THUMBNAIL_TARGET_SIZE_PX)
-                        ThumbnailCache.bitmaps[fileId] = thumbnail.toComposeImageBitmap()
-                    } else {
-                        ThumbnailCache.failed[fileId] = true
-                    }
-                    ThumbnailCache.recordAccess(fileId)
-                } finally {
-                    Files.deleteIfExists(tempFile)
-                    Files.deleteIfExists(tempDir)
+                val thumbnailBytes = client.getThumbnail(fileId)
+                val bufferedImage = thumbnailBytes?.let { ImageIO.read(ByteArrayInputStream(it)) }
+                if (bufferedImage != null) {
+                    val thumbnail = downscaleForThumbnail(bufferedImage, THUMBNAIL_TARGET_SIZE_PX)
+                    ThumbnailCache.bitmaps[fileId] = thumbnail.toComposeImageBitmap()
+                } else {
+                    ThumbnailCache.failed[fileId] = true
                 }
+                ThumbnailCache.recordAccess(fileId)
             }
         } catch (e: CancellationException) {
             throw e

@@ -61,6 +61,41 @@ struct DashboardView: View {
                         }
 
                         CloudCard(
+                            icon: "list.bullet.rectangle",
+                            iconColor: CloudTheme.accent,
+                            title: "Recent Activity"
+                        ) {
+                            VStack(spacing: 0) {
+                                if !viewModel.isAccountActivityAvailable {
+                                    Text("Not available on this server")
+                                        .foregroundStyle(CloudTheme.textSecondary)
+                                        .padding(16)
+                                } else if viewModel.accountActivity.isEmpty {
+                                    Text(viewModel.busy ? "Loading\u{2026}" : "No activity yet.")
+                                        .foregroundStyle(CloudTheme.textSecondary)
+                                        .padding(16)
+                                } else {
+                                    ForEach(Array(viewModel.accountActivity.prefix(5).enumerated()), id: \.element.id) { index, entry in
+                                        ActivityRow(entry: entry, showDivider: true)
+                                    }
+                                }
+                                NavigationLink {
+                                    ActivityFeedView(viewModel: viewModel)
+                                } label: {
+                                    HStack {
+                                        Text("View All")
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption)
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 11)
+                                }
+                                .foregroundStyle(CloudTheme.accent)
+                            }
+                        }
+
+                        CloudCard(
                             icon: "gearshape.fill",
                             iconColor: CloudTheme.iconAdmin,
                             title: "Account Settings"
@@ -116,6 +151,7 @@ struct DashboardView: View {
         }
         .task {
             viewModel.loadAccountInfo()
+            viewModel.loadRecentActivity()
         }
         .sheet(isPresented: $showingChangeEmail) {
             ChangeEmailSheet(viewModel: viewModel)

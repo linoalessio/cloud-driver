@@ -10,6 +10,7 @@
 		04F54EC65B32136532FF90FF /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16ED61AD9CEBE4BE9FD1A15 /* FilePreviewView.swift */; };
 		12B0D95060CA9D9E7A649EDD /* CloudDriverSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 43DBF2A825D5B79E44C19DDB /* CloudDriverSwift */; };
 		14DBB07F56E0BE219BEA89AC /* SharedFolderBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA51FDC6F590C59BBF2A8F9 /* SharedFolderBrowserView.swift */; };
+		19F1F313F32651D5B71395F3 /* VersionHistorySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CDEA069799A58B6F43CAB2 /* VersionHistorySheet.swift */; };
 		19FEB89901626E0643F5BB3A /* QuickActionMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */; };
 		224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */; };
 		2B6088C28C2BB2A4AAC66F82 /* FolderColorPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */; };
@@ -26,6 +27,7 @@
 		87EAD1EBB497CB4D9D456F78 /* AuthScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */; };
 		9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E4109F19145B980EE9E021 /* FileIcons.swift */; };
 		B30F9AB753AF1DF2A00562C2 /* ByteFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */; };
+		BF044CFC9B64B554FFEA8C2E /* ActivityFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595D54B461940D2A9FFD454E /* ActivityFeedView.swift */; };
 		C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28674A06893A4308FF4A0528 /* FileBrowserView.swift */; };
 		CF6B22CC1F82E87D9F1AFBEA /* Concurrency.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */; };
 		D05BF570922EC998A3048616 /* TrashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278F4310AD868CB0DBDA9118 /* TrashView.swift */; };
@@ -39,7 +41,7 @@
 /* Begin PBXFileReference section */
 		1B94506B9257E25501BB2203 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderColorPickerSheet.swift; sourceTree = "<group>"; };
-		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		278F4310AD868CB0DBDA9118 /* TrashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashView.swift; sourceTree = "<group>"; };
 		28674A06893A4308FF4A0528 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
 		2DF2FDAC649212A535D0C68B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
@@ -48,6 +50,7 @@
 		35DACC1275AEE035A69C9738 /* Sorting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sorting.swift; sourceTree = "<group>"; };
 		38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedWithMeView.swift; sourceTree = "<group>"; };
 		436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		595D54B461940D2A9FFD454E /* ActivityFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityFeedView.swift; sourceTree = "<group>"; };
 		5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriverMobileApp.swift; sourceTree = "<group>"; };
 		638C74856A457BF0C68E3920 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangeEmailSheet.swift; sourceTree = "<group>"; };
@@ -60,6 +63,7 @@
 		B16ED61AD9CEBE4BE9FD1A15 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		B1E4109F19145B980EE9E021 /* FileIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIcons.swift; sourceTree = "<group>"; };
 		B8CAB6D77147ACDBCFAFEA2E /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		C1CDEA069799A58B6F43CAB2 /* VersionHistorySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionHistorySheet.swift; sourceTree = "<group>"; };
 		CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthScreens.swift; sourceTree = "<group>"; };
 		CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Concurrency.swift; sourceTree = "<group>"; };
 		EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ByteFormat.swift; sourceTree = "<group>"; };
@@ -99,6 +103,7 @@
 		BD9D67EF7D3037B23B5EF1B9 /* Screens */ = {
 			isa = PBXGroup;
 			children = (
+				595D54B461940D2A9FFD454E /* ActivityFeedView.swift */,
 				2DF2FDAC649212A535D0C68B /* ActivityView.swift */,
 				CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */,
 				72A96779F874DC966E72C447 /* ChangeEmailSheet.swift */,
@@ -112,6 +117,7 @@
 				38D18CC97CFBFE41E6018BE6 /* SharedWithMeView.swift */,
 				436EC38D24DE5E8F1A6FF5F4 /* ShareSheet.swift */,
 				278F4310AD868CB0DBDA9118 /* TrashView.swift */,
+				C1CDEA069799A58B6F43CAB2 /* VersionHistorySheet.swift */,
 			);
 			path = Screens;
 			sourceTree = "<group>";
@@ -184,6 +190,8 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = 4907A71CA8D7D2066C42706E /* Build configuration list for PBXProject "CloudDriverMobile" */;
 			developmentRegion = en;
@@ -224,6 +232,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BF044CFC9B64B554FFEA8C2E /* ActivityFeedView.swift in Sources */,
 				72281DEF3814D91092BB3429 /* ActivityView.swift in Sources */,
 				EDDC1C50E9F78F4D28B33A0B /* AppViewModel.swift in Sources */,
 				224006F424A88C082AD28337 /* ArchiveSupport.swift in Sources */,
@@ -248,6 +257,7 @@
 				43D0FE4C278A993FCEE75F8C /* Sorting.swift in Sources */,
 				61CE03AB73C3F45B89F95D67 /* Theme.swift in Sources */,
 				D05BF570922EC998A3048616 /* TrashView.swift in Sources */,
+				19F1F313F32651D5B71395F3 /* VersionHistorySheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,7 +328,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
@@ -343,7 +352,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";

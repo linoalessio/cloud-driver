@@ -540,7 +540,14 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
                 // swallowing it here would break this coroutine's cooperative cancellation.
                 throw e
             } catch (e: ApiClient.ApiException) {
-                this@AppViewModel.errorMessage = e.message ?: "Request failed"
+                // A 429 means the server itself asked for backoff - never auto-retried (that would
+                // risk amplifying load right when the server asked for less of it); just show a
+                // friendly, specific message instead of the raw server text.
+                this@AppViewModel.errorMessage = if (e.statusCode() == 429) {
+                    "Too many requests — please wait a moment and try again"
+                } else {
+                    e.message ?: "Request failed"
+                }
             } catch (e: Exception) {
                 this@AppViewModel.errorMessage = e.message ?: e.toString()
             } finally {
@@ -658,6 +665,9 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.adminAuditLog.clear()
         this.adminAuditLogShowAll = false
         this.adminMetrics = null
+        this.searchOverlayOpen = false
+        this.searchQuery = ""
+        this.searchResults.clear()
         this.screen = Screen.Login
     }
 
@@ -856,6 +866,101 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
             throw e
         } catch (e: Exception) {
             null // metrics extension not running, or fetch failed - must never fail the rest of this panel
+        }
+    }
+
+    // --- activity feed -----------------------------------------------------
+
+    fun showActivity() {
+        this.screen = Screen.Activity
+        this.errorMessage = null
+    }
+
+    // --- webhooks (desktop-only) --------------------------------------------
+
+    fun showWebhooks() {
+        this.screen = Screen.Webhooks
+        this.errorMessage = null
+    }
+
+    // --- search ----------------------------------------------------------
+
+    /** The caller's current search query - `null`/blank means the search overlay isn't active. */
+    var searchQuery: String by mutableStateOf("")
+        private set
+
+    val searchResults = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse>()
+
+    /** `true` while a search overlay is open (see `FileBrowserScreen`'s toolbar search icon) - independent of [busy], since typing into the field shouldn't disable the rest of the screen. */
+    var searchOverlayOpen: Boolean by mutableStateOf(false)
+        private set
+
+    var searchInFlight: Boolean by mutableStateOf(false)
+        private set
+
+    var searchUnavailable: Boolean by mutableStateOf(false)
+        private set
+
+    fun openSearchOverlay() {
+        this.searchOverlayOpen = true
+    }
+
+    fun closeSearchOverlay() {
+        this.searchOverlayOpen = false
+        this.searchQuery = ""
+        this.searchResults.clear()
+    }
+
+    /**
+     * Updates [searchQuery] and, once the caller has stopped typing for a short debounce window
+     * (see `FileBrowserScreen`'s own [EMAIL_CHECK_DEBOUNCE_MILLIS] precedent for the same idea),
+     * fires the actual search - deliberately not routed through [run] (a search overlay shouldn't
+     * disable the rest of the screen the way a full action does); [searchInFlight] drives its own,
+     * narrower loading indicator instead. A `503` (the search extension not running on this
+     * deployment) is surfaced via [searchUnavailable] rather than [errorMessage], so the overlay
+     * can show a dedicated "search isn't available on this server" message.
+     */
+    fun updateSearchQuery(query: String) {
+        this.searchQuery = query
+        this.scope.launch {
+            kotlinx.coroutines.delay(400)
+            if (this@AppViewModel.searchQuery != query) return@launch // superseded by a later keystroke
+            val trimmed = query.trim()
+            if (trimmed.isEmpty()) {
+                this@AppViewModel.searchResults.clear()
+                return@launch
+            }
+            this@AppViewModel.searchInFlight = true
+            this@AppViewModel.searchUnavailable = false
+            try {
+                val results = this@AppViewModel.client.search(trimmed)
+                if (this@AppViewModel.searchQuery == query) {
+                    this@AppViewModel.searchResults.clear()
+                    this@AppViewModel.searchResults.addAll(results)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ApiClient.ApiException) {
+                if (e.statusCode() == 503) this@AppViewModel.searchUnavailable = true
+            } catch (e: Exception) {
+                // Best-effort - a failed search just leaves the previous results showing.
+            } finally {
+                this@AppViewModel.searchInFlight = false
+            }
+        }
+    }
+
+    /** Navigates to a search result's containing folder (root if `null`) and closes the search overlay - the result itself isn't flashed/selected, opening the right folder is enough to find it. */
+    fun openSearchResult(result: de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse) {
+        this.closeSearchOverlay()
+        val folderId = result.folderId()
+        if (folderId == null) {
+            this.navigateToBreadcrumb(-1)
+        } else {
+            this.screen = Screen.Browser
+            this.breadcrumbs.clear()
+            this.currentFolderId = folderId
+            this.loadCurrentFolder()
         }
     }
 

@@ -34,4 +34,10 @@ sealed interface Screen {
 
     /** After login: read-only admin panel (registered accounts + audit trail) - only reachable while [AppViewModel.currentUserIsAdmin]. */
     data object Admin : Screen
+
+    /** After login: the global activity feed - every recorded action across every file/folder the caller can see. */
+    data object Activity : Screen
+
+    /** After login: manage registered webhook subscriptions and view recent delivery attempts. */
+    data object Webhooks : Screen
 }

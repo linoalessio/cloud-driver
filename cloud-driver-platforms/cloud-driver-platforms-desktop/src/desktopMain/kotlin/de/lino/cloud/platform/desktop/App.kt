@@ -11,12 +11,14 @@ import de.lino.cloud.platform.desktop.auth.RegisterScreen
 import de.lino.cloud.platform.desktop.auth.ResetPasswordConfirmScreen
 import de.lino.cloud.platform.desktop.auth.ResetPasswordRequestScreen
 import de.lino.cloud.platform.desktop.model.Screen
+import de.lino.cloud.platform.desktop.panel.ActivityFeedScreen
 import de.lino.cloud.platform.desktop.panel.AdminScreen
 import de.lino.cloud.platform.desktop.panel.DashboardScreen
 import de.lino.cloud.platform.desktop.panel.FileBrowserScreen
 import de.lino.cloud.platform.desktop.panel.SharedFolderBrowserScreen
 import de.lino.cloud.platform.desktop.panel.SharedWithMeScreen
 import de.lino.cloud.platform.desktop.panel.TrashScreen
+import de.lino.cloud.platform.desktop.panel.WebhooksScreen
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 
 /**
@@ -46,6 +48,8 @@ fun App(viewModel: AppViewModel) {
             Screen.SharedWithMe -> SharedWithMeScreen(viewModel)
             Screen.SharedFolderBrowser -> SharedFolderBrowserScreen(viewModel)
             Screen.Admin -> AdminScreen(viewModel)
+            Screen.Activity -> ActivityFeedScreen(viewModel)
+            Screen.Webhooks -> WebhooksScreen(viewModel)
         }
     }
 }

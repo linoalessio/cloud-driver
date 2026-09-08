@@ -176,23 +176,35 @@ struct CloudRow<Trailing: View>: View {
     let title: String
     var subtitle: String? = nil
     var showDivider = true
+    /// A real image (e.g. a fetched thumbnail) to show in place of `icon`'s SF Symbol - `nil`
+    /// (the default) preserves every existing call site's plain-glyph rendering unchanged.
+    var thumbnail: Image? = nil
     let trailing: Trailing
 
-    init(icon: String, iconColor: Color, title: String, subtitle: String? = nil, showDivider: Bool = true, @ViewBuilder trailing: () -> Trailing) {
+    init(icon: String, iconColor: Color, title: String, subtitle: String? = nil, showDivider: Bool = true, thumbnail: Image? = nil, @ViewBuilder trailing: () -> Trailing) {
         self.icon = icon
         self.iconColor = iconColor
         self.title = title
         self.subtitle = subtitle
         self.showDivider = showDivider
+        self.thumbnail = thumbnail
         self.trailing = trailing()
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-                    .frame(width: 20)
+                if let thumbnail {
+                    thumbnail
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 28, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                } else {
+                    Image(systemName: icon)
+                        .foregroundStyle(iconColor)
+                        .frame(width: 20)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .foregroundStyle(CloudTheme.textPrimary)

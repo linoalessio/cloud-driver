@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,12 +38,17 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -126,6 +132,54 @@ private const val DOUBLE_CLICK_THRESHOLD_MILLIS = 400L
 
 /** How long `ShareDialog` waits after the last keystroke in its grantee-email field before firing a live existence check - avoids a network round trip on every keystroke. */
 private const val EMAIL_CHECK_DEBOUNCE_MILLIS = 400L
+
+/**
+ * Fixed expiry choices offered by `ShareDialog` for both a share grant and a public link, rather
+ * than a full date/time picker - matches the low-friction feel of the rest of this app's dialogs.
+ * [epochMillisFrom] resolves a choice against the current wall-clock time at the moment it's used
+ * (not when the enum constant was declared), so [NEVER] is the only one with no expiry at all.
+ */
+private enum class ExpiryPreset(val label: String, private val durationMillis: Long?) {
+    NEVER("Never", null),
+    ONE_DAY("1 day", 24L * 60 * 60 * 1000),
+    SEVEN_DAYS("7 days", 7L * 24 * 60 * 60 * 1000),
+    THIRTY_DAYS("30 days", 30L * 24 * 60 * 60 * 1000);
+
+    fun epochMillisFrom(nowEpochMillis: Long): Long? = this.durationMillis?.let { nowEpochMillis + it }
+}
+
+/** A small "View"/"Edit" dropdown selector, reused by `ShareDialog` for the permission granted alongside a new share. */
+@Composable
+private fun PermissionDropdown(selected: String, onSelect: (String) -> Unit, enabled: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+            Text(if (selected == "EDIT") "Edit" else "View")
+            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("View") }, onClick = { onSelect("VIEW"); expanded = false })
+            DropdownMenuItem(text = { Text("Edit") }, onClick = { onSelect("EDIT"); expanded = false })
+        }
+    }
+}
+
+/** A small expiry-preset dropdown selector, reused by `ShareDialog` for both a share grant's and a public link's expiry. */
+@Composable
+private fun ExpiryDropdown(selected: ExpiryPreset, onSelect: (ExpiryPreset) -> Unit, enabled: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+            Text(selected.label)
+            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            for (preset in ExpiryPreset.entries) {
+                DropdownMenuItem(text = { Text(preset.label) }, onClick = { onSelect(preset); expanded = false })
+            }
+        }
+    }
+}
 
 /**
  * The header's current-location display: a clickable "Home / Folder1 / Folder2" trail mirroring
@@ -221,6 +275,12 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     // AuthenticatedShell's content" shape as moveDialogEntry above, for the same reason.
     var previewEntry by remember { mutableStateOf<Entry.FileEntry?>(null) }
 
+    // The file a context-menu "Version history" was requested for, if any - drives VersionHistoryDialog.
+    var versionHistoryEntry by remember { mutableStateOf<Entry.FileEntry?>(null) }
+
+    // The entry a context-menu "Activity" was requested for, if any - drives EntryActivityDialog.
+    var activityDialogEntry by remember { mutableStateOf<Entry?>(null) }
+
     // Whether an OS-level drag (from Finder/Explorer) is currently hovering this screen - drives
     // the highlighted drop-zone overlay below. Purely local, transient UI-gesture state, same
     // reasoning FileBrowserScreen's own in-app drag state (draggedEntries/hoveredFolderId) is kept
@@ -311,6 +371,15 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 UploadMenuButton(viewModel)
 
                 SortMenuButton(viewModel)
+
+                // Opens a small overlay to search every file the caller owns by name/content,
+                // always global rather than scoped to the current folder - matching the server
+                // route's own always-global scope, so there's nothing to narrow client-side.
+                OutlinedButton(onClick = { viewModel.openSearchOverlay() }, enabled = !viewModel.busy) {
+                    Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Search")
+                }
 
                 // Only shown once something is selected - an empty toolbar slot for an action
                 // with nothing to act on just adds visual noise, per this app's own spec. Bundled
@@ -432,6 +501,8 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
                         onShareRequest = { shareDialogEntry = entry },
                         onSetColorRequest = { if (entry is Entry.FolderEntry) colorPickerEntry = entry },
+                        onVersionHistoryRequest = { if (entry is Entry.FileEntry) versionHistoryEntry = entry },
+                        onActivityRequest = { activityDialogEntry = entry },
                     )
                 }
                 // Explicit "Load more" rather than auto-loading on scroll - a large folder's next
@@ -502,6 +573,78 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     previewEntry?.let { entry ->
         FilePreviewDialog(entry = entry, client = viewModel.client, onDismiss = { previewEntry = null })
     }
+
+    versionHistoryEntry?.let { entry ->
+        VersionHistoryDialog(viewModel = viewModel, entry = entry, onDismiss = { versionHistoryEntry = null })
+    }
+
+    activityDialogEntry?.let { entry ->
+        EntryActivityDialog(viewModel = viewModel, entry = entry, onDismiss = { activityDialogEntry = null })
+    }
+
+    if (viewModel.searchOverlayOpen) {
+        SearchDialog(viewModel = viewModel, onDismiss = { viewModel.closeSearchOverlay() })
+    }
+}
+
+/**
+ * The toolbar's "Search" overlay - always global (every file the caller owns, not scoped to the
+ * current folder, matching the server route's own scope), debounced ~400ms after the last
+ * keystroke (see [AppViewModel.updateSearchQuery]) so a network call doesn't fire on every
+ * keystroke. Clicking a result navigates straight to its containing folder and closes the overlay.
+ */
+@Composable
+private fun SearchDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Search") },
+        text = {
+            Column(Modifier.fillMaxWidth().height(360.dp)) {
+                OutlinedTextField(
+                    value = viewModel.searchQuery,
+                    onValueChange = { viewModel.updateSearchQuery(it) },
+                    label = { Text("File name or content") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    trailingIcon = { if (viewModel.searchInFlight) CircularProgressIndicator(modifier = Modifier.size(18.dp)) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                when {
+                    viewModel.searchUnavailable -> Text("Search isn't available on this server.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    viewModel.searchQuery.isBlank() -> Text("Type to search every file you own.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    viewModel.searchResults.isEmpty() && !viewModel.searchInFlight -> Text("No matches.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else -> {
+                        LazyColumn(Modifier.weight(1f)) {
+                            items(viewModel.searchResults, key = { it.storedFileId() }) { result ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.openSearchResult(result) }
+                                        .padding(vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(result.fileName())
+                                        Text(
+                                            result.folderId()?.let { "In a folder" } ?: "In Home",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+    )
 }
 
 /**
@@ -775,6 +918,69 @@ private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> 
     var emailInput by remember { mutableStateOf("") }
     var actionInFlight by remember { mutableStateOf(false) }
 
+    // Permission granted alongside a new share ("VIEW"/"EDIT") and its optional expiry - "EDIT"
+    // only ever grants the server-side ability to replace the file's own content directly (see
+    // CloudDriverClient.shareFile's own Javadoc); this app has no in-app "edit a shared file"
+    // action of its own, so EDIT is offered purely as a grant option for a caller with their own
+    // tooling, deliberately not paired with any editing UI here.
+    var permissionLevel by remember { mutableStateOf("VIEW") }
+    var shareExpiryPreset by remember { mutableStateOf(ExpiryPreset.NEVER) }
+
+    // Public-link state - file-only (the server has no folder public-link route), so this whole
+    // section is skipped entirely for a folder entry.
+    var publicLinks by remember { mutableStateOf<List<de.lino.cloud.platform.rest.api.dto.Dtos.PublicFileLinkSummaryResponse>>(emptyList()) }
+    var publicLinksLoading by remember { mutableStateOf(entry is Entry.FileEntry) }
+    var publicLinkExpiryPreset by remember { mutableStateOf(ExpiryPreset.NEVER) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    suspend fun reloadPublicLinks() {
+        if (entry !is Entry.FileEntry) return
+        publicLinksLoading = true
+        try {
+            publicLinks = viewModel.client.listPublicFileLinks(entry.id)
+        } catch (e: Exception) {
+            // Best-effort - a failed fetch just leaves the section showing "none yet" rather than
+            // failing the whole dialog, since the sharing half above is the primary function here.
+        } finally {
+            publicLinksLoading = false
+        }
+    }
+
+    LaunchedEffect(entry.id) { reloadPublicLinks() }
+
+    fun createPublicLink() {
+        if (entry !is Entry.FileEntry || actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                val expiresAt = publicLinkExpiryPreset.epochMillisFrom(System.currentTimeMillis())
+                viewModel.client.createPublicFileLink(entry.id, expiresAt)
+                reloadPublicLinks()
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to create public link"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    fun revokePublicLink(token: String) {
+        if (entry !is Entry.FileEntry || actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                viewModel.client.revokePublicFileLink(entry.id, token)
+                reloadPublicLinks()
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to revoke public link"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    fun publicUrlFor(token: String): String = viewModel.client.apiClient.apiBaseUrl().resolve("/public/files/$token").toString()
+
     // Live existence check for the typed grantee address, debounced so it doesn't fire a network
     // call on every keystroke - null means "unknown/still checking", true/false once resolved.
     // Keyed on the trimmed email so pure whitespace edits don't restart the debounce.
@@ -824,9 +1030,10 @@ private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> 
         actionInFlight = true
         scope.launch {
             try {
+                val expiresAt = shareExpiryPreset.epochMillisFrom(System.currentTimeMillis())
                 when (entry) {
-                    is Entry.FileEntry -> viewModel.client.shareFile(entry.id, email)
-                    is Entry.FolderEntry -> viewModel.client.shareFolder(entry.id, email)
+                    is Entry.FileEntry -> viewModel.client.shareFile(entry.id, email, permissionLevel, expiresAt)
+                    is Entry.FolderEntry -> viewModel.client.shareFolder(entry.id, email, permissionLevel, expiresAt)
                 }
                 emailInput = ""
                 checkedEmail = ""
@@ -869,7 +1076,7 @@ private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> 
         onDismissRequest = onDismiss,
         title = { Text("Share \"${entry.name}\"") },
         text = {
-            Column(Modifier.fillMaxWidth().height(340.dp)) {
+            Column(Modifier.fillMaxWidth().height(520.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = emailInput,
@@ -894,6 +1101,12 @@ private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> 
                     )
                 }
 
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PermissionDropdown(selected = permissionLevel, onSelect = { permissionLevel = it }, enabled = !actionInFlight)
+                    ExpiryDropdown(selected = shareExpiryPreset, onSelect = { shareExpiryPreset = it }, enabled = !actionInFlight)
+                }
+
                 Spacer(Modifier.height(16.dp))
                 Text("Currently shared with", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
@@ -903,15 +1116,258 @@ private fun ShareDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> 
                     dialogError != null -> Text(dialogError!!, color = MaterialTheme.colorScheme.error)
                     currentShares.isEmpty() -> Text("Not shared with anyone yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     else -> {
+                        Column(Modifier.heightIn(max = 140.dp)) {
+                            LazyColumn {
+                                items(currentShares, key = { it }) { email ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(email, modifier = Modifier.weight(1f))
+                                        IconButton(onClick = { revoke(email) }, enabled = !actionInFlight) {
+                                            Icon(Icons.Filled.PersonRemove, contentDescription = "Revoke", tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Public links are a file-only capability - the server has no equivalent route
+                // for a folder, so this whole section simply doesn't render for one.
+                if (entry is Entry.FileEntry) {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Public link", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        ExpiryDropdown(selected = publicLinkExpiryPreset, onSelect = { publicLinkExpiryPreset = it }, enabled = !actionInFlight)
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(onClick = ::createPublicLink, enabled = !actionInFlight) {
+                            Text("Create link")
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    when {
+                        publicLinksLoading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        publicLinks.isEmpty() -> Text("No public links yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else -> {
+                            Column(Modifier.heightIn(max = 140.dp)) {
+                                LazyColumn {
+                                    items(publicLinks, key = { it.token() }) { link ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text(publicUrlFor(link.token()), style = MaterialTheme.typography.bodySmall)
+                                                Text(
+                                                    if (link.expiresAtEpochMillis() == null) "Never expires" else "Expires ${formatEpochMilli(link.expiresAtEpochMillis()!!)}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                            IconButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(publicUrlFor(link.token()))) }) {
+                                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy link")
+                                            }
+                                            IconButton(onClick = { revokePublicLink(link.token()) }, enabled = !actionInFlight) {
+                                                Icon(Icons.Filled.PersonRemove, contentDescription = "Revoke link", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
+/**
+ * The context menu's "Version history" action - lists every previously-captured version of
+ * [entry]'s content (timestamp, size), each with "Download this version"/"Restore". Stays open
+ * across multiple actions, the same self-contained shape [ShareDialog] uses, rather than closing
+ * itself after one action. Treats a `503` (the versioning extension not running on this
+ * deployment) as "no version history available" rather than an error, matching this app's
+ * existing convention for every other optional-extension call.
+ */
+@Composable
+private fun VersionHistoryDialog(viewModel: AppViewModel, entry: Entry.FileEntry, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var versions by remember { mutableStateOf<List<de.lino.cloud.platform.rest.api.dto.Dtos.FileVersionSummaryResponse>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var unavailable by remember { mutableStateOf(false) }
+    var dialogError by remember { mutableStateOf<String?>(null) }
+    var actionInFlight by remember { mutableStateOf(false) }
+
+    suspend fun reload() {
+        loading = true
+        dialogError = null
+        try {
+            versions = viewModel.client.listFileVersions(entry.id)
+        } catch (e: de.lino.cloud.platform.rest.api.ApiClient.ApiException) {
+            if (e.statusCode() == 503) unavailable = true else dialogError = e.message ?: "Failed to load version history"
+        } catch (e: Exception) {
+            dialogError = e.message ?: "Failed to load version history"
+        } finally {
+            loading = false
+        }
+    }
+
+    LaunchedEffect(entry.id) { reload() }
+
+    fun downloadVersion(versionNumber: Int) {
+        val destination = chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY) ?: return
+        if (actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                viewModel.client.downloadFileVersion(entry.id, versionNumber, destination.resolve("v${versionNumber}_${entry.name}"))
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to download version"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    fun restoreVersion(versionNumber: Int) {
+        if (actionInFlight) return
+        actionInFlight = true
+        scope.launch {
+            try {
+                viewModel.client.restoreFileVersion(entry.id, versionNumber)
+                onDismiss()
+                viewModel.loadCurrentFolder()
+            } catch (e: Exception) {
+                dialogError = e.message ?: "Failed to restore version"
+            } finally {
+                actionInFlight = false
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Version history: \"${entry.name}\"") },
+        text = {
+            Column(Modifier.fillMaxWidth().height(320.dp)) {
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    unavailable -> Text("Version history isn't available on this server.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    dialogError != null -> Text(dialogError!!, color = MaterialTheme.colorScheme.error)
+                    versions.isEmpty() -> Text("No earlier versions yet - this file has never been overwritten.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else -> {
                         LazyColumn(Modifier.weight(1f)) {
-                            items(currentShares, key = { it }) { email ->
+                            items(versions, key = { it.versionNumber() }) { version ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(email, modifier = Modifier.weight(1f))
-                                    IconButton(onClick = { revoke(email) }, enabled = !actionInFlight) {
-                                        Icon(Icons.Filled.PersonRemove, contentDescription = "Revoke", tint = MaterialTheme.colorScheme.error)
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Version ${version.versionNumber()}", fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            "${formatEpochMilli(version.capturedAtEpochMillis())} - ${formatBytes(version.sizeBytes())}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    IconButton(onClick = { downloadVersion(version.versionNumber()) }, enabled = !actionInFlight) {
+                                        Icon(Icons.Filled.Download, contentDescription = "Download this version")
+                                    }
+                                    IconButton(onClick = { restoreVersion(version.versionNumber()) }, enabled = !actionInFlight) {
+                                        Icon(Icons.Filled.Restore, contentDescription = "Restore this version")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
+/**
+ * The context menu's "Activity" action - a scoped view of the audit trail for one file/folder,
+ * newest first, with "Load more" pagination mirroring the folder view's own pattern. Reuses the
+ * same list-rendering shape [ActivityFeedScreen] (see `Screen.Activity`) uses for the global feed,
+ * just backed by [CloudDriverClient.listFileActivity]/[listFolderActivity] instead of [listActivity].
+ */
+@Composable
+private fun EntryActivityDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var entries by remember { mutableStateOf<List<de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse>>(emptyList()) }
+    var cursor by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var dialogError by remember { mutableStateOf<String?>(null) }
+
+    suspend fun page(nextCursor: String?): de.lino.cloud.platform.rest.api.dto.Dtos.Page<de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse> =
+        when (entry) {
+            is Entry.FileEntry -> viewModel.client.listFileActivity(entry.id, nextCursor, 50)
+            is Entry.FolderEntry -> viewModel.client.listFolderActivity(entry.id, nextCursor, 50)
+        }
+
+    LaunchedEffect(entry.id) {
+        loading = true
+        dialogError = null
+        try {
+            val firstPage = page(null)
+            entries = firstPage.items()
+            cursor = firstPage.nextCursor()
+        } catch (e: Exception) {
+            dialogError = e.message ?: "Failed to load activity"
+        } finally {
+            loading = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Activity: \"${entry.name}\"") },
+        text = {
+            Column(Modifier.fillMaxWidth().height(320.dp)) {
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    dialogError != null -> Text(dialogError!!, color = MaterialTheme.colorScheme.error)
+                    entries.isEmpty() -> Text("No recorded activity yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else -> {
+                        LazyColumn(Modifier.weight(1f)) {
+                            items(entries, key = { "${it.timestampEpochMillis()}-${it.action()}" }) { activity ->
+                                ActivityEntryRow(activity)
+                            }
+                            if (cursor != null) {
+                                item(key = "__load_more_activity__") {
+                                    Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                                        if (loadingMore) {
+                                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                                        } else {
+                                            TextButton(onClick = {
+                                                val c = cursor ?: return@TextButton
+                                                loadingMore = true
+                                                scope.launch {
+                                                    try {
+                                                        val nextPage = page(c)
+                                                        entries = entries + nextPage.items()
+                                                        cursor = nextPage.nextCursor()
+                                                    } catch (e: Exception) {
+                                                        dialogError = e.message ?: "Failed to load more activity"
+                                                    } finally {
+                                                        loadingMore = false
+                                                    }
+                                                }
+                                            }) { Text("Load more") }
+                                        }
                                     }
                                 }
                             }
@@ -1061,6 +1517,8 @@ private fun EntryRow(
     onDeleteRequest: () -> Unit,
     onShareRequest: () -> Unit,
     onSetColorRequest: () -> Unit,
+    onVersionHistoryRequest: () -> Unit,
+    onActivityRequest: () -> Unit,
 ) {
     var rowBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
     var contextMenuExpanded by remember { mutableStateOf(false) }
@@ -1115,7 +1573,11 @@ private fun EntryRow(
                     val now = System.currentTimeMillis()
                     if (now - lastClickTimeMillis <= DOUBLE_CLICK_THRESHOLD_MILLIS) {
                         lastClickTimeMillis = 0L
-                        onPreviewRequest()
+                        // A file still being scanned or flagged by content-scanning can't be
+                        // previewed - its content isn't servable yet (see CloudUserService's
+                        // scan-blocked check server-side) - so a double-click on one is a no-op
+                        // here rather than opening a dialog that would just fail to load.
+                        if (entry !is Entry.FileEntry || entry.summary.scanStatus() == "CLEAN") onPreviewRequest()
                     } else {
                         lastClickTimeMillis = now
                         onOpen()
@@ -1125,24 +1587,41 @@ private fun EntryRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Checkbox(checked = selected, onCheckedChange = { onToggleSelect() }, enabled = enabled, modifier = Modifier.width(40.dp))
-            val thumbnail = rememberThumbnail(entry, client)
-            if (thumbnail != null) {
-                Image(
-                    thumbnail,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(20.dp).clip(RoundedCornerShape(4.dp)),
-                )
-            } else {
-                Icon(
-                    iconFor(entry),
-                    contentDescription = null,
-                    // A distinct color per folder/file category (see EntryIcons.kt#colorFor) -
-                    // the real macOS iCloud app renders every service as its own colorful icon
-                    // rather than one repeated monochrome tint.
-                    tint = colorFor(entry),
-                    modifier = Modifier.size(20.dp),
-                )
+            val scanStatus = (entry as? Entry.FileEntry)?.summary?.scanStatus()
+            Box(contentAlignment = Alignment.BottomEnd) {
+                val thumbnail = rememberThumbnail(entry, client)
+                if (thumbnail != null) {
+                    Image(
+                        thumbnail,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(20.dp).clip(RoundedCornerShape(4.dp)),
+                    )
+                } else {
+                    Icon(
+                        iconFor(entry),
+                        contentDescription = null,
+                        // A distinct color per folder/file category (see EntryIcons.kt#colorFor) -
+                        // the real macOS iCloud app renders every service as its own colorful icon
+                        // rather than one repeated monochrome tint.
+                        tint = colorFor(entry),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                // A small badge overlaid on the icon when a content scan hasn't cleared this file
+                // yet - a spinner while still pending, a warning triangle once flagged. Nothing is
+                // shown for "CLEAN" (the overwhelming majority of files, and every file on a
+                // deployment with no content-scanning extension running at all).
+                when (scanStatus) {
+                    "PENDING" -> CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                    "FLAGGED" -> Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = "Flagged by content scanning",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(12.dp),
+                    )
+                    else -> {}
+                }
             }
             Spacer(Modifier.width(10.dp))
             Text(entry.name, modifier = Modifier.weight(1f))
@@ -1156,10 +1635,19 @@ private fun EntryRow(
             onDismissRequest = { contextMenuExpanded = false },
             offset = with(LocalDensity.current) { DpOffset(contextMenuOffset.x.toDp(), contextMenuOffset.y.toDp()) },
         ) {
+            // Disabled while a content scan hasn't cleared this file yet - mirrors the server's
+            // own refusal to serve non-CLEAN content (409 while pending, 403 once flagged),
+            // surfaced proactively here instead of only after a failed click.
+            val downloadBlocked = scanStatus != null && scanStatus != "CLEAN"
+            val downloadBlockedReason = when (scanStatus) {
+                "PENDING" -> "Download (still being scanned)"
+                "FLAGGED" -> "Download (flagged by content scanning)"
+                else -> "Download"
+            }
             DropdownMenuItem(
-                text = { Text("Download") },
+                text = { Text(downloadBlockedReason) },
                 leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                enabled = enabled,
+                enabled = enabled && !downloadBlocked,
                 onClick = { contextMenuExpanded = false; onDownloadRequest() },
             )
             DropdownMenuItem(
@@ -1187,6 +1675,20 @@ private fun EntryRow(
                 leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
                 enabled = enabled,
                 onClick = { contextMenuExpanded = false; onShareRequest() },
+            )
+            if (entry is Entry.FileEntry) {
+                DropdownMenuItem(
+                    text = { Text("Version history") },
+                    leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+                    enabled = enabled,
+                    onClick = { contextMenuExpanded = false; onVersionHistoryRequest() },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Activity") },
+                leadingIcon = { Icon(Icons.Filled.Timeline, contentDescription = null) },
+                enabled = enabled,
+                onClick = { contextMenuExpanded = false; onActivityRequest() },
             )
             DropdownMenuItem(
                 text = { Text("Delete") },

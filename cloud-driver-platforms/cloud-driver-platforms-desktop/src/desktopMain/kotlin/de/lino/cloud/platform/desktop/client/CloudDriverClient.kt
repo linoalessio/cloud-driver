@@ -2,17 +2,25 @@ package de.lino.cloud.platform.desktop.client
 
 import de.lino.cloud.platform.rest.api.ApiClient
 import de.lino.cloud.platform.rest.api.SessionManager
+import de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.FileVersionSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.Page
+import de.lino.cloud.platform.rest.api.dto.Dtos.PublicFileLinkSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookDeliveryAttemptResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionCreatedResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionSummaryResponse
 import de.lino.cloud.platform.rest.api.push.LiveUpdateClient
 import de.lino.cloud.platform.rest.api.session.TokenStoreFactory
 import kotlinx.coroutines.future.await
@@ -316,6 +324,17 @@ class CloudDriverClient(
         this.apiClient.shareFileAsync(fileId, granteeEmail).await()
     }
 
+    /**
+     * Grants [granteeEmail]'s account access to [fileId] with an explicit [permissionLevel]
+     * (`"VIEW"`/`"EDIT"`) and optional [expiresAtEpochMillis] (`null` = never expires). `"EDIT"`
+     * only ever grants the ability to replace the file's own content directly - there is no
+     * in-app "edit a shared file" UI in this app, the permission is offered purely as a grant
+     * option for a caller with their own tooling.
+     */
+    suspend fun shareFile(fileId: String, granteeEmail: String, permissionLevel: String, expiresAtEpochMillis: Long?) {
+        this.apiClient.shareFileAsync(fileId, granteeEmail, permissionLevel, expiresAtEpochMillis).await()
+    }
+
     /** Revokes a previously-granted share of [fileId] from [granteeEmail]. Idempotent - also succeeds if no such grant existed. */
     suspend fun revokeFileShare(fileId: String, granteeEmail: String) {
         this.apiClient.revokeFileShareAsync(fileId, granteeEmail).await()
@@ -335,6 +354,11 @@ class CloudDriverClient(
         this.apiClient.shareFolderAsync(folderId, granteeEmail).await()
     }
 
+    /** Folder counterpart to the file [shareFile] overload with an explicit [permissionLevel]/[expiresAtEpochMillis]. */
+    suspend fun shareFolder(folderId: String, granteeEmail: String, permissionLevel: String, expiresAtEpochMillis: Long?) {
+        this.apiClient.shareFolderAsync(folderId, granteeEmail, permissionLevel, expiresAtEpochMillis).await()
+    }
+
     /** Revokes a previously-granted share of [folderId] from [granteeEmail]. Idempotent. */
     suspend fun revokeFolderShare(folderId: String, granteeEmail: String) {
         this.apiClient.revokeFolderShareAsync(folderId, granteeEmail).await()
@@ -352,6 +376,84 @@ class CloudDriverClient(
 
     /** Whether any account is registered under [email] - not scoped to the signed-in account's own address. Backs the Share dialog's live grantee-email check. */
     suspend fun checkCloudUserExists(email: String): Boolean = this.apiClient.checkCloudUserExistsAsync(email).await()
+
+    /** Creates a new public, unauthenticated link to [fileId]'s content, optionally expiring at [expiresAtEpochMillis] (`null` = never). Owner-only. */
+    suspend fun createPublicFileLink(fileId: String, expiresAtEpochMillis: Long?): PublicFileLinkSummaryResponse =
+        this.apiClient.createPublicFileLinkAsync(fileId, expiresAtEpochMillis).await()
+
+    /** Every currently-active public link for [fileId] - backs a "manage public links"/revoke UI. */
+    suspend fun listPublicFileLinks(fileId: String): List<PublicFileLinkSummaryResponse> =
+        this.apiClient.listPublicFileLinksAsync(fileId).await()
+
+    /** Revokes one of [fileId]'s public links by its [token]. Idempotent. */
+    suspend fun revokePublicFileLink(fileId: String, token: String) {
+        this.apiClient.revokePublicFileLinkAsync(fileId, token).await()
+    }
+
+    // --- versioning ------------------------------------------------------------
+
+    /** Every previously-captured version of [fileId]'s content, newest last. Throws (`ApiException`, `503`) if `cloud-driver-extensions-versioning` isn't running on this deployment. */
+    suspend fun listFileVersions(fileId: String): List<FileVersionSummaryResponse> =
+        this.apiClient.listFileVersionsAsync(fileId).await()
+
+    /** Streams one specific past version's content straight to [destination] on disk - [destination] must not already exist. */
+    suspend fun downloadFileVersion(fileId: String, versionNumber: Int, destination: Path): Path =
+        this.apiClient.downloadFileVersionAsync(fileId, versionNumber, destination).await()
+
+    /** Restores [fileId]'s content back to [versionNumber] - the file's current content is itself captured as a fresh version first, so nothing is lost. */
+    suspend fun restoreFileVersion(fileId: String, versionNumber: Int): StoredFileSummaryResponse =
+        this.apiClient.restoreFileVersionAsync(fileId, versionNumber).await()
+
+    // --- thumbnails --------------------------------------------------------
+
+    /**
+     * Fetches [fileId]'s pre-generated, server-side JPEG thumbnail, or `null` if none exists yet
+     * (generation still pending, an unsupported content type, or `cloud-driver-extensions-thumbnails`
+     * not running on this deployment) - a `404`/`503` from [ApiClient.getThumbnail] is treated as
+     * "no thumbnail" here, not an error, matching the server's own "may not have one yet" contract.
+     */
+    suspend fun getThumbnail(fileId: String): ByteArray? = try {
+        this.apiClient.getThumbnailAsync(fileId).await()
+    } catch (e: ApiClient.ApiException) {
+        if (e.statusCode() == 404 || e.statusCode() == 503) null else throw e
+    }
+
+    // --- search --------------------------------------------------------------
+
+    /** Searches every file the caller owns by name/content (not scoped to the current folder), at most [limit] results. Throws (`ApiException`, `503`) if `cloud-driver-extensions-search` isn't running on this deployment. */
+    suspend fun search(query: String, limit: Int = 25): List<SearchResultResponse> =
+        this.apiClient.searchAsync(query, limit).await()
+
+    // --- activity feed -------------------------------------------------------
+
+    /** One page of the caller's global activity feed (every file/folder they can see), newest first. */
+    suspend fun listActivity(cursor: String?, limit: Int): Page<ActivityEntryResponse> =
+        this.apiClient.listActivityAsync(cursor, limit).await()
+
+    /** One page of activity scoped to a single file. */
+    suspend fun listFileActivity(fileId: String, cursor: String?, limit: Int): Page<ActivityEntryResponse> =
+        this.apiClient.listFileActivityAsync(fileId, cursor, limit).await()
+
+    /** One page of activity scoped to a single folder. */
+    suspend fun listFolderActivity(folderId: String, cursor: String?, limit: Int): Page<ActivityEntryResponse> =
+        this.apiClient.listFolderActivityAsync(folderId, cursor, limit).await()
+
+    // --- webhooks (desktop-only) ----------------------------------------------
+
+    /** Registers a new webhook subscription - the returned secret is shown exactly once and never retrievable again afterward. */
+    suspend fun registerWebhook(url: String, eventTypes: List<String>): WebhookSubscriptionCreatedResponse =
+        this.apiClient.registerWebhookAsync(url, eventTypes).await()
+
+    /** Every currently-registered webhook subscription, without their secrets. */
+    suspend fun listWebhooks(): List<WebhookSubscriptionSummaryResponse> = this.apiClient.listWebhooksAsync().await()
+
+    /** Permanently removes a webhook subscription. Idempotent. */
+    suspend fun revokeWebhook(id: String) {
+        this.apiClient.revokeWebhookAsync(id).await()
+    }
+
+    /** The most recent delivery attempts across every one of the caller's webhooks. */
+    suspend fun listWebhookDeliveries(): List<WebhookDeliveryAttemptResponse> = this.apiClient.listWebhookDeliveriesAsync().await()
 
     /**
      * Opens the live-push WebSocket connection - call

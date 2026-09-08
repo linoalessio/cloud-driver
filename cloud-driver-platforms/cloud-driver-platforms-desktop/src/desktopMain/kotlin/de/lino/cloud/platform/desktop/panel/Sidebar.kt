@@ -215,6 +215,11 @@ fun Sidebar(viewModel: AppViewModel) {
                 ) { IconTile(Icons.Filled.AdminPanelSettings, CloudColors.Orange) }
             }
             SidebarItem(
+                label = "Activity",
+                selected = viewModel.screen == Screen.Activity,
+                onClick = { viewModel.showActivity() },
+            ) { IconTile(Icons.Filled.History, CloudColors.Indigo) }
+            SidebarItem(
                 label = "Trash",
                 selected = viewModel.screen == Screen.Trash,
                 onClick = { viewModel.showTrash() },

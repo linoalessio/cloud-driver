@@ -76,6 +76,10 @@ struct FileBrowserView: View {
     private static let menuCoordinateSpace = "FileBrowserView.menuSpace"
 
     @ObservedObject var viewModel: AppViewModel
+    /// Backs `.searchable` below - always a global search across every file the caller owns
+    /// (matching the server route's own scope), never narrowed to the currently-browsed folder.
+    @State private var searchText = ""
+    private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     @State private var pendingImport: PendingImport?
     @State private var showingNewFolderAlert = false
     @State private var newFolderName = ""
@@ -201,13 +205,14 @@ struct FileBrowserView: View {
                                 VStack(spacing: 0) {
                                     ForEach(Array(viewModel.files.enumerated()), id: \.element.id) { index, file in
                                         let entry = SelectableEntry.file(file)
+                                        let isAccessible = viewModel.isFileAccessible(file)
                                         Button {
                                             // Same debounce as the folder row above - see
                                             // `quickActionGesture()`'s own doc comment.
                                             guard quickActionMenu == nil else { return }
                                             if viewModel.isSelecting {
                                                 viewModel.toggleSelection(entry)
-                                            } else {
+                                            } else if isAccessible {
                                                 viewModel.previewFile(file)
                                             }
                                         } label: {
@@ -219,21 +224,27 @@ struct FileBrowserView: View {
                                                     icon: fileIcon(for: file.contentType),
                                                     iconColor: fileIconColor(for: file.contentType),
                                                     title: file.fileName,
-                                                    subtitle: formatBytes(file.sizeBytes),
-                                                    showDivider: index != viewModel.files.count - 1
+                                                    subtitle: scanStatusSubtitle(for: file) ?? formatBytes(file.sizeBytes),
+                                                    showDivider: index != viewModel.files.count - 1,
+                                                    thumbnail: viewModel.thumbnails[file.fileId].map(Image.init(uiImage:))
                                                 ) {
-                                                    if !viewModel.isSelecting {
-                                                        Menu {
-                                                            menuButtons(fileMenuActions(file, entry: entry))
-                                                        } label: {
-                                                            Image(systemName: "ellipsis.circle")
-                                                                .foregroundStyle(CloudTheme.textSecondary)
+                                                    HStack(spacing: 6) {
+                                                        scanStatusBadge(for: file)
+                                                        if !viewModel.isSelecting {
+                                                            Menu {
+                                                                menuButtons(fileMenuActions(file, entry: entry))
+                                                            } label: {
+                                                                Image(systemName: "ellipsis.circle")
+                                                                    .foregroundStyle(CloudTheme.textSecondary)
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                         .buttonStyle(.plain)
+                                        .opacity(isAccessible || viewModel.isSelecting ? 1 : 0.5)
+                                        .onAppear { viewModel.loadThumbnailIfNeeded(for: file) }
                                         // Same frame-tracking the folder rows above get - see that
                                         // row's own comment for why this isn't a per-row gesture.
                                         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(Self.menuCoordinateSpace)) }) { newValue in
@@ -296,6 +307,10 @@ struct FileBrowserView: View {
                 if viewModel.busy && viewModel.files.isEmpty && viewModel.folders.isEmpty {
                     ProgressView()
                         .tint(.white)
+                }
+
+                if isSearching {
+                    searchResultsOverlay
                 }
 
                 if isContentHidden {
@@ -438,6 +453,18 @@ struct FileBrowserView: View {
         .task {
             viewModel.loadCurrentFolder()
         }
+        .searchable(text: $searchText, prompt: "Search all files")
+        // Debounced by `Task.sleep` rather than firing on every keystroke - `.task(id:)` already
+        // cancels the previous invocation the instant `searchText` changes again, so only the
+        // sleep from the most recent keystroke ever survives to actually call the server.
+        .task(id: searchText) {
+            guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            await viewModel.search(query: searchText)
+        }
         .fileImporter(
             isPresented: Binding(
                 get: { pendingImport != nil },
@@ -485,6 +512,12 @@ struct FileBrowserView: View {
         }
         .sheet(item: $sharingTargets) { targets in
             ShareSheet(viewModel: viewModel, targets: targets)
+        }
+        .sheet(item: $viewModel.versioningTarget) { file in
+            VersionHistorySheet(viewModel: viewModel, file: file)
+        }
+        .sheet(item: $viewModel.activityTarget) { file in
+            FileActivitySheet(viewModel: viewModel, file: file)
         }
         // "Set color" (added 2026-09-05) - a small sheet of preset swatches, mirroring the
         // desktop app's own `FolderColorPickerDialog`.
@@ -624,14 +657,22 @@ struct FileBrowserView: View {
     /// The actions available on one file - same "shared between tap-to-open and long-press" shape
     /// as `folderMenuActions`.
     private func fileMenuActions(_ file: StoredFileSummaryResponse, entry: SelectableEntry) -> [QuickAction] {
-        var actions: [QuickAction] = [
-            QuickAction("Download", systemImage: "arrow.down.circle") {
+        var actions: [QuickAction] = []
+        let isAccessible = viewModel.isFileAccessible(file)
+        if isAccessible {
+            actions.append(QuickAction("Download", systemImage: "arrow.down.circle") {
                 viewModel.download(file)
+            })
+            if isZipArchive(file.contentType) {
+                actions.append(QuickAction("Extract", systemImage: "doc.zipper") {
+                    viewModel.extractArchive(file)
+                })
             }
-        ]
-        if isZipArchive(file.contentType) {
-            actions.append(QuickAction("Extract", systemImage: "doc.zipper") {
-                viewModel.extractArchive(file)
+            actions.append(QuickAction("Version history", systemImage: "clock.arrow.circlepath") {
+                viewModel.versioningTarget = file
+            })
+            actions.append(QuickAction("Activity", systemImage: "list.bullet.rectangle") {
+                viewModel.presentFileActivity(file)
             })
         }
         actions.append(contentsOf: [
@@ -770,6 +811,78 @@ struct FileBrowserView: View {
 
     private func itemCountText(_ count: Int) -> String {
         "\(count) item\(count == 1 ? "" : "s")"
+    }
+
+    /// Overrides a non-`CLEAN` file's normal byte-size subtitle with a plain status line - `nil`
+    /// for a `CLEAN` file, so its usual size subtitle shows through unchanged.
+    private func scanStatusSubtitle(for file: StoredFileSummaryResponse) -> String? {
+        switch file.scanStatus {
+        case "PENDING": return "Scanning\u{2026}"
+        case "FLAGGED": return "Flagged - unavailable"
+        default: return nil
+        }
+    }
+
+    @ViewBuilder
+    private func scanStatusBadge(for file: StoredFileSummaryResponse) -> some View {
+        switch file.scanStatus {
+        case "PENDING":
+            ProgressView().scaleEffect(0.6)
+        case "FLAGGED":
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// Replaces the normal folder listing entirely while `isSearching` - a global search across
+    /// every file the caller owns, never scoped to the currently-browsed folder. Tapping a result
+    /// navigates straight to its containing folder, the same destination a normal row tap reaches.
+    private var searchResultsOverlay: some View {
+        ZStack {
+            CloudTheme.backgroundGradient
+            if !viewModel.isSearchAvailable {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 32))
+                        .foregroundStyle(CloudTheme.textSecondary)
+                    Text("Search isn't available on this server")
+                        .foregroundStyle(CloudTheme.textSecondary)
+                }
+            } else if viewModel.isSearchLoading {
+                ProgressView().tint(.white)
+            } else if viewModel.searchResults.isEmpty {
+                Text("No matches for \u{201c}\(searchText)\u{201d}")
+                    .foregroundStyle(CloudTheme.textSecondary)
+            } else {
+                ScrollView {
+                    CloudCard(icon: "magnifyingglass", iconColor: CloudTheme.accent, title: "Results", subtitle: itemCountText(viewModel.searchResults.count)) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(viewModel.searchResults.enumerated()), id: \.element.id) { index, result in
+                                Button {
+                                    searchText = ""
+                                    viewModel.openSearchResult(result)
+                                } label: {
+                                    CloudRow(
+                                        icon: "doc.fill",
+                                        iconColor: CloudTheme.iconFile,
+                                        title: result.fileName,
+                                        subtitle: result.folderId == nil ? "Home" : nil,
+                                        showDivider: index != viewModel.searchResults.count - 1
+                                    ) { EmptyView() }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
     }
 
 }
