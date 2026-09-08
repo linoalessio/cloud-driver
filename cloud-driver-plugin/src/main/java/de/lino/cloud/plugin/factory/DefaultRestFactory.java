@@ -336,11 +336,26 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /**
      * Default {@code WRITE}-class (every non-GET/HEAD method - uploads included, see {@link
      * #classifyRequest}) per-identity request cap per {@link
-     * #DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS}-second window - tighter than {@link
-     * #DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS}, since a mutation (an upload, a delete, a move)
-     * is inherently more expensive to serve and more consequential if abused than a read.
+     * #DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS}-second window.
+     *
+     * <p><b>Fixed a real bug (2026-09-08), reported directly by Lino: uploading/deleting from
+     * {@code cloud-driver-platforms-desktop} failed with "Too many requests - wait a moment and
+     * try again" on any moderately-sized batch.</b> The original value here was {@code 60} -
+     * tighter than {@link #DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS}'s {@code 300}, reasoning
+     * that a mutation is inherently more expensive/consequential-if-abused than a read - but that
+     * reasoning never accounted for this app's own core batch features: uploading/deleting a
+     * folder, extracting a zip archive, or duplicating a folder each fire <em>one HTTP request per
+     * file</em> (only capped at {@code DEFAULT_MAX_CONCURRENT_TRANSFERS}, 8, concurrently in
+     * flight at once - never capped in <em>total count</em>), and this codebase's own documented
+     * usage (a "~2,500-file upload", folders with hundreds of entries) routinely needs well over
+     * 60 write requests inside a single minute for a completely legitimate, single-account batch
+     * operation. Raised 10x, to {@code 600} - still meaningfully bounded (a genuine
+     * credential-abuse/DoS attempt against one already-authenticated account has to sustain ~10
+     * writes/second to hit it, and every write is separately gated by this account's own byte
+     * quota and content-scan pipeline regardless), but no longer throttles this app's own normal
+     * batch upload/delete/extract/duplicate flows partway through.
      */
-    private static final int DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS = 60;
+    private static final int DEFAULT_API_RATE_LIMIT_WRITE_MAX_REQUESTS = 600;
     /** Default {@code WRITE}-class rate-limit window, in seconds. */
     private static final long DEFAULT_API_RATE_LIMIT_WRITE_WINDOW_SECONDS = 60L;
     /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
@@ -929,7 +944,23 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
      * {@link #bindUpdate}/{@link #bindDelete} to read.
      *
-     * @throws UnauthorizedResponse if no token is present, or it is malformed/invalid/expired
+     * <p><b>Fixed a real bug (2026-09-08):</b> {@link AuthService#validate} only checks a JWT's
+     * signature and expiry - it never looks the embedded id back up against the database, since a
+     * JWT is deliberately stateless. That meant a still-unexpired access token (issued with a 12h
+     * lifetime) kept working for the rest of that window even after its underlying {@link
+     * de.lino.cloud.api.jwt.user.AuthUser} account was gone (a hard reset, an admin/operator
+     * delete, or simply the account never really existing on this deployment) - concretely, a
+     * desktop/mobile client with a still-persisted session (see {@code SessionManager#tryRestoreSession})
+     * would silently "log in" to a deleted account on relaunch, since its one lightweight probe
+     * call only needed a token {@link AuthService#validate} still accepted, not a real account
+     * behind it. This filter now also resolves the validated id via {@link
+     * AuthService#getAuthUser}, the same cheap, per-id-cached lookup {@link #requireAdmin} already
+     * performs off this same attribute - a miss is treated identically to an invalid/expired
+     * token (same message, same {@code 401}), so a client's existing "log out on 401" handling
+     * (already required to react to a rotated/invalidated refresh token) closes this gap with no
+     * client-side change needed.
+     *
+     * @throws UnauthorizedResponse if no token is present, it is malformed/invalid/expired, or its account no longer exists
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
@@ -943,12 +974,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             throw new UnauthorizedResponse(
                     "Missing " + AUTHORIZATION_HEADER + " header or '" + TOKEN_QUERY_PARAM + "' query parameter");
         }
+        final String userId;
         try {
-            final String userId = this.authService.validate(token);
-            ctx.attribute(USER_ID_ATTRIBUTE, userId);
+            userId = this.authService.validate(token);
         } catch (final InvalidJwtException e) {
             throw new UnauthorizedResponse("Invalid or expired token");
         }
+        if (this.authService.getAuthUser(userId).isEmpty()) {
+            throw new UnauthorizedResponse("Invalid or expired token");
+        }
+        ctx.attribute(USER_ID_ATTRIBUTE, userId);
     }
 
     /**
