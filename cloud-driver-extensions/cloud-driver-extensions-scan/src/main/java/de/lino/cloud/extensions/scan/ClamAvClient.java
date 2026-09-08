@@ -29,13 +29,18 @@ import java.util.regex.Pattern;
  *       verdict - see {@link ClamAvScanException}).</li>
  * </ol>
  *
- * <p><b>Not verified against a real running {@code clamd} instance</b> - this sandboxed
- * environment has no ClamAV daemon available to test against, so this implementation follows the
- * documented protocol precisely but hasn't been exercised end-to-end the way this codebase's own
- * "confirmed by running the real thing" bar normally requires (see e.g. {@code
- * cloud-driver-platforms-desktop}'s own icon-trimming verification). Flagged explicitly rather
- * than silently claimed as tested - verify against a real {@code clamd} (e.g. {@code docker run
- * clamav/clamav}) before relying on this in production.
+ * <p><b>Verified end-to-end against a real, running {@code clamd} on {@code strato} (2026-09-08)</b>
+ * - a standalone test replaying this exact protocol (EICAR test string, and benign content)
+ * against the deployed daemon confirmed both {@link #CLEAN_PATTERN}/{@link #FOUND_PATTERN} parse
+ * the real responses ({@code "stream: OK"}/{@code "stream: Eicar-Test-Signature FOUND"}) exactly
+ * as written. This sandboxed dev environment still has no local {@code clamd} to test against
+ * day-to-day - only the deployment itself was exercised - but the protocol implementation is no
+ * longer unverified. See CLAUDE.md's "Content scanning" section ("ClamAV setup on {@code strato}")
+ * for the real deployment incident this pass found and fixed - {@code clamd.conf}'s own
+ * {@code TCPSocket}/{@code TCPAddr} directives are silently ignored under Debian's systemd
+ * socket-activation packaging unless the {@code .socket} unit itself is also given a TCP
+ * {@code ListenStream}, which this class's protocol implementation had no way to know about or
+ * work around from the Java side.
  */
 final class ClamAvClient {
 

@@ -377,9 +377,11 @@ public final class DefaultFileFactory extends FileFactory {
      * Delegates to {@link DataFactory#clear}. <b>Does not purge S3-backed objects</b> - out of
      * scope for this class's S3-backed-content support (which only covers {@link #upload}/
      * {@link #download}/{@link #findById}/{@link #getEntities}/{@link #delete}), a known,
-     * deliberately unaddressed gap: a {@code DefaultCloudDriver#reset()} (which calls this) leaves
-     * any already-uploaded S3 object behind. Flagged here rather than silently expanding this
-     * change's scope to also purge a whole bucket.
+     * deliberately unaddressed gap for any caller reaching this method directly. Flagged here
+     * rather than silently expanding this change's scope to also purge a whole bucket. Note this
+     * gap does <b>not</b> apply to {@code DefaultCloudDriver#reset()} (added 2026-09-08) - that
+     * method never actually called this one (it always went straight to {@code
+     * DataFactory#deleteSectionAsync}), and now does its own S3 purge first, see its own Javadoc.
      */
     @Override
     public void clear() {

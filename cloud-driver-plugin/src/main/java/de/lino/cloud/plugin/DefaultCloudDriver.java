@@ -12,7 +12,11 @@ import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
+import de.lino.cloud.api.security.database.DatabaseClientException;
+import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
+import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
@@ -206,9 +210,32 @@ public final class DefaultCloudDriver extends CloudDriver {
      * Wipes every {@link de.lino.database.database.entity.Serialized} entity section this
      * repository defines - every {@link AuthUser}, {@link CloudUser}, {@link Folder}, {@link
      * StoredFile}, {@link StoredFileOwnership}, {@link PendingRegistration}, {@link
-     * PendingPasswordReset}, and {@link ApiKey} row, across the whole database. Called by the
-     * terminal package's {@code HardResetCommand} (aliased {@code reset}) after its own two-step
-     * confirmation - there is no undo.
+     * PendingPasswordReset}, and {@link ApiKey} row, across the whole database - and, if S3-backed
+     * content storage is configured ({@link IFactoryContainer#getObjectStorageService()}
+     * non-{@code null}), every S3 object any {@link StoredFile} row currently points at. Called by
+     * the terminal package's {@code HardResetCommand} (aliased {@code reset}) after its own
+     * two-step confirmation - there is no undo.
+     *
+     * <p><b>S3 purge added 2026-09-08, closing a real, previously-documented gap.</b> {@link
+     * de.lino.cloud.plugin.factory.DefaultFileFactory#clear()}/{@code #deleteSection()} never
+     * purged S3 objects - an accepted trade-off for those two methods on their own, since an
+     * orphaned object left behind by a routine {@code clear()}/{@code deleteSection()} call is
+     * cheap to clean up later - but this method bypasses {@link FileFactory} entirely and calls
+     * {@link DataFactory#deleteSectionAsync} directly, so it never benefited from {@link
+     * de.lino.cloud.plugin.factory.DefaultFileFactory#delete(String)}'s own S3 cleanup either, and
+     * a full, deliberate, operator-confirmed account wipe leaving every S3 object behind is a much
+     * larger gap than either of those two routine-operation ones. {@link #purgeS3BackedContent}
+     * enumerates every {@link StoredFile} row (via {@link DataFactory#getEntities}, <b>before</b>
+     * the {@code StoredFile} section itself is wiped below - the object keys live only on those
+     * rows, so they must be read first) and best-effort deletes each {@link
+     * StoredFile#isS3Backed()} row's own object; a dedup alias ({@link StoredFile#isDedupAlias()})
+     * is naturally skipped, since an alias is never itself {@code isS3Backed()} (it carries no
+     * {@code objectStorageKey} of its own), so each real S3 object is still purged exactly once
+     * regardless of how many aliases point at it. Runs synchronously, before the concurrent
+     * section wipe below starts - deliberately not folded into the same {@link
+     * CompletableFuture#allOf} batch, since the {@code StoredFile} row list must be read in full
+     * before {@code deleteSectionAsync(StoredFile.class)} can be allowed to remove it; racing the
+     * two would risk the section wipe reaching a row before its object was ever purged.
      *
      * <p>Deliberately does <b>not</b> touch key-encryption-key (KEK) material: KEK rotation state
      * lives in its own raw {@code "kek"} {@link de.lino.database.database.DatabaseSection}
@@ -241,7 +268,12 @@ public final class DefaultCloudDriver extends CloudDriver {
     public void reset() {
 
         final DataFactory dataFactory = this.getFactoryContainer().getDataFactory();
-        
+        final ObjectStorageService objectStorageService = this.getFactoryContainer().getObjectStorageService();
+
+        if (objectStorageService != null) {
+            this.purgeS3BackedContent(dataFactory, objectStorageService);
+        }
+
         final List<CompletableFuture<Void>> deletions = List.of(
                 dataFactory.deleteSectionAsync(AuthUser.class),
                 dataFactory.deleteSectionAsync(CloudUser.class),
@@ -255,6 +287,45 @@ public final class DefaultCloudDriver extends CloudDriver {
 
         CompletableFuture.allOf(deletions.toArray(new CompletableFuture[0])).join();
 
+    }
+
+    /**
+     * Enumerates every currently-stored {@link StoredFile} and best-effort deletes each {@link
+     * StoredFile#isS3Backed()} row's own object from {@code objectStorageService} - see {@link
+     * #reset()}'s own Javadoc for why this must run, synchronously, before that method's own
+     * {@code StoredFile} section wipe. A dedup alias never carries an {@link
+     * StoredFile#objectStorageKey()} of its own, so {@link StoredFile#isS3Backed()} alone is
+     * enough to skip it without a separate {@link StoredFile#isDedupAlias()} check.
+     *
+     * <p>Never throws - an enumeration failure or a single object's delete failure is logged (via
+     * {@link #getLogger()}) and the rest of {@link #reset()} proceeds regardless, the same "an S3
+     * cleanup problem must never block a more important operation" reasoning {@code
+     * DefaultFileFactory#deleteObjectQuietly} already applies per-object, extended here to the
+     * enumeration step too - an orphaned S3 object left behind by a failed enumeration is a cheap
+     * problem to clean up later by hand; a {@code reset()} that refused to wipe the database
+     * because S3 was unreachable would not be.
+     *
+     * @param dataFactory the facet {@link StoredFile} rows are read through
+     * @param objectStorageService the facet each S3-backed row's object is deleted through
+     */
+    private void purgeS3BackedContent(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService) {
+        final List<StoredFile> files;
+        try {
+            files = dataFactory.getEntities(StoredFile.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException enumerationFailed) {
+            this.getLogger().log(Level.WARNING,
+                    "@DefaultCloudDriver.reset: failed to enumerate StoredFile rows for the S3 purge - leaving any S3 objects behind", enumerationFailed);
+            return;
+        }
+        for (final StoredFile file : files) {
+            if (!file.isS3Backed()) continue;
+            try {
+                objectStorageService.deleteObject(file.objectStorageKey());
+            } catch (final ObjectStorageException deleteFailed) {
+                this.getLogger().log(Level.WARNING,
+                        "@DefaultCloudDriver.reset: failed to delete S3 object '" + file.objectStorageKey() + "' for file '" + file.fileId() + "'", deleteFailed);
+            }
+        }
     }
 
     /**
