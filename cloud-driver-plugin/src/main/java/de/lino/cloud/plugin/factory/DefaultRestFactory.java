@@ -21,6 +21,7 @@ import de.lino.cloud.api.jwt.auth.AuthTokens;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.redis.RedisSupport;
@@ -94,7 +95,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * else, and {@link #update}/{@link #delete} 404 the same way rather than
  * letting one user mutate another's record.
  */
-public final class DefaultRestFactory extends RestFactory implements LiveUpdatePublisher {
+public final class DefaultRestFactory extends RestFactory implements LiveUpdatePublisher, RateLimitAdmin {
 
     /** HTTP request header {@link #requireValidApiKey} checks against {@link #apiKey}. */
     private static final String API_KEY_HEADER = "X-API-Key";
@@ -551,6 +552,82 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final class ApiRateLimitBucket {
         private long windowStartEpochMillis = System.currentTimeMillis();
         private int count;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The two window counts are of the <b>in-process</b> maps only, because those are the only
+     * ones countable at all: the Redis-backed counters are individually-expiring keys under two
+     * prefixes, and enumerating them would mean a keyspace scan - precisely the operation {@link
+     * RedisSupport}'s own Javadoc forbids as a boot-cost hazard. {@link
+     * RateLimitAdmin.RateLimitStatus#redisBacked()} is therefore the field that actually tells an
+     * operator how to read the other two: when it is {@code true}, a low in-process count means
+     * "counting happens elsewhere", not "nobody is being limited".
+     */
+    @NotNull
+    @Override
+    public RateLimitAdmin.RateLimitStatus status() {
+        return new RateLimitAdmin.RateLimitStatus(this.authRateLimitBuckets.size(), this.apiRateLimitBuckets.size(),
+                CloudDriver.getInstance().getFactoryContainer().getRedisSupport() != null);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Clears both backing stores rather than whichever one happens to be live. That is not
+     * belt-and-braces: a request that hit Redis while it was healthy and then fell back to the
+     * in-process map after a blip has genuinely left a window in <em>both</em>, and clearing only
+     * the live one would leave an operator's "reset" quietly ineffective - the exact class of
+     * silent half-success this codebase has repeatedly been bitten by.
+     *
+     * <p>An identity is cleared under both limiter prefixes and under both key shapes it can
+     * appear as: {@link #requireWithinAuthRateLimit} keys by the raw client address, while {@link
+     * #requireWithinApiRateLimit} keys by {@code "user:<id>"}/{@code "ip:<address>"}. An operator
+     * types one identifier and expects it cleared everywhere, so both are tried.
+     */
+    @Override
+    public int reset(@Nullable final String identity) {
+        if (identity == null) {
+            final int cleared = this.authRateLimitBuckets.size() + this.apiRateLimitBuckets.size();
+            this.authRateLimitBuckets.clear();
+            this.apiRateLimitBuckets.clear();
+            return cleared;
+        }
+
+        int cleared = 0;
+        if (this.authRateLimitBuckets.remove(identity) != null) cleared++;
+        for (final String candidate : new String[]{identity, "user:" + identity, "ip:" + identity}) {
+            if (this.apiRateLimitBuckets.remove(candidate) != null) cleared++;
+            if (deleteRedisWindow(AUTH_RATE_LIMIT_REDIS_KEY_PREFIX + candidate)) cleared++;
+            if (deleteRedisWindow(API_RATE_LIMIT_REDIS_KEY_PREFIX + candidate)) cleared++;
+        }
+        return cleared;
+    }
+
+    /**
+     * Best-effort removal of one Redis-backed rate-limit window.
+     *
+     * <p>Swallows every failure and reports {@code false}, matching the same fail-open posture
+     * {@link #incrementRedisWindow} already takes: a Redis problem must never turn an operator's
+     * reset into an exception, and a window that could not be cleared simply expires on its own
+     * within its (short, by construction) TTL.
+     *
+     * @return {@code true} only if a window actually existed and was removed
+     */
+    private static boolean deleteRedisWindow(final String key) {
+        final RedisSupport redisSupport = CloudDriver.getInstance().getFactoryContainer().getRedisSupport();
+        if (redisSupport == null) return false;
+        try {
+            // getCount before reset purely so this method can report whether a window genuinely
+            // existed - RedisCounterService#reset is void and idempotent, so it alone cannot
+            // distinguish "cleared something" from "there was nothing there".
+            final boolean existed = redisSupport.counterService().getCount(key) > 0;
+            redisSupport.counterService().reset(key);
+            return existed;
+        } catch (final RuntimeException ignored) {
+            return false;
+        }
     }
 
     /**

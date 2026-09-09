@@ -35,4 +35,24 @@ public interface ContentScanService {
      */
     void scanAsync(@NotNull String storedFileId);
 
+    /**
+     * Probes whether the backing scan engine is actually reachable right now.
+     *
+     * <p><b>This is not a formality.</b> Scanning deliberately fails <em>open</em>: a file whose
+     * scan cannot be performed is marked {@code CLEAN} and never revisited, so an unreachable
+     * engine does not degrade uploads - it silently stops protecting them. That is precisely what
+     * happened on this deployment, where {@code clamd} was installed and running but had no TCP
+     * listener at all, so every scan attempt was refused, retried, and failed open, with the only
+     * evidence buried in console scrollback. A published service is therefore <b>not</b> evidence
+     * that scanning works; this method is.
+     *
+     * <p>Must never throw - an unreachable engine is the answer, not an error.
+     *
+     * @return {@code true} if the scan engine answered, {@code false} if it is unreachable or an
+     * implementation has no way to probe it (the default)
+     */
+    default boolean isScannerReachable() {
+        return false;
+    }
+
 }

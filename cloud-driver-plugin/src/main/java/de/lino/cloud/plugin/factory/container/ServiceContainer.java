@@ -1,12 +1,15 @@
 package de.lino.cloud.plugin.factory.container;
 
 import de.lino.cloud.api.audit.AuditLogService;
+import de.lino.cloud.api.backup.BackupService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
@@ -50,6 +53,12 @@ public class ServiceContainer implements IServiceContainer {
     private volatile ContentScanService contentScanService;
     /** The semantic-search bridge, {@code null} until {@link #setIntelligenceService} publishes one. */
     private volatile IntelligenceService intelligenceService;
+    /** The resolved outgoing-mail sender, {@code null} until {@link #setEmailSender} publishes one. */
+    private volatile EmailSender emailSender;
+    /** Operator control over the running REST layer's rate limiters, {@code null} until {@link #setRateLimitAdmin} publishes one. */
+    private volatile RateLimitAdmin rateLimitAdmin;
+    /** On-demand access to the database backup job, {@code null} until {@link #setBackupService} publishes one. */
+    private volatile BackupService backupService;
 
     /** {@inheritDoc} */
     @Override
@@ -193,6 +202,42 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setIntelligenceService(@NonNull final IntelligenceService intelligenceService) {
         this.intelligenceService = intelligenceService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public EmailSender getEmailSender() {
+        return this.emailSender;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setEmailSender(@NonNull final EmailSender emailSender) {
+        this.emailSender = emailSender;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public RateLimitAdmin getRateLimitAdmin() {
+        return this.rateLimitAdmin;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setRateLimitAdmin(@NonNull final RateLimitAdmin rateLimitAdmin) {
+        this.rateLimitAdmin = rateLimitAdmin;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public BackupService getBackupService() {
+        return this.backupService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setBackupService(@NonNull final BackupService backupService) {
+        this.backupService = backupService;
     }
 
 }

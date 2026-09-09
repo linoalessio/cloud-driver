@@ -1,8 +1,10 @@
 package de.lino.cloud.api.s3storage;
 
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.InputStream;
+import java.util.List;
 
 /**
  * Abstraction over a content-addressable/key-addressable binary object store for {@link
@@ -77,4 +79,49 @@ public interface ObjectStorageService {
      * @throws ObjectStorageException if checking existence fails
      */
     boolean exists(@NotNull String objectKey) throws ObjectStorageException;
+
+    /**
+     * Lists one page of the object keys currently held by this store, for reconciliation/audit
+     * purposes - the counterpart every other method here deliberately lacks, since normal
+     * operation only ever addresses an object by a key the caller already knows.
+     *
+     * <p><b>Why this exists at all.</b> Nothing in this codebase reconciles the object store
+     * against the {@code StoredFile} rows that are supposed to reference it, and that gap has
+     * already cost real money: an abandoned-presigned-upload leak left 1.1 GB across 121,728
+     * objects in the live bucket while only ~400 MB of files had ever actually been uploaded
+     * through the app (see {@code PendingPresignedUploadPurgeScheduler} for the fix to that
+     * specific cause). Two known gaps still orphan objects - {@code FileFactory#clear()} and
+     * {@code #deleteSection()} never purge - so a periodic audit remains the only way to notice.
+     *
+     * <p><b>Deliberately paginated rather than returning every key at once.</b> A bucket at the
+     * scale above would materialize a six-figure {@code List} in heap, precisely the class of
+     * unbounded full-scan this codebase has already been bitten by (see {@code
+     * EntityDatabaseClient#getEntities}'s own {@code OutOfMemoryError} incidents). A caller
+     * streams pages and keeps only what it needs.
+     *
+     * <p>Keys are returned <b>without</b> any implementation-side prefix (the {@code keyPrefix} an
+     * {@code S3ObjectStorageService} may be configured with), so a returned key is directly
+     * comparable with the {@code objectKey} a caller originally passed to {@link #putObject} - in
+     * this codebase always a {@code StoredFile#fileId()}.
+     *
+     * @param continuationToken the {@link ObjectListing#nextContinuationToken()} of the previous
+     * page, or {@code null} to start from the beginning
+     * @param maxKeys the maximum number of keys to return in this page; implementations may return
+     * fewer even when more remain, so a caller must page until {@link
+     * ObjectListing#nextContinuationToken()} is {@code null} rather than until a short page
+     * @return one page of keys plus the token needed to request the next
+     * @throws ObjectStorageException if the listing call itself fails
+     */
+    @NotNull
+    ObjectListing listObjects(@Nullable String continuationToken, int maxKeys) throws ObjectStorageException;
+
+    /**
+     * One page of {@link #listObjects}.
+     *
+     * @param keys this page's object keys, prefix already stripped
+     * @param nextContinuationToken the token to pass back to {@link #listObjects} for the next
+     * page, or {@code null} when this was the last page
+     */
+    record ObjectListing(@NotNull List<String> keys, @Nullable String nextContinuationToken) {
+    }
 }

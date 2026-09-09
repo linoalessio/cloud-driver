@@ -1,11 +1,14 @@
 package de.lino.cloud.api.factory.service;
 
 import de.lino.cloud.api.audit.AuditLogService;
+import de.lino.cloud.api.backup.BackupService;
 import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
+import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.thumbnail.ThumbnailService;
@@ -250,5 +253,60 @@ public interface IServiceContainer {
      * @param intelligenceService the bridge to this deployment's {@code cloud-driver-intelligence} Python service
      */
     void setIntelligenceService(@NonNull IntelligenceService intelligenceService);
+
+    /**
+     * Returns the {@link EmailSender} this deployment actually resolved at startup, or {@code null}
+     * if {@code CloudRestExtension} hasn't published one yet.
+     *
+     * <p>Published specifically so an operator can verify mail delivery without registering a real
+     * account to trigger it. Which sender was chosen is a silent, three-way fallback (SES, then
+     * SMTP, then a {@code LoggingEmailSender} that delivers nothing at all), decided once at
+     * startup - so a deployment can look entirely healthy while every verification e-mail it
+     * "sends" is being written to a log. That failure mode has already cost this project a
+     * production incident, where every registration to an unverified address failed with a bare
+     * {@code 500} whose real cause was only visible in a stack trace.
+     *
+     * @return the {@link EmailSender}, or {@code null}
+     */
+    EmailSender getEmailSender();
+
+    /**
+     * Publishes the real {@link EmailSender}, once resolved.
+     *
+     * @param emailSender the sender {@code AuthService} delivers verification codes through
+     */
+    void setEmailSender(@NonNull EmailSender emailSender);
+
+    /**
+     * Returns operator control over the running REST layer's rate limiters, or {@code null} if
+     * {@code CloudRestExtension} hasn't published one yet. See {@link RateLimitAdmin}'s own Javadoc
+     * for why this is a separate published facet rather than something reachable off {@code
+     * IFactoryContainer#getRestFactory()}.
+     *
+     * @return the {@link RateLimitAdmin}, or {@code null}
+     */
+    RateLimitAdmin getRateLimitAdmin();
+
+    /**
+     * Publishes the real {@link RateLimitAdmin}, once the JWT-gated {@code RestFactory} is built.
+     *
+     * @param rateLimitAdmin the running REST layer's own limiter control
+     */
+    void setRateLimitAdmin(@NonNull RateLimitAdmin rateLimitAdmin);
+
+    /**
+     * Returns on-demand access to the database backup job, or {@code null} if {@code
+     * cloud-driver-extensions-backup}'s {@code CloudBackupExtension} hasn't published one yet.
+     *
+     * @return the {@link BackupService}, or {@code null}
+     */
+    BackupService getBackupService();
+
+    /**
+     * Publishes the real {@link BackupService}, once built.
+     *
+     * @param backupService the instance wrapping this deployment's backup scheduler
+     */
+    void setBackupService(@NonNull BackupService backupService);
 
 }

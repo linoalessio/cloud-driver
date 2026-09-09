@@ -109,4 +109,84 @@ public interface IntelligenceService {
     @NotNull
     List<SemanticMatch> search(@NotNull String queryText, @NotNull Collection<String> candidateFileIds, int limit);
 
+    /**
+     * Queues an update of {@code storedFileId}'s recorded owner, without re-embedding its content.
+     *
+     * <p><b>This is bookkeeping, never an access decision</b> - the recorded owner remains exactly
+     * the non-authoritative hint this interface's security-invariant section describes, and no
+     * search path consults it. What it does affect is {@link #findDuplicates}, which is scoped per
+     * account: a stale owner there produces a wrong (never a leaked) grouping, since candidate ids
+     * are still supplied by the caller's own authoritative pre-filter.
+     *
+     * <p>Cheap by construction - the stored vector is untouched, only its metadata - so callers may
+     * invoke it on ordinary sharing changes without paying an embedding cost. Must return quickly
+     * and never throw, like the other two queueing methods here.
+     *
+     * @param storedFileId the file whose recorded owner to refresh
+     * @param ownerAuthUserId the account that currently owns it
+     */
+    void refreshOwnerAsync(@NotNull String storedFileId, @NotNull String ownerAuthUserId);
+
+    /**
+     * Groups {@code candidateFileIds} into sets whose vectors are at least {@code
+     * minimumSimilarity} alike - "these look like the same document" for a human to review.
+     *
+     * <p><b>Bound by the same security invariant as {@link #search}</b>, for the same reason and in
+     * the same two stages: {@code candidateFileIds} is a hard restriction resolved by the caller
+     * from authoritative access data, and every returned id must still be re-checked by the caller
+     * before it may reach a client. A grouping is a strictly more sensitive result than a search
+     * hit - it asserts a relationship <em>between</em> two files - so neither stage may be relaxed
+     * here on the grounds that the ids "came from" the caller.
+     *
+     * <p>Never throws: an unavailable service returns an empty list, exactly as {@link #search}
+     * does.
+     *
+     * @param candidateFileIds the only ids that may be grouped; an empty collection returns an
+     * empty list without contacting the backing service
+     * @param minimumSimilarity the cosine-similarity floor in {@code [0, 1]} every pair within a
+     * group must meet. Similarity is not linear in perceived sameness - a sensible floor is high
+     * (0.9+); a low one groups everything that shares a topic.
+     * @param limit the maximum number of groups to return
+     * @return near-duplicate groups, most similar first; empty if nothing qualifies or the service
+     * is unavailable
+     */
+    @NotNull
+    List<DuplicateGroup> findDuplicates(@NotNull Collection<String> candidateFileIds, double minimumSimilarity, int limit);
+
+    /**
+     * Suggests descriptive labels for {@code storedFileId} from the backing service's fixed
+     * vocabulary - see {@link TagSuggestion}'s own Javadoc for how they are derived and, more
+     * importantly, what their confidence does not mean.
+     *
+     * <p>Takes only a file id and therefore performs <b>no access check of its own</b>: the caller
+     * must have already established that the requesting account may see this file. This mirrors
+     * every other method here - none of them is an authorization boundary.
+     *
+     * <p>Returns an empty list for a file that was never indexed (there is no vector to compare),
+     * for an unavailable service, or when the backing model cannot embed at all. Never throws.
+     *
+     * @param storedFileId the file to label
+     * @param limit the maximum number of suggestions to return
+     * @return suggestions, most confident first; empty if none can be produced
+     */
+    @NotNull
+    List<TagSuggestion> suggestTags(@NotNull String storedFileId, int limit);
+
+    /**
+     * Probes whether the backing service is reachable and actually able to embed right now.
+     *
+     * <p>Distinct from "this facet is published", which only means the extension loaded and says
+     * nothing about the separately-run service behind it. Because indexing fails open, an
+     * unreachable service produces no error anywhere a user can see - files simply stop being
+     * indexed - so this probe is the only way to notice before someone reports that search has
+     * quietly stopped returning new files.
+     *
+     * <p>Must never throw - unreachable is an answer, not a failure.
+     *
+     * @return {@code true} only if the service answered <em>and</em> reported a usable embedding
+     * backend; {@code false} if it is unreachable, or up but unable to embed (an optional
+     * dependency missing), which is a state that otherwise looks identical to "nothing matched"
+     */
+    boolean isServiceHealthy();
+
 }

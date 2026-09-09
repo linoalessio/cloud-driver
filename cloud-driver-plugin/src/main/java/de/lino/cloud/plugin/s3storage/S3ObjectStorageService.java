@@ -5,6 +5,7 @@ import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.async.AsyncRequestBody;
@@ -13,7 +14,9 @@ import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.transfer.s3.S3TransferManager;
 import software.amazon.awssdk.transfer.s3.model.CompletedDownload;
 import software.amazon.awssdk.transfer.s3.model.CompletedUpload;
@@ -23,6 +26,8 @@ import software.amazon.awssdk.transfer.s3.model.Upload;
 import software.amazon.awssdk.transfer.s3.model.UploadRequest;
 
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletionException;
 
 /**
@@ -240,6 +245,53 @@ public final class S3ObjectStorageService implements ObjectStorageService {
                     "@S3ObjectStorageService.exists: existence check failed for key '" + key + "' in bucket '" + this.bucket + "'", e
             );
         }
+    }
+
+    /**
+     * {@inheritDoc} Backed by S3's own {@code ListObjectsV2}, whose native pagination this maps
+     * onto directly - {@code maxKeys} becomes {@code MaxKeys}, and S3's {@code
+     * NextContinuationToken} is handed back verbatim as the caller's next page token.
+     *
+     * <p>Each returned key has {@link #keyPrefix} stripped back off, so what a caller gets is the
+     * same {@code objectKey} it originally passed to {@link #putObject} - always a {@code
+     * StoredFile#fileId()} in this codebase - rather than the fully-qualified key this class
+     * stores under internally. A key that somehow does not carry the configured prefix is skipped
+     * rather than returned unstripped: it was not written by this service, so reporting it as a
+     * comparable object key would produce a false "orphan" in the audit this method exists for.
+     */
+    @NotNull
+    @Override
+    public ObjectListing listObjects(@Nullable final String continuationToken, final int maxKeys) throws ObjectStorageException {
+        try {
+            final ListObjectsV2Response response = this.s3AsyncClient.listObjectsV2(builder -> {
+                builder.bucket(this.bucket).maxKeys(maxKeys);
+                if (!this.keyPrefix.isEmpty()) builder.prefix(this.keyPrefix + "/");
+                if (continuationToken != null) builder.continuationToken(continuationToken);
+            }).join();
+
+            final List<String> keys = new ArrayList<>();
+            for (final S3Object object : response.contents()) {
+                final String stripped = this.stripKeyPrefix(object.key());
+                if (stripped != null) keys.add(stripped);
+            }
+            return new ObjectListing(List.copyOf(keys),
+                    Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null);
+        } catch (final CompletionException | SdkException e) {
+            throw new ObjectStorageException(
+                    "@S3ObjectStorageService.listObjects: listing failed for bucket '" + this.bucket + "'", unwrap(e)
+            );
+        }
+    }
+
+    /**
+     * Inverse of {@link #resolveKey} - {@code null} for a key that does not carry {@link
+     * #keyPrefix} at all (see {@link #listObjects}'s own Javadoc for why such a key is dropped
+     * rather than returned as-is).
+     */
+    private String stripKeyPrefix(final String fullKey) {
+        if (this.keyPrefix.isEmpty()) return fullKey;
+        final String prefix = this.keyPrefix + "/";
+        return fullKey.startsWith(prefix) ? fullKey.substring(prefix.length()) : null;
     }
 
     /**

@@ -94,6 +94,17 @@ final class DefaultContentScanService implements ContentScanService {
         this.retryScheduler.shutdown();
     }
 
+    /**
+     * {@inheritDoc} Delegates to {@code clamd}'s own {@code PING} command via {@link
+     * ClamAvClient#ping()} - see that method's Javadoc for why a ping rather than a socket
+     * connect, and {@link de.lino.cloud.api.scan.ContentScanService#isScannerReachable()} for why
+     * this probe matters more here than the mere presence of this service does.
+     */
+    @Override
+    public boolean isScannerReachable() {
+        return this.clamAvClient.ping();
+    }
+
     /** {@inheritDoc} */
     @Override
     public void scanAsync(@NotNull final String storedFileId) {

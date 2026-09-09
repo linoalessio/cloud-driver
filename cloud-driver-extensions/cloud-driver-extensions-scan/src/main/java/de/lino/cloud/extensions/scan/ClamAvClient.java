@@ -93,6 +93,33 @@ final class ClamAvClient {
         }
     }
 
+    /**
+     * Probes {@code clamd} with its own {@code PING} command, expecting {@code PONG}.
+     *
+     * <p>Deliberately {@code PING} rather than a zero-byte {@code INSTREAM}: it is the cheapest
+     * command in the protocol, it never touches the signature database, and - unlike merely
+     * opening a socket - it proves the process on the other end is actually {@code clamd} and is
+     * answering, not just that something is listening on the port.
+     *
+     * <p>Never throws. An unreachable daemon is the answer this method exists to give, and its
+     * one caller ({@code ContentScanService#isScannerReachable}) is a diagnostic that must not be
+     * able to fail with an exception of its own.
+     *
+     * @return {@code true} if {@code clamd} answered {@code PONG}
+     */
+    boolean ping() {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(this.host, this.port), (int) this.timeout.toMillis());
+            socket.setSoTimeout((int) this.timeout.toMillis());
+            final OutputStream out = socket.getOutputStream();
+            out.write("zPING\0".getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            return "PONG".equalsIgnoreCase(readNulTerminatedResponse(socket.getInputStream()));
+        } catch (final IOException | RuntimeException unreachable) {
+            return false;
+        }
+    }
+
     private static void writeChunk(final OutputStream out, final byte[] content, final int offset, final int length) throws IOException {
         out.write(new byte[]{
                 (byte) (length >>> 24), (byte) (length >>> 16), (byte) (length >>> 8), (byte) length

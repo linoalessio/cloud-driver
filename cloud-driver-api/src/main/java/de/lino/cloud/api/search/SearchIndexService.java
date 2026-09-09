@@ -97,4 +97,21 @@ public interface SearchIndexService {
     @NotNull
     List<SearchResult> search(@NotNull String authUserId, @NotNull String query, int limit);
 
+    /**
+     * How many documents this index currently holds, across every account.
+     *
+     * <p>Exists purely so an operator can tell an index that is genuinely empty (nothing uploaded
+     * yet) apart from one that is empty because it was never populated - a distinction that has
+     * real history here: the in-memory index is lost on every restart and, before a startup
+     * backfill existed, silently held nothing for every file uploaded before the process started,
+     * which reads from the outside as "search is broken" rather than "index is cold".
+     *
+     * @return the total number of indexed documents, or {@code -1} if an implementation cannot
+     * cheaply determine it (the default) - a caller must render {@code -1} as "unknown" rather
+     * than as a count
+     */
+    default int indexedDocumentCount() {
+        return -1;
+    }
+
 }

@@ -125,6 +125,16 @@ public final class InMemorySearchIndexService implements SearchIndexService {
                 .toList();
     }
 
+    /**
+     * {@inheritDoc} Summed across every account's own map on each call rather than tracked as a
+     * running total - this is an operator-facing diagnostic invoked by hand, so an O(accounts)
+     * walk costs nothing worth maintaining a counter (and its invalidation) for.
+     */
+    @Override
+    public int indexedDocumentCount() {
+        return this.documentsByUser.values().stream().mapToInt(Map::size).sum();
+    }
+
     private Map<String, SearchDocument> documentsForUser(final String authUserId) {
         return this.documentsByUser.computeIfAbsent(authUserId, ignored -> new ConcurrentHashMap<>());
     }
