@@ -4,6 +4,7 @@ import de.lino.cloud.api.event.database.FileChangeListenerRegistry;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.plugin.event.database.DefaultFileChangeListenerRegistry;
@@ -79,6 +80,9 @@ public class FactoryContainer implements IFactoryContainer {
     /** Fan-out point for {@code DatabaseWatchEvent} notifications - see its own Javadoc. Always constructed, regardless of whether {@code cloud-driver-watcher} ever actually runs. */
     private final FileChangeListenerRegistry fileChangeListenerRegistry;
 
+    /** The optional Redis facet, or {@code null} if this deployment has none reachable - see {@link RedisSupport}'s own Javadoc. */
+    private final RedisSupport redisSupport;
+
     /**
      * Same as {@link #FactoryContainer(DatabaseProvider, EnvelopeEncryptionService,
      * ConnectivityChecker, ObjectStorageService)} with {@code objectStorageService} defaulted to
@@ -111,10 +115,34 @@ public class FactoryContainer implements IFactoryContainer {
      *     {@code null} to keep every file inline
      * @throws NullPointerException if {@code databaseProvider}/{@code envelopeEncryptionService}/{@code connectivityChecker} is {@code null}
      */
-    @SneakyThrows
     public FactoryContainer(@NonNull final DatabaseProvider databaseProvider, @NonNull final EnvelopeEncryptionService envelopeEncryptionService,
                              @NonNull final ConnectivityChecker connectivityChecker, @Nullable final ObjectStorageService objectStorageService) {
+        this(databaseProvider, envelopeEncryptionService, connectivityChecker, objectStorageService, null);
+    }
 
+    /**
+     * Same as {@link #FactoryContainer(DatabaseProvider, EnvelopeEncryptionService,
+     * ConnectivityChecker, ObjectStorageService)}, with an explicit {@link RedisSupport} backing
+     * {@link #getRedisSupport()} - {@code null} (every other overload's default) leaves every
+     * Redis-backed behavior falling back to its in-process equivalent, exactly as before Redis
+     * support existed.
+     *
+     * @param databaseProvider the backing {@code database-driver-plugin} provider every entity/file is persisted through
+     * @param envelopeEncryptionService encrypts/decrypts entities before persistence - also what
+     *     {@link #fileFactory} uses to encrypt a file's content independently before handing it to
+     *     {@code objectStorageService}, if configured
+     * @param connectivityChecker backs {@link #fileFactory}'s offline-safe upload deferral
+     * @param objectStorageService backs {@link #fileFactory}'s optional S3-backed content path, or
+     *     {@code null} to keep every file inline
+     * @param redisSupport the optional Redis facet, or {@code null} if this deployment has none
+     * @throws NullPointerException if {@code databaseProvider}/{@code envelopeEncryptionService}/{@code connectivityChecker} is {@code null}
+     */
+    @SneakyThrows
+    public FactoryContainer(@NonNull final DatabaseProvider databaseProvider, @NonNull final EnvelopeEncryptionService envelopeEncryptionService,
+                             @NonNull final ConnectivityChecker connectivityChecker, @Nullable final ObjectStorageService objectStorageService,
+                             @Nullable final RedisSupport redisSupport) {
+
+        this.redisSupport = redisSupport;
         this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(
                 databaseProvider, envelopeEncryptionService,
                 EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL,

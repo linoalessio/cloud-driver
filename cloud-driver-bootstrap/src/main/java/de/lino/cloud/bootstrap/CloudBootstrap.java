@@ -17,6 +17,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
@@ -28,6 +29,7 @@ import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.cloud.plugin.file.PendingPresignedUploadPurgeScheduler;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.file.TrashPurgeScheduler;
+import de.lino.cloud.plugin.redis.JedisRedisSupport;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.cloud.plugin.security.keys.AwsKmsKeyEncryptionService;
 import de.lino.cloud.plugin.s3storage.S3ObjectStorageService;
@@ -139,7 +141,15 @@ public final class CloudBootstrap {
         final EnvelopeEncryptionService envelopeEncryptionService = new EnvelopeEncryptionService(keyEncryptionService);
         final ObjectStorageService objectStorageService = resolveObjectStorageService(configuration);
 
-        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER, objectStorageService);
+        // Optional, and resolved without any configuration.json key of its own: JedisRedisSupport
+        // reads a sibling redis-database.json (the same Credentials shape postgres-database.json
+        // uses) and returns null - never throws - for a missing file, a malformed one, or a Redis
+        // that simply isn't reachable right now, so a Redis problem can never stop this deployment
+        // from booting. See RedisSupport's own Javadoc for what it actually backs.
+        final RedisSupport redisSupport = JedisRedisSupport.fromConfiguration(
+                Logger.getLogger(CloudBootstrap.class.getSimpleName()));
+
+        DefaultCloudDriver.setInstance(databaseProvider, envelopeEncryptionService, ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER, objectStorageService, redisSupport);
 
         return Optional.of(CloudDriver.getInstance());
     }

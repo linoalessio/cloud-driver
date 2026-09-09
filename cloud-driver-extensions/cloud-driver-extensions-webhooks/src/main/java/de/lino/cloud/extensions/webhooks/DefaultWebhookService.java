@@ -23,12 +23,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,19 +51,23 @@ public final class DefaultWebhookService implements WebhookService {
     /** Per-request timeout - short enough that a slow/malicious receiver can't tie up a dispatch worker thread for long. */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
 
-    /** How many recent delivery attempts (across every account this process serves) are retained - see {@link #listRecentDeliveries}'s own Javadoc for why this is bounded, in-memory, and non-durable. */
-    private static final int MAX_RETAINED_DELIVERIES = 500;
-
     private final DataFactory dataFactory;
     private final Logger logger;
     private final HttpClient httpClient;
     private final ExecutorService dispatchExecutor;
     private final ScheduledExecutorService retryScheduler;
-    private final Deque<WebhookDeliveryAttempt> recentDeliveries = new ConcurrentLinkedDeque<>();
+
+    /**
+     * The bounded delivery-attempt history {@link #listRecentDeliveries} reads from - still an
+     * in-memory ring buffer on the read path, but written through to Redis when this deployment
+     * has one, so it survives a restart. See {@link WebhookDeliveryLog}'s own Javadoc.
+     */
+    private final WebhookDeliveryLog deliveryLog;
 
     public DefaultWebhookService(@NotNull final DataFactory dataFactory, @NotNull final Logger logger) {
         this.dataFactory = dataFactory;
         this.logger = logger;
+        this.deliveryLog = new WebhookDeliveryLog(logger);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(REQUEST_TIMEOUT)
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
@@ -138,7 +139,7 @@ public final class DefaultWebhookService implements WebhookService {
         final Set<String> ownedWebhookIds = ownedSubscriptions(authUserId).stream()
                 .map(WebhookSubscription::getId)
                 .collect(java.util.stream.Collectors.toSet());
-        return this.recentDeliveries.stream()
+        return this.deliveryLog.snapshot().stream()
                 .filter(attempt -> ownedWebhookIds.contains(attempt.webhookId()))
                 .toList();
     }
@@ -239,14 +240,16 @@ public final class DefaultWebhookService implements WebhookService {
         }
     }
 
-    /** Appends one attempt to {@link #recentDeliveries}, trimming the oldest entry past {@link #MAX_RETAINED_DELIVERIES} - a simple, unbounded-growth-safe ring buffer. */
+    /** Appends one attempt to {@link #deliveryLog}, which owns both the bound and the write-through to Redis. */
     private void recordAttempt(final String webhookId, final WebhookEventType eventType, final String targetId,
                                 final int attemptNumber, final boolean succeeded, final Integer statusCode) {
-        this.recentDeliveries.addLast(new WebhookDeliveryAttempt(
+        this.deliveryLog.record(new WebhookDeliveryAttempt(
                 webhookId, eventType, targetId, System.currentTimeMillis(), attemptNumber, succeeded, statusCode));
-        while (this.recentDeliveries.size() > MAX_RETAINED_DELIVERIES) {
-            this.recentDeliveries.pollFirst();
-        }
+    }
+
+    /** @return whether {@link #deliveryLog} is currently persisting attempts - read by {@code CloudWebhooksExtension} purely to say so at startup */
+    boolean isDeliveryHistoryDurable() {
+        return this.deliveryLog.isDurable();
     }
 
     /** Computes the lowercase-hex HMAC-SHA256 of {@code body} under {@code secret}. */

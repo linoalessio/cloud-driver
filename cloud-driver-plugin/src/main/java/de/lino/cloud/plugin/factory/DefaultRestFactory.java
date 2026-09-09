@@ -23,7 +23,9 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
+import de.lino.database.database.notification.RedisCounterService;
 import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -331,6 +333,18 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final long DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS = 60L;
     /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
     private static final long API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
+    /**
+     * Redis key prefix {@link #requireWithinAuthRateLimit}'s counters live under, once a {@link
+     * RedisSupport} is available - see {@link #incrementRedisWindow} for how these are counted and
+     * expired. Distinct from {@link #API_RATE_LIMIT_REDIS_KEY_PREFIX} so the two limiters can never
+     * share a counter for the same identity, exactly as their two separate in-process bucket maps
+     * already cannot.
+     */
+    private static final String AUTH_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:auth:";
+    /** Redis key prefix {@link #requireWithinApiRateLimit}'s {@code READ}-class counters live under - see {@link #AUTH_RATE_LIMIT_REDIS_KEY_PREFIX}. */
+    private static final String API_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:api-read:";
+    /** {@link #incrementRedisWindow}'s return value meaning "Redis is unavailable or the command failed - fall back to the in-process bucket". */
+    private static final long REDIS_WINDOW_UNAVAILABLE = -1L;
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
     private static final String ADMIN_PATH_PREFIX = "/admin/";
     /** Path mounted by {@link #start} for {@link #handleListAuthUsers}/{@link #handleGetAuthUser}. */
@@ -1018,9 +1032,21 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (!ctx.path().startsWith(AUTH_PATH_PREFIX) || ME_PATH.equals(ctx.path())) {
             return;
         }
-        final long windowMillis = resolveAuthRateLimitWindowSeconds() * 1000L;
-        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(resolveRateLimitKey(ctx), ignored -> new AuthRateLimitBucket());
+        final long windowSeconds = resolveAuthRateLimitWindowSeconds();
+        final long windowMillis = windowSeconds * 1000L;
+        final String identity = resolveRateLimitKey(ctx);
         final int maxRequests = resolveAuthRateLimitMaxRequests();
+
+        final long redisCount = incrementRedisWindow(AUTH_RATE_LIMIT_REDIS_KEY_PREFIX + identity, windowSeconds);
+        if (redisCount != REDIS_WINDOW_UNAVAILABLE) {
+            if (redisCount > maxRequests) {
+                throw new TooManyRequestsResponse(
+                        "Too many authentication requests from this address - try again later");
+            }
+            return;
+        }
+
+        final AuthRateLimitBucket bucket = this.authRateLimitBuckets.computeIfAbsent(identity, ignored -> new AuthRateLimitBucket());
         synchronized (bucket) {
             final long now = System.currentTimeMillis();
             if (now - bucket.windowStartEpochMillis >= windowMillis) {
@@ -1098,9 +1124,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (ctx.method() != HandlerType.GET && ctx.method() != HandlerType.HEAD) {
             return;
         }
-        final long windowMillis = resolveApiRateLimitReadWindowSeconds() * 1000L;
+        final long windowSeconds = resolveApiRateLimitReadWindowSeconds();
+        final long windowMillis = windowSeconds * 1000L;
         final int maxRequests = resolveApiRateLimitReadMaxRequests();
         final String bucketKey = resolveApiRateLimitIdentity(ctx);
+
+        final long redisCount = incrementRedisWindow(API_RATE_LIMIT_REDIS_KEY_PREFIX + bucketKey, windowSeconds);
+        if (redisCount != REDIS_WINDOW_UNAVAILABLE) {
+            if (redisCount > maxRequests) {
+                throw new TooManyRequestsResponse("Too many requests - try again later");
+            }
+            return;
+        }
+
         final ApiRateLimitBucket bucket = this.apiRateLimitBuckets.computeIfAbsent(bucketKey, ignored -> new ApiRateLimitBucket());
         synchronized (bucket) {
             final long now = System.currentTimeMillis();
@@ -1126,6 +1162,47 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static String resolveApiRateLimitIdentity(final Context ctx) {
         final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
         return userId != null ? "user:" + userId : "ip:" + resolveRateLimitKey(ctx);
+    }
+
+    /**
+     * Counts one hit against {@code key}'s shared, Redis-backed fixed window, if this deployment
+     * has a reachable Redis - the distributed equivalent of the {@link AuthRateLimitBucket}/{@link
+     * ApiRateLimitBucket} maps, and what makes a rate limit survive a process restart and stay
+     * correct across more than one instance, neither of which a per-process {@link
+     * ConcurrentHashMap} can do.
+     *
+     * <p>Delegates to {@link RedisCounterService#incrementAndGetWithExpiry} rather than a
+     * read-then-write against a Redis key: that operation increments and - only on the first hit of
+     * a fresh window - arms the window's TTL in one atomic step, so concurrent callers can neither
+     * lose a count nor each re-arm the TTL and extend the window indefinitely. Window rollover is
+     * therefore Redis' own key expiry rather than the explicit {@code now - windowStart >= window}
+     * check the in-process buckets do, but the resulting semantics are the same fixed window
+     * (including the same documented ~2x burst allowance right at a boundary).
+     *
+     * <p><b>Fails open to the in-process path, never to the caller.</b> A Redis blip mid-request
+     * returns {@link #REDIS_WINDOW_UNAVAILABLE} so the caller falls back to its own bucket map,
+     * rather than surfacing a {@code 500} for a request that has nothing wrong with it - the same
+     * "optional infrastructure degrades, it does not break the request" reasoning {@code
+     * DefaultContentScanService}'s own fail-open behavior already applies. The trade-off, accepted
+     * deliberately: while Redis is down, each instance counts independently again, so a
+     * multi-instance deployment briefly allows up to {@code instances x limit}. That is strictly
+     * better than the pre-Redis behavior, which allowed exactly that at all times.
+     *
+     * @param key the fully-prefixed Redis counter key to increment
+     * @param windowSeconds the window length, armed as {@code key}'s TTL on the window's first hit
+     * @return the count after this hit, or {@link #REDIS_WINDOW_UNAVAILABLE} if Redis isn't
+     *     configured, wasn't reachable at boot, or failed on this call
+     */
+    private static long incrementRedisWindow(final String key, final long windowSeconds) {
+        final RedisSupport redisSupport = CloudDriver.getInstance().getFactoryContainer().getRedisSupport();
+        if (redisSupport == null) {
+            return REDIS_WINDOW_UNAVAILABLE;
+        }
+        try {
+            return redisSupport.counterService().incrementAndGetWithExpiry(key, windowSeconds);
+        } catch (final Exception redisFailed) {
+            return REDIS_WINDOW_UNAVAILABLE;
+        }
     }
 
     /** Same sweep shape as {@link #maybeSweepAuthRateLimitBuckets}, applied to {@link #apiRateLimitBuckets}/{@link #lastApiRateLimitSweepEpochMillis} instead. */

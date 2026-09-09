@@ -69,10 +69,15 @@ public interface WebhookService {
     List<WebhookSubscriptionSummary> listWebhooks(@NotNull String authUserId);
 
     /**
-     * Lists the most recent delivery attempts across all of {@code authUserId}'s webhooks
-     * (implementations may bound how many are retained - purely in-memory/informational, not a
-     * durable audit trail; lost on restart, the same trade-off {@code InMemorySearchIndexService}
-     * already accepts for the same reason).
+     * Lists the most recent delivery attempts across all of {@code authUserId}'s webhooks.
+     * Implementations may bound how many are retained, and this is informational rather than a
+     * durable audit trail - {@code AuditLogService}/{@code AuditEvent} remain the persisted,
+     * envelope-encrypted trail for anything that genuinely needs one.
+     *
+     * <p>Whether history survives a restart is an implementation/deployment property, not a
+     * contract: {@code DefaultWebhookService} keeps it in a bounded in-memory ring buffer and
+     * additionally writes through to Redis when {@code IFactoryContainer#getRedisSupport()} is
+     * available, so a caller must not assume either that history is durable or that it is lost.
      *
      * @param authUserId the account whose delivery history to list
      * @return the most recent {@link WebhookDeliveryAttempt}s, newest first

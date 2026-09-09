@@ -30,6 +30,10 @@ public class CloudWebhooksExtension extends Extension {
     @Override
     public void onRunning(final String[] args) {
         this.cloudDriver().getTerminal().displayApproved("&3Webhooks &bready &7- dispatching upload/delete/share events to subscribed URLs");
+        this.cloudDriver().getTerminal().displayApproved(
+                this.webhookService.isDeliveryHistoryDurable()
+                        ? "&3Webhook delivery history &bpersisted &7to Redis - survives a restart"
+                        : "&3Webhook delivery history &ein-process only &7- no Redis configured, history is lost on restart");
     }
 
     /** Shuts {@link #webhookService}'s dispatch workers down, if it was ever built. */

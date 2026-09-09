@@ -2,6 +2,7 @@ package de.lino.cloud.api.factory.container;
 
 import de.lino.cloud.api.event.database.FileChangeListenerRegistry;
 import de.lino.cloud.api.factory.*;
+import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import org.jetbrains.annotations.Nullable;
 
@@ -71,5 +72,18 @@ public interface IFactoryContainer {
      * @return the {@link FileChangeListenerRegistry}, never {@code null}
      */
     FileChangeListenerRegistry getFileChangeListenerRegistry();
+
+    /**
+     * Returns the optional Redis facet, or {@code null} if this deployment has no reachable Redis
+     * configured - the same fixed-for-the-container's-lifetime, opt-in contract {@link
+     * #getObjectStorageService()} carries, and like it, every caller must handle {@code null} by
+     * falling back to its own in-process behavior rather than failing. See {@link RedisSupport}'s
+     * own Javadoc for what belongs behind this facet, and in particular what must never be stored
+     * through it.
+     *
+     * @return the {@link RedisSupport}, or {@code null} if Redis isn't configured or wasn't reachable at boot
+     */
+    @Nullable
+    RedisSupport getRedisSupport();
 
 }

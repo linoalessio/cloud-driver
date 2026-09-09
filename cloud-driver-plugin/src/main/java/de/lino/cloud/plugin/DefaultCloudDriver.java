@@ -17,6 +17,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.security.rest.ApiKey;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
@@ -137,18 +138,45 @@ public final class DefaultCloudDriver extends CloudDriver {
      * @return the installed instance
      */
     @NotNull
-    public static synchronized CloudDriver setInstance(
+    public static CloudDriver setInstance(
             @NotNull final DatabaseProvider databaseProvider,
             @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
             @NotNull final ConnectivityChecker connectivityChecker,
             @Nullable final ObjectStorageService objectStorageService
+    ) {
+        return setInstance(databaseProvider, envelopeEncryptionService, connectivityChecker, objectStorageService, null);
+    }
+
+    /**
+     * Same as {@link #setInstance(DatabaseProvider, EnvelopeEncryptionService, ConnectivityChecker,
+     * ObjectStorageService)}, with an explicit {@link RedisSupport} backing {@link
+     * IFactoryContainer#getRedisSupport()} - {@code null} (every other overload's default) leaves
+     * every Redis-backed behavior falling back to its in-process equivalent.
+     *
+     * @param databaseProvider the backing {@code database-driver-plugin} provider
+     * @param envelopeEncryptionService encrypts/decrypts entities before persistence, and - if
+     *     {@code objectStorageService} is non-{@code null} - a file's content independently before
+     *     it's handed to that object store
+     * @param connectivityChecker backs {@link #getConnectivityChecker()} and {@link DefaultFileFactory}
+     * @param objectStorageService backs {@link DefaultFileFactory}'s optional S3-backed content
+     *     path, or {@code null} to keep every file inline (this deployment's default)
+     * @param redisSupport the optional Redis facet, or {@code null} if this deployment has none
+     * @return the installed instance
+     */
+    @NotNull
+    public static synchronized CloudDriver setInstance(
+            @NotNull final DatabaseProvider databaseProvider,
+            @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
+            @NotNull final ConnectivityChecker connectivityChecker,
+            @Nullable final ObjectStorageService objectStorageService,
+            @Nullable final RedisSupport redisSupport
     ) {
 
         final Terminal terminal = new Terminal(new DefaultPromptProvider());
         final Logger logger = Logger.getLogger(CloudDriver.class.getSimpleName());
         terminal.attachLogging(logger);
 
-        final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker, objectStorageService);
+        final IFactoryContainer factoryContainer = new FactoryContainer(databaseProvider, envelopeEncryptionService, connectivityChecker, objectStorageService, redisSupport);
         final IServiceContainer serviceContainer = new ServiceContainer();
 
         final DefaultCloudDriver instance = new DefaultCloudDriver(
@@ -198,6 +226,14 @@ public final class DefaultCloudDriver extends CloudDriver {
         }
 
         this.runShutdownStep("DataFactory", this.factoryContainer.getDataFactory()::shutdown);
+
+        // Released after the DataFactory rather than alongside it: Redis backs no entity
+        // persistence at all (see RedisSupport's own Javadoc), so nothing torn down above can
+        // still need it, and closing it earlier would only widen the window where an in-flight
+        // request's rate-limit check hits an already-closed pool and falls back to in-process
+        // counting for no reason.
+        final RedisSupport redisSupport = this.factoryContainer.getRedisSupport();
+        if (redisSupport != null) this.runShutdownStep("RedisSupport", redisSupport::shutdown);
 
         if (this.terminal != null && this.terminal.isActive())
             this.runShutdownStep("Terminal", this.terminal::shutdown);
