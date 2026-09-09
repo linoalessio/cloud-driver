@@ -47,8 +47,7 @@ the host OS's own package manager and bound to loopback.
 flowchart LR
     PUSH["Push / PR"] --> CI["Build checks:<br/>Maven · Swift · Python ×2 · Qodana"]
     REL["GitHub Release created"] --> PUB["maven-publish.yml →<br/>GitHub Packages"]
-    OP["Operator, by hand"] --> DEP["deploy-cloud.sh →<br/>server upload + restart"]
-    CI -.->|"never deploys"| DEP
+    OP["Operator, by hand — CI never deploys"] --> DEP["deploy-cloud.sh →<br/>server upload + restart"]
 ```
 
 Six GitHub Actions workflows exist (`.github/workflows/`) — five automatic checks plus one
