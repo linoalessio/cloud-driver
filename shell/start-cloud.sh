@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Starts cloud-driver-bootstrap-1.0.6.jar inside a detached `screen` session
+# Starts cloud-driver-bootstrap-1.0.7.jar inside a detached `screen` session
 # named "cloud_driver". If the process ever exits - crash or otherwise - it
 # is restarted after a 3 second countdown. Re-running this script while the
 # session is already running is a no-op.
@@ -33,7 +33,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAR_NAME="cloud-driver-bootstrap-1.0.6.jar"
+JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
 SESSION_NAME="cloud_driver"
 JVM_XMX="${JVM_XMX:-6g}"
 
