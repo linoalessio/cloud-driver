@@ -441,7 +441,7 @@ Every other key (SMTP/SES, S3, metrics, rate limits, trash retention, ClamAV, se
 6. Start the backend **from inside that directory** (paths resolve against the working dir):
 
    ```bash
-   cd run && java -Xmx4g -jar cloud-driver-bootstrap-1.0.6.jar
+   cd run && java -Xmx6g -jar cloud-driver-bootstrap-1.0.6.jar
    ```
 
 7. Point a client at it (the apps hardcode their server URL — see
@@ -721,7 +721,7 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 - The backend deploys as **one shaded jar plus its extension jars to a single server** — there is
   no Docker/Kubernetes/containerized deployment. Operator-local shell scripts (untracked, since
   they hardcode server details) upload the build and run it in a detached, auto-restarting
-  session with an explicit heap size (`-Xmx4g` on the reference deployment).
+  session with an explicit heap size (`-Xmx6g` on the reference deployment).
 - Put a TLS-terminating reverse proxy in front of the REST port; keep the metrics port
   loopback-only or firewalled.
 - The optional companion processes (`clamd`, Redis, the Python intelligence service) run as

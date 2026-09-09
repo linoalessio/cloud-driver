@@ -343,16 +343,22 @@ concurrency level.
 Not a hard requirement, but grounded in two real incidents hit on the reference deployment worth
 planning around:
 
-- **JVM heap**: launch with an explicit `-Xmx` (the reference deployment uses `-Xmx4g` on a 7.7 GB
+- **JVM heap**: launch with an explicit `-Xmx` (the reference deployment uses `-Xmx6g` on a 7.7 GB
   box, via `JVM_XMX` in `shell/start-cloud.sh`). Without one, JVM ergonomics can cap the heap far
   below what's actually free, and a single large upload needs several simultaneous in-memory copies
   of its content before it reaches the database — a real `OutOfMemoryError` was hit on this exact
-  gap persisting a ~195 MB file with no `-Xmx` set.
+  gap persisting a ~195 MB file with no `-Xmx` set. Separately, the persistence layer caches every
+  table's rows in memory for the process's whole lifetime, so the **resident heap floor grows with
+  total database size** — a second real `OutOfMemoryError` boot crash-loop was hit at ~3 GB of
+  stored payload under `-Xmx4g` (2026-09-09; see [troubleshooting.md](troubleshooting.md)). Size
+  `-Xmx` above the database's total payload size, and re-check as data grows.
+- **Swap**: the reference deployment adds a 4 GB swapfile as a kernel-OOM safety net — with the
+  heap floor above, an unswapped box this size has little headroom left for spikes.
 - **`clamav-daemon`**, once its signature database is loaded, resides at roughly 700 MB–1 GB —
   budget for this on top of the JVM's own `-Xmx` if content scanning is enabled.
-- **Total**: the reference deployment runs comfortably on 7.7 GB RAM with `-Xmx4g` + `clamd` +
-  Postgres all co-located, but headroom is genuinely tight (~2.6 GB "available" per `free -h`) —
-  don't add further memory-hungry services to the same box without re-checking.
+- **Total**: the reference deployment runs on 7.7 GB RAM + 4 GB swap with `-Xmx6g` + `clamd` +
+  Postgres all co-located, and headroom is genuinely tight — don't add further memory-hungry
+  services to the same box without re-checking.
 
 ---
 

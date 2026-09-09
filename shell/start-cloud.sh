@@ -4,7 +4,7 @@
 # named "cloud_driver". If the process ever exits - crash or otherwise - it
 # is restarted after a 3 second countdown. Re-running this script while the
 # session is already running is a no-op.
-# JVM_XMX (default 4g, see below) is passed as -Xmx explicitly - without it, the
+# JVM_XMX (default 6g, see below) is passed as -Xmx explicitly - without it, the
 # JVM's default heap-sizing ergonomics only claim ~1/4 of the machine's total RAM
 # (confirmed 2026-09-01: ~2 GB on a 7.7 GB box), which is not enough headroom for
 # a large file upload: persisting a StoredFile currently needs several separate,
@@ -16,6 +16,16 @@
 # A ~195 MB upload OOM'd (`java.lang.OutOfMemoryError: Java heap space` inside
 # Gson's JsonWriter, mid-persist) against the previous, unset default.
 #
+# Raised 4g -> 6g on 2026-09-09: boot loads every table's rows into the in-memory
+# entry cache, and StoredFile alone had grown past 3 GB of payload, which no
+# longer fit under 4g even after database-driver 1.3.14 made that load streaming
+# (before 1.3.14 the JDBC driver additionally buffered the whole table up front,
+# which is what actually OOM-crashed boot in a restart loop - the visible symptom
+# was "Unexpected packet type: 102" from a connection the dying JVM left
+# half-read). The entry cache holds the full table contents for the process's
+# whole lifetime, so the resident heap floor grows with the database; a 4 GB
+# swapfile was added the same day as the kernel-OOM safety net.
+#
 # Usage: ./start-cloud.sh            (from the directory containing the jar)
 #        screen -r cloud_driver      (to attach and watch/interact with it)
 #        screen -d cloud_driver      (to detach again, Ctrl-A d also works)
@@ -25,7 +35,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR_NAME="cloud-driver-bootstrap-1.0.6.jar"
 SESSION_NAME="cloud_driver"
-JVM_XMX="${JVM_XMX:-4g}"
+JVM_XMX="${JVM_XMX:-6g}"
 
 run_loop() {
     cd "$SCRIPT_DIR" || exit 1
