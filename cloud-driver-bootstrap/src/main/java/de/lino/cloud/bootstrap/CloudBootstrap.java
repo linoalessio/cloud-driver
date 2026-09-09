@@ -25,6 +25,7 @@ import de.lino.cloud.auth.entity.StoredFileOwnership;
 import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
+import de.lino.cloud.plugin.file.PendingPresignedUploadPurgeScheduler;
 import de.lino.cloud.plugin.file.PendingUploadScheduler;
 import de.lino.cloud.plugin.file.TrashPurgeScheduler;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
@@ -84,6 +85,8 @@ public final class CloudBootstrap {
                     , startPendingUploadScheduler()
 
                     , startTrashPurgeScheduler()
+
+                    , startPresignedUploadPurgeScheduler()
 
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
 
@@ -272,6 +275,40 @@ public final class CloudBootstrap {
         trashPurgeScheduler.start(Duration.ofDays(1));
 
         return trashPurgeScheduler::shutdown;
+    }
+
+    /**
+     * Starts a {@link PendingPresignedUploadPurgeScheduler} on its own ticker thread, cleaning up
+     * abandoned presigned-upload tickets (and their orphaned S3 objects) - see that class's own
+     * Javadoc for the real gap this closes (a client abandoning a presigned upload used to leave
+     * its S3 object permanently orphaned, with nothing anywhere tracking or cleaning it up).
+     *
+     * <p>Unlike {@link #startTrashPurgeScheduler()}, this is wired in and started unconditionally
+     * (whenever {@link ObjectStorageService} is configured at all) - no operator sign-off on the
+     * retention window is needed first, since a wrong (too short) window here has a bounded,
+     * non-catastrophic failure mode rather than {@code TrashPurgeScheduler}'s "permanent, silent
+     * data loss" one. See {@link PendingPresignedUploadPurgeScheduler}'s own Javadoc for why.
+     *
+     * <p>A no-op (returns a no-op shutdown action) if this deployment hasn't configured {@link
+     * ObjectStorageService} at all - presigned uploads don't exist without one either, so there is
+     * never anything for this scheduler to find.
+     *
+     * @return the scheduler's shutdown action, or a no-op if S3-backed storage isn't configured
+     */
+    private static Runnable startPresignedUploadPurgeScheduler() {
+
+        final ObjectStorageService objectStorageService = CLOUD_DRIVER.getFactoryContainer().getObjectStorageService();
+        if (objectStorageService == null) {
+            return () -> {};
+        }
+
+        final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
+
+        final PendingPresignedUploadPurgeScheduler presignedUploadPurgeScheduler =
+                PendingPresignedUploadPurgeScheduler.withConfiguredRetention(dataFactory, objectStorageService);
+        presignedUploadPurgeScheduler.start(Duration.ofHours(1));
+
+        return presignedUploadPurgeScheduler::shutdown;
     }
 
     /**

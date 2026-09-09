@@ -50,6 +50,7 @@ import de.lino.cloud.auth.entity.PublicShareLink;
 import de.lino.cloud.auth.entity.SharedFileGrant;
 import de.lino.cloud.auth.entity.SharedFolderGrant;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
+import de.lino.cloud.auth.pending.PendingPresignedUpload;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -859,6 +860,13 @@ public final class CloudUserService implements ICloudUserService {
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final String fileId = UUID.randomUUID().toString();
+        // Fixed a real gap (2026-09-09): this method used to persist nothing at all, so a client
+        // that abandoned the upload after this point (crash, closed app, network failure, or
+        // simply never calling completePresignedUpload) left its already-uploaded S3 object
+        // permanently orphaned - nothing anywhere ever tracked or cleaned it up. Best-effort: a
+        // failure to persist this tracking row must never block the upload ticket itself from
+        // being issued, since real uploads working is more important than this cleanup mechanism.
+        trackPendingPresignedUploadQuietly(fileId, authUserId);
         return new PresignedUploadTicket(fileId, presignedTransferService.presignUpload(fileId, sizeBytes, PRESIGNED_URL_EXPIRY));
     }
 
@@ -908,6 +916,12 @@ public final class CloudUserService implements ICloudUserService {
 
         this.updateCloudUserBytesUsage(authUserId, realSizeBytes);
         recordMetric(MetricsRecorder::recordUploadSuccess);
+
+        // The real StoredFile now exists, so this ticket is no longer "abandoned" no matter what
+        // happens next - best-effort only, since PendingPresignedUploadPurgeScheduler's own
+        // real-StoredFile-existence check (see that class's Javadoc) already protects against
+        // ever deleting this file's content even if this particular delete happens to fail.
+        untrackPendingPresignedUploadQuietly(fileId);
 
         // Fixed a real bug (2026-09-08, reported as "uploaded file never shows up in Search"):
         // this method used to skip every one of uploadFile(...)'s own audit/search/webhook hooks
@@ -976,7 +990,7 @@ public final class CloudUserService implements ICloudUserService {
      * so it never masks the real {@link UploadQuotaExceededException}/database failure the caller
      * is already about to throw.
      */
-    private static void deleteOrphanedPresignedObjectQuietly(final PresignedTransferService presignedTransferService, final String fileId) {
+    private void deleteOrphanedPresignedObjectQuietly(final PresignedTransferService presignedTransferService, final String fileId) {
         try {
             presignedTransferService.deleteObject(fileId);
         } catch (final ObjectStorageException cleanupFailed) {
@@ -984,6 +998,50 @@ public final class CloudUserService implements ICloudUserService {
                     Level.WARNING,
                     "@CloudUserService: failed to delete orphaned presigned-upload object for file '" + fileId + "'", cleanupFailed
             );
+        }
+        // The object (if it ever existed) is gone either way - drop the tracking row now rather
+        // than waiting for PendingPresignedUploadPurgeScheduler's own retention window to elapse.
+        untrackPendingPresignedUploadQuietly(fileId);
+    }
+
+    /**
+     * Persists a {@link PendingPresignedUpload} row so {@code PendingPresignedUploadPurgeScheduler}
+     * (cloud-driver-plugin) can eventually notice and clean up this ticket's S3 object if the
+     * upload is ever abandoned - see that class's Javadoc, and {@link PendingPresignedUpload}'s
+     * own Javadoc, for the full mechanism this closes a gap in. Best-effort: a failure to persist
+     * this bookkeeping row must never block {@link #beginPresignedUpload} from returning a usable
+     * ticket - a real upload succeeding matters more than this cleanup mechanism working.
+     *
+     * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}
+     * @param authUserId the account the ticket was issued to
+     */
+    private void trackPendingPresignedUploadQuietly(final String fileId, final String authUserId) {
+        try {
+            this.dataFactory.register(new PendingPresignedUpload(fileId, authUserId, System.currentTimeMillis()));
+        } catch (final DatabaseClientException | KeyWrapException trackingFailed) {
+            CloudDriver.getInstance().getLogger().log(
+                    Level.WARNING,
+                    "@CloudUserService: failed to persist PendingPresignedUpload tracking row for file '" + fileId + "'", trackingFailed
+            );
+        }
+    }
+
+    /**
+     * Deletes the {@link PendingPresignedUpload} tracking row for {@code fileId}, if any - called
+     * once an upload attempt under that id is no longer "abandoned" one way or another (either it
+     * completed successfully, or it was rolled back and its S3 object already removed). Best-effort:
+     * a failure here never blocks the caller, since {@code PendingPresignedUploadPurgeScheduler}
+     * only ever deletes an S3 object after independently confirming no real {@code StoredFile}
+     * exists under the same id - a stale tracking row surviving this delete is a wasted future
+     * lookup, never a data-loss risk.
+     *
+     * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}
+     */
+    private void untrackPendingPresignedUploadQuietly(final String fileId) {
+        try {
+            this.dataFactory.delete(fileId, PendingPresignedUpload.class);
+        } catch (final DatabaseClientException alreadyGoneOrOther) {
+            // best-effort only - see this method's own Javadoc
         }
     }
 
