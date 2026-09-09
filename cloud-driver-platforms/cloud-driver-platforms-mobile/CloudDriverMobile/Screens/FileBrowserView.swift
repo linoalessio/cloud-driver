@@ -837,40 +837,72 @@ struct FileBrowserView: View {
         }
     }
 
-    /// Replaces the normal folder listing entirely while `isSearching` - a global search across
-    /// every file the caller owns, never scoped to the currently-browsed folder. Tapping a result
-    /// navigates straight to its containing folder, the same destination a normal row tap reaches.
-    private var searchResultsOverlay: some View {
-        ZStack {
-            CloudTheme.backgroundGradient
-            if !viewModel.isSearchAvailable {
-                VStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 32))
-                        .foregroundStyle(CloudTheme.textSecondary)
-                    Text("Search isn't available on this server")
-                        .foregroundStyle(CloudTheme.textSecondary)
+    /// Mode picker shown above the search results.
+    ///
+    /// Two genuinely different searches, chosen explicitly rather than merged: **Name & content**
+    /// matches literal text, **Meaning** matches semantically, so "invoice from the garage" can
+    /// find a file called `scan_0042.pdf`. Hidden entirely - not shown disabled - on a deployment
+    /// that does not run semantic search, since an option that can never work here is noise.
+    @ViewBuilder
+    private var searchModePicker: some View {
+        if viewModel.isSemanticSearchAvailable {
+            Picker("Search mode", selection: Binding(
+                get: { viewModel.isSemanticSearchEnabled },
+                set: { enabled in
+                    Task { await viewModel.setSemanticSearch(enabled, query: searchText) }
                 }
-            } else if viewModel.isSearchLoading {
-                ProgressView().tint(.white)
-            } else if viewModel.searchResults.isEmpty {
+            )) {
+                Text("Name & content").tag(false)
+                Text("Meaning").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+    }
+
+    /// The result list itself, for whichever search mode is active.
+    @ViewBuilder
+    private var searchResultsContent: some View {
+        if !viewModel.isSearchAvailable {
+            Spacer()
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 32))
+                    .foregroundStyle(CloudTheme.textSecondary)
+                Text("Search isn't available on this server")
+                    .foregroundStyle(CloudTheme.textSecondary)
+            }
+            Spacer()
+        } else if viewModel.isSearchLoading {
+            Spacer()
+            ProgressView().tint(.white)
+            Spacer()
+        } else if viewModel.isSemanticSearchEnabled {
+            if viewModel.semanticSearchResults.isEmpty {
+                Spacer()
                 Text("No matches for \u{201c}\(searchText)\u{201d}")
                     .foregroundStyle(CloudTheme.textSecondary)
+                Spacer()
             } else {
                 ScrollView {
-                    CloudCard(icon: "magnifyingglass", iconColor: CloudTheme.accent, title: "Results", subtitle: itemCountText(viewModel.searchResults.count)) {
+                    CloudCard(icon: "sparkle.magnifyingglass", iconColor: CloudTheme.accent, title: "Results", subtitle: itemCountText(viewModel.semanticSearchResults.count)) {
                         VStack(spacing: 0) {
-                            ForEach(Array(viewModel.searchResults.enumerated()), id: \.element.id) { index, result in
+                            ForEach(Array(viewModel.semanticSearchResults.enumerated()), id: \.element.id) { index, result in
                                 Button {
                                     searchText = ""
-                                    viewModel.openSearchResult(result)
+                                    viewModel.openSemanticSearchResult(result)
                                 } label: {
                                     CloudRow(
                                         icon: "doc.fill",
                                         iconColor: CloudTheme.iconFile,
                                         title: result.fileName,
-                                        subtitle: result.folderId == nil ? "Home" : nil,
-                                        showDivider: index != viewModel.searchResults.count - 1
+                                        // The score is shown because a semantic list has no natural
+                                        // cut-off: every entry matched to some degree, so how
+                                        // strongly is the only thing separating a real hit from a
+                                        // weak one.
+                                        subtitle: "\(Int(result.score * 100))% match" + (result.folderId == nil ? " · Home" : ""),
+                                        showDivider: index != viewModel.semanticSearchResults.count - 1
                                     ) { EmptyView() }
                                 }
                                 .buttonStyle(.plain)
@@ -881,6 +913,49 @@ struct FileBrowserView: View {
                     .padding(.top, 8)
                 }
                 .scrollIndicators(.hidden)
+            }
+        } else if viewModel.searchResults.isEmpty {
+            Spacer()
+            Text("No matches for \u{201c}\(searchText)\u{201d}")
+                .foregroundStyle(CloudTheme.textSecondary)
+            Spacer()
+        } else {
+            ScrollView {
+                CloudCard(icon: "magnifyingglass", iconColor: CloudTheme.accent, title: "Results", subtitle: itemCountText(viewModel.searchResults.count)) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(viewModel.searchResults.enumerated()), id: \.element.id) { index, result in
+                            Button {
+                                searchText = ""
+                                viewModel.openSearchResult(result)
+                            } label: {
+                                CloudRow(
+                                    icon: "doc.fill",
+                                    iconColor: CloudTheme.iconFile,
+                                    title: result.fileName,
+                                    subtitle: result.folderId == nil ? "Home" : nil,
+                                    showDivider: index != viewModel.searchResults.count - 1
+                                ) { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    /// Replaces the normal folder listing entirely while `isSearching` - a global search across
+    /// every file the caller owns, never scoped to the currently-browsed folder. Tapping a result
+    /// navigates straight to its containing folder, the same destination a normal row tap reaches.
+    private var searchResultsOverlay: some View {
+        ZStack {
+            CloudTheme.backgroundGradient
+            VStack(spacing: 0) {
+                searchModePicker
+                searchResultsContent
             }
         }
     }

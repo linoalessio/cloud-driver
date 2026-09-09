@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -597,6 +598,15 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
  * current folder, matching the server route's own scope), debounced ~400ms after the last
  * keystroke (see [AppViewModel.updateSearchQuery]) so a network call doesn't fire on every
  * keystroke. Clicking a result navigates straight to its containing folder and closes the overlay.
+ *
+ * Two modes, chosen explicitly by the user rather than by the app. **Name & content** matches
+ * literal text; **Meaning** matches semantically, so "invoice from the garage" can find a file
+ * called `scan_0042.pdf`. They are genuinely different searches - not a better and a worse one -
+ * which is why both are offered rather than silently merged: merging two differently-scored result
+ * lists would produce an ordering neither engine actually vouches for.
+ *
+ * The Meaning option is hidden entirely on a deployment that does not run semantic search, rather
+ * than shown-and-disabled: an option that can never work on this server is noise, not information.
  */
 @Composable
 private fun SearchDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
@@ -608,17 +618,69 @@ private fun SearchDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
                 OutlinedTextField(
                     value = viewModel.searchQuery,
                     onValueChange = { viewModel.updateSearchQuery(it) },
-                    label = { Text("File name or content") },
+                    label = { Text(if (viewModel.semanticSearchEnabled) "Describe what you're looking for" else "File name or content") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                     trailingIcon = { if (viewModel.searchInFlight) CircularProgressIndicator(modifier = Modifier.size(18.dp)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                if (!viewModel.semanticSearchUnavailable) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FilterChip(
+                            selected = !viewModel.semanticSearchEnabled,
+                            onClick = { viewModel.changeSemanticSearchEnabled(false) },
+                            label = { Text("Name & content") },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(
+                            selected = viewModel.semanticSearchEnabled,
+                            onClick = { viewModel.changeSemanticSearchEnabled(true) },
+                            label = { Text("Meaning") },
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(12.dp))
+                val semantic = viewModel.semanticSearchEnabled
+                val resultCount = if (semantic) viewModel.semanticSearchResults.size else viewModel.searchResults.size
                 when {
                     viewModel.searchUnavailable -> Text("Search isn't available on this server.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    viewModel.searchQuery.isBlank() -> Text("Type to search every file you own.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    viewModel.searchResults.isEmpty() && !viewModel.searchInFlight -> Text("No matches.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    viewModel.searchQuery.isBlank() -> Text(
+                        if (semantic) "Describe what a file is about - the words don't have to appear in it."
+                        else "Type to search every file you own.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    resultCount == 0 && !viewModel.searchInFlight -> Text("No matches.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    semantic -> {
+                        LazyColumn(Modifier.weight(1f)) {
+                            items(viewModel.semanticSearchResults, key = { it.storedFileId() }) { result ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.openSemanticSearchResult(result) }
+                                        .padding(vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(result.fileName())
+                                        Text(
+                                            // The score is shown because a semantic list has no
+                                            // natural cut-off: unlike a keyword match, every entry
+                                            // matched to some degree, so how strongly is the only
+                                            // thing distinguishing a real hit from a weak one.
+                                            "${(result.score() * 100).toInt()}% match  ·  " + (result.folderId()?.let { "In a folder" } ?: "In Home"),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                     else -> {
                         LazyColumn(Modifier.weight(1f)) {
                             items(viewModel.searchResults, key = { it.storedFileId() }) { result ->

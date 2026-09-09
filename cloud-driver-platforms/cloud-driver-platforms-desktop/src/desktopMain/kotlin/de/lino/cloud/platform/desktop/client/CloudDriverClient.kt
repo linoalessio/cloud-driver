@@ -13,7 +13,10 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.MessageResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MetricsSnapshotResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page
 import de.lino.cloud.platform.rest.api.dto.Dtos.PublicFileLinkSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.DuplicateFileGroupResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.SemanticSearchResultResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.TagSuggestionResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
@@ -423,6 +426,25 @@ class CloudDriverClient(
     /** Searches every file the caller owns by name/content (not scoped to the current folder), at most [limit] results. Throws (`ApiException`, `503`) if `cloud-driver-extensions-search` isn't running on this deployment. */
     suspend fun search(query: String, limit: Int = 25): List<SearchResultResponse> =
         this.apiClient.searchAsync(query, limit).await()
+
+    /**
+     * Searches by *meaning* rather than by literal text, so "invoice from the garage" can surface
+     * a file named `scan_0042.pdf`. Complements [search] rather than replacing it - the two find
+     * genuinely different things.
+     *
+     * Throws (`ApiException`, `503`) if `cloud-driver-extensions-intelligence` isn't running on
+     * this deployment, which callers treat as "fall back to [search]" rather than as an error.
+     */
+    suspend fun semanticSearch(query: String, limit: Int = 25): List<SemanticSearchResultResponse> =
+        this.apiClient.semanticSearchAsync(query, limit).await()
+
+    /** Groups the caller's files into sets that look like the same document. See [DuplicateFileGroupResponse] on why this is a suggestion, not a fact. */
+    suspend fun findDuplicates(minimumSimilarity: Double = 0.95, limit: Int = 50): List<DuplicateFileGroupResponse> =
+        this.apiClient.findDuplicatesAsync(minimumSimilarity, limit).await()
+
+    /** Suggests descriptive labels for one file - relative confidences against a fixed vocabulary, never a probability. */
+    suspend fun suggestFileTags(fileId: String, limit: Int = 5): List<TagSuggestionResponse> =
+        this.apiClient.suggestFileTagsAsync(fileId, limit).await()
 
     // --- activity feed -------------------------------------------------------
 

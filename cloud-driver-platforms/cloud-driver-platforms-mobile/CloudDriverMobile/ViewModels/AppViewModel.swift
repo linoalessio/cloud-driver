@@ -448,6 +448,35 @@ final class AppViewModel: ObservableObject {
     /// of silently showing nothing on every keystroke.
     @Published var isSearchAvailable = true
 
+    /// Whether the search field is currently in semantic mode.
+    ///
+    /// Keyword and semantic search answer genuinely different questions - one matches literal
+    /// text, the other matches meaning - so this is an explicit user choice, not something the app
+    /// decides. Running both on every keystroke was considered and rejected: it doubles request
+    /// volume on an already-debounced per-keystroke path, and merging two differently-scored lists
+    /// produces an ordering neither engine actually vouches for.
+    @Published var isSemanticSearchEnabled = false
+
+    /// `false` once semantic search has answered `503` on this deployment.
+    ///
+    /// Sticky for the session on purpose: the answer cannot change without the server being
+    /// reconfigured, so re-asking on every keystroke would be pure waste. It also hides the mode
+    /// picker entirely, since an option that can never work here is noise rather than information.
+    @Published var isSemanticSearchAvailable = true
+
+    /// Semantic hits for the current query, scored - populated only while `isSemanticSearchEnabled`.
+    @Published var semanticSearchResults: [SemanticSearchResultResponse] = []
+
+    /// Switches search mode and re-runs the current query, so the change is visible immediately
+    /// rather than only on the next keystroke.
+    func setSemanticSearch(_ enabled: Bool, query: String) async {
+        guard !(enabled && !isSemanticSearchAvailable) else { return }
+        isSemanticSearchEnabled = enabled
+        searchResults = []
+        semanticSearchResults = []
+        await search(query: query)
+    }
+
     /// Runs a global search across every file the caller owns, debounced by the caller
     /// (`FileBrowserView`'s `.task(id:)` on the search text) rather than here, so a fast typist
     /// doesn't fire one request per keystroke. Deliberately not routed through `run` - a search
@@ -463,11 +492,25 @@ final class AppViewModel: ObservableObject {
         isSearchLoading = true
         defer { isSearchLoading = false }
         do {
-            searchResults = try await client.search(query: trimmed, limit: 25)
+            if isSemanticSearchEnabled {
+                semanticSearchResults = try await client.semanticSearch(query: trimmed, limit: 25)
+            } else {
+                searchResults = try await client.search(query: trimmed, limit: 25)
+            }
             isSearchAvailable = true
         } catch APIError.server(503, _) {
-            isSearchAvailable = false
-            searchResults = []
+            if isSemanticSearchEnabled {
+                // Remember it and drop straight back to keyword search, rather than leaving the
+                // user looking at an empty list in a mode this server cannot serve. Re-running
+                // here is what makes the fallback invisible to them.
+                isSemanticSearchAvailable = false
+                isSemanticSearchEnabled = false
+                semanticSearchResults = []
+                await search(query: query)
+            } else {
+                isSearchAvailable = false
+                searchResults = []
+            }
         } catch is CancellationError {
             // A newer keystroke superseded this search - not a user-facing failure.
         } catch {
@@ -479,7 +522,17 @@ final class AppViewModel: ObservableObject {
     /// a result with no `folderId`) - the same destination a normal folder-row tap would reach,
     /// just resolved directly from the result instead of by browsing there.
     func openSearchResult(_ result: SearchResultResponse) {
-        guard let folderId = result.folderId else {
+        openSearchResultFolder(result.folderId)
+    }
+
+    /// Semantic counterpart of `openSearchResult(_:)` - identical navigation, a different result type.
+    func openSemanticSearchResult(_ result: SemanticSearchResultResponse) {
+        openSearchResultFolder(result.folderId)
+    }
+
+    /// Shared navigation for both result kinds.
+    private func openSearchResultFolder(_ folderId: String?) {
+        guard let folderId else {
             goToHomeRoot()
             return
         }

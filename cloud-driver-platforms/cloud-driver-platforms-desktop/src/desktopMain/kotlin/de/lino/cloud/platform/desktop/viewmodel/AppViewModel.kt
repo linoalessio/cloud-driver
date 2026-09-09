@@ -668,6 +668,11 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.searchOverlayOpen = false
         this.searchQuery = ""
         this.searchResults.clear()
+        this.semanticSearchResults.clear()
+        this.semanticSearchEnabled = false
+        // Deliberately NOT cleared: whether this deployment supports semantic search is a property
+        // of the server, not of the session, so re-discovering it on the next login would just
+        // repeat a request whose answer cannot have changed.
         this.screen = Screen.Login
     }
 
@@ -901,6 +906,51 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     var searchUnavailable: Boolean by mutableStateOf(false)
         private set
 
+    /**
+     * Whether the search overlay is currently in semantic mode.
+     *
+     * Keyword and semantic search answer genuinely different questions - one matches literal text,
+     * the other matches meaning - so this is an explicit user choice rather than something the app
+     * decides. Running both on every keystroke was considered and rejected: it doubles the request
+     * volume on a debounced, per-keystroke path, and merging two differently-scored result lists
+     * produces an ordering neither engine actually vouches for.
+     */
+    var semanticSearchEnabled: Boolean by mutableStateOf(false)
+        private set
+
+    /**
+     * `true` once a semantic search has come back `503` on this deployment.
+     *
+     * Sticky for the session on purpose: the answer cannot change without the server being
+     * reconfigured, so re-asking on every keystroke would be pure waste. It also drives the mode
+     * toggle's own disabled state, so the option is not offered where it cannot work.
+     */
+    var semanticSearchUnavailable: Boolean by mutableStateOf(false)
+        private set
+
+    /** Semantic hits for [searchQuery], scored - populated only while [semanticSearchEnabled]. */
+    val semanticSearchResults = mutableStateListOf<de.lino.cloud.platform.rest.api.dto.Dtos.SemanticSearchResultResponse>()
+
+    /**
+     * Switches between keyword and semantic search, re-running the current query in the new mode.
+     *
+     * Falls back to keyword mode immediately if semantic search has already been found unavailable
+     * - offering a mode that cannot work is worse than not offering it.
+     *
+     * Named `change...` rather than `set...` deliberately: `var semanticSearchEnabled by
+     * mutableStateOf(...) private set` already synthesises a `setSemanticSearchEnabled(Boolean)`
+     * JVM method even though its setter is private, so a same-named public function fails
+     * compilation with "Platform declaration clash" - the same trap `changeFolderSortOption`/
+     * `changeFileSortOption` in this class were already named around.
+     */
+    fun changeSemanticSearchEnabled(enabled: Boolean) {
+        if (enabled && this.semanticSearchUnavailable) return
+        this.semanticSearchEnabled = enabled
+        this.searchResults.clear()
+        this.semanticSearchResults.clear()
+        if (this.searchQuery.isNotBlank()) this.updateSearchQuery(this.searchQuery)
+    }
+
     fun openSearchOverlay() {
         this.searchOverlayOpen = true
     }
@@ -909,6 +959,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.searchOverlayOpen = false
         this.searchQuery = ""
         this.searchResults.clear()
+        this.semanticSearchResults.clear()
     }
 
     /**
@@ -933,15 +984,34 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
             this@AppViewModel.searchInFlight = true
             this@AppViewModel.searchUnavailable = false
             try {
-                val results = this@AppViewModel.client.search(trimmed)
-                if (this@AppViewModel.searchQuery == query) {
-                    this@AppViewModel.searchResults.clear()
-                    this@AppViewModel.searchResults.addAll(results)
+                if (this@AppViewModel.semanticSearchEnabled) {
+                    val results = this@AppViewModel.client.semanticSearch(trimmed)
+                    if (this@AppViewModel.searchQuery == query) {
+                        this@AppViewModel.semanticSearchResults.clear()
+                        this@AppViewModel.semanticSearchResults.addAll(results)
+                    }
+                } else {
+                    val results = this@AppViewModel.client.search(trimmed)
+                    if (this@AppViewModel.searchQuery == query) {
+                        this@AppViewModel.searchResults.clear()
+                        this@AppViewModel.searchResults.addAll(results)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: ApiClient.ApiException) {
-                if (e.statusCode() == 503) this@AppViewModel.searchUnavailable = true
+                if (e.statusCode() == 503) {
+                    if (this@AppViewModel.semanticSearchEnabled) {
+                        // Remember it and drop straight back to keyword search rather than leaving
+                        // the user staring at an empty result list in a mode this server cannot
+                        // serve. Re-running here is what makes the fallback invisible to them.
+                        this@AppViewModel.semanticSearchUnavailable = true
+                        this@AppViewModel.semanticSearchEnabled = false
+                        this@AppViewModel.updateSearchQuery(query)
+                    } else {
+                        this@AppViewModel.searchUnavailable = true
+                    }
+                }
             } catch (e: Exception) {
                 // Best-effort - a failed search just leaves the previous results showing.
             } finally {
@@ -950,10 +1020,19 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         }
     }
 
+    /** Semantic counterpart of [openSearchResult] - identical navigation, a different result type. */
+    fun openSemanticSearchResult(result: de.lino.cloud.platform.rest.api.dto.Dtos.SemanticSearchResultResponse) {
+        this.navigateToFolderOfResult(result.folderId())
+    }
+
     /** Navigates to a search result's containing folder (root if `null`) and closes the search overlay - the result itself isn't flashed/selected, opening the right folder is enough to find it. */
     fun openSearchResult(result: de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse) {
+        this.navigateToFolderOfResult(result.folderId())
+    }
+
+    /** Shared navigation for both result kinds - closes the overlay, then opens the containing folder. */
+    private fun navigateToFolderOfResult(folderId: String?) {
         this.closeSearchOverlay()
-        val folderId = result.folderId()
         if (folderId == null) {
             this.navigateToBreadcrumb(-1)
         } else {

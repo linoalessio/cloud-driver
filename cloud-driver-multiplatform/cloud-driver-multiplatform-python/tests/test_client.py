@@ -374,3 +374,102 @@ def test_file_and_global_activity_feed_pagination(client: CloudDriverClient) -> 
     assert page.items[0].action == "FILE_UPLOAD"
     assert page.next_cursor is None
     assert global_page.items == []
+
+
+# --------------------------------------------------------------- semantic search / duplicates / tags
+
+
+@respx.mock
+def test_semantic_search_parses_scores(client: CloudDriverClient) -> None:
+    route = respx.get(f"{BASE_URL}/search/semantic").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"storedFileId": "f1", "fileName": "scan_0042.pdf", "folderId": None, "score": 0.81},
+                {"storedFileId": "f2", "fileName": "notes.txt", "folderId": "fold-1", "score": 0.42},
+            ],
+        )
+    )
+
+    results = client.semantic_search("Rechnung Autowerkstatt", limit=5)
+
+    assert [r.stored_file_id for r in results] == ["f1", "f2"]
+    assert results[0].score == pytest.approx(0.81)
+    assert results[1].folder_id == "fold-1"
+    assert route.calls.last.request.url.params["q"] == "Rechnung Autowerkstatt"
+    assert route.calls.last.request.url.params["limit"] == "5"
+
+
+@respx.mock
+def test_semantic_search_unavailable_raises_so_a_caller_can_fall_back(client: CloudDriverClient) -> None:
+    """A 503 must be distinguishable from "nothing matched" - that is what makes fallback possible."""
+    from cloud_driver_client import ServiceUnavailableError
+
+    respx.get(f"{BASE_URL}/search/semantic").mock(
+        return_value=httpx.Response(503, json={"message": "not running"})
+    )
+    with pytest.raises(ServiceUnavailableError):
+        client.semantic_search("anything")
+
+
+@respx.mock
+def test_find_duplicates_parses_groups(client: CloudDriverClient) -> None:
+    route = respx.get(f"{BASE_URL}/files/duplicates").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "files": [
+                        {"storedFileId": "a", "fileName": "invoice.pdf", "folderId": None},
+                        {"storedFileId": "b", "fileName": "invoice (1).pdf", "folderId": None},
+                    ],
+                    "similarity": 0.97,
+                }
+            ],
+        )
+    )
+
+    groups = client.find_duplicates(minimum_similarity=0.9, limit=10)
+
+    assert len(groups) == 1
+    assert [f.stored_file_id for f in groups[0].files] == ["a", "b"]
+    assert groups[0].similarity == pytest.approx(0.97)
+    assert route.calls.last.request.url.params["minimumSimilarity"] == "0.9"
+
+
+@respx.mock
+def test_find_duplicates_defaults_to_a_high_threshold(client: CloudDriverClient) -> None:
+    """A low default would group everything sharing a topic - worse than returning nothing."""
+    route = respx.get(f"{BASE_URL}/files/duplicates").mock(return_value=httpx.Response(200, json=[]))
+    client.find_duplicates()
+    assert float(route.calls.last.request.url.params["minimumSimilarity"]) >= 0.9
+
+
+@respx.mock
+def test_suggest_file_tags_parses_suggestions(client: CloudDriverClient) -> None:
+    respx.get(f"{BASE_URL}/files/f1/tags").mock(
+        return_value=httpx.Response(
+            200, json=[{"tag": "invoice", "confidence": 0.63}, {"tag": "receipt", "confidence": 0.55}]
+        )
+    )
+
+    suggestions = client.suggest_file_tags("f1", limit=2)
+
+    assert [s.tag for s in suggestions] == ["invoice", "receipt"]
+    assert suggestions[0].confidence == pytest.approx(0.63)
+
+
+@respx.mock
+def test_suggest_file_tags_empty_is_not_an_error(client: CloudDriverClient) -> None:
+    """A never-indexed file has no vector to compare - "no suggestions" is a real answer."""
+    respx.get(f"{BASE_URL}/files/f1/tags").mock(return_value=httpx.Response(200, json=[]))
+    assert client.suggest_file_tags("f1") == []
+
+
+@respx.mock
+def test_suggest_file_tags_inaccessible_file_is_a_404(client: CloudDriverClient) -> None:
+    respx.get(f"{BASE_URL}/files/other/tags").mock(
+        return_value=httpx.Response(404, json={"message": "No StoredFile with id other"})
+    )
+    with pytest.raises(NotFoundError):
+        client.suggest_file_tags("other")
