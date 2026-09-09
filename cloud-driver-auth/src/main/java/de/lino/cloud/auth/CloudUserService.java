@@ -25,10 +25,13 @@ import de.lino.cloud.api.file.PublicFileLinkSummary;
 import de.lino.cloud.api.file.ScanStatus;
 import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.scan.ContentScanService;
+import de.lino.cloud.api.intelligence.DuplicateFileGroup;
+import de.lino.cloud.api.intelligence.DuplicateGroup;
 import de.lino.cloud.api.intelligence.IntelligenceDocument;
 import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.intelligence.SemanticMatch;
 import de.lino.cloud.api.intelligence.SemanticSearchResult;
+import de.lino.cloud.api.intelligence.TagSuggestion;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.search.SearchDocument;
@@ -1374,6 +1377,10 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.shareFile: failed to persist grant for " + fileId + " to " + granteeEmail, e);
         }
         dispatchWebhookEvent(ownerAuthUserId, WebhookEventType.FILE_SHARED, fileId);
+        // Keeps the vector store's ownership hint current across sharing changes - see
+        // refreshIntelligenceOwner's own Javadoc for why that matters now that duplicate
+        // detection is scoped per account, and why it never was a search-security issue.
+        refreshIntelligenceOwner(fileId, ownerAuthUserId);
     }
 
     /**
@@ -1394,6 +1401,8 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.revokeFileShare: failed to revoke grant for " + fileId + " from " + granteeEmail, e);
         }
+        // The counterpart to shareFile's own refresh - see refreshIntelligenceOwner.
+        refreshIntelligenceOwner(fileId, ownerAuthUserId);
     }
 
     /**
@@ -2515,6 +2524,94 @@ public final class CloudUserService implements ICloudUserService {
             results.add(new SemanticSearchResult(match.storedFileId(), fileName, candidate.folderId(), match.score()));
         }
         return List.copyOf(results);
+    }
+
+    /**
+     * Refreshes {@code storedFileId}'s recorded owner in the vector store, if an {@link
+     * IntelligenceService} is published - a no-op otherwise, and never throwing, matching every
+     * other intelligence hook in this class.
+     *
+     * <h2>Why this exists, and what it deliberately is not</h2>
+     *
+     * The vector store records an owner as a <b>hint</b>. It was previously never refreshed after
+     * indexing, which was flagged as a "missing share-revocation hook" - but for search that was
+     * always a non-issue and remains one: a search ranks only the ids the caller's own
+     * authoritative pre-filter offers, so the hint has never been able to widen anyone's access,
+     * however stale it got.
+     *
+     * <p>What changed is that duplicate detection now exists and is scoped per account. The hint
+     * still cannot leak a file - candidate ids are supplied by the same pre-filter - but a store
+     * whose ownership metadata drifts is a store no maintenance job can reason about. Refreshing
+     * it here is cheap (no re-embedding, just metadata) and keeps that from happening.
+     */
+    private static void refreshIntelligenceOwner(final String storedFileId, final String ownerAuthUserId) {
+        try {
+            final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+            if (intelligenceService != null) intelligenceService.refreshOwnerAsync(storedFileId, ownerAuthUserId);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see indexFileForIntelligence's own Javadoc.
+        }
+    }
+
+    /**
+     * See {@link ICloudUserService#findDuplicateFiles}'s Javadoc - and {@link
+     * IntelligenceService}'s own security-invariant section, which this method enforces in the
+     * same two stages {@link #semanticSearch} does.
+     *
+     * <p>Stage 2 is stricter here than for a search: a group whose members do not <em>all</em>
+     * survive re-validation is not returned with the survivors, it is rebuilt from them and then
+     * dropped entirely if fewer than two remain. Returning a partial group would assert a
+     * duplicate relationship that this method can no longer actually vouch for.
+     */
+    @NonNull
+    @Override
+    public List<DuplicateFileGroup> findDuplicateFiles(@NonNull final String authUserId, final double minimumSimilarity, final int limit) {
+        final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+        if (intelligenceService == null || limit <= 0) return List.of();
+
+        // Stage 1 - the pre-filter.
+        final Map<String, AccessibleFile> accessible = this.accessibleFiles(authUserId);
+        if (accessible.size() < 2) return List.of();
+
+        final List<DuplicateGroup> groups = intelligenceService.findDuplicates(accessible.keySet(), minimumSimilarity, limit);
+
+        // Stage 2 - the post-check. Never assume a returned id was one of the candidates.
+        final List<DuplicateFileGroup> results = new ArrayList<>();
+        for (final DuplicateGroup group : groups) {
+            final List<DuplicateFileGroup.Entry> entries = new ArrayList<>();
+            for (final String storedFileId : group.storedFileIds()) {
+                final AccessibleFile candidate = accessible.get(storedFileId);
+                if (candidate == null) continue;
+                try {
+                    this.checkFileAccess(authUserId, storedFileId);
+                } catch (final RuntimeException accessDenied) {
+                    continue;
+                }
+                final String fileName = candidate.fileName() != null ? candidate.fileName()
+                        : this.findStoredFileMetadata(storedFileId).map(StoredFile::fileName).orElse(null);
+                if (fileName == null) continue;
+                entries.add(new DuplicateFileGroup.Entry(storedFileId, fileName, candidate.folderId()));
+            }
+            if (entries.size() >= 2) results.add(new DuplicateFileGroup(List.copyOf(entries), group.similarity()));
+        }
+        return List.copyOf(results);
+    }
+
+    /**
+     * See {@link ICloudUserService#suggestFileTags}'s Javadoc.
+     *
+     * <p>Access is established <b>before</b> the backing service is contacted at all, via the same
+     * {@link #requireFileAccess} every {@code /files} response uses - so an unauthorized caller
+     * never even causes a lookup against the vector store, and the content-scan gate applies here
+     * exactly as it does to a download.
+     */
+    @NonNull
+    @Override
+    public List<TagSuggestion> suggestFileTags(@NonNull final String authUserId, @NonNull final String storedFileId, final int limit) {
+        this.requireFileAccess(authUserId, storedFileId, "suggestFileTags");
+        final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+        if (intelligenceService == null || limit <= 0) return List.of();
+        return intelligenceService.suggestTags(storedFileId, limit);
     }
 
     /**

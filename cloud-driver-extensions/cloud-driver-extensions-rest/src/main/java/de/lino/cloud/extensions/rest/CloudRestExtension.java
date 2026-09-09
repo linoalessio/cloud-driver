@@ -146,6 +146,12 @@ public class CloudRestExtension extends Extension {
         this.cloudDriver().getServiceContainer().setAuthService(authService);
         this.cloudDriver().getServiceContainer().setCloudUserService(cloudUserService);
         this.cloudDriver().getServiceContainer().setAuditLogService(auditLogService);
+        // Published so an operator can verify mail delivery without registering a real account to
+        // trigger it. Which sender was resolved is a silent three-way fallback (SES, then SMTP,
+        // then a LoggingEmailSender that delivers nothing at all), so a deployment can look
+        // entirely healthy while every verification e-mail it "sends" goes to a log file - a
+        // failure mode this project has already paid for in production.
+        this.cloudDriver().getServiceContainer().setEmailSender(emailSender);
 
         // Lets GET /files/{id}/content stream a direct-transfer file's content straight from S3
         // instead of resolving it as a byte[] first - see DefaultRestFactory#resolveDownloadableContent.
@@ -161,6 +167,14 @@ public class CloudRestExtension extends Extension {
         // DatabaseWatchEvent#handle (cloud-driver-api, no dependency on this module) can reach it
         // purely through IServiceContainer without cloud-driver-api ever depending on Javalin.
         this.cloudDriver().getServiceContainer().setLiveUpdatePublisher(restFactory);
+
+        // Rate-limit control, published the same way and for the same structural reason as the
+        // live-update publisher directly above: the limiter state that matters lives on THIS
+        // JWT-gated instance, not on the unauthenticated RestFactory reachable via
+        // IFactoryContainer#getRestFactory(). Without this there is no way to clear an exhausted
+        // window short of waiting it out or restarting the process - which is how a real user
+        // ended up locked out of login after ordinary Dashboard use consumed the shared budget.
+        this.cloudDriver().getServiceContainer().setRateLimitAdmin(restFactory);
 
         // AuthUser and StoredFile are deliberately NOT mounted here at all - both are entities
         // with no Owned scoping (AuthUser has no ownership concept, it IS the account; StoredFile's

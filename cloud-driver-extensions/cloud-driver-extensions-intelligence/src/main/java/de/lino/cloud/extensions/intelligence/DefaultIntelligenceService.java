@@ -1,8 +1,10 @@
 package de.lino.cloud.extensions.intelligence;
 
+import de.lino.cloud.api.intelligence.DuplicateGroup;
 import de.lino.cloud.api.intelligence.IntelligenceDocument;
 import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.intelligence.SemanticMatch;
+import de.lino.cloud.api.intelligence.TagSuggestion;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -72,9 +74,13 @@ final class DefaultIntelligenceService implements IntelligenceService {
         };
     }
 
-    /** @return {@code true} if the Python service answered its health probe - used only for a startup log line. */
+    /**
+     * @return {@code true} if the Python service answered its health probe with a usable embedding
+     * backend - used for {@code CloudIntelligenceExtension}'s startup line. Identical to {@link
+     * #isServiceHealthy()}, kept as the package-private name that extension already calls.
+     */
     boolean isServiceReachable() {
-        return this.httpClient.isHealthy();
+        return this.isServiceHealthy();
     }
 
     /** Shuts {@link #executor}/{@link #retryScheduler} down - called by {@code CloudIntelligenceExtension#onEnding}/{@code #onException}. */
@@ -120,6 +126,69 @@ final class DefaultIntelligenceService implements IntelligenceService {
             // Not retried - see this class's own Javadoc.
             this.logger.log(Level.WARNING, "@DefaultIntelligenceService: semantic search failed - returning no results", searchFailed);
             return List.of();
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void refreshOwnerAsync(@NotNull final String storedFileId, @NotNull final String ownerAuthUserId) {
+        try {
+            this.executor.execute(() -> performRefreshOwner(storedFileId, ownerAuthUserId));
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see IntelligenceService's own Javadoc.
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Synchronous and never retried, exactly like {@link #search}: a caller is waiting on it,
+     * and an empty result is a serviceable answer.
+     */
+    @NotNull
+    @Override
+    public List<DuplicateGroup> findDuplicates(@NotNull final Collection<String> candidateFileIds,
+                                               final double minimumSimilarity, final int limit) {
+        if (candidateFileIds.isEmpty() || limit <= 0) return List.of();
+        try {
+            return this.httpClient.findDuplicates(candidateFileIds, minimumSimilarity, limit);
+        } catch (final IOException | IntelligenceServiceException | RuntimeException failed) {
+            this.logger.log(Level.WARNING, "@DefaultIntelligenceService: duplicate detection failed - returning no groups", failed);
+            return List.of();
+        }
+    }
+
+    /** {@inheritDoc} Synchronous and never retried, for the same reason as {@link #findDuplicates}. */
+    @NotNull
+    @Override
+    public List<TagSuggestion> suggestTags(@NotNull final String storedFileId, final int limit) {
+        if (limit <= 0) return List.of();
+        try {
+            return this.httpClient.suggestTags(storedFileId, limit);
+        } catch (final IOException | IntelligenceServiceException | RuntimeException failed) {
+            this.logger.log(Level.WARNING, "@DefaultIntelligenceService: tag suggestion failed for " + storedFileId, failed);
+            return List.of();
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean isServiceHealthy() {
+        return this.httpClient.isHealthy();
+    }
+
+    /**
+     * Refreshes one file's recorded owner, retrying on the same schedule indexing uses.
+     *
+     * <p>Worth retrying at all - unlike a search - because this is a fire-and-forget correction
+     * with nobody waiting on it, and an owner left stale produces a silently wrong duplicate
+     * grouping later rather than a visible failure now.
+     */
+    private void performRefreshOwner(final String storedFileId, final String ownerAuthUserId) {
+        try {
+            this.httpClient.updateOwner(storedFileId, ownerAuthUserId);
+        } catch (final IOException | IntelligenceServiceException | RuntimeException failed) {
+            this.logger.log(Level.WARNING, "@DefaultIntelligenceService: owner refresh failed for " + storedFileId, failed);
         }
     }
 

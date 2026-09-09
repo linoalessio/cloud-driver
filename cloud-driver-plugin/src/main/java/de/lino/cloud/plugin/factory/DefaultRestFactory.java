@@ -246,6 +246,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final String FILES_SHARED_BY_ME_COUNT_PATH = FILES_PATH + "/shared-by-me/count";
     /**
+     * Path mounted by {@link #start} for {@link #handleFindDuplicates}.
+     *
+     * <p><b>Registered before {@code GET /files/{id}}, and that is load-bearing</b> - a literal
+     * {@code duplicates} in a {@code {id}} slot is exactly the shape that silently broke {@link
+     * #FILES_SHARED_WITH_ME_PATH} for months; see that constant's own Javadoc for the mechanism
+     * (Javalin matches in registration order, with no static-over-param precedence).
+     */
+    private static final String FILES_DUPLICATES_PATH = FILES_PATH + "/duplicates";
+    /** Query parameter name for {@link #handleFindDuplicates}'s cosine-similarity floor. */
+    private static final String MINIMUM_SIMILARITY_QUERY_PARAM = "minimumSimilarity";
+    /**
+     * Default similarity floor when {@link #MINIMUM_SIMILARITY_QUERY_PARAM} is absent. High on
+     * purpose: similarity is not linear in perceived sameness, and a lower floor groups files that
+     * merely share a topic - which, for a feature a user reads as "these are the same document",
+     * is worse than returning nothing.
+     */
+    private static final double DEFAULT_DUPLICATE_SIMILARITY = 0.95d;
+    /** Default group count for {@link #handleFindDuplicates} when {@link #LIMIT_QUERY_PARAM} is absent. */
+    private static final int DEFAULT_DUPLICATE_GROUP_LIMIT = 50;
+    /** Default suggestion count for {@link #handleSuggestFileTags} when {@link #LIMIT_QUERY_PARAM} is absent. */
+    private static final int DEFAULT_TAG_SUGGESTION_LIMIT = 5;
+    /**
      * Path mounted by {@link #start} for {@link #handleBeginPresignedUpload} (presigned
      * direct-to-client transfer). A {@code POST} route, unlike every other constant on this page - no {@code
      * FILES_PATH + "/{id}"} route exists for {@code POST}, only {@code GET}, so this 2-segment
@@ -879,6 +901,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 // coincidence, not because of any framework guarantee.
                 config.routes.get(FILES_SHARED_WITH_ME_PATH, this::handleListFilesSharedWithMe);
                 config.routes.get(FILES_SHARED_BY_ME_COUNT_PATH, this::handleCountFilesSharedByMe);
+                // Same registration-order requirement as the two static paths above - a literal
+                // "duplicates" would otherwise be swallowed by GET /files/{id} as a file id.
+                config.routes.get(FILES_DUPLICATES_PATH, this::handleFindDuplicates);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
                 config.routes.get(FILES_PATH + "/{id}/thumbnail", this::handleGetThumbnail);
@@ -891,6 +916,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_PATH + "/{id}/versions/{versionNumber}/content", this::handleDownloadFileVersion);
                 config.routes.post(FILES_PATH + "/{id}/versions/{versionNumber}/restore", this::handleRestoreFileVersion);
                 config.routes.get(FILES_PATH + "/{id}/activity", this::handleListFileActivity);
+                config.routes.get(FILES_PATH + "/{id}/tags", this::handleSuggestFileTags);
                 config.routes.get(ACTIVITY_PATH, this::handleListActivity);
                 config.routes.get(SEARCH_PATH, this::handleSearch);
                 config.routes.get(SEMANTIC_SEARCH_PATH, this::handleSemanticSearch);
@@ -2911,6 +2937,94 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.semanticSearch(userId, query, limit))
                 .thenAccept(results -> ctx.contentType("application/json").result(this.gson.toJson(results))));
+    }
+
+    /**
+     * {@code GET /files/duplicates?minimumSimilarity=&limit=}: groups the caller's own accessible
+     * files into near-duplicate sets, via {@link
+     * de.lino.cloud.api.user.ICloudUserService#findDuplicateFiles}.
+     *
+     * <p>Routed through {@code CloudUserService} rather than straight to {@link
+     * de.lino.cloud.api.intelligence.IntelligenceService}, for the same reason {@link
+     * #handleSemanticSearch} is - and more strongly: a group asserts a relationship
+     * <em>between</em> two files, so the two-stage access invariant matters more here, not less.
+     *
+     * <p>{@code 503} if {@code cloud-driver-extensions-intelligence} isn't running, so a client
+     * can distinguish "unavailable" from "no duplicates found" - two very different things to show
+     * a user. An out-of-range {@code minimumSimilarity} is a {@code 400}: silently clamping it
+     * would hand back results the caller did not ask for under a threshold they think they set.
+     */
+    private void handleFindDuplicates(@NotNull final Context ctx) {
+        final int limit = resolveDuplicateLimit(ctx);
+        final double minimumSimilarity = resolveMinimumSimilarity(ctx);
+        final String userId = requireUserId(ctx);
+
+        if (CloudDriver.getInstance().getServiceContainer().getIntelligenceService() == null) {
+            throw new ServiceUnavailableResponse("Semantic search extension is not running on this deployment");
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.findDuplicateFiles(userId, minimumSimilarity, limit))
+                .thenAccept(groups -> ctx.contentType("application/json").result(this.gson.toJson(groups))));
+    }
+
+    /**
+     * {@code GET /files/{id}/tags?limit=}: suggests descriptive labels for one file, via {@link
+     * de.lino.cloud.api.user.ICloudUserService#suggestFileTags}.
+     *
+     * <p>Access-checked inside that method (ownership, then a share, then the content-scan gate),
+     * so a caller that cannot read the file gets the same {@code 404} it would from any other
+     * {@code /files/{id}} route rather than a hint that the file exists - which is exactly why
+     * this uses {@code handle} with {@link #notFoundOrPropagate} rather than {@code thenAccept}.
+     *
+     * <p>{@code 503} if the extension isn't running. A file that simply was never indexed returns
+     * an empty array, not an error - "no suggestions" is a perfectly good answer to render.
+     */
+    private void handleSuggestFileTags(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final Integer requestedLimit = parsePageLimit(ctx);
+        final int limit = requestedLimit != null ? requestedLimit : DEFAULT_TAG_SUGGESTION_LIMIT;
+        final String userId = requireUserId(ctx);
+
+        if (CloudDriver.getInstance().getServiceContainer().getIntelligenceService() == null) {
+            throw new ServiceUnavailableResponse("Semantic search extension is not running on this deployment");
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.suggestFileTags(userId, id, limit))
+                .handle((suggestions, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    ctx.contentType("application/json").result(this.gson.toJson(suggestions));
+                    return null;
+                }));
+    }
+
+    /** Resolves the group count for {@link #handleFindDuplicates}: {@link #LIMIT_QUERY_PARAM} if present and valid, otherwise {@link #DEFAULT_DUPLICATE_GROUP_LIMIT}. */
+    private static int resolveDuplicateLimit(final Context ctx) {
+        final Integer limit = parsePageLimit(ctx);
+        return limit != null ? limit : DEFAULT_DUPLICATE_GROUP_LIMIT;
+    }
+
+    /**
+     * Resolves {@link #handleFindDuplicates}'s similarity floor - {@link
+     * #DEFAULT_DUPLICATE_SIMILARITY} when absent, a {@code 400} when present but unparseable or
+     * outside {@code [0, 1]}.
+     */
+    private static double resolveMinimumSimilarity(final Context ctx) {
+        final String raw = ctx.queryParam(MINIMUM_SIMILARITY_QUERY_PARAM);
+        if (raw == null || raw.isBlank()) return DEFAULT_DUPLICATE_SIMILARITY;
+        final double parsed;
+        try {
+            parsed = Double.parseDouble(raw.trim());
+        } catch (final NumberFormatException malformed) {
+            throw new BadRequestResponse("'" + MINIMUM_SIMILARITY_QUERY_PARAM + "' must be a number between 0 and 1");
+        }
+        if (parsed < 0.0d || parsed > 1.0d) {
+            throw new BadRequestResponse("'" + MINIMUM_SIMILARITY_QUERY_PARAM + "' must be between 0 and 1");
+        }
+        return parsed;
     }
 
     /** Resolves the result count for {@link #handleSearch}: {@link #LIMIT_QUERY_PARAM} if present and valid, otherwise {@link #DEFAULT_SEARCH_RESULT_LIMIT}. */

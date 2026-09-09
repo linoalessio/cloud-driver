@@ -104,6 +104,21 @@ public final class DatabaseBackupScheduler {
     private volatile ScheduledFuture<?> scheduledFuture;
 
     /**
+     * Outcome of the most recent cycle, for {@code BackupService#status()}.
+     *
+     * <p>Deliberately in-process only, not persisted: this exists so an operator can ask "did last
+     * night's backup actually run?" of the process that would have run it, and a value read back
+     * from disk after a restart would answer a different question than the one being asked.
+     */
+    private volatile Long lastRunStartedAtEpochMillis;
+    /** When the most recent cycle finished, or {@code null} while one is in flight. */
+    private volatile Long lastRunFinishedAtEpochMillis;
+    /** Whether the most recent finished cycle succeeded. */
+    private volatile boolean lastRunSucceeded;
+    /** A short human-readable summary of the most recent cycle, or {@code null} if none has run. */
+    private volatile String lastRunDetail;
+
+    /**
      * @param credentials         connection details of the PostgreSQL database to back up; a
      *                            dedicated {@link SQLExecution} pool is deliberately built for
      *                            it, see the class Javadoc
@@ -220,15 +235,70 @@ public final class DatabaseBackupScheduler {
             return;
         }
 
+        this.lastRunStartedAtEpochMillis = System.currentTimeMillis();
+        this.lastRunFinishedAtEpochMillis = null;
         try {
             runBackupCycle();
+            this.lastRunSucceeded = true;
+            this.lastRunDetail = "Backup written to " + this.backupRootDirectory;
         } catch (final Throwable throwable) {
+            this.lastRunSucceeded = false;
+            this.lastRunDetail = throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
             CloudDriver.getInstance().getLogger().warning("Backup cycle failed: &c" + throwable.getMessage());
             throwable.printStackTrace();
         } finally {
+            this.lastRunFinishedAtEpochMillis = System.currentTimeMillis();
             this.cycleRunning.set(false);
         }
 
+    }
+
+    /**
+     * Runs one backup cycle immediately, on this scheduler's own worker, without waiting for the
+     * next scheduled tick and without disturbing the schedule.
+     *
+     * <p>Refuses (returning {@code false}) while a cycle is already in flight rather than queuing
+     * a second one - two simultaneous full-database reads are exactly the memory pressure this
+     * deployment has already been bitten by, and the existing {@link #cycleRunning} guard would
+     * make the queued run a no-op anyway, reported as a success it never performed.
+     *
+     * @return {@code true} if a run was started, {@code false} if one was already in flight
+     */
+    public boolean runNow() {
+        if (this.cycleRunning.get()) return false;
+        try {
+            this.scheduledExecutorService.execute(this::tick);
+            return true;
+        } catch (final RuntimeException rejected) {
+            // Already shut down - reported as "not started" rather than thrown, since the one
+            // caller is an operator-facing command that must print a reason, not a stack trace.
+            return false;
+        }
+    }
+
+    /** @return whether a backup cycle is running right now. */
+    public boolean isRunning() {
+        return this.cycleRunning.get();
+    }
+
+    /** @return when the most recent cycle began, or {@code null} if none has run in this process. */
+    public Long lastRunStartedAtEpochMillis() {
+        return this.lastRunStartedAtEpochMillis;
+    }
+
+    /** @return when the most recent cycle finished, or {@code null} if it is still running (or none has run). */
+    public Long lastRunFinishedAtEpochMillis() {
+        return this.lastRunFinishedAtEpochMillis;
+    }
+
+    /** @return whether the most recent finished cycle succeeded - meaningless before one has finished. */
+    public boolean lastRunSucceeded() {
+        return this.lastRunSucceeded;
+    }
+
+    /** @return a short human-readable summary of the most recent cycle, or {@code null} if none has run. */
+    public String lastRunDetail() {
+        return this.lastRunDetail;
     }
 
     /**

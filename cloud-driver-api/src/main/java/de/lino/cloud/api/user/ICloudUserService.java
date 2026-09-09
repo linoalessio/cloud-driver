@@ -2,7 +2,9 @@ package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.intelligence.IntelligenceService;
+import de.lino.cloud.api.intelligence.DuplicateFileGroup;
 import de.lino.cloud.api.intelligence.SemanticSearchResult;
+import de.lino.cloud.api.intelligence.TagSuggestion;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.PresignedUploadTicket;
@@ -977,5 +979,54 @@ public interface ICloudUserService {
      */
     @NonNull
     List<SemanticSearchResult> semanticSearch(@NotNull String authUserId, @NotNull String query, int limit);
+
+    /**
+     * Groups the caller's own accessible files into near-duplicate sets - "you appear to have
+     * stored this document twice", for a human to act on.
+     *
+     * <p>Enforces exactly the same two-stage security invariant {@link #semanticSearch} does, and
+     * for a stronger reason: a group asserts a relationship <em>between</em> two files, so an id
+     * leaking in would reveal more than a stray search hit. Stage 1 supplies only the caller's
+     * authoritative access set as candidates; stage 2 re-checks every returned id and drops any
+     * group left with fewer than two survivors.
+     *
+     * <p><b>Not the same thing as content deduplication.</b> {@code StoredFile}'s existing
+     * deduplication matches an exact SHA-256 of the raw bytes and is a fact; this is a similarity
+     * judgement over meaning, and exists precisely to catch what an exact hash cannot - the same
+     * invoice scanned twice, a document re-exported at another quality.
+     *
+     * <p>Returns an empty list if no {@code IntelligenceService} is published, matching {@link
+     * #semanticSearch}'s own "degrade to no results" contract.
+     *
+     * @param authUserId the account whose files to compare - never another account's
+     * @param minimumSimilarity the cosine-similarity floor every pair in a group must meet, in
+     * {@code [0, 1]}; a sensible value is high (0.9+), since a low one groups everything that
+     * merely shares a topic
+     * @param limit the maximum number of groups to return
+     * @return near-duplicate groups, most similar first; never {@code null}
+     */
+    @NotNull
+    List<DuplicateFileGroup> findDuplicateFiles(@NotNull String authUserId, double minimumSimilarity, int limit);
+
+    /**
+     * Suggests descriptive labels for one file the caller may see.
+     *
+     * <p>Access-checked exactly like {@link #getFile}: ownership first, then a share, then the
+     * content-scan gate - a caller can never get suggestions for a file it cannot read, and a
+     * still-scanning or flagged file yields nothing rather than leaking a description of content
+     * that has not been cleared.
+     *
+     * <p>Returns an empty list if no {@code IntelligenceService} is published or the file was
+     * never indexed. Suggestions are zero-shot against a fixed vocabulary - see {@link
+     * TagSuggestion}'s own Javadoc before rendering their confidence to a user.
+     *
+     * @param authUserId the requesting account
+     * @param storedFileId the file to label
+     * @param limit the maximum number of suggestions to return
+     * @return suggestions, most confident first; never {@code null}
+     * @throws IllegalArgumentException if the file does not exist or the caller cannot access it
+     */
+    @NotNull
+    List<TagSuggestion> suggestFileTags(@NotNull String authUserId, @NotNull String storedFileId, int limit);
 
 }

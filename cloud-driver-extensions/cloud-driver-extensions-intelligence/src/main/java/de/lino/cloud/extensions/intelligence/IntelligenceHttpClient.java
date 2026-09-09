@@ -2,8 +2,10 @@ package de.lino.cloud.extensions.intelligence;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
+import de.lino.cloud.api.intelligence.DuplicateGroup;
 import de.lino.cloud.api.intelligence.IntelligenceDocument;
 import de.lino.cloud.api.intelligence.SemanticMatch;
+import de.lino.cloud.api.intelligence.TagSuggestion;
 
 import java.io.IOException;
 import java.net.URI;
@@ -41,6 +43,9 @@ final class IntelligenceHttpClient {
 
     private final URI indexEndpoint;
     private final URI searchEndpoint;
+    private final URI duplicatesEndpoint;
+    private final URI tagsEndpoint;
+    private final URI healthEndpoint;
     private final String baseUrl;
     private final String sharedSecret;
     private final Duration timeout;
@@ -51,6 +56,9 @@ final class IntelligenceHttpClient {
         this.baseUrl = "http://" + host + ":" + port;
         this.indexEndpoint = URI.create(this.baseUrl + "/index");
         this.searchEndpoint = URI.create(this.baseUrl + "/search");
+        this.duplicatesEndpoint = URI.create(this.baseUrl + "/duplicates");
+        this.tagsEndpoint = URI.create(this.baseUrl + "/tags");
+        this.healthEndpoint = URI.create(this.baseUrl + "/health");
         this.sharedSecret = sharedSecret;
         this.timeout = timeout;
         // HTTP/1.1 is pinned deliberately - do not "modernise" this to the default.
@@ -80,6 +88,30 @@ final class IntelligenceHttpClient {
 
     /** One entry of {@code POST /search}'s response array. */
     private record SearchHit(String fileId, double score) {
+    }
+
+    /** The {@code PATCH /index/{fileId}/owner} request body. */
+    private record UpdateOwnerRequest(String ownerUserId) {
+    }
+
+    /** The {@code POST /duplicates} request body. */
+    private record DuplicatesRequest(Collection<String> candidateFileIds, double minimumSimilarity, int limit) {
+    }
+
+    /** One entry of {@code POST /duplicates}' response array. */
+    private record DuplicateGroupResponse(List<String> storedFileIds, double similarity) {
+    }
+
+    /** The {@code POST /tags} request body. */
+    private record TagsRequest(String fileId, int limit) {
+    }
+
+    /** One entry of {@code POST /tags}' response array. */
+    private record TagSuggestionResponse(String tag, double confidence) {
+    }
+
+    /** The {@code GET /health} response body - only the two fields this client actually acts on. */
+    private record HealthResponse(String status, boolean embeddingsAvailable) {
     }
 
     /**
@@ -138,11 +170,78 @@ final class IntelligenceHttpClient {
                 .toList();
     }
 
-    /** Health probe backing {@code CloudIntelligenceExtension}'s startup log line - never throws, just reports reachability. */
+    /**
+     * Refreshes {@code storedFileId}'s recorded owner without re-embedding its content.
+     *
+     * @throws IOException if the connection itself fails
+     * @throws IntelligenceServiceException if the service answered with a non-2xx status
+     */
+    void updateOwner(final String storedFileId, final String ownerAuthUserId) throws IOException, IntelligenceServiceException {
+        final URI endpoint = URI.create(this.baseUrl + "/index/"
+                + java.net.URLEncoder.encode(storedFileId, StandardCharsets.UTF_8) + "/owner");
+        send(endpoint, "PATCH", this.gson.toJson(new UpdateOwnerRequest(ownerAuthUserId)));
+    }
+
+    /**
+     * Groups {@code candidateFileIds} into near-duplicate sets.
+     *
+     * <p>Like {@link #search}, the returned ids are <b>untrusted</b> and are deliberately not
+     * verified here against {@code candidateFileIds} - the caller's own re-check is the real
+     * guarantee, and validating here would invite the belief that it is not needed.
+     *
+     * @throws IOException if the connection itself fails
+     * @throws IntelligenceServiceException if the service answered with a non-2xx status or an unparseable body
+     */
+    List<DuplicateGroup> findDuplicates(final Collection<String> candidateFileIds, final double minimumSimilarity, final int limit)
+            throws IOException, IntelligenceServiceException {
+        final String responseBody = send(this.duplicatesEndpoint, "POST",
+                this.gson.toJson(new DuplicatesRequest(candidateFileIds, minimumSimilarity, limit)));
+        final DuplicateGroupResponse[] groups;
+        try {
+            groups = this.gson.fromJson(responseBody, DuplicateGroupResponse[].class);
+        } catch (final JsonSyntaxException malformed) {
+            throw new IntelligenceServiceException("Unparseable /duplicates response: " + malformed.getMessage());
+        }
+        if (groups == null) return List.of();
+        return java.util.Arrays.stream(groups)
+                .filter(group -> group != null && group.storedFileIds() != null && group.storedFileIds().size() >= 2)
+                .map(group -> new DuplicateGroup(List.copyOf(group.storedFileIds()), group.similarity()))
+                .toList();
+    }
+
+    /**
+     * Asks for descriptive labels for one already-indexed file.
+     *
+     * @throws IOException if the connection itself fails
+     * @throws IntelligenceServiceException if the service answered with a non-2xx status or an unparseable body
+     */
+    List<TagSuggestion> suggestTags(final String storedFileId, final int limit) throws IOException, IntelligenceServiceException {
+        final String responseBody = send(this.tagsEndpoint, "POST", this.gson.toJson(new TagsRequest(storedFileId, limit)));
+        final TagSuggestionResponse[] suggestions;
+        try {
+            suggestions = this.gson.fromJson(responseBody, TagSuggestionResponse[].class);
+        } catch (final JsonSyntaxException malformed) {
+            throw new IntelligenceServiceException("Unparseable /tags response: " + malformed.getMessage());
+        }
+        if (suggestions == null) return List.of();
+        return java.util.Arrays.stream(suggestions)
+                .filter(suggestion -> suggestion != null && suggestion.tag() != null)
+                .map(suggestion -> new TagSuggestion(suggestion.tag(), suggestion.confidence()))
+                .toList();
+    }
+
+    /**
+     * Health probe backing {@code CloudIntelligenceExtension}'s startup log line and {@code
+     * IntelligenceService#isServiceHealthy()} - never throws, just reports reachability.
+     *
+     * <p>Requires the service to report a usable embedding backend, not merely to answer.
+     * A service that is up but cannot embed produces results indistinguishable from "nothing
+     * matched" - reporting that as healthy would defeat the entire point of probing.
+     */
     boolean isHealthy() {
         try {
-            send(URI.create(this.baseUrl + "/health"), "GET", null);
-            return true;
+            final HealthResponse health = this.gson.fromJson(send(this.healthEndpoint, "GET", null), HealthResponse.class);
+            return health != null && "ok".equalsIgnoreCase(health.status()) && health.embeddingsAvailable();
         } catch (final IOException | IntelligenceServiceException | RuntimeException unreachable) {
             return false;
         }

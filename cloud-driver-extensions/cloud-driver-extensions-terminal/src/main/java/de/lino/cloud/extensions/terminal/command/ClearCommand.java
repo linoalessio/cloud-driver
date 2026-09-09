@@ -36,8 +36,6 @@ public class ClearCommand implements Command {
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
-        final CloudDriver cloudDriver = CloudDriver.getInstance();
-
         this.terminal().clearScreen();
         this.terminal().emptyLine();
         System.out.println(Constraints.CLOUD_DRIVER_BANNER);

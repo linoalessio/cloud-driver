@@ -49,6 +49,11 @@ public class CloudBackupExtension extends Extension {
     public void onRunning(String[] args) {
 
         this.backupScheduler.start();
+        // Published so an operator can take a backup on demand - before a hardReset, a migration,
+        // or a risky deploy - and can see whether the scheduled one has actually been running
+        // rather than silently failing every night. Both are the moments a backup matters most,
+        // and neither was reachable before: this scheduler exposed only start/stop/shutdown.
+        this.cloudDriver().getServiceContainer().setBackupService(new SchedulerBackupService(this.backupScheduler));
 
     }
 

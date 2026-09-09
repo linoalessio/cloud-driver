@@ -14,6 +14,10 @@ dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.30,<1",
     "pydantic>=2,<3",
+    # PDF text extraction is pure-Python, dependency-free and small enough to be worth having
+    # unconditionally: without it every PDF - the single most common document type this service
+    # sees - would fall back to a file-name-only embedding.
+    "pypdf>=4,<7",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +28,22 @@ embeddings = ["sentence-transformers>=3,<6"]
 # The real vector store. Same reasoning: without it the service falls back to InMemoryVectorStore,
 # which is functionally complete but lost on restart (fine for tests, not for a deployment).
 store = ["chromadb>=0.5,<2"]
-dev = ["pytest>=8", "httpx>=0.27,<1"]
+# At-rest encryption of stored vectors (CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY). Optional only
+# because enabling encryption is itself opt-in - but note the failure posture differs from every
+# other extra here: a configured key with this extra missing makes the service refuse to persist
+# at all rather than silently write plaintext vectors to disk. See crypto.py.
+encryption = ["cryptography>=42,<46"]
+# PDF text-layer extraction. Small and pure-Python, so it is also part of the default install
+# below - listed separately so a deployment can reason about it explicitly.
+pdf = ["pypdf>=4,<7"]
+# OCR for images and scanned PDFs. Needs a *system* tesseract binary (plus a data pack per
+# language) that pip cannot install, and pdf2image additionally needs poppler - which is why this
+# is off by default even once installed (CLOUD_DRIVER_INTELLIGENCE_OCR).
+ocr = ["pytesseract>=0.3,<1", "Pillow>=10,<12", "pdf2image>=1.17,<2"]
+# Multimodal image embeddings, so a text query can match a photo's content rather than its name
+# alone. A second model in memory (~600 MB) - hence off by default.
+clip = ["sentence-transformers>=3,<6", "Pillow>=10,<12"]
+dev = ["pytest>=8", "httpx>=0.27,<1", "cryptography>=42,<46", "pypdf>=4,<7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cloud_driver_intelligence"]

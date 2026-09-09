@@ -1,7 +1,8 @@
-"""The FastAPI application - four endpoints, no persistence beyond the vector store.
+"""The FastAPI application.
 
-Read :mod:`cloud_driver_intelligence` (the package docstring) before changing ``/search``: the one
-invariant this whole service is built around is that it never decides what a user may see.
+Read :mod:`cloud_driver_intelligence` (the package docstring) before changing ``/search`` or
+``/duplicates``: the one invariant this whole service is built around is that it never decides
+what a user may see.
 """
 
 from __future__ import annotations
@@ -12,10 +13,27 @@ import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 
-from .embeddings import embedding_model, extract_embeddable_text
-from .models import HealthResponse, IndexRequest, SearchHit, SearchRequest
+from .config import settings
+from .embeddings import (
+    clip_model,
+    embedding_model,
+    encode_image_vector,
+    extract_embeddable_text,
+    tag_vocabulary,
+)
+from .models import (
+    DuplicateGroupResponse,
+    DuplicatesRequest,
+    HealthResponse,
+    IndexRequest,
+    SearchHit,
+    SearchRequest,
+    TagSuggestionResponse,
+    TagsRequest,
+    UpdateOwnerRequest,
+)
 from .security import require_shared_secret
-from .store import create_store
+from .store import KIND_IMAGE, KIND_TEXT, create_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,27 +47,42 @@ app = FastAPI(
 store = create_store()
 
 
+def _cosine(left: list[float], right: list[float]) -> float:
+    """Dot product, which *is* cosine similarity here - every vector is L2-normalised on encode."""
+    return sum(a * b for a, b in zip(left, right))
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Liveness/readiness probe - the only unauthenticated endpoint.
 
-    Deliberately exempt from the shared secret: the Java bridge calls this at startup purely to log
-    whether this service is reachable, and it reveals nothing an operator with network access to
-    this port could not already infer from the port being open. It reports whether the embedding
-    backend and persistent store actually loaded, so a half-configured deployment (service up,
-    optional extras missing) is visible directly rather than inferred from silently empty searches.
+    Deliberately exempt from the shared secret: the Java bridge calls this to log whether this
+    service is reachable, and it reveals nothing an operator with network access to this port
+    could not already infer from the port being open.
+
+    Reports each optional capability separately, because every one of them fails *silently* when
+    absent - a missing embedding backend, an unencrypted store and a disabled image model all look
+    identical from the outside to "nothing matched". This endpoint is the only place that
+    distinguishes them.
     """
     return HealthResponse(
         status="ok",
         embeddingsAvailable=embedding_model.available,
         persistentStore=store.persistent,
+        encryptedStore=store.encrypted,
+        imageEmbeddingsAvailable=clip_model is not None and clip_model.available,
         indexedDocuments=store.count(),
     )
 
 
 @app.post("/index", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_shared_secret)])
 async def index(request: IndexRequest) -> Response:
-    """Embed one file and store its vector, replacing any vector previously held for the same id.
+    """Embed one file and store its vector(s), replacing anything previously held for the same id.
+
+    Two vectors may result: a text vector (always, built from the file name plus whatever the
+    extractors in :mod:`.embeddings` can pull out) and - for an image, when CLIP is enabled - an
+    image vector in a *separate* space. They are stored under separate modalities and never
+    compared with each other.
 
     Answers ``204`` even when no embedding backend is available: the Java bridge would otherwise
     retry three times and log a ``SEVERE`` give-up for every single upload on a deployment that
@@ -64,13 +97,38 @@ async def index(request: IndexRequest) -> Response:
         _LOGGER.debug("No embedding backend available - not indexing %s", request.fileId)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    store.upsert(request.fileId, request.ownerUserId, vectors[0])
+    store.upsert(request.fileId, request.ownerUserId, vectors[0], KIND_TEXT)
+
+    image_vector = encode_image_vector(request.contentType, content)
+    if image_vector is not None:
+        store.upsert(request.fileId, request.ownerUserId, image_vector, KIND_IMAGE)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.patch(
+    "/index/{file_id}/owner",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_shared_secret)],
+)
+async def update_owner(file_id: str, request: UpdateOwnerRequest) -> Response:
+    """Refresh a stored entry's recorded owner without re-embedding anything.
+
+    Exists so the Java side can keep this store's ownership hint current across sharing changes at
+    negligible cost. Note what it is *not*: the recorded owner still never gates a search, which
+    loads only the ids a caller explicitly offers. Where it does matter is ``/duplicates``, whose
+    results a human reads as "these files are the same" - a stale owner there produces a wrong
+    grouping rather than a leaked one, but wrong is reason enough.
+
+    Idempotent on absence, matching ``DELETE /index/{file_id}``.
+    """
+    store.update_owner(file_id, request.ownerUserId)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.delete("/index/{file_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_shared_secret)])
 async def delete_index(file_id: str) -> Response:
-    """Remove one file's vector.
+    """Remove every vector held for one file, across all modalities.
 
     Idempotent on absence - deleting a file that was never indexed is a ``204``, not a ``404``,
     matching ``ObjectStorageService#deleteObject``'s own contract on the Java side, since the caller
@@ -93,6 +151,11 @@ async def search(request: SearchRequest) -> list[SearchHit]:
 
     The Java caller re-checks every returned id regardless (see its ``IntelligenceService``
     Javadoc). Both halves are required; neither is a reason to relax the other.
+
+    When CLIP is enabled a file may be scored twice - once against its text vector and once
+    against its image vector, each within its own vector space - and keeps the higher score. A
+    photo therefore competes on what it *depicts* as well as on what it is called, without image
+    and text similarities ever being compared across spaces.
     """
     if not request.candidateFileIds or not request.queryText.strip():
         return []
@@ -100,20 +163,123 @@ async def search(request: SearchRequest) -> list[SearchHit]:
     query_vectors = embedding_model.encode([request.queryText])
     if query_vectors is None:
         return []
-    query_vector = query_vectors[0]
 
-    candidates = store.vectors_for(request.candidateFileIds)
-    if not candidates:
-        return []
+    best: dict[str, float] = {}
+    for file_id, vector in store.vectors_for(request.candidateFileIds, KIND_TEXT).items():
+        best[file_id] = _cosine(query_vectors[0], vector)
 
-    # Both sides are L2-normalised (see EmbeddingModel.encode), so a dot product *is* the cosine
-    # similarity - no division, no per-vector normalisation needed here.
-    scored = [
-        SearchHit(fileId=file_id, score=sum(a * b for a, b in zip(query_vector, vector)))
-        for file_id, vector in candidates.items()
-    ]
+    if clip_model is not None:
+        clip_query = clip_model.encode([request.queryText])
+        if clip_query is not None:
+            for file_id, vector in store.vectors_for(request.candidateFileIds, KIND_IMAGE).items():
+                score = _cosine(clip_query[0], vector)
+                if score > best.get(file_id, float("-inf")):
+                    best[file_id] = score
+
+    scored = [SearchHit(fileId=file_id, score=score) for file_id, score in best.items()]
     scored.sort(key=lambda hit: hit.score, reverse=True)
     return scored[: request.limit]
+
+
+@app.post(
+    "/duplicates",
+    response_model=list[DuplicateGroupResponse],
+    dependencies=[Depends(require_shared_secret)],
+)
+async def duplicates(request: DuplicatesRequest) -> list[DuplicateGroupResponse]:
+    """Group ``candidateFileIds`` into sets whose vectors are near-identical.
+
+    Bound by exactly the same structural restriction as :func:`search`, for a stronger reason: a
+    group asserts a relationship *between* two files, so an id that leaked in would say more than
+    a stray search hit would. Only the offered ids are ever loaded.
+
+    **Near-duplicate, not duplicate.** This is a similarity judgement over meaning, not a hash
+    comparison - the Java side already deduplicates byte-identical content exactly and losslessly.
+    What this catches is what that cannot: the same invoice scanned twice, a document re-exported
+    at a different quality, a photo saved in another format.
+
+    Grouping is single-link agglomerative over the pairwise matrix, which is O(n²) in the
+    candidate count - acceptable because a candidate set is one account's files and this is an
+    explicitly-invoked action, not something on the upload path. A group's reported similarity is
+    its *weakest* internal pair, so a caller's own threshold judges the whole group.
+    """
+    ids = list(dict.fromkeys(request.candidateFileIds))  # de-duplicate, preserve order
+    if len(ids) < 2:
+        return []
+
+    threshold = request.minimumSimilarity if request.minimumSimilarity is not None else settings.duplicate_threshold
+    vectors = store.vectors_for(ids, KIND_TEXT)
+    known = [file_id for file_id in ids if file_id in vectors]
+    if len(known) < 2:
+        return []
+
+    # Union-find over every pair above the threshold. Single-link is the right join rule here:
+    # transitively-similar files (A~B, B~C) belong in one group for a human to review, even if A
+    # and C are not directly above the threshold themselves.
+    parent = {file_id: file_id for file_id in known}
+
+    def find(node: str) -> str:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    weakest: dict[tuple[str, str], float] = {}
+    for i, left in enumerate(known):
+        for right in known[i + 1 :]:
+            score = _cosine(vectors[left], vectors[right])
+            if score >= threshold:
+                weakest[(left, right)] = score
+                left_root, right_root = find(left), find(right)
+                if left_root != right_root:
+                    parent[left_root] = right_root
+
+    groups: dict[str, list[str]] = {}
+    for file_id in known:
+        groups.setdefault(find(file_id), []).append(file_id)
+
+    results: list[DuplicateGroupResponse] = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        member_set = set(members)
+        internal = [
+            score for (left, right), score in weakest.items() if left in member_set and right in member_set
+        ]
+        results.append(
+            DuplicateGroupResponse(storedFileIds=members, similarity=min(internal) if internal else threshold)
+        )
+
+    results.sort(key=lambda group: group.similarity, reverse=True)
+    return results[: request.limit]
+
+
+@app.post(
+    "/tags",
+    response_model=list[TagSuggestionResponse],
+    dependencies=[Depends(require_shared_secret)],
+)
+async def tags(request: TagsRequest) -> list[TagSuggestionResponse]:
+    """Suggest descriptive labels for one already-indexed file.
+
+    Zero-shot against a fixed vocabulary (see :class:`~.embeddings.TagVocabulary`): the file's
+    stored vector is scored against each label's vector. No training, no per-deployment model, and
+    no learning from user behaviour - which is exactly why the returned confidence is a *relative*
+    similarity and not a calibrated probability.
+
+    Takes an id rather than content, so a caller never re-uploads bytes this service already
+    embedded. A file that was never indexed has no vector to compare and yields an empty list -
+    deliberately not a ``404``, since "no suggestions" is a perfectly good answer to render and the
+    caller has already established the file exists.
+    """
+    vectors = store.vectors_for([request.fileId], KIND_TEXT)
+    file_vector = vectors.get(request.fileId)
+    if file_vector is None:
+        return []
+    return [
+        TagSuggestionResponse(tag=tag, confidence=confidence)
+        for tag, confidence in tag_vocabulary.suggest(file_vector, request.limit)
+    ]
 
 
 def _decode_content(content_base64: str | None) -> bytes | None:
