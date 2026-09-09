@@ -142,15 +142,66 @@ restriction, ranking, idempotency, and degradation when the optional extras are 
 The candidate restriction has its own dedicated tests, including one that indexes a document owned
 by a *different* account and asserts it stays invisible when not offered as a candidate.
 
+### If `pytest` reports `ModuleNotFoundError: No module named 'cloud_driver_intelligence'`
+
+Delete `.venv` and reinstall. A `pip install -e` that fails part-way — the most likely cause being a
+missing `README.md`, which hatchling validates *after* it has already written the editable install's
+`.pth` and `dist-info` — leaves those two behind in a state a subsequent successful install does not
+repair, so the package is registered but never actually lands on `sys.path`. The `.pth` file looks
+entirely correct when inspected, which makes this misleading to debug. A clean venv fixes it, and CI
+never hits it because every run installs fresh.
+
 ## Deployment
 
-Run as its own process or container, started and stopped independently of `cloud-driver-bootstrap` —
-the same operational shape as `clamd`.
+Run as its own process, started and stopped independently of `cloud-driver-bootstrap` — the same
+operational shape as `clamd` and Redis, which on this deployment are both real systemd services.
 
-`cloud-driver` does **not** require this service to be up in order to boot. If it is unreachable the
-Java bridge retries an index call three times (3s/15s), then gives up and leaves that file
-un-indexed. Nothing about access, quota or integrity depends on it; the only cost is that the file
-is not semantically findable until it is next re-uploaded or its content replaced.
+`deploy/` holds everything needed:
+
+```bash
+./deploy/install-on-server.sh
+```
+
+Idempotent — safe to re-run to ship updated source. It uploads the source, builds a venv with the
+`embeddings` and `store` extras, writes the shared secret (read from the local, gitignored
+`cloud-driver/configuration.json`, so the two halves cannot drift apart) to a root-owned `0600` env
+file, installs `deploy/cloud-driver-intelligence.service`, starts it, and waits for `/health`.
+
+The vector store and the downloaded model live in `/var/lib/cloud-driver-intelligence`
+(systemd `StateDirectory`) and are never touched by a re-install, so re-running does not lose the
+index.
+
+The service runs as a `DynamicUser` rather than root — nothing here needs privilege, and the store
+holds embeddings derived from real file content. Note this differs from the JVM beside it, which
+does run as root on this box.
+
+**The Python half does nothing on its own.** Semantic search only works once the Java side is
+deployed too:
+
+```bash
+mvn clean install            # builds cloud-driver-extensions-intelligence
+./shell/deploy-cloud.sh      # bootstrap jar + ALL extension jars + configuration.json
+ssh strato 'screen -S cloud_driver -X quit'
+ssh strato 'cd /home/cloud && ./start-cloud.sh'
+```
+
+That last pair restarts the JVM, which is a brief interruption of the whole API — the extension jar
+and the bootstrap jar must always be deployed together from the same commit, or the process crashes
+at startup on a `NoClassDefFoundError` and `start-cloud.sh`'s restart loop repeats it indefinitely.
+
+Useful afterwards:
+
+```bash
+ssh strato 'systemctl status cloud-driver-intelligence'
+ssh strato 'journalctl -u cloud-driver-intelligence -n 50 --no-pager'
+ssh strato 'curl -s http://127.0.0.1:8600/health'
+```
+
+`cloud-driver` does **not** require this service to be up in order to boot.
+ If it is unreachable the Java bridge retries an
+index call three times (3s/15s), then gives up and leaves that file un-indexed. Nothing about
+access, quota or integrity depends on it; the only cost is that the file is not semantically
+findable until it is next re-uploaded or its content replaced.
 
 There is no re-index-everything command yet — see "Known gaps" below.
 

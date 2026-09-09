@@ -1,0 +1,88 @@
+# systemd unit for the cloud-driver-intelligence semantic-search service.
+#
+# Install to /etc/systemd/system/cloud-driver-intelligence.service, then:
+#   systemctl daemon-reload
+#   systemctl enable --now cloud-driver-intelligence
+#
+# Deliberately mirrors how clamav-daemon and redis-server already run on this box (a real systemd
+# service, enabled for boot) rather than the JVM's own `screen` session - nothing here needs an
+# interactive console, and a crash should be restarted by systemd, not by a bash loop.
+
+[Unit]
+Description=cloud-driver semantic search (embedding + vector store)
+Documentation=https://github.com/linoalessio/cloud-driver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+# Runs as an unprivileged, systemd-managed transient user rather than root (which is what
+# everything else on this box happens to run as). Nothing here needs privilege, and the vector
+# store holds embeddings derived from real file content - see the README's "What is stored"
+# section - so it is worth keeping out of root's reach even though the JVM beside it is not.
+DynamicUser=yes
+
+# /var/lib/cloud-driver-intelligence, created on first start and owned by the dynamic user. This
+# is the ONE directory that must persist across restarts: it holds the Chroma store and the
+# downloaded embedding model.
+StateDirectory=cloud-driver-intelligence
+StateDirectoryMode=0700
+
+WorkingDirectory=/opt/cloud-driver-intelligence
+
+# A DynamicUser has no home directory and systemd sets no $HOME for it, so anything calling
+# Path.home()/os.path.expanduser("~") raises RuntimeError: Could not determine home directory.
+# That is not hypothetical: chromadb evaluates Path.home() at IMPORT time (a class attribute in
+# chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py, for a bundled ONNX model this service
+# never uses), so without this line the very first `import chromadb` in store.py's
+# ChromaVectorStore.try_create() kills the process before uvicorn ever binds a port - confirmed as
+# a real crash loop on strato, 2026-09-09. Pointing $HOME at the state directory makes every such
+# path resolve somewhere the dynamic user can actually write. Do not remove this because the two
+# explicit cache variables below "already cover it" - they only cover the libraries that read them.
+Environment=HOME=/var/lib/cloud-driver-intelligence
+
+# sentence-transformers downloads its model to $HF_HOME (default ~/.cache/huggingface), which a
+# DynamicUser has no writable home for - point it at the state directory instead, or the very
+# first start fails trying to write the model it just fetched.
+Environment=HF_HOME=/var/lib/cloud-driver-intelligence/huggingface
+Environment=CLOUD_DRIVER_INTELLIGENCE_STORE_PATH=/var/lib/cloud-driver-intelligence/chroma
+
+# The shared secret. Kept in a root-owned 0600 file rather than inline here: a unit file is
+# world-readable by default, and this value must match "intelligence-shared-secret" in the JVM's
+# own configuration.json. Create it with:
+#   install -m 600 /dev/null /etc/cloud-driver-intelligence.env
+#   echo "CLOUD_DRIVER_INTELLIGENCE_SECRET=<the secret>" > /etc/cloud-driver-intelligence.env
+EnvironmentFile=/etc/cloud-driver-intelligence.env
+
+# Loopback only - this service has no transport security and its shared secret is a second line of
+# defence, not the first. Do not widen this without putting a reverse proxy in front of it.
+ExecStart=/opt/cloud-driver-intelligence/.venv/bin/uvicorn \
+    cloud_driver_intelligence.app:app \
+    --host 127.0.0.1 \
+    --port 8600
+
+Restart=on-failure
+RestartSec=5s
+
+# The JVM beside this one runs with -Xmx4g on a 7.7 GB box with no swap. PyTorch settles at
+# roughly 1-1.5 GB RSS for this model, which fits - but leaving it uncapped means a runaway here
+# would push the JVM into the OOM killer rather than dying itself. A cap makes the failure land on
+# the component that can actually fail open (see IntelligenceService's fail-open contract).
+MemoryMax=2G
+
+# Standard hardening - none of this service's work needs any of it.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
