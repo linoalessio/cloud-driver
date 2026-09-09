@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "cloud-driver-intelligence"
 version = "1.0.6"
 description = "Semantic-search microservice for cloud-driver: embeds uploaded file content and ranks it by meaning."
-readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
 authors = [{ name = "Lino Alessio Kauschinger" }]
