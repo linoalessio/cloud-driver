@@ -2,9 +2,9 @@
 
 This page is task-oriented: for each way a caller actually reaches `cloud-driver`, it shows the
 minimal working code. For the full REST route table, see [api-reference.md](api-reference.md); for
-a single module's complete contract (every method, every exception), see that module's own
-`README.md` linked from the [root README](../README.md)'s module map. This page exists so those
-two don't have to be cross-referenced by hand just to write a first working call.
+a single class's complete contract (every method, every exception), the source and its Javadoc in
+the module named alongside each sample are the reference. This page exists so a first working call
+never requires reading either end to end.
 
 ## Which layer do I actually want?
 
@@ -16,7 +16,7 @@ two don't have to be cross-referenced by hand just to write a first working call
 | Talk to it from the Kotlin/Compose desktop app's own code | `CloudDriverClient` — [§4](#4-kotlin-desktop-client) |
 | Talk to it from the Swift/iOS app's own code | `cloud-driver-multiplatform-swift`'s `APIClient` — [§5](#5-swift-ios-client) |
 | Inspect/administer a running deployment as an operator | The interactive terminal — [§6](#6-operator-terminal-commands) |
-| Talk to it from a Python microservice | `cloud-driver-multiplatform-python`'s `CloudDriverClient` — see [that module's README](../cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) |
+| Talk to it from a Python microservice | `cloud-driver-multiplatform-python`'s `CloudDriverClient` (`pip install -e .` from `cloud-driver-multiplatform/cloud-driver-multiplatform-python`) |
 
 Everything in §3–§5 ultimately calls the same REST routes described in §2; they exist so three very
 different runtimes (plain JVM, Kotlin Multiplatform/Compose Desktop, Swift/SwiftUI) don't each have
@@ -27,8 +27,8 @@ to hand-roll HTTP, JSON, retry-on-401, and OS credential storage from scratch.
 Everything below lives in `cloud-driver-api` (contracts) with implementations in
 `cloud-driver-plugin`/`cloud-driver-auth`. It's what you use when writing a new
 `cloud-driver-extensions-*` feature module, or any other code that runs inside the
-`cloud-driver-bootstrap` process itself. See `cloud-driver-api/README.md` for the complete contract
-of every class named here.
+`cloud-driver-bootstrap` process itself. Every class named here is declared in
+`cloud-driver-api` — its Javadoc is the complete contract.
 
 ### 1.1 Get hold of `CloudDriver`
 
@@ -88,7 +88,8 @@ dataFactory.registerAsync(new CustomerRecord(43, "DE01..."))
 
 `reload(CustomerRecord.class)` re-reads that type's section from the database — needed if a
 *different* process (or a different `DataFactory` instance) wrote a row this one hasn't seen yet;
-see `cloud-driver-plugin/README.md`'s "Cross-process staleness" note for why this isn't automatic.
+see the "Cross-process staleness" note in [architecture.md](architecture.md)'s "Data handling"
+section for why this isn't automatic.
 
 ### 1.3 `FileFactory` — files, and offline-safe uploads
 
@@ -167,8 +168,8 @@ eventFactory.dispatch(OrderPlacedEvent.class, new JsonDocument().append("orderId
 ```
 
 Two built-in events already ship and fire on their own: `DatabaseWatchEvent`
-(`de.lino.cloud.api.event.database`) fires on a Postgres change notification (see
-`cloud-driver-extensions-watcher/README.md`), and `PendingUploadEvent` fires once a queued offline
+(`de.lino.cloud.api.event.database`) fires on a Postgres change notification (installed by the
+`cloud-driver-extensions-watcher` feature module), and `PendingUploadEvent` fires once a queued offline
 upload from §1.3 finally succeeds. Register a handler for either the same way as above.
 
 ### 1.6 `RestFactory` — exposing HTTP routes
@@ -196,7 +197,8 @@ api.start("0.0.0.0", 8080);
 
 All four verbs (`register`/`fetch`/`update`/`delete`) must be called before `start(...)` —
 routes are assembled once, up front. Only entities implementing `Owned` are scoped to the calling
-user's own data on the JWT-gated instance; see `cloud-driver-api/README.md`'s `Owned` section.
+user's own data on the JWT-gated instance; see `Owned`'s Javadoc (`cloud-driver-api`,
+`de.lino.cloud.api.jwt.rest`) for the exact scoping rules.
 
 ### 1.7 `cloud-driver-auth` services — accounts, files, sharing
 
@@ -224,8 +226,8 @@ cloudUserService.deleteFile(userId, uploaded.fileId());   // soft delete - moves
 cloudUserService.restoreFile(userId, uploaded.fileId());  // back out of trash, stays unshared
 ```
 
-See `cloud-driver-auth/README.md` for the full method list (folders, trash, sharing, quotas,
-password reset, e-mail change, refresh tokens, admin).
+See `ICloudUserService`/`IAuthService` (`cloud-driver-api`) for the full method list (folders,
+trash, sharing, quotas, password reset, e-mail change, refresh tokens, admin).
 
 ## 2. The REST API, over HTTP
 
@@ -309,13 +311,14 @@ curl -X POST "https://api.cloud-driver.de/files/<fileId>/restore" -H "Authorizat
 
 `GET /ws/updates` (bearer token via `Authorization` header, or `?token=` for a client that can't set
 one, e.g. a browser) pushes `{"table","operation","id"}` whenever the connected account's own data
-changes elsewhere — another device, a share, a live-push-triggering database write. See
-`cloud-driver-extensions-watcher/README.md` for what triggers it server-side.
+changes elsewhere — another device, a share, a live-push-triggering database write. Server-side,
+the `cloud-driver-extensions-watcher` feature module's Postgres change notifications are what
+trigger it.
 
 ## 3. Java client library (`cloud-driver-multiplatform-java`)
 
 For any JVM app that would rather not hand-roll HTTP, retry-on-401, and OS keychain access. Depends
-on nothing else in this repo (see `cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md`). Lives
+on nothing else in this repo — it talks to the backend purely over HTTP/WebSocket. Lives
 under `cloud-driver-multiplatform` — the Maven-built sibling of `cloud-driver-multiplatform-swift` (Swift) and
 `cloud-driver-multiplatform-python` (Python), formerly named `cloud-driver-platforms-rest`.
 
@@ -352,9 +355,9 @@ try (ApiClient apiClient = new ApiClient("https://api.cloud-driver.de", "https:/
 ```
 
 Every method above also has an `*Async` form returning `CompletableFuture<T>` (`loginAsync`,
-`uploadFileAsync`, `listFilesAsync`, ...) — see `cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md`'s
-full method list for uploads/downloads streamed to/from disk with progress callbacks,
-cursor-paginated listings, and the admin/audit-log routes.
+`uploadFileAsync`, `listFilesAsync`, ...). `ApiClient` also covers uploads/downloads streamed
+to/from disk with progress callbacks, cursor-paginated listings, and the admin/audit-log routes —
+its Javadoc is the full method list.
 
 ## 4. Kotlin desktop client
 
@@ -384,14 +387,15 @@ client.close() // shuts down the wrapped ApiClient's executor
 
 `client.usedKeychainFallback` is `true` if no real OS keychain was found and the session token fell
 back to a permission-restricted plain file — surface that to the user rather than silently
-degrading. See `cloud-driver-platforms-desktop/README.md` for the full call list (folders, trash,
-admin, metrics).
+degrading. `CloudDriverClient` (the desktop app's thin suspend-function wrapper over
+`ApiClient`) covers the full surface — folders, trash, sharing, admin, metrics.
 
 ## 5. Swift iOS client
 
 `cloud-driver-platforms-mobile`'s networking/session layer is `cloud-driver-multiplatform-swift`
 (`cloud-driver-multiplatform/cloud-driver-multiplatform-swift`, a local Swift Package Manager dependency — no
-shared code with the JVM client, see that module's README for why), a Swift `actor` built on
+shared code with the JVM client, deliberately: each SDK hand-mirrors the same REST contract in its
+own ecosystem's idiom), a Swift `actor` built on
 `async`/`await`:
 
 ```swift
@@ -412,7 +416,7 @@ try await client.shareFile(fileId: uploaded.fileId, granteeEmail: "colleague@exa
 ## 6. Operator terminal commands
 
 `cloud-driver-extensions-terminal` registers a fixed catalog of commands against the interactive
-console (see `cloud-driver-api/README.md`'s "`terminal` package" section for the engine itself).
+console (the terminal engine itself lives in `cloud-driver-api`'s `terminal` package).
 Typed directly at the console the running `cloud-driver-bootstrap` process opens — not called from
 code:
 

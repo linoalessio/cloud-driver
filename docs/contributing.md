@@ -20,10 +20,13 @@ boundary, it belongs at a lower layer instead.
 
 ## Keeping documentation current
 
-Each module owns its own `README.md` — update it in the same change as the code it describes, not
-as a separate follow-up. Cross-cutting concerns (architecture, configuration, the API contract,
-deployment) live under `docs/` at the repository root; update the relevant page there too when a
-change affects more than one module.
+Documentation lives in exactly two places: the root `README.md` (the map — modules, diagrams,
+quick start) and `docs/` (architecture, security, configuration, the API contract, testing,
+deployment, this page). Update the relevant page **in the same change as the code it describes**,
+not as a separate follow-up — a new route belongs in [api-reference.md](api-reference.md), a new
+config key in [configuration.md](configuration.md), a new module in the root README's module
+table. Modules deliberately do not carry their own `README.md` files; module-level detail belongs
+in source Javadoc.
 
 ## Adding a new backend feature module
 
@@ -31,8 +34,7 @@ change affects more than one module.
    a small manifest file (name, version, dependencies on other feature modules).
 2. Implement only the lifecycle hooks the extension framework requires — registration into the
    running process happens automatically once the module's jar is placed in the extensions folder.
-3. Add the module's own `README.md`.
-4. Add a row for it to the module map in this repository's root `README.md` and, if it's
+3. Add a row for it to the module table in this repository's root `README.md` and, if it's
    security- or config-relevant, to [security.md](security.md) / [configuration.md](configuration.md).
 
 ## Adding a new REST route
@@ -40,7 +42,7 @@ change affects more than one module.
 1. Add the route and its handler in the REST feature module.
 2. Add the client-side call in the shared REST client library, then wire it into whichever app(s)
    need it (desktop, mobile, or both).
-3. Add a row to [api-reference.md](api-reference.md) and to that module's own README.
+3. Add a row to [api-reference.md](api-reference.md).
 
 ## Pull requests
 

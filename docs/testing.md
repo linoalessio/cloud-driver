@@ -1,7 +1,8 @@
 # Testing
 
-No automated test framework (JUnit, XCTest, etc.) is wired into any part of this codebase today.
-This page documents how changes are actually verified in its absence.
+No automated test framework (JUnit, XCTest, etc.) is wired into the Java, Kotlin, or Swift parts
+of this codebase today — the two Python packages are the exception, each carrying a real `pytest`
+suite run in CI. This page documents how changes are actually verified.
 
 ## Backend (Java/Maven modules)
 
@@ -39,15 +40,28 @@ This page documents how changes are actually verified in its absence.
 - Regenerate the Xcode project (`xcodegen generate`) after adding, removing, or renaming any
   source file, before building.
 
+## Python packages
+
+The exception to the above: `cloud-driver-multiplatform-python` (the SDK) and
+`cloud-driver-intelligence` (the semantic-search service) each have a real `pytest` suite —
+network calls mocked in the SDK's case, so no live server is needed:
+
+```
+cd <package-dir>
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
 ## CI
 
-Two automated checks run on every push/pull request (see [deployment.md](deployment.md) for the
+Five automated checks run on pushes/pull requests (see [deployment.md](deployment.md) for the
 full pipeline):
 
 | Workflow | Verifies |
 |---|---|
-| Backend build | `mvn package` across the whole Maven reactor |
-| Mobile build | An Xcode simulator build of the mobile app |
-
-Neither runs a test suite — both are build-verification only, matching the "no test framework"
-state described above.
+| Backend build (`maven.yml`) | `mvn package` across the whole Maven reactor — build only, no tests |
+| Mobile build (`swift.yml`) | An Xcode simulator build of the mobile app — build only |
+| Python SDK (`python.yml`) | `pytest` across Python 3.10/3.11/3.12 |
+| Intelligence service (`intelligence.yml`) | `pytest` for the semantic-search service |
+| Qodana (`qodana_code_quality.yml`) | Static analysis |

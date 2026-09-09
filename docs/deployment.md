@@ -21,15 +21,27 @@ the same commit.** Feature-module jars resolve shared types off the running boot
 classpath at load time — mixing versions crashes the process at startup, and the auto-restart loop
 will simply repeat that crash indefinitely rather than recovering.
 
+## Companion processes
+
+The optional external processes (`clamd`, Redis, the Python intelligence service) run as ordinary
+system services beside the JVM — none is deployed by the scripts above. The intelligence service
+ships its own systemd unit and idempotent installer under `cloud-driver-intelligence/deploy/`
+(run from a local checkout against the target server); `clamd` and Redis are installed through
+the host OS's own package manager and bound to loopback.
+
 ## Continuous integration
 
-Two GitHub Actions workflows run automatically; a third handles publishing:
+Six GitHub Actions workflows exist (`.github/workflows/`) — five automatic checks plus one
+publisher:
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| Backend build check | Push / pull request | Runs `mvn package` across the whole reactor |
-| Mobile build check | Push / pull request (mobile app changes only) | Builds the mobile app against the iOS Simulator SDK |
-| Package publish | GitHub Release creation | Publishes every backend module to this repository's own package registry |
+| `maven.yml` — Java CI with Maven | Push / pull request (backend changes) | Runs `mvn package` across the whole reactor |
+| `swift.yml` — Swift | Push / pull request (mobile app changes) | Builds the mobile app against the iOS Simulator SDK |
+| `python.yml` — Python | Push / pull request (Python SDK changes) | Installs the SDK and runs its `pytest` suite (3.10/3.11/3.12) |
+| `intelligence.yml` — Intelligence Service | Push / pull request (intelligence service changes) | Installs the service and runs its `pytest` suite |
+| `qodana_code_quality.yml` — Qodana | Push / pull request | JetBrains Qodana static analysis |
+| `maven-publish.yml` — Maven Package | GitHub Release creation | Publishes every backend module to this repository's own GitHub Packages registry |
 
 No workflow deploys to a live server automatically — that step is always run by hand via
 `deploy-cloud.sh`, on purpose, since pushing to production is a separate decision from cutting a

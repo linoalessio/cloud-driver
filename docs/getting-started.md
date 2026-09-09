@@ -61,7 +61,9 @@ To build and install a native application (macOS/Linux/Windows):
 ./gradlew packageDistributionForCurrentOS
 ```
 
-See the desktop app's own README for platform-specific installer notes.
+Or run the module's `./build-app.sh`, which builds and installs the app into the OS's normal
+application location with a desktop shortcut (and works around a known macOS codesigning race the
+plain Gradle task can hit).
 
 ## 4. Run the mobile app
 
@@ -85,9 +87,10 @@ module or `cloud-driver-multiplatform-swift`.
 ## Verifying the backend is reachable
 
 Once the backend is running with the REST feature module loaded, the API responds on the
-configured `rest-api-port`. Both client apps point at a fixed backend address configured in their
-own source — check each app's own README for where to change it when testing against a different
-deployment.
+configured `rest-server-port`. Both client apps point at a fixed backend address hardcoded in
+their own source — `DEFAULT_SERVER_URL` in the desktop app's `Main.kt`, and `APIClient`'s
+`baseURL` in `cloud-driver-multiplatform-swift` for the mobile app — change the constant and
+rebuild when testing against a different deployment.
 
 ## Next steps
 

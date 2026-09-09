@@ -45,9 +45,15 @@ instance:
   own gets a "not found" response rather than "forbidden," to avoid confirming the record's
   existence at all.
 - File/folder sharing between accounts is a separate, additive mechanism layered on top of
-  ownership, not a change to how ownership itself is enforced — a small, explicit table
-  documenting exactly which operations honor a share versus require ownership lives in the
-  relevant module's own README.
+  ownership, not a change to how ownership itself is enforced. Exactly three operations honor a
+  share: reading a shared file's content (a folder share covers everything nested inside it),
+  browsing a shared folder's contents, and — only under an explicit `EDIT`-level grant on that
+  specific file — replacing its content. Everything else (upload, rename, move, delete, restore,
+  re-sharing) remains strictly owner-only. Shares can carry an expiry, after which they behave as
+  if they never existed.
+- Public file links are the one unauthenticated access path: read-only, files-only, backed by a
+  high-entropy random token, optionally expiring, and revoked automatically when the file is
+  deleted.
 
 ## Network-facing hardening
 

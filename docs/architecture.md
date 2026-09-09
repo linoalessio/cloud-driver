@@ -1,23 +1,24 @@
 # Architecture
 
-This page covers how the system fits together. For a single module's implementation detail, see
-that module's own `README.md` (linked from the [root README](../README.md)'s module map).
+This page covers how the system fits together. For the module-by-module map (and the diagrams
+that visualize what this page describes), see the [root README](../README.md); for
+implementation detail, the source (and its Javadoc) of the module in question is the reference.
 
 ## Components
 
-| Component | Kind | Deployable unit | README |
-|---|---|---|---|
-| `cloud-driver-api` | Backend contracts | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-api/README.md`](../cloud-driver-api/README.md) |
-| `cloud-driver-auth` | Backend auth engine | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-auth/README.md`](../cloud-driver-auth/README.md) |
-| `cloud-driver-plugin` | Backend implementations | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-plugin/README.md`](../cloud-driver-plugin/README.md) |
-| `cloud-driver-bootstrap` | Backend entry point | One shaded, runnable jar (`java -jar`) | [`cloud-driver-bootstrap/README.md`](../cloud-driver-bootstrap/README.md) |
-| `cloud-driver-extensions-*` | Backend feature modules (REST API, Postgres change watcher, terminal, backup, metrics, thumbnails, versioning, search, webhooks, content scanning, semantic-search bridge) | Unshaded jars, loaded into the bootstrap process from a folder at startup | [`cloud-driver-extensions/README.md`](../cloud-driver-extensions/README.md) |
-| `cloud-driver-intelligence` | Semantic-search service (Python) | **Its own process/container**, started and stopped independently | [README](../cloud-driver-intelligence/README.md) |
-| `cloud-driver-platforms-desktop` | Desktop client app | Native installer (macOS/Windows/Linux) | [README](../cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
-| `cloud-driver-platforms-mobile` | Mobile client app (iOS) — GUI only | iOS app build | [README](../cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
-| `cloud-driver-multiplatform-java` | Client networking library (Java) | Consumed by the desktop app only | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) |
-| `cloud-driver-multiplatform-swift` | Client networking library (Swift) | Consumed by the mobile app only | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-swift/README.md) |
-| `cloud-driver-multiplatform-python` | Client SDK (Python) | Standalone `pip` package | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md) |
+| Component | Kind | Deployable unit |
+|---|---|---|
+| `cloud-driver-api` | Backend contracts | Compiled into `cloud-driver-bootstrap` |
+| `cloud-driver-auth` | Backend auth engine | Compiled into `cloud-driver-bootstrap` |
+| `cloud-driver-plugin` | Backend implementations | Compiled into `cloud-driver-bootstrap` |
+| `cloud-driver-bootstrap` | Backend entry point | One shaded, runnable jar (`java -jar`) |
+| `cloud-driver-extensions-*` | Backend feature modules (REST API, Postgres change watcher, terminal, backup, metrics, thumbnails, versioning, search, webhooks, content scanning, semantic-search bridge) | Unshaded jars, loaded into the bootstrap process from a folder at startup |
+| `cloud-driver-intelligence` | Semantic-search service (Python) | **Its own process**, started and stopped independently |
+| `cloud-driver-platforms-desktop` | Desktop client app | Native installer (macOS/Windows/Linux) |
+| `cloud-driver-platforms-mobile` | Mobile client app (iOS) — GUI only | iOS app build |
+| `cloud-driver-multiplatform-java` | Client networking library (Java) | Consumed by the desktop app only |
+| `cloud-driver-multiplatform-swift` | Client networking library (Swift) | Consumed by the mobile app only |
+| `cloud-driver-multiplatform-python` | Client SDK (Python) | Standalone `pip` package |
 
 ## How the backend actually runs
 
@@ -52,8 +53,12 @@ Python). None of the three is required for `cloud-driver` to boot, and each has 
 counterpart that degrades rather than fails when it is absent.
 
 `cloud-driver-intelligence` additionally never touches Postgres — its only data store is its own
-vector store — and it is never permitted to decide who may see what. See
-[its README](../cloud-driver-intelligence/README.md) for that two-stage security model.
+vector store — and it is never permitted to decide who may see what. Every semantic search is
+two-staged on the Java side: a **pre-filter** offers the service only the file ids the caller
+currently has access to (resolved from authoritative ownership/sharing data), and a **post-check**
+re-validates every returned id against that same access check, treating the service's answer as
+untrusted input. A compromised or stale instance can therefore at worst return nothing — never
+another account's files.
 
 ## Request flow, end to end
 
