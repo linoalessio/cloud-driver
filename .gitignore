@@ -12,8 +12,9 @@ cloud-driver/redis-database.json
 architecture
 architecture/*.md
 
-shell/*.sh
-shell
+shell/deploy-cloud.sh
+shell/release-and-package.sh
+shell/test-bootstrap.sh
 
 test
 
