@@ -1,6 +1,6 @@
 {
   "name": "cloud-driver-metrics",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Exposes operational metrics (uploads, pending-upload queue depth, extension status, quota rejections) via a Prometheus-scrapeable /metrics endpoint",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]

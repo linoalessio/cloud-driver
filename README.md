@@ -5,7 +5,7 @@
 ![Swift](https://img.shields.io/badge/Swift-5-F05138)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 ![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-336791)
-![Version](https://img.shields.io/badge/Version-1.0.6-blue)
+![Version](https://img.shields.io/badge/Version-1.0.7-blue)
 
 `cloud-driver` is a self-hosted cloud storage system for securely storing, managing, and sharing
 files through a modular Java backend, a JWT-authenticated REST API, an encrypted PostgreSQL
@@ -430,7 +430,7 @@ Every other key (SMTP/SES, S3, metrics, rate limits, trash retention, ClamAV, se
 
    ```text
    run/
-   ├── cloud-driver-bootstrap-1.0.6.jar
+   ├── cloud-driver-bootstrap-1.0.7.jar
    ├── cloud-driver/
    │   ├── postgres-database.json
    │   └── configuration.json
@@ -441,7 +441,7 @@ Every other key (SMTP/SES, S3, metrics, rate limits, trash retention, ClamAV, se
 6. Start the backend **from inside that directory** (paths resolve against the working dir):
 
    ```bash
-   cd run && java -Xmx6g -jar cloud-driver-bootstrap-1.0.6.jar
+   cd run && java -Xmx6g -jar cloud-driver-bootstrap-1.0.7.jar
    ```
 
 7. Point a client at it (the apps hardcode their server URL — see

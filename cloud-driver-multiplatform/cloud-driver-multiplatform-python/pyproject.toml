@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloud-driver-client"
-version = "1.0.6"
+version = "1.0.7"
 description = "Full-coverage Python SDK for the cloud-driver REST/WebSocket API, for writing microservices against it."
 requires-python = ">=3.10"
 license = { text = "Proprietary" }

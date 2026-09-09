@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.lino.cloud</groupId>
         <artifactId>cloud-driver</artifactId>
-        <version>1.0.6</version>
+        <version>1.0.7</version>
     </parent>
 
     <modelVersion>4.0.0</modelVersion>
@@ -18,7 +18,7 @@
         <dependency>
             <groupId>de.lino.cloud.plugin</groupId>
             <artifactId>cloud-driver-plugin</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
         </dependency>
 
         <!-- AuthService/JwtSigner/JjwtSigner, used directly by startRestApi and
@@ -27,7 +27,7 @@
         <dependency>
             <groupId>de.lino.cloud.auth</groupId>
             <artifactId>cloud-driver-auth</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
         </dependency>
 
         <!-- Not used by any class in this module directly - needed at runtime by

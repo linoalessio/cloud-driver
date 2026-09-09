@@ -6,7 +6,7 @@
     <parent>
         <groupId>de.lino.cloud.multiplatform</groupId>
         <artifactId>cloud-driver-multiplatform</artifactId>
-        <version>1.0.6</version>
+        <version>1.0.7</version>
     </parent>
 
     <groupId>de.lino.cloud.multiplatform.java</groupId>

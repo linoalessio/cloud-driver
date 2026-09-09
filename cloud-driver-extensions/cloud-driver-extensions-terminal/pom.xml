@@ -6,7 +6,7 @@
     <parent>
         <groupId>de.lino.cloud.extensions</groupId>
         <artifactId>cloud-driver-extensions</artifactId>
-        <version>1.0.6</version>
+        <version>1.0.7</version>
     </parent>
 
     <groupId>de.lino.cloud.extensions.terminal</groupId>
@@ -18,7 +18,7 @@
         <dependency>
             <groupId>de.lino.cloud.api</groupId>
             <artifactId>cloud-driver-api</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
         </dependency>
 
         <!-- MigrateToS3Command (architecture/AWS_S3_IMPL.md section 7) needs EnvelopeEncryptionService/
@@ -29,7 +29,7 @@
         <dependency>
             <groupId>de.lino.cloud.plugin</groupId>
             <artifactId>cloud-driver-plugin</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
         </dependency>
 
         <!-- SQLExecution, for MigrateToS3Command's own keyset-paginated id listing (the same
