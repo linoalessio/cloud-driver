@@ -32,6 +32,23 @@ request itself.
 | `/auth/change-email/confirm` | POST | Confirm the code and apply the change |
 | `/auth/me` | GET | The caller's own account id, email, and admin flag |
 
+How the token pair moves through a session:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as REST API
+    C->>A: POST /auth/login (email + password)
+    A-->>C: access JWT (12 h) + refresh token (30 d)
+    C->>A: GET /files (Authorization: Bearer <access>)
+    A-->>C: 200 OK
+    Note over C,A: ... access token expires ...
+    C->>A: POST /auth/refresh (refresh token)
+    A-->>C: fresh pair — the old refresh token is now invalid
+    C->>A: POST /auth/logout (refresh token)
+    A-->>C: 204 — refresh token revoked server-side
+```
+
 ## Files and folders
 
 | Route | Method | Purpose |

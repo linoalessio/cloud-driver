@@ -20,8 +20,8 @@ on:
 # Python SDK (hatchling build backend) - not a Maven module, not touched by mvn/maven.yml at all.
 # Its own test suite (tests/test_client.py) mocks the server via respx, so this needs no live
 # server/database - matching the "package install + pytest" shape every other pure-Python CI
-# workflow uses. See cloud-driver-multiplatform/cloud-driver-multiplatform-python/README.md and the root
-# CLAUDE.md's own "cloud-driver-multiplatform" section for the full picture. Moved here
+# workflow uses. See docs/testing.md and the root README.md's "Client SDKs" section for the
+# full picture. Moved here
 # (2026-09-07) from a repo-root-level cloud-driver-python directory - first to
 # cloud-driver-multiplatform/cloud-driver-python, then (the same day) renamed again to its current
 # path above, alongside cloud-driver-multiplatform-java (Java) and cloud-driver-multiplatform-swift

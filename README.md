@@ -731,7 +731,26 @@ Full detail: [docs/deployment.md](docs/deployment.md).
   (with pytest), Qodana static analysis, and a publish workflow that pushes every Maven module to
   GitHub Packages when a release is created. **No workflow deploys to a server automatically** —
   production pushes are always a separate, manual decision.
-- 
+
+## Known Limitations
+
+- No automated test coverage for the Java/Kotlin/Swift codebases (the Python parts excepted).
+- No containerized or orchestrated deployment; deployment tooling is operator-local scripting
+  against a single server.
+- Encryption/decryption of a file is single-shot: a large file's full content passes through
+  memory, so heap must be sized for the largest expected upload (chunked/streaming encryption is
+  an open, deliberately deferred design decision).
+- Several read paths (login lookup, per-account listings) do a full in-memory scan of an entity
+  type — the storage layer has no secondary indexes. Accepted at current data scale.
+- The WebSocket live-update session registry is process-local: running multiple backend instances
+  behind a load balancer is not supported today.
+- Client apps hardcode their server URL; pointing them elsewhere requires a rebuild.
+- Malware scanning **fails open**: if the scanner is unreachable after retries, the file is
+  marked clean (loudly logged) rather than blocking uploads.
+- There is no web client, and no client-side sync engine (the server-side optimistic-concurrency
+  primitive for it exists; the client half is deferred).
+- No automated backup restore path.
+
 ## Roadmap
 
 - [ ] Chunked/streaming encryption so large files never need full-content heap headroom

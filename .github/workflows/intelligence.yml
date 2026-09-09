@@ -18,7 +18,7 @@ on:
 
 # cloud-driver-intelligence is the Python half of semantic search - a standalone FastAPI service,
 # not a Maven module and not a client SDK (so it lives outside cloud-driver-multiplatform, which
-# groups per-ecosystem SDKs; see the root CLAUDE.md). Its Java half is
+# groups per-ecosystem SDKs; see the root README.md and docs/architecture.md). Its Java half is
 # cloud-driver-extensions-intelligence, built by maven.yml like every other extension.
 #
 # Deliberately installs only the "dev" extra, NOT "embeddings"/"store": the test suite substitutes

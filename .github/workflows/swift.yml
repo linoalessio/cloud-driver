@@ -20,8 +20,8 @@ on:
 
 # cloud-driver-platforms-mobile is a native iOS (iPhone) app - plain Swift/SwiftUI, not a Swift
 # Package Manager executable/library - so this builds it with xcodebuild against a generated
-# Xcode project rather than `swift build`/`swift test`. See that module's own README/the root
-# CLAUDE.md ("cloud-driver-platforms-mobile") for the full picture.
+# Xcode project rather than `swift build`/`swift test`. See the root README.md's "Mobile
+# Client" section and docs/getting-started.md for the full picture.
 #
 # Its networking/session layer, cloud-driver-multiplatform-swift, is a *local* Swift Package
 # Manager path dependency (declared in project.yml, resolved straight off this same checkout, no

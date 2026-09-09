@@ -9,6 +9,14 @@
 | Key structure | DEK/KEK envelope encryption with rotation: a fresh data-encryption key is generated per payload and wrapped under the currently active key-encryption key |
 | Type/identity binding | An entity's type name and primary key are bound into the encryption's authenticated data, so a swapped ciphertext of the same size can't silently decrypt as the wrong record |
 
+```mermaid
+flowchart LR
+    KEK["KEK<br/>(AWS KMS in production)"] -->|wraps| DEK["DEK<br/>fresh per payload,<br/>destroyed after use"]
+    DEK -->|"AES-256-GCM<br/>fresh nonce per call"| CT["Ciphertext"]
+    PT["Plaintext entity / file"] --> CT
+    CT --> ROW["Database row:<br/>ciphertext + wrapped DEK<br/>+ authenticated type/id binding"]
+```
+
 ## Key management implementations
 
 | Implementation | Production-ready | Notes |
@@ -19,6 +27,17 @@
 | AWS KMS-backed | **Yes** | Key material never leaves AWS's HSMs; supports rotation via a real key-creation call. Requires network access and AWS credentials at runtime |
 
 ## Authentication
+
+```mermaid
+flowchart LR
+    REG["Register"] -->|"e-mailed code"| CONF["Confirm"]
+    CONF --> PAIR["Access JWT (12 h)<br/>+ refresh token (30 d)"]
+    LOGIN["Login"] --> PAIR
+    PAIR --> USE["Authenticated requests"]
+    USE -->|"access token expires"| REF["Refresh"]
+    REF -->|"old refresh token invalidated"| PAIR
+    USE -->|"logout"| REVOKE["Refresh token revoked"]
+```
 
 Two independent, mutually exclusive mechanisms exist for the REST API — never combined on one
 instance:
@@ -65,6 +84,14 @@ instance:
 | Oversized uploads | A per-account upload quota and a hard request-size ceiling, both enforced before an oversized payload is fully read into memory |
 
 ## What "deleted" actually means
+
+```mermaid
+flowchart LR
+    LIVE["Live file / folder"] -->|"Delete"| TRASH["Trash<br/>(still occupies storage,<br/>shares revoked)"]
+    TRASH -->|"Restore"| LIVE
+    TRASH -->|"Retention window elapses<br/>or 'empty trash'"| GONE["Permanently removed<br/>(usage decremented)"]
+    LIVE -->|"Account reset / deletion"| GONE
+```
 
 - A single file/folder delete is a soft delete (moved to a recoverable trash), not immediate
   removal — recoverable until an explicit restore or a configured retention window elapses.

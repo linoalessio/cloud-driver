@@ -30,6 +30,15 @@ gives most of the benefit of modular services — a feature can be built, versio
 about independently — without the operational overhead of running and coordinating separate
 processes.
 
+```mermaid
+flowchart LR
+    JAR["extension jar dropped into<br/>extensions/ next to the bootstrap jar"] --> SCAN["Folder scanned<br/>at startup"]
+    SCAN --> MAN["extension.json read<br/>(name, version, dependencies)"]
+    MAN --> ORDER["Started in dependency order"]
+    ORDER --> THREAD["Runs on its own named thread<br/>inside the bootstrap process"]
+    THREAD --> PUB["Publishes its services into the<br/>shared service container"]
+```
+
 | Extension | Responsibility |
 |---|---|
 | `cloud-driver-extensions-rest` | The JWT-authenticated REST API (login, registration, files, folders, sharing, trash, admin routes, live push) |
@@ -62,23 +71,13 @@ another account's files.
 
 ## Request flow, end to end
 
-```
-Desktop / Mobile client
-        │  HTTPS + bearer JWT
-        ▼
-cloud-driver-extensions-rest  (REST API surface)
-        │
-        ▼
-cloud-driver-auth  (CloudUserService, AuthService)
-        │
-        ▼
-cloud-driver-plugin  (DefaultDataFactory / DefaultFileFactory / EntityDatabaseClient)
-        │
-        ▼
-Envelope encryption  (fresh DEK generated → AES-256-GCM encrypt → DEK wrapped under the active KEK)
-        │
-        ▼
-Postgres  (via the external database-driver artifact group)
+```mermaid
+flowchart TD
+    CLIENT["Desktop / Mobile client"] -->|"HTTPS + bearer JWT"| REST["cloud-driver-extensions-rest<br/>(REST API surface)"]
+    REST --> AUTH["cloud-driver-auth<br/>(CloudUserService, AuthService)"]
+    AUTH --> PLUGIN["cloud-driver-plugin<br/>(DefaultDataFactory / DefaultFileFactory /<br/>EntityDatabaseClient)"]
+    PLUGIN --> ENC["Envelope encryption<br/>fresh DEK → AES-256-GCM encrypt →<br/>DEK wrapped under the active KEK"]
+    ENC --> PG[("Postgres<br/>(via the external database-driver<br/>artifact group)")]
 ```
 
 Reading reverses every step, additionally verifying the AES-256-GCM authentication tag and (for
@@ -109,9 +108,16 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
 
 ## Dependency direction
 
+```mermaid
+flowchart LR
+    API["cloud-driver-api"] --> AUTH["cloud-driver-auth"]
+    AUTH --> PLUGIN["cloud-driver-plugin"]
+    PLUGIN --> BOOT["cloud-driver-bootstrap"]
+    PLUGIN --> EXT["cloud-driver-extensions-*"]
 ```
-cloud-driver-api  ←  cloud-driver-auth  ←  cloud-driver-plugin  ←  cloud-driver-bootstrap / extensions-*
-```
+
+An arrow `A --> B` reads "B builds on A" — i.e. `B` is allowed to depend on `A`'s types, never
+the reverse.
 
 Never add a dependency the other way — `cloud-driver-api` must never depend on `cloud-driver-auth`
 or `cloud-driver-plugin`, and `cloud-driver-auth` must never depend on `cloud-driver-plugin`.

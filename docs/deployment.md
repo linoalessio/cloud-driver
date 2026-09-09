@@ -2,6 +2,18 @@
 
 ## Backend
 
+```mermaid
+flowchart TD
+    NET["Internet"] -->|HTTPS| PROXY["Reverse proxy (TLS termination)"]
+    PROXY --> APP["cloud-driver-bootstrap jar<br/>+ extensions/ (same commit!)"]
+    APP --> PG[("PostgreSQL")]
+    APP -.-> CLAM["clamd"]
+    APP -.-> REDIS[("Redis")]
+    APP -.-> INTEL["cloud-driver-intelligence<br/>(systemd service)"]
+    APP --> BK["Backup archives<br/>(rotated, local)"]
+    PROM["Prometheus"] -.->|"loopback scrape"| APP
+```
+
 The backend deploys as a single jar to one server — there is no orchestration platform (Kubernetes,
 etc.) involved. A handful of shell scripts (kept local to each operator's machine, not tracked in
 version control since they hardcode server-specific connection details) handle the mechanics:
@@ -30,6 +42,14 @@ ships its own systemd unit and idempotent installer under `cloud-driver-intellig
 the host OS's own package manager and bound to loopback.
 
 ## Continuous integration
+
+```mermaid
+flowchart LR
+    PUSH["Push / PR"] --> CI["Build checks:<br/>Maven · Swift · Python ×2 · Qodana"]
+    REL["GitHub Release created"] --> PUB["maven-publish.yml →<br/>GitHub Packages"]
+    OP["Operator, by hand"] --> DEP["deploy-cloud.sh →<br/>server upload + restart"]
+    CI -.->|"never deploys"| DEP
+```
 
 Six GitHub Actions workflows exist (`.github/workflows/`) — five automatic checks plus one
 publisher:

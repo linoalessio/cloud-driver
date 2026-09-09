@@ -8,6 +8,18 @@ never requires reading either end to end.
 
 ## Which layer do I actually want?
 
+```mermaid
+flowchart TD
+    Q{"Where does your<br/>code run?"}
+    Q -->|"Inside the backend process<br/>(an extension, bootstrap code)"| L1["In-process Java API — §1"]
+    Q -->|"A JVM app elsewhere"| L3["Java client library — §3"]
+    Q -->|"The desktop app itself"| L4["Kotlin CloudDriverClient — §4"]
+    Q -->|"The iOS app itself"| L5["Swift APIClient — §5"]
+    Q -->|"A Python service/script"| LP["Python SDK"]
+    Q -->|"Anything else / curl"| L2["Raw REST — §2"]
+    Q -->|"A human operator at the console"| L6["Terminal commands — §6"]
+```
+
 | I want to... | Use |
 |---|---|
 | Build a new backend feature that runs inside the `cloud-driver-bootstrap` process | The in-process Java API — [§1](#1-in-process-java-api-same-jvm) |

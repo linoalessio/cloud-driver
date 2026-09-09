@@ -4,6 +4,16 @@ No automated test framework (JUnit, XCTest, etc.) is wired into the Java, Kotlin
 of this codebase today — the two Python packages are the exception, each carrying a real `pytest`
 suite run in CI. This page documents how changes are actually verified.
 
+```mermaid
+flowchart LR
+    CHG["Code change"] --> WHICH{"Which part?"}
+    WHICH -->|"Backend (Java)"| J["mvn package →<br/>run the real jar / worked example"]
+    WHICH -->|"Desktop (Kotlin)"| K["compileKotlinDesktop →<br/>real ./gradlew run session"]
+    WHICH -->|"Mobile (Swift)"| SW["xcodebuild simulator build →<br/>device run where hardware matters"]
+    WHICH -->|"Python packages"| PYT["pytest (also in CI)"]
+    J & K & SW & PYT --> CI["CI on push:<br/>build checks + Python tests"]
+```
+
 ## Backend (Java/Maven modules)
 
 - Files under a module's `src/test` directory are **runnable worked examples with a `main`

@@ -14,6 +14,21 @@ This page covers building and running each component locally. For system design,
 | [XcodeGen](https://github.com/yonaskolb/XcodeGen) | Mobile app project generation |
 | No separate Gradle install needed | Desktop app ships its own wrapper |
 
+The overall build/run order — the backend jar and the Java client library both come out of the
+one Maven build, and each client builds on top of it:
+
+```mermaid
+flowchart TD
+    MVN["mvn clean install<br/>(whole reactor)"] --> PKG["mvn -pl cloud-driver-bootstrap -am package<br/>(shaded, runnable jar)"]
+    MVN --> JLIB["cloud-driver-multiplatform-java<br/>installed into ~/.m2"]
+    PKG --> CFG["Place postgres-database.json<br/>+ configuration.json + extensions/"]
+    CFG --> RUN["java -jar cloud-driver-bootstrap-&lt;version&gt;.jar"]
+    JLIB --> DESK["Desktop app:<br/>./gradlew run"]
+    SWIFTPKG["cloud-driver-multiplatform-swift<br/>(resolved automatically by SPM)"] --> MOB["iOS app:<br/>xcodegen generate + Xcode"]
+    RUN -.->|HTTPS| DESK
+    RUN -.->|HTTPS| MOB
+```
+
 ## 1. Build the backend
 
 ```
