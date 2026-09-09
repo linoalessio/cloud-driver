@@ -24,6 +24,7 @@
         <module>cloud-driver-extensions-search</module>
         <module>cloud-driver-extensions-webhooks</module>
         <module>cloud-driver-extensions-scan</module>
+        <module>cloud-driver-extensions-intelligence</module>
     </modules>
 
 </project>

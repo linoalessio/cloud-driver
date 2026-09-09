@@ -166,8 +166,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * already documents, since a search matches files regardless of which folder they sit in.
      */
     private static final String SEARCH_PATH = "/search";
-    /** Query parameter name for {@link #handleSearch}'s search text. */
+    /** Query parameter name for {@link #handleSearch}'s search text - reused verbatim by {@link #handleSemanticSearch}, so a client can switch between the two search kinds without reshaping its query string. */
     private static final String SEARCH_QUERY_QUERY_PARAM = "q";
+    /**
+     * Path mounted by {@link #start} for {@link #handleSemanticSearch} - a sub-resource of {@link
+     * #SEARCH_PATH} rather than a {@code /files/...} route, deliberately: nesting it under {@code
+     * /files} would have put a literal {@code search} segment in the exact position {@code
+     * /files/{id}} expects a path parameter, making it a registration-order hazard of precisely the
+     * kind {@link #FILES_SHARED_WITH_ME_PATH}'s own Javadoc documents a real, months-long outage
+     * for. Here there is no hazard at all to reason about: this template has two segments and
+     * {@link #SEARCH_PATH} has one, so neither can ever shadow the other regardless of the order
+     * they happen to be registered in.
+     */
+    private static final String SEMANTIC_SEARCH_PATH = SEARCH_PATH + "/semantic";
     /**
      * Query parameter {@link #handleReplaceFileContent} reads an optimistic-concurrency
      * precondition from - the caller's last-seen
@@ -805,6 +816,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_PATH + "/{id}/activity", this::handleListFileActivity);
                 config.routes.get(ACTIVITY_PATH, this::handleListActivity);
                 config.routes.get(SEARCH_PATH, this::handleSearch);
+                config.routes.get(SEMANTIC_SEARCH_PATH, this::handleSemanticSearch);
                 config.routes.post(WEBHOOKS_PATH, this::handleRegisterWebhook);
                 config.routes.get(WEBHOOKS_PATH, this::handleListWebhooks);
                 config.routes.delete(WEBHOOKS_PATH + "/{id}", this::handleRevokeWebhook);
@@ -2782,6 +2794,45 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> searchIndexService.search(userId, query, limit))
+                .thenAccept(results -> ctx.contentType("application/json").result(this.gson.toJson(results))));
+    }
+
+    /**
+     * {@code GET /search/semantic?q=&limit=}: searches the caller's own accessible files by
+     * <em>meaning</em> rather than by literal text, via {@link
+     * de.lino.cloud.api.user.ICloudUserService#semanticSearch}. The embedding-based counterpart to
+     * {@link #handleSearch}'s keyword search, with the same query-parameter shape and the same
+     * "a blank {@code ?q=} is zero results, not a {@code 400}" convention, so a client can offer
+     * both against one search box.
+     *
+     * <p><b>Deliberately routed through {@code CloudUserService}, not straight to {@link
+     * de.lino.cloud.api.intelligence.IntelligenceService} the way {@link #handleSearch} reaches
+     * {@code SearchIndexService}.</b> That shortcut is safe for keyword search because that index
+     * is itself account-scoped; the semantic index is not - it ranks whatever candidate ids it is
+     * given, and deciding which ids those may be (and re-checking every id that comes back) is
+     * exactly the two-stage invariant {@code CloudUserService#semanticSearch} exists to enforce.
+     * See {@link de.lino.cloud.api.intelligence.IntelligenceService}'s own Javadoc.
+     *
+     * <p>{@code 503} (via {@link ServiceUnavailableResponse}) if {@code
+     * cloud-driver-extensions-intelligence} isn't running on this deployment - checked here rather
+     * than inferred from an empty result, so a client can tell "semantic search is unavailable"
+     * apart from "nothing matched" and fall back to {@link #handleSearch} accordingly.
+     */
+    private void handleSemanticSearch(@NotNull final Context ctx) {
+        final String query = ctx.queryParam(SEARCH_QUERY_QUERY_PARAM);
+        final int limit = resolveSearchLimit(ctx);
+        final String userId = requireUserId(ctx);
+
+        if (CloudDriver.getInstance().getServiceContainer().getIntelligenceService() == null) {
+            throw new ServiceUnavailableResponse("Semantic search extension is not running on this deployment");
+        }
+        if (query == null || query.isBlank()) {
+            ctx.contentType("application/json").result(this.gson.toJson(List.of()));
+            return;
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.semanticSearch(userId, query, limit))
                 .thenAccept(results -> ctx.contentType("application/json").result(this.gson.toJson(results))));
     }
 

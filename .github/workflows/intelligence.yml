@@ -1,0 +1,58 @@
+# This workflow installs cloud-driver-intelligence and runs its test suite.
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Intelligence Service
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-intelligence/**'
+      - '.github/workflows/intelligence.yml'
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-intelligence/**'
+      - '.github/workflows/intelligence.yml'
+  workflow_dispatch:
+
+# cloud-driver-intelligence is the Python half of semantic search - a standalone FastAPI service,
+# not a Maven module and not a client SDK (so it lives outside cloud-driver-multiplatform, which
+# groups per-ecosystem SDKs; see the root CLAUDE.md). Its Java half is
+# cloud-driver-extensions-intelligence, built by maven.yml like every other extension.
+#
+# Deliberately installs only the "dev" extra, NOT "embeddings"/"store": the test suite substitutes
+# a deterministic stub embedding model and uses the in-memory vector store, so pulling in
+# sentence-transformers (PyTorch, ~2 GB) and chromadb would add several minutes per run to test
+# nothing this repo owns. That the service degrades correctly without either extra is itself
+# covered by the tests.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: cloud-driver-intelligence
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.10", "3.11", "3.12" ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: cloud-driver-intelligence/pyproject.toml
+
+      - name: Install cloud-driver-intelligence (with dev extras)
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -v

@@ -11,7 +11,8 @@ that module's own `README.md` (linked from the [root README](../README.md)'s mod
 | `cloud-driver-auth` | Backend auth engine | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-auth/README.md`](../cloud-driver-auth/README.md) |
 | `cloud-driver-plugin` | Backend implementations | Compiled into `cloud-driver-bootstrap` | [`cloud-driver-plugin/README.md`](../cloud-driver-plugin/README.md) |
 | `cloud-driver-bootstrap` | Backend entry point | One shaded, runnable jar (`java -jar`) | [`cloud-driver-bootstrap/README.md`](../cloud-driver-bootstrap/README.md) |
-| `cloud-driver-extensions-*` | Backend feature modules (REST API, Postgres change watcher, terminal, backup, metrics) | Unshaded jars, loaded into the bootstrap process from a folder at startup | [`cloud-driver-extensions/README.md`](../cloud-driver-extensions/README.md) |
+| `cloud-driver-extensions-*` | Backend feature modules (REST API, Postgres change watcher, terminal, backup, metrics, thumbnails, versioning, search, webhooks, content scanning, semantic-search bridge) | Unshaded jars, loaded into the bootstrap process from a folder at startup | [`cloud-driver-extensions/README.md`](../cloud-driver-extensions/README.md) |
+| `cloud-driver-intelligence` | Semantic-search service (Python) | **Its own process/container**, started and stopped independently | [README](../cloud-driver-intelligence/README.md) |
 | `cloud-driver-platforms-desktop` | Desktop client app | Native installer (macOS/Windows/Linux) | [README](../cloud-driver-platforms/cloud-driver-platforms-desktop/README.md) |
 | `cloud-driver-platforms-mobile` | Mobile client app (iOS) — GUI only | iOS app build | [README](../cloud-driver-platforms/cloud-driver-platforms-mobile/README.md) |
 | `cloud-driver-multiplatform-java` | Client networking library (Java) | Consumed by the desktop app only | [README](../cloud-driver-multiplatform/cloud-driver-multiplatform-java/README.md) |
@@ -35,6 +36,24 @@ processes.
 | `cloud-driver-extensions-terminal` | The operator-facing interactive terminal and its command catalog |
 | `cloud-driver-extensions-backup` | Streaming, keyset-paginated database backup job |
 | `cloud-driver-extensions-metrics` | Prometheus-scrapeable `/metrics` endpoint on its own loopback-only port |
+| `cloud-driver-extensions-thumbnails` | Generates preview thumbnails for images and PDF first pages |
+| `cloud-driver-extensions-versioning` | Keeps prior versions of a file's content on overwrite, with a restore path |
+| `cloud-driver-extensions-search` | Keyword search index over file names and extracted text |
+| `cloud-driver-extensions-webhooks` | Delivers signed, retried HTTP callbacks for file events |
+| `cloud-driver-extensions-scan` | Malware-scans uploaded content via an external `clamd` daemon |
+| `cloud-driver-extensions-intelligence` | Bridges uploads to the `cloud-driver-intelligence` Python service, and backs semantic search |
+
+### The exception: external processes
+
+Three pieces of the backend are genuinely separate processes rather than in-process extensions,
+because each owns something a JVM extension cannot: `clamd` (virus definitions), Redis (state that
+survives a restart), and `cloud-driver-intelligence` (an embedding model and vector store, in
+Python). None of the three is required for `cloud-driver` to boot, and each has an in-process
+counterpart that degrades rather than fails when it is absent.
+
+`cloud-driver-intelligence` additionally never touches Postgres — its only data store is its own
+vector store — and it is never permitted to decide who may see what. See
+[its README](../cloud-driver-intelligence/README.md) for that two-stage security model.
 
 ## Request flow, end to end
 

@@ -32,6 +32,11 @@ next to the running backend process — never commit real values found in either
 | `aws-s3-region` | string | — | S3-backed file content storage |
 | `aws-s3-bucket` | string | Unset → S3-backed storage disabled, files stored inline | S3-backed file content storage |
 | `aws-s3-key-prefix` | string | `""` | S3-backed file content storage (optional) |
+| `intelligence-shared-secret` | string | **required** — the extension refuses to load without it | Semantic search (secret) |
+| `intelligence-host` | string | `127.0.0.1` | Semantic search |
+| `intelligence-port` | int | `8600` | Semantic search |
+| `intelligence-timeout-seconds` | long | `30` | Semantic search |
+| `intelligence-max-bytes` | long | 100 MiB | Semantic search — files above this are left un-indexed |
 
 ## Notes
 
@@ -47,3 +52,15 @@ next to the running backend process — never commit real values found in either
   Enabling it otherwise lets a client spoof its own rate-limit identity.
 - Widening `metrics-bind-host` beyond loopback is a real access-control decision — the metrics
   endpoint carries no authentication of its own.
+- `intelligence-shared-secret` must match `CLOUD_DRIVER_INTELLIGENCE_SECRET` on the Python
+  service. It is the one `intelligence-*` key with no default, deliberately: an extension that
+  authenticated with a well-known constant would be worse than one that refuses to load. A
+  missing or blank value disables only semantic search, exactly as any other extension's load
+  failure disables only itself.
+- `intelligence-max-bytes` defaults to the value the design document specifies, but is worth
+  lowering deliberately: content travels base64-encoded in a JSON body (~1.37x), so the default
+  permits a ~137 MiB request for a large binary that will almost certainly yield nothing
+  embeddable anyway. A value in the low tens of MiB is more proportionate.
+- This table does not yet cover every key the backend reads — the `clamav-*`,
+  `content-scan-max-bytes`, `api-rate-limit-read-*`, `file-versioning-*`, `aws-ses-*` and
+  `presigned-upload-ticket-retention-hours` keys are documented in `CLAUDE.md` but not here.

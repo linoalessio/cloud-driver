@@ -14,6 +14,8 @@ on:
       - '**/*.md'
       - '.github/workflows/swift.yml'
       - '.github/workflows/python.yml'
+      - 'cloud-driver-intelligence/**'
+      - '.github/workflows/intelligence.yml'
   pull_request:
     branches: [ "master" ]
     paths-ignore:
@@ -24,6 +26,8 @@ on:
       - '**/*.md'
       - '.github/workflows/swift.yml'
       - '.github/workflows/python.yml'
+      - 'cloud-driver-intelligence/**'
+      - '.github/workflows/intelligence.yml'
   workflow_dispatch:
 
 jobs:

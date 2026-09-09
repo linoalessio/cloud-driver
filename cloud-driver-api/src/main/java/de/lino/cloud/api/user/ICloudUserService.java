@@ -1,6 +1,8 @@
 package de.lino.cloud.api.user;
 
 import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.intelligence.IntelligenceService;
+import de.lino.cloud.api.intelligence.SemanticSearchResult;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.PresignedUploadTicket;
@@ -22,6 +24,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The behavioral contract {@code CloudUserService} (in {@code cloud-driver-auth})
@@ -928,5 +931,51 @@ public interface ICloudUserService {
      * @return the number of distinct files {@code authUserId} owns with at least one active share, {@code 0} if none
      */
     int countFilesSharedByMe(@NotNull String authUserId);
+
+    /**
+     * Every {@link StoredFile#fileId()} {@code authUserId} currently has access to - files they own
+     * and haven't trashed, plus files directly shared with them.
+     *
+     * <p>This is the authoritative access set backing stage 1 of {@link IntelligenceService}'s
+     * two-stage security invariant (see that interface's own Javadoc): it is resolved from real
+     * ownership/sharing data at request time, and is the only set a semantic-search backend is ever
+     * permitted to rank within. Exposed on this interface rather than kept private because the same
+     * set is genuinely useful to any future caller needing "what can this account see right now"
+     * without also paying to resolve each file's content.
+     *
+     * <p>Cost: a full {@code StoredFileOwnership} scan, the same trade-off {@link
+     * #listFileSummaries} already accepts (see its own Javadoc) - suitable for once-per-request use,
+     * not per-item.
+     *
+     * @param authUserId the account whose access set to resolve
+     * @return every currently-accessible file id; empty if the account has none
+     */
+    @NonNull
+    Set<String> accessibleFileIds(@NotNull String authUserId);
+
+    /**
+     * Searches {@code authUserId}'s currently-accessible files by <em>meaning</em> rather than by
+     * literal text, via {@link IntelligenceService} - the semantic counterpart to the keyword-based
+     * {@code SearchIndexService} search behind {@code GET /search}.
+     *
+     * <p><b>This method is the single place both halves of {@link IntelligenceService}'s security
+     * invariant are enforced</b> (pre-filter the candidate set from authoritative data, then
+     * re-check every returned id against that same authoritative check before it may reach a
+     * client). Never call an {@link IntelligenceService} directly from a route to serve a client -
+     * always go through here.
+     *
+     * <p>Returns an empty list rather than throwing when semantic search is simply unavailable on
+     * this deployment ({@code cloud-driver-extensions-intelligence} not running, or the Python
+     * service unreachable), matching that interface's fail-open contract. A route wanting to answer
+     * {@code 503} instead should check {@code IServiceContainer#getIntelligenceService()} itself
+     * first, the same way every other optional-facet route in this codebase already does.
+     *
+     * @param authUserId the searching account
+     * @param query the caller's search text - a blank query returns an empty list, not an error
+     * @param limit the maximum number of results to return
+     * @return matching accessible files, most similar first, capped at {@code limit}
+     */
+    @NonNull
+    List<SemanticSearchResult> semanticSearch(@NotNull String authUserId, @NotNull String query, int limit);
 
 }

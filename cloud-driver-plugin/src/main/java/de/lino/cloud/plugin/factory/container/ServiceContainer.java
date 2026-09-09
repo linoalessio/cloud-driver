@@ -2,6 +2,7 @@ package de.lino.cloud.plugin.factory.container;
 
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.service.IServiceContainer;
+import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
@@ -47,6 +48,8 @@ public class ServiceContainer implements IServiceContainer {
     private volatile WebhookService webhookService;
     /** The content-scan trigger, {@code null} until {@link #setContentScanService} publishes one. */
     private volatile ContentScanService contentScanService;
+    /** The semantic-search bridge, {@code null} until {@link #setIntelligenceService} publishes one. */
+    private volatile IntelligenceService intelligenceService;
 
     /** {@inheritDoc} */
     @Override
@@ -178,6 +181,18 @@ public class ServiceContainer implements IServiceContainer {
     @Override
     public void setContentScanService(@NonNull final ContentScanService contentScanService) {
         this.contentScanService = contentScanService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public IntelligenceService getIntelligenceService() {
+        return this.intelligenceService;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void setIntelligenceService(@NonNull final IntelligenceService intelligenceService) {
+        this.intelligenceService = intelligenceService;
     }
 
 }

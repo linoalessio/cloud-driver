@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.lino.cloud.extensions</groupId>
+        <artifactId>cloud-driver-extensions</artifactId>
+        <version>1.0.6</version>
+    </parent>
+
+    <groupId>de.lino.cloud.extensions.intelligence</groupId>
+    <artifactId>cloud-driver-extensions-intelligence</artifactId>
+    <packaging>jar</packaging>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>de.lino.cloud.plugin</groupId>
+            <artifactId>cloud-driver-plugin</artifactId>
+            <version>1.0.6</version>
+        </dependency>
+
+        <!-- No HTTP client or JSON dependency of its own, deliberately:
+             IntelligenceHttpClient is built on the JDK's own java.net.http.HttpClient, and Gson is
+             already on the host bootstrap jar's shaded classpath (via database-driver). Every
+             extension jar is loaded unshaded, parent-first against that host classpath, so a
+             library nothing else in this repo already pulls in would additionally have to be
+             declared by cloud-driver-bootstrap to be resolvable at runtime at all - the
+             NoClassDefFoundError trap cloud-driver-extensions-metrics (micrometer) and
+             cloud-driver-extensions-thumbnails (pdfbox) each had to be fixed for. Adding nothing
+             new here sidesteps it entirely. -->
+
+    </dependencies>
+
+</project>

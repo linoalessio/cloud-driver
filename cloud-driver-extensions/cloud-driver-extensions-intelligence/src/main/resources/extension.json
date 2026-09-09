@@ -1,0 +1,7 @@
+{
+  "name": "cloud-driver-intelligence",
+  "version": "1.0.6",
+  "description": "Bridges newly uploaded file content to the cloud-driver-intelligence Python service for embedding, enabling semantic search",
+  "authors": ["Lino Alessio Kauschinger"],
+  "dependencies": ["cloud-driver-bootstrap"]
+}

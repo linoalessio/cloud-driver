@@ -1,6 +1,7 @@
 package de.lino.cloud.api.factory.service;
 
 import de.lino.cloud.api.audit.AuditLogService;
+import de.lino.cloud.api.intelligence.IntelligenceService;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
@@ -230,5 +231,24 @@ public interface IServiceContainer {
      * @param contentScanService the instance backing the {@code FileChangeListener}-triggered scan-on-upload hook
      */
     void setContentScanService(@NonNull ContentScanService contentScanService);
+
+    /**
+     * Returns the semantic-search service, or {@code null} if {@code
+     * cloud-driver-extensions-intelligence}'s {@code CloudIntelligenceExtension} hasn't published
+     * one yet (not started, or this deployment doesn't run that extension at all). {@code
+     * de.lino.cloud.auth.CloudUserService}'s own indexing hooks and {@code
+     * DefaultRestFactory}'s semantic-search route must null-check this the same way they already
+     * do for {@link #getContentScanService()}.
+     *
+     * @return the {@link IntelligenceService}, or {@code null}
+     */
+    IntelligenceService getIntelligenceService();
+
+    /**
+     * Publishes the real {@link IntelligenceService}, once built.
+     *
+     * @param intelligenceService the bridge to this deployment's {@code cloud-driver-intelligence} Python service
+     */
+    void setIntelligenceService(@NonNull IntelligenceService intelligenceService);
 
 }

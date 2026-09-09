@@ -25,6 +25,10 @@ import de.lino.cloud.api.file.PublicFileLinkSummary;
 import de.lino.cloud.api.file.ScanStatus;
 import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.scan.ContentScanService;
+import de.lino.cloud.api.intelligence.IntelligenceDocument;
+import de.lino.cloud.api.intelligence.IntelligenceService;
+import de.lino.cloud.api.intelligence.SemanticMatch;
+import de.lino.cloud.api.intelligence.SemanticSearchResult;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.search.SearchDocument;
@@ -330,6 +334,9 @@ public final class CloudUserService implements ICloudUserService {
         // trash-then-purge path), but resetCloudUser/deleteCloudUser call hardDeleteFile directly
         // on a possibly still-live (never-trashed) file, so this must not assume it already ran.
         removeFromSearchIndex(authUserId, storedFileId);
+        // Same idempotency reasoning again - and harmless even if it never runs at all, since a
+        // vector outliving its file can never surface (see IntelligenceService#removeAsync).
+        removeFromIntelligenceIndex(storedFileId);
     }
 
     /**
@@ -768,6 +775,7 @@ public final class CloudUserService implements ICloudUserService {
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
         indexFileForSearch(authUserId, storedFile, folderId, content);
+        indexFileForIntelligence(authUserId, storedFile, content);
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, storedFile.fileId());
 
         return storedFile;
@@ -933,6 +941,9 @@ public final class CloudUserService implements ICloudUserService {
         // indexed by name/folder, just without a text extract.
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, fileId, null));
         indexFileForSearch(authUserId, storedFile, folderId, null);
+        // Content is likewise unavailable here, so this file is embedded by name alone - see
+        // IntelligenceDocument#content()'s own Javadoc for that nullable case.
+        indexFileForIntelligence(authUserId, storedFile, null);
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, fileId);
 
         // Direct-transfer (presigned) content is never scanned - see ContentScanService's own
@@ -2110,6 +2121,7 @@ public final class CloudUserService implements ICloudUserService {
         // this is "who did this", unlike the quota/usage charge above, which is "whose storage".
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
         indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), newContent);
+        indexFileForIntelligence(ownerAuthUserId, replaced, newContent);
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
                 replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId(),
@@ -2347,6 +2359,164 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
+
+    /**
+     * Embeds {@code storedFile} into {@link CloudDriver#getInstance()}'s {@link
+     * IntelligenceService}, if {@code cloud-driver-extensions-intelligence} has published one - a
+     * no-op otherwise. Never throws, matching {@link #indexFileForSearch}'s own defensive shape:
+     * an unreachable embedding service must never block a real upload/content replacement.
+     *
+     * <p>Unlike {@link #indexFileForSearch}, no text is extracted here and no content type is
+     * filtered out - the raw bytes are handed over as-is and the Python service decides what is
+     * embeddable (see {@link IntelligenceDocument}'s own Javadoc for that deliberate split).
+     *
+     * @param authUserId the owning account
+     * @param storedFile the file's current state, already persisted
+     * @param content the file's raw, uncompressed bytes, or {@code null} if this server never held
+     * them (a direct-transfer/presigned upload), in which case only the file name is embeddable
+     */
+    private static void indexFileForIntelligence(final String authUserId, final StoredFile storedFile, final byte[] content) {
+        try {
+            final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+            if (intelligenceService == null) return;
+            intelligenceService.indexAsync(new IntelligenceDocument(
+                    authUserId, storedFile.fileId(), storedFile.fileName(), storedFile.contentType(), content));
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        }
+    }
+
+    /**
+     * Removes {@code storedFileId}'s vector, if an {@link IntelligenceService} is published -
+     * called by {@link #deleteFile} (trash) and unconditionally by {@link #hardDeleteFile}
+     * (permanent removal), the same idempotent pair {@link #removeFromSearchIndex} already
+     * handles. Takes no {@code authUserId}: the vector store is keyed by file id alone, and its
+     * own record of an owner is never authoritative anyway (see {@link IntelligenceService}'s
+     * security-invariant section).
+     */
+    private static void removeFromIntelligenceIndex(final String storedFileId) {
+        try {
+            final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+            if (intelligenceService != null) intelligenceService.removeAsync(storedFileId);
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see indexFileForIntelligence's own Javadoc.
+        }
+    }
+
+    /**
+     * Re-embeds {@code storedFileId} after {@link #restoreFile} brings it back out of the trash,
+     * mirroring {@link #reindexRestoredFileForSearch}'s own "a restore is a deliberate, occasional
+     * action that can afford a full content re-fetch" reasoning. A no-op if the extension isn't
+     * running or the re-fetch fails for any reason.
+     */
+    private void reindexRestoredFileForIntelligence(final String authUserId, final String storedFileId) {
+        try {
+            final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+            if (intelligenceService == null) return;
+            final StoredFile restored = this.fileFactory.findById(storedFileId).orElse(null);
+            if (restored == null) return;
+            intelligenceService.indexAsync(new IntelligenceDocument(
+                    authUserId, storedFileId, restored.fileName(), restored.contentType(), restored.content()));
+        } catch (final RuntimeException ignored) {
+            // Best-effort only - see this method's own Javadoc.
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException ignored) {
+            // Same reasoning - a failed re-fetch must never block the restore itself.
+        }
+    }
+
+    /**
+     * One entry of the authoritative access set {@link #accessibleFiles} resolves - a file id
+     * paired with just enough metadata to render a search hit without a second lookup.
+     *
+     * @param fileName the file's cached display name, or {@code null} for a legacy {@link
+     * StoredFileOwnership} row written before metadata was cached on it (see {@link
+     * StoredFileOwnership#hasMetadata()}) - resolved lazily, per surviving hit only, by {@link
+     * #semanticSearch}
+     */
+    private record AccessibleFile(@Nullable String fileName, @Nullable String folderId) {
+    }
+
+    /**
+     * Every file id {@code authUserId} currently has access to - owned and not trashed, plus every
+     * file directly shared with them - each paired with its cached display metadata.
+     *
+     * <p>This is the authoritative pre-filter of {@link IntelligenceService}'s two-stage security
+     * invariant (stage 1): the semantic index is never asked "what does this user have?", only
+     * "which of <em>these</em> is most similar?". Deliberately excludes trashed files (via {@link
+     * #ownedFileOwnerships}, unlike {@link #visibleActivityTargetIds}'s own
+     * deliberately-includes-deleted behavior) - a trashed file must not surface in a search result,
+     * the same rule {@link #listFileSummaries} already applies to a keyword listing.
+     *
+     * <p>Cost: the same full {@link StoredFileOwnership} scan {@link #listFileSummaries} already
+     * accepts, plus {@link #listSharedWithMe}'s own. Paid once per search request, never per hit.
+     */
+    private Map<String, AccessibleFile> accessibleFiles(final String authUserId) {
+        final Map<String, AccessibleFile> accessible = new HashMap<>();
+        this.ownedFileOwnerships(authUserId).forEach(ownership ->
+                accessible.put(ownership.getStoredFileId(), new AccessibleFile(ownership.getFileName(), ownership.getFolderId())));
+        this.listSharedWithMe(authUserId).forEach(shared ->
+                accessible.put(shared.file().fileId(), new AccessibleFile(shared.file().fileName(), shared.file().folderId())));
+        return accessible;
+    }
+
+    /** See {@link ICloudUserService#accessibleFileIds}'s Javadoc. */
+    @NonNull
+    @Override
+    public Set<String> accessibleFileIds(@NonNull final String authUserId) {
+        return Set.copyOf(this.accessibleFiles(authUserId).keySet());
+    }
+
+    /**
+     * See {@link ICloudUserService#semanticSearch}'s Javadoc - and {@link IntelligenceService}'s
+     * own "security invariant" section, which this method is the single implementation of.
+     *
+     * <p>Both stages are visible in the body below and neither may be removed:
+     *
+     * <ol>
+     *   <li><b>Pre-filter</b> - {@link #accessibleFiles} resolves the caller's real, current access
+     *       set from authoritative data, and only those ids are offered to the vector store.</li>
+     *   <li><b>Post-check</b> - every returned id is first required to be a member of that same
+     *       freshly-resolved set (so a fabricated or stale id from a misbehaving service is dropped
+     *       outright), and is then additionally run through {@link #checkFileAccess}, the very same
+     *       check every other {@code /files} response performs. That second half is not redundant
+     *       in practice: it is what also enforces the content-scan gate, so a still-scanning or
+     *       flagged file can never leak into a result list through this route.</li>
+     * </ol>
+     *
+     * <p>The per-hit {@link #checkFileAccess} call is O(1) for an owned file (a composite-key
+     * lookup) and pays {@link #requireSharedFileAccess}'s own full scan only for a hit reached
+     * through a share - bounded by {@code limit}, never by the size of the account.
+     */
+    @NonNull
+    @Override
+    public List<SemanticSearchResult> semanticSearch(@NonNull final String authUserId, @NonNull final String query, final int limit) {
+        final IntelligenceService intelligenceService = CloudDriver.getInstance().getServiceContainer().getIntelligenceService();
+        if (intelligenceService == null || query.isBlank() || limit <= 0) return List.of();
+
+        // Stage 1 - the pre-filter.
+        final Map<String, AccessibleFile> accessible = this.accessibleFiles(authUserId);
+        if (accessible.isEmpty()) return List.of();
+
+        final List<SemanticMatch> matches = intelligenceService.search(query, accessible.keySet(), limit);
+
+        // Stage 2 - the post-check. Never assume a returned id was one of the candidates.
+        final List<SemanticSearchResult> results = new ArrayList<>();
+        for (final SemanticMatch match : matches) {
+            final AccessibleFile candidate = accessible.get(match.storedFileId());
+            if (candidate == null) continue;
+            try {
+                this.checkFileAccess(authUserId, match.storedFileId());
+            } catch (final RuntimeException accessDenied) {
+                continue;
+            }
+            final String fileName = candidate.fileName() != null ? candidate.fileName()
+                    : this.findStoredFileMetadata(match.storedFileId()).map(StoredFile::fileName).orElse(null);
+            if (fileName == null) continue; // a hit we cannot even name is not a usable result
+            results.add(new SemanticSearchResult(match.storedFileId(), fileName, candidate.folderId(), match.score()));
+        }
+        return List.copyOf(results);
+    }
+
     /**
      * @return {@code true} if {@code cloud-driver-extensions-scan} has published a {@link
      * ContentScanService} - see {@link #uploadFile(String, String, byte[], String)}'s own use of
@@ -2415,6 +2585,7 @@ public final class CloudUserService implements ICloudUserService {
         this.revokeAllPublicFileLinks(storedFileId);
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_DELETE, storedFileId, null));
         removeFromSearchIndex(authUserId, storedFileId);
+        removeFromIntelligenceIndex(storedFileId);
         // Webhook dispatch - fired once, at soft-delete (when a user actually
         // experiences "my file is gone"), not again at the later permanent purge of the same file.
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_DELETED, storedFileId);
@@ -2443,6 +2614,7 @@ public final class CloudUserService implements ICloudUserService {
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_RESTORE, storedFileId, null));
         this.reindexRestoredFileForSearch(authUserId, storedFileId, ownership.getFolderId());
+        this.reindexRestoredFileForIntelligence(authUserId, storedFileId);
     }
 
     /**
