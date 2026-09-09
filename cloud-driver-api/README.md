@@ -24,7 +24,7 @@ A consuming extension almost always also needs `cloud-driver-plugin` (every conc
 </dependency>
 ```
 
-This module itself depends on `database-driver-api` (pinned to `1.3.11`), `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface), `org.projectlombok:lombok` (provided scope, `@NonNull`/`@Getter`/`@ToString`/...), and `org.jline:jline:4.3.1` (the only third-party UI-facing library this module pulls in, exclusively for the `terminal` package). It has no Javalin, no JDBC driver, no JWT library of its own - every such dependency is confined to whichever module actually implements the corresponding interface.
+This module itself depends on `database-driver-api` (pinned to `1.3.13`), `org.jetbrains:annotations` (`@NotNull`/`@Nullable` on the public API surface), `org.projectlombok:lombok` (provided scope, `@NonNull`/`@Getter`/`@ToString`/...), and `org.jline:jline:4.3.1` (the only third-party UI-facing library this module pulls in, exclusively for the `terminal` package). It has no Javalin, no JDBC driver, no JWT library of its own - every such dependency is confined to whichever module actually implements the corresponding interface.
 
 ## Project structure - packages and what lives in each
 
