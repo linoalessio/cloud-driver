@@ -48,6 +48,15 @@ import java.util.Properties;
  * target AWS account/region, and - unless that account has been moved out of the SES sandbox -
  * every recipient address verified too; an unverified sender/recipient causes {@link
  * SesV2Exception} on every {@link #send} call, surfaced here as {@link EmailDeliveryException}.
+ *
+ * <p>Optionally sends every message through a named SES <em>configuration set</em> (see {@link
+ * #configurationSetName}), which is how bounce/complaint/delivery events are routed to an SNS
+ * topic for monitoring. Naming it here rather than relying on a default configuration set
+ * configured on the sending identity itself makes the binding explicit and survives someone later
+ * clearing that identity-level setting in the AWS console. <strong>The named set must already
+ * exist in the target account/region</strong> - SES rejects every {@code SendEmail} call naming a
+ * set that does not exist ({@code ConfigurationSetDoesNotExist}), so leave this unset until the
+ * set has actually been created.
  */
 public final class SesEmailSender implements EmailSender {
 
@@ -61,6 +70,14 @@ public final class SesEmailSender implements EmailSender {
     private final String fromAddress;
 
     /**
+     * The SES configuration set every message is sent through, or {@code null} to send without
+     * naming one at all (in which case SES applies whatever default configuration set is
+     * configured on the sending identity, if any). Must name a set that already exists in the
+     * target account/region - see this class's own Javadoc.
+     */
+    private final String configurationSetName;
+
+    /**
      * Convenience constructor: builds a {@link SesV2Client} against {@code region}, resolving AWS
      * credentials via the SDK's own default credential provider chain.
      *
@@ -69,7 +86,24 @@ public final class SesEmailSender implements EmailSender {
      * @param fromAddress the address every sent e-mail is shown as coming from
      */
     public SesEmailSender(@NonNull final Region region, @NonNull final String fromAddress) {
-        this(SesV2Client.builder().region(region).build(), fromAddress);
+        this(region, fromAddress, null);
+    }
+
+    /**
+     * Convenience constructor: builds a {@link SesV2Client} against {@code region}, resolving AWS
+     * credentials via the SDK's own default credential provider chain, and sends every message
+     * through {@code configurationSetName}.
+     *
+     * @param region the AWS region SES is reached in (must be a region where SES is available and
+     *     {@code fromAddress} is a verified identity)
+     * @param fromAddress the address every sent e-mail is shown as coming from
+     * @param configurationSetName the SES configuration set to send through, or {@code null}/blank
+     *     to name none - see {@link #configurationSetName}. Must already exist in the target
+     *     account/region if given.
+     */
+    public SesEmailSender(@NonNull final Region region, @NonNull final String fromAddress,
+                          final String configurationSetName) {
+        this(SesV2Client.builder().region(region).build(), fromAddress, configurationSetName);
     }
 
     /**
@@ -78,8 +112,25 @@ public final class SesEmailSender implements EmailSender {
      * @param fromAddress the address every sent e-mail is shown as coming from
      */
     public SesEmailSender(@NonNull final SesV2Client client, @NonNull final String fromAddress) {
+        this(client, fromAddress, null);
+    }
+
+    /**
+     * @param client an already-configured {@link SesV2Client} (e.g. for tests, or a caller that
+     *     needs non-default client configuration)
+     * @param fromAddress the address every sent e-mail is shown as coming from
+     * @param configurationSetName the SES configuration set to send through, or {@code null}/blank
+     *     to name none - see {@link #configurationSetName}. Must already exist in the target
+     *     account/region if given. Normalized to {@code null} if blank, so an unset/empty
+     *     {@code configuration.json} value behaves identically to omitting it.
+     */
+    public SesEmailSender(@NonNull final SesV2Client client, @NonNull final String fromAddress,
+                          final String configurationSetName) {
         this.client = client;
         this.fromAddress = fromAddress;
+        this.configurationSetName = configurationSetName == null || configurationSetName.isBlank()
+                ? null
+                : configurationSetName;
     }
 
     /**
@@ -92,7 +143,8 @@ public final class SesEmailSender implements EmailSender {
      * @param htmlBody the HTML e-mail body
      * @param plainTextBody the plain-text fallback e-mail body
      * @throws EmailDeliveryException if the message cannot be assembled, or SES rejects sending it
-     *     (unverified sender/recipient, throttling, a suppressed/bounced address, ...)
+     *     (unverified sender/recipient, throttling, a suppressed/bounced address, a {@link
+     *     #configurationSetName} naming a set that does not exist, ...)
      */
     @Override
     public void send(@NonNull final String toAddress, @NonNull final String subject, @NonNull final String htmlBody,
@@ -108,14 +160,21 @@ public final class SesEmailSender implements EmailSender {
             throw new EmailDeliveryException("@SesEmailSender.send: failed to build email for " + toAddress, e);
         }
 
+        final SendEmailRequest.Builder request = SendEmailRequest.builder()
+                .fromEmailAddress(this.fromAddress)
+                .destination(Destination.builder().toAddresses(toAddress).build())
+                .content(EmailContent.builder()
+                        .raw(RawMessage.builder().data(SdkBytes.fromByteArray(rawMessage)).build())
+                        .build());
+
+        // Only ever named when actually configured - passing a null/blank name would be sent as a
+        // literal (nonexistent) set name, which SES rejects outright.
+        if (this.configurationSetName != null) {
+            request.configurationSetName(this.configurationSetName);
+        }
+
         try {
-            this.client.sendEmail(SendEmailRequest.builder()
-                    .fromEmailAddress(this.fromAddress)
-                    .destination(Destination.builder().toAddresses(toAddress).build())
-                    .content(EmailContent.builder()
-                            .raw(RawMessage.builder().data(SdkBytes.fromByteArray(rawMessage)).build())
-                            .build())
-                    .build());
+            this.client.sendEmail(request.build());
         } catch (final SesV2Exception e) {
             throw new EmailDeliveryException("@SesEmailSender.send: SES rejected sending email to " + toAddress, e);
         }

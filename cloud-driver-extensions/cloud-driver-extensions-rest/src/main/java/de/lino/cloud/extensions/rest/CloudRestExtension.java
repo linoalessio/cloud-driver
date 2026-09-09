@@ -231,6 +231,15 @@ public class CloudRestExtension extends Extension {
      * "aws-ses-region"} is missing/blank. If {@code "aws-ses-region"} is set but {@code
      * "aws-ses-from-address"} is missing/blank, logs a warning and returns {@code null} too,
      * rather than constructing a {@link SesEmailSender} that could never actually send anything.
+     *
+     * <p>Also reads the optional {@code "aws-ses-configuration-set"} key - the name of an SES
+     * configuration set every message is then sent through, which is how bounce/complaint/delivery
+     * events reach an SNS topic for monitoring. Absent/blank (the default) sends without naming one,
+     * exactly as this method behaved before that key existed, in which case SES still applies
+     * whatever default configuration set is set on the sending identity itself. <strong>Only set
+     * this key once the named set actually exists in the target account/region</strong> - SES
+     * rejects every send naming a nonexistent set, which would take down account registration,
+     * password reset and e-mail change all at once.
      * AWS credentials themselves are never read from here - the SDK's own default credential
      * provider chain resolves them, the same convention {@code AwsKmsKeyEncryptionService}/{@code
      * S3ObjectStorageService} already established for every AWS-backed service in this codebase.
@@ -253,7 +262,11 @@ public class CloudRestExtension extends Extension {
             return null;
         }
 
-        return new SesEmailSender(Region.of(regionName), fromAddress);
+        // Optional: absent/blank leaves the configuration set unnamed, which is the pre-existing
+        // behaviour and the only safe default (a name SES does not know rejects every send).
+        final String configurationSetName = this.configString(configuration, "aws-ses-configuration-set");
+
+        return new SesEmailSender(Region.of(regionName), fromAddress, configurationSetName);
     }
 
     /**
