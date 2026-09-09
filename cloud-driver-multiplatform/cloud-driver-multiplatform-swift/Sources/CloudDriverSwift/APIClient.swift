@@ -476,6 +476,42 @@ public actor APIClient {
         return try decode(data)
     }
 
+    /// Searches the caller's accessible files by *meaning* rather than literal text, so a query
+    /// like "invoice from the garage" can surface a file named `scan_0042.pdf`.
+    ///
+    /// Complements `search(query:limit:)` rather than replacing it - the two find genuinely
+    /// different things. A `503` here specifically means semantic search is not available on the
+    /// connected deployment, which is a caller's cue to fall back to keyword search rather than to
+    /// surface an error.
+    public func semanticSearch(query: String, limit: Int) async throws -> [SemanticSearchResultResponse] {
+        let request = plainRequest("/search/semantic?q=\(query.queryEncoded())&limit=\(limit)", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Groups the caller's files into sets that appear to be the same document.
+    ///
+    /// `minimumSimilarity` should be high (0.9+): similarity is not linear in perceived sameness,
+    /// so a low threshold groups everything that merely shares a topic - which, for a feature a
+    /// user reads as "these are duplicates", is worse than returning nothing.
+    public func findDuplicates(minimumSimilarity: Double = 0.95, limit: Int = 50) async throws -> [DuplicateFileGroupResponse] {
+        let request = plainRequest("/files/duplicates?minimumSimilarity=\(minimumSimilarity)&limit=\(limit)",
+                                   method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// Suggests descriptive labels for one file.
+    ///
+    /// Suggestions are scored against a fixed vocabulary, so their confidence is a relative
+    /// similarity rather than a probability - present them as suggestions a user accepts, never as
+    /// facts. An empty array is a normal answer for a file that was never indexed.
+    public func suggestFileTags(fileId: String, limit: Int = 5) async throws -> [TagSuggestionResponse] {
+        let request = plainRequest("/files/\(fileId)/tags?limit=\(limit)", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
     // MARK: - File version history
 
     /// Lists every captured version of `fileId`'s content, newest first - a version is captured

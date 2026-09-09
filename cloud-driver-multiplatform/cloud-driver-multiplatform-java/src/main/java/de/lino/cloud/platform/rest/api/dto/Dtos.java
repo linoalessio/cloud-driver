@@ -368,6 +368,42 @@ public final class Dtos {
     }
 
     /**
+     * Shape of one entry in the {@code GET /search/semantic} response array.
+     *
+     * <p>Identical to {@link SearchResultResponse} plus a {@code score} - the cosine similarity
+     * between the query and the file, higher being closer. The two are kept as separate types
+     * rather than one optional-score type because they answer different questions: keyword search
+     * either matched or it did not, whereas every semantic result matched to <em>some</em> degree
+     * and the score is what makes the list interpretable.
+     */
+    public record SemanticSearchResultResponse(String storedFileId, String fileName, String folderId, double score) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/duplicates} response array - a set of files the
+     * server considers near-identical in meaning, plus the group's weakest pairwise similarity.
+     *
+     * <p><b>Not the same as byte-identical.</b> The server deduplicates identical content exactly
+     * and invisibly; this is a similarity judgement over meaning, meant for a human to review. A
+     * client must present it as a suggestion and must never delete anything on its own.
+     */
+    public record DuplicateFileGroupResponse(java.util.List<DuplicateFileEntryResponse> files, double similarity) {
+    }
+
+    /** One member of a {@link DuplicateFileGroupResponse}. */
+    public record DuplicateFileEntryResponse(String storedFileId, String fileName, String folderId) {
+    }
+
+    /**
+     * Shape of one entry in the {@code GET /files/{id}/tags} response array.
+     *
+     * <p>{@code confidence} is a <em>relative</em> similarity against a fixed label vocabulary, not
+     * a calibrated probability - do not render it to a user as a percentage of correctness.
+     */
+    public record TagSuggestionResponse(String tag, double confidence) {
+    }
+
+    /**
      * Shape of one entry in the {@code GET /files/{id}/public-link} response array, and of the
      * object {@code POST /files/{id}/public-link} returns on success - an unauthenticated,
      * read-only link to one file's content. {@code expiresAtEpochMillis} is {@code null} if the

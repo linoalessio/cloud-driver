@@ -32,7 +32,10 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.RenameFileRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.Page;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RefreshRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.RequestPasswordResetRequest;
+import de.lino.cloud.platform.rest.api.dto.Dtos.DuplicateFileGroupResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SearchResultResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.SemanticSearchResultResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.TagSuggestionResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedByMeCountResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderContentsResponse;
@@ -2816,6 +2819,98 @@ public final class ApiClient implements AutoCloseable {
     private HttpRequest searchRequest(final String query, final int limit) {
         final String encodedQuery = URLEncoder.encode(query == null ? "" : query, StandardCharsets.UTF_8);
         return this.requestBuilder(this.apiBaseUrl.resolve("/search?q=" + encodedQuery + "&limit=" + limit), true).GET().build();
+    }
+
+    // --- semantic search / duplicates / tags ---------------------------------
+
+    /**
+     * {@code GET /search/semantic?q=...&limit=...}: searches the caller's accessible files by
+     * <em>meaning</em> rather than literal text, so "invoice from the garage" can find a file
+     * named {@code scan_0042.pdf}.
+     *
+     * <p>Complements {@link #search(String, int)} rather than replacing it - the two find
+     * genuinely different things, and a client offering one search box is expected to run both or
+     * let the user choose. A {@code 503} here specifically means semantic search is not available
+     * on the connected deployment, which is a caller's cue to fall back to keyword search rather
+     * than to show an error.
+     *
+     * @param query the search text
+     * @param limit maximum results to return
+     * @return matches, most similar first
+     * @throws ApiException {@code 401} if not logged in / token expired, {@code 503} if semantic
+     * search is not running on the connected deployment
+     */
+    public List<SemanticSearchResultResponse> semanticSearch(final String query, final int limit) throws ApiException {
+        return List.of(this.send(this.semanticSearchRequest(query, limit), SemanticSearchResultResponse[].class));
+    }
+
+    /** Async form of {@link #semanticSearch(String, int)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<List<SemanticSearchResultResponse>> semanticSearchAsync(final String query, final int limit) {
+        return this.sendAsync(this.semanticSearchRequest(query, limit), SemanticSearchResultResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /search/semantic?q=...&limit=...} request against {@link #apiBaseUrl}. */
+    private HttpRequest semanticSearchRequest(final String query, final int limit) {
+        final String encodedQuery = URLEncoder.encode(query == null ? "" : query, StandardCharsets.UTF_8);
+        return this.requestBuilder(this.apiBaseUrl.resolve("/search/semantic?q=" + encodedQuery + "&limit=" + limit), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/duplicates?minimumSimilarity=...&limit=...}: groups the caller's files
+     * into sets that appear to be the same document.
+     *
+     * <p>{@code minimumSimilarity} should be high (0.9+). Similarity is not linear in perceived
+     * sameness, so a low threshold groups everything that merely shares a topic - which, for a
+     * feature a user reads as "these are duplicates", is worse than returning nothing.
+     *
+     * @param minimumSimilarity cosine-similarity floor in {@code [0, 1]}
+     * @param limit maximum groups to return
+     * @return near-duplicate groups, most similar first
+     * @throws ApiException {@code 400} if {@code minimumSimilarity} is outside {@code [0, 1]},
+     * {@code 401} if not logged in, {@code 503} if semantic search is not running
+     */
+    public List<DuplicateFileGroupResponse> findDuplicates(final double minimumSimilarity, final int limit) throws ApiException {
+        return List.of(this.send(this.duplicatesRequest(minimumSimilarity, limit), DuplicateFileGroupResponse[].class));
+    }
+
+    /** Async form of {@link #findDuplicates(double, int)}. */
+    public CompletableFuture<List<DuplicateFileGroupResponse>> findDuplicatesAsync(final double minimumSimilarity, final int limit) {
+        return this.sendAsync(this.duplicatesRequest(minimumSimilarity, limit), DuplicateFileGroupResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/duplicates} request against {@link #apiBaseUrl}. */
+    private HttpRequest duplicatesRequest(final double minimumSimilarity, final int limit) {
+        return this.requestBuilder(this.apiBaseUrl.resolve(
+                "/files/duplicates?minimumSimilarity=" + minimumSimilarity + "&limit=" + limit), true).GET().build();
+    }
+
+    /**
+     * {@code GET /files/{id}/tags?limit=...}: suggests descriptive labels for one file.
+     *
+     * <p>Suggestions come from a fixed vocabulary scored against the file's own embedding, so
+     * their confidence is a relative similarity rather than a probability - present them as
+     * suggestions a user accepts, never as facts. An empty list is a normal answer for a file that
+     * was never indexed.
+     *
+     * @param fileId the file to label
+     * @param limit maximum suggestions to return
+     * @return suggestions, most confident first
+     * @throws ApiException {@code 404} if the file does not exist or is not accessible,
+     * {@code 503} if semantic search is not running
+     */
+    public List<TagSuggestionResponse> suggestFileTags(final String fileId, final int limit) throws ApiException {
+        return List.of(this.send(this.tagsRequest(fileId, limit), TagSuggestionResponse[].class));
+    }
+
+    /** Async form of {@link #suggestFileTags(String, int)}. */
+    public CompletableFuture<List<TagSuggestionResponse>> suggestFileTagsAsync(final String fileId, final int limit) {
+        return this.sendAsync(this.tagsRequest(fileId, limit), TagSuggestionResponse[].class).thenApply(List::of);
+    }
+
+    /** Builds the {@code GET /files/{id}/tags} request against {@link #apiBaseUrl}. */
+    private HttpRequest tagsRequest(final String fileId, final int limit) {
+        return this.requestBuilder(this.apiBaseUrl.resolve(
+                "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8) + "/tags?limit=" + limit), true).GET().build();
     }
 
     // --- thumbnails ----------------------------------------------------------

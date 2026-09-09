@@ -327,6 +327,50 @@ public struct SearchResultResponse: Decodable, Identifiable, Hashable {
     public let folderId: String?
 }
 
+/// Shape of one entry in `GET /search/semantic`'s response array.
+///
+/// `SearchResultResponse` plus a `score` - the cosine similarity between the query and the file,
+/// higher being closer. Kept as its own type rather than folding an optional score onto the
+/// keyword shape, because the two answer different questions: a keyword search either matched or
+/// it did not, whereas every semantic result matched to *some* degree and the score is what makes
+/// the list interpretable at all.
+public struct SemanticSearchResultResponse: Decodable, Identifiable, Hashable {
+    public var id: String { storedFileId }
+    public let storedFileId: String
+    public let fileName: String
+    public let folderId: String?
+    public let score: Double
+}
+
+/// One member of a `DuplicateFileGroupResponse`.
+public struct DuplicateFileEntryResponse: Decodable, Identifiable, Hashable {
+    public var id: String { storedFileId }
+    public let storedFileId: String
+    public let fileName: String
+    public let folderId: String?
+}
+
+/// Shape of one entry in `GET /files/duplicates`'s response array - files the server considers
+/// near-identical in meaning, plus the group's weakest pairwise similarity.
+///
+/// **Not the same as byte-identical.** The server deduplicates identical content exactly and
+/// invisibly; this is a similarity judgement meant for a human to review, so a client must present
+/// it as a suggestion and must never delete anything on its own.
+public struct DuplicateFileGroupResponse: Decodable, Hashable {
+    public let files: [DuplicateFileEntryResponse]
+    public let similarity: Double
+}
+
+/// Shape of one entry in `GET /files/{id}/tags`'s response array.
+///
+/// `confidence` is a *relative* similarity against a fixed label vocabulary, not a calibrated
+/// probability - do not render it to a user as a percentage of correctness.
+public struct TagSuggestionResponse: Decodable, Identifiable, Hashable {
+    public var id: String { tag }
+    public let tag: String
+    public let confidence: Double
+}
+
 /// Body for `POST /files/{id}/public-link` - `expiresAtEpochMillis` `nil` creates a link that
 /// never expires.
 public struct CreatePublicFileLinkRequest: Encodable {

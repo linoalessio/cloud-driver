@@ -21,7 +21,7 @@ from .token_store import TokenStore
 
 if TYPE_CHECKING:
     from .live_updates import LiveUpdateClient
-    from .models import SearchResult
+    from .models import DuplicateFileGroup, SearchResult, SemanticSearchResult, TagSuggestion
 
 
 class _AsyncResourceProxy:
@@ -73,6 +73,19 @@ class AsyncCloudDriverClient:
 
     async def search(self, query: str, *, limit: int = 25) -> "list[SearchResult]":
         return await asyncio.to_thread(self._sync.search, query, limit=limit)
+
+    async def semantic_search(self, query: str, *, limit: int = 25) -> "list[SemanticSearchResult]":
+        return await asyncio.to_thread(self._sync.semantic_search, query, limit=limit)
+
+    async def find_duplicates(
+        self, *, minimum_similarity: float = 0.95, limit: int = 50
+    ) -> "list[DuplicateFileGroup]":
+        return await asyncio.to_thread(
+            self._sync.find_duplicates, minimum_similarity=minimum_similarity, limit=limit
+        )
+
+    async def suggest_file_tags(self, file_id: str, *, limit: int = 5) -> "list[TagSuggestion]":
+        return await asyncio.to_thread(self._sync.suggest_file_tags, file_id, limit=limit)
 
     async def download_public_file_to_path(
         self,

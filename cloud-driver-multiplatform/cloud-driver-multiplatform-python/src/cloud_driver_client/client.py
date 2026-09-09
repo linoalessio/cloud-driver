@@ -42,7 +42,10 @@ from .models import (
     MetricsSnapshot,
     Page,
     PublicFileLinkSummary,
+    DuplicateFileGroup,
     SearchResult,
+    SemanticSearchResult,
+    TagSuggestion,
     SharedByMeCount,
     SharedFileSummary,
     SharedFolderContents,
@@ -232,6 +235,43 @@ class CloudDriverClient:
         an empty/blank query short-circuits server-side before that check even runs)."""
         resp = self._request("GET", "/search", params={"q": query, "limit": limit})
         return [SearchResult.model_validate(x) for x in resp.json()]
+
+    def semantic_search(self, query: str, *, limit: int = 25) -> list[SemanticSearchResult]:
+        """GET /search/semantic?q=&limit= - ranks the caller's accessible files by *meaning*
+        rather than literal text, so "invoice from the garage" can surface `scan_0042.pdf`.
+
+        Complements `search()` rather than replacing it; the two find genuinely different things.
+        Raises ServiceUnavailableError if semantic search isn't running on this deployment, which
+        is a caller's cue to fall back to `search()` rather than to surface an error. A blank
+        query short-circuits server-side and returns an empty list."""
+        resp = self._request("GET", "/search/semantic", params={"q": query, "limit": limit})
+        return [SemanticSearchResult.model_validate(x) for x in resp.json()]
+
+    def find_duplicates(
+        self, *, minimum_similarity: float = 0.95, limit: int = 50
+    ) -> list[DuplicateFileGroup]:
+        """GET /files/duplicates - groups the caller's files into sets that look like the same
+        document.
+
+        `minimum_similarity` should stay high (0.9+): similarity is not linear in perceived
+        sameness, so a low threshold groups everything that merely shares a topic - which, for a
+        result a user reads as "these are duplicates", is worse than returning nothing. A value
+        outside [0, 1] is rejected server-side with BadRequestError rather than clamped."""
+        resp = self._request(
+            "GET",
+            "/files/duplicates",
+            params={"minimumSimilarity": minimum_similarity, "limit": limit},
+        )
+        return [DuplicateFileGroup.model_validate(x) for x in resp.json()]
+
+    def suggest_file_tags(self, file_id: str, *, limit: int = 5) -> list[TagSuggestion]:
+        """GET /files/{id}/tags - suggests descriptive labels for one file.
+
+        Access-checked exactly like a download, so a file the caller cannot read raises
+        NotFoundError rather than revealing that it exists. An empty list is a normal answer for a
+        file that was never indexed - not an error."""
+        resp = self._request("GET", f"/files/{file_id}/tags", params={"limit": limit})
+        return [TagSuggestion.model_validate(x) for x in resp.json()]
 
     # -- public share links (architecture/MICRO.md section 6) ---------------------------------
 

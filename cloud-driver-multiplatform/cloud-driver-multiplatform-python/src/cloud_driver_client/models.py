@@ -197,6 +197,57 @@ class SearchResult(_Model):
     folder_id: str | None = Field(default=None, alias="folderId")
 
 
+class SemanticSearchResult(_Model):
+    """One match returned by GET /search/semantic.
+
+    SearchResult plus a `score` - the cosine similarity between the query and the file, higher
+    being closer. A separate model rather than an optional field on SearchResult because the two
+    answer different questions: a keyword search either matched or it did not, whereas every
+    semantic result matched to *some* degree and the score is what makes the list interpretable.
+    """
+
+    stored_file_id: str = Field(alias="storedFileId")
+    file_name: str = Field(alias="fileName")
+    folder_id: str | None = Field(default=None, alias="folderId")
+    score: float
+
+
+class DuplicateFileEntry(_Model):
+    """One member of a DuplicateFileGroup."""
+
+    stored_file_id: str = Field(alias="storedFileId")
+    file_name: str = Field(alias="fileName")
+    folder_id: str | None = Field(default=None, alias="folderId")
+
+
+class DuplicateFileGroup(_Model):
+    """A set of files the server considers near-identical in meaning, from GET /files/duplicates.
+
+    **Not the same as byte-identical.** The server already deduplicates identical content exactly
+    and invisibly; this is a similarity judgement over *meaning*, which is what catches the cases
+    an exact hash cannot - the same invoice scanned twice, a document re-exported at another
+    quality. It is a suggestion for a human, never grounds for deleting anything automatically.
+
+    `similarity` is the group's weakest pairwise score, so comparing it against your own threshold
+    judges the whole group rather than its best pair.
+    """
+
+    files: list[DuplicateFileEntry]
+    similarity: float
+
+
+class TagSuggestion(_Model):
+    """One suggested label for a file, from GET /files/{id}/tags.
+
+    Zero-shot: the server scores the file's embedding against a fixed label vocabulary. There is no
+    training and no learning from user behaviour, so `confidence` is a *relative* similarity and
+    not a calibrated probability - do not render it to a user as a percentage of correctness.
+    """
+
+    tag: str
+    confidence: float
+
+
 class PublicFileLinkSummary(_Model):
     """An unauthenticated public share link on a file - `architecture/MICRO.md` section 6. `token`
     is the whole of what's needed to resolve the file's content through the anonymous
