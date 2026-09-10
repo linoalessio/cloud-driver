@@ -359,6 +359,7 @@ planning around:
 - **Total**: the reference deployment runs on 7.7 GB RAM + 4 GB swap with `-Xmx6g` + `clamd` +
   Postgres all co-located, and headroom is genuinely tight — don't add further memory-hungry
   services to the same box without re-checking.
+- **Recommendation**: the cloud-driver needs x-GB RAM depending on how much data will be scaled.
 
 ---
 
