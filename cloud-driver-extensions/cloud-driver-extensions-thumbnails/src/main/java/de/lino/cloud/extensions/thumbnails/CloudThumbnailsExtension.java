@@ -79,18 +79,42 @@ public class CloudThumbnailsExtension extends Extension {
 
     private static final List<ThumbnailGenerator> GENERATORS = List.of(new ImageThumbnailGenerator(), new PdfThumbnailGenerator());
 
+    /**
+     * The PDFBox/FontBox library loggers {@link #onLoading()} raises to {@link Level#SEVERE}.
+     * PDFBox's lenient parser emits one {@code java.util.logging} WARNING per damaged object it
+     * recovers from ("Invalid dictionary, found: ... but expected: '/'", "The end of the stream
+     * is out of range", ...) - a single corrupt-but-renderable uploaded PDF floods the operator
+     * terminal with hundreds of such lines (observed 2026-09-10) while PDFBox still produces a
+     * perfectly usable thumbnail. Raising these loggers to SEVERE drops only that internal
+     * chatter; it deliberately does <b>not</b> hide real failures, because a PDF that genuinely
+     * can't be rendered still surfaces as {@link #generateThumbnail}'s own single per-file
+     * WARNING (the one signal that matters - the lesson of the 2026-09-01 silenced-Javalin
+     * incident is "never suppress the only signal", not "never quiet a library").
+     *
+     * <p>Held in a {@code static final} field, not set-and-forgotten inline: JUL only keeps
+     * <em>weak</em> references to named loggers, so a level configured on an unreferenced logger
+     * can be garbage-collected away mid-run, silently restoring the flood.
+     */
+    private static final List<java.util.logging.Logger> QUIETED_PDF_LIBRARY_LOGGERS = List.of(
+            java.util.logging.Logger.getLogger("org.apache.pdfbox"),
+            java.util.logging.Logger.getLogger("org.apache.fontbox"));
+
     private DataFactory dataFactory;
     private FileFactory fileFactory;
     private ExecutorService executor;
     private FileChangeListener listener;
 
     /**
-     * Resolves {@link #dataFactory}/{@link #fileFactory}, builds {@link #executor}, publishes a
-     * {@link DefaultThumbnailService} into {@code IServiceContainer#setThumbnailService}, and
-     * registers {@link #listener} against {@code FileChangeListenerRegistry}.
+     * Quiets {@link #QUIETED_PDF_LIBRARY_LOGGERS} (see that field's Javadoc for why that is
+     * safe), resolves {@link #dataFactory}/{@link #fileFactory}, builds {@link #executor},
+     * publishes a {@link DefaultThumbnailService} into {@code
+     * IServiceContainer#setThumbnailService}, and registers {@link #listener} against {@code
+     * FileChangeListenerRegistry}.
      */
     @Override
     public void onLoading() {
+
+        QUIETED_PDF_LIBRARY_LOGGERS.forEach(libraryLogger -> libraryLogger.setLevel(Level.SEVERE));
 
         this.dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
         this.fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();

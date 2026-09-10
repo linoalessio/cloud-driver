@@ -178,4 +178,6 @@ a given deployment (surfaced as a `503` response).
 - `503` uniformly means "this optional capability isn't available on this deployment" (presigned
   transfer, thumbnails, versions, search, webhooks, semantic search) — clients treat it as a
   fall-back signal, not an error.
-- `429` means a rate limit was exceeded (per-IP on `/auth/*`, per-user on reads elsewhere).
+- `429` means a rate limit was exceeded (per-IP on `/auth/*`, per-user on reads elsewhere;
+  `GET /files/{id}/thumbnail` is exempt from the read limit so browsing large photo folders —
+  one thumbnail request per visible file — can't trip it).

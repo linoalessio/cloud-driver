@@ -122,6 +122,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     /** Path mounted by {@link #start} for {@link #handleUploadFile}/{@link #handleListFiles}/{@link #handleDownloadFile}/{@link #handleDownloadFileContent}/{@link #handleDeleteFile}/{@link #handleMoveFile}. */
     private static final String FILES_PATH = "/files";
     /**
+     * Trailing segment of the {@link #handleGetThumbnail} route ({@code /files/{id}/thumbnail}) -
+     * what {@link #requireWithinApiRateLimit} matches (together with the {@link #FILES_PATH}
+     * prefix) to exempt thumbnail fetches from the {@code READ}-class rate limit. A suffix
+     * constant rather than a full template, since the concrete path has a file id in the middle
+     * and this is the only route under {@link #FILES_PATH} ending in this segment.
+     */
+    private static final String THUMBNAIL_PATH_SUFFIX = "/thumbnail";
+    /**
      * Path mounted by {@link #start} for {@link #handleListDeletedFiles} - a static segment that
      * happens to be registered <em>before</em> {@link #FILES_PATH}{@code /{id}} in {@link #start}.
      * <b>Corrected (2026-09-02):</b> this used to claim Javalin's own routing matches a static
@@ -906,7 +914,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.get(FILES_DUPLICATES_PATH, this::handleFindDuplicates);
                 config.routes.get(FILES_PATH + "/{id}", this::handleDownloadFile);
                 config.routes.get(FILES_PATH + "/{id}/content", this::handleDownloadFileContent);
-                config.routes.get(FILES_PATH + "/{id}/thumbnail", this::handleGetThumbnail);
+                config.routes.get(FILES_PATH + "/{id}" + THUMBNAIL_PATH_SUFFIX, this::handleGetThumbnail);
                 config.routes.delete(FILES_PATH + "/{id}", this::handleDeleteFile);
                 config.routes.post(FILES_PATH + "/{id}/restore", this::handleRestoreFile);
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
@@ -1204,6 +1212,18 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * token's 384-bit search space making brute-forcing infeasible regardless; a dedicated limiter
      * for that surface is a known, flagged, out-of-scope follow-up, not silently forgotten).
      *
+     * <p>Also excludes {@code GET /files/{id}/thumbnail} ({@link #FILES_PATH} + {@link
+     * #THUMBNAIL_PATH_SUFFIX}, added 2026-09-10): the desktop/mobile file browsers fire one
+     * thumbnail {@code GET} per visible image/video row, so ordinary browsing of a few hundred
+     * photos legitimately exceeds any per-minute read budget sized to blunt a scraper - the exact
+     * per-file-request pattern that already forced the {@code WRITE}-class limit's removal (see
+     * above). Safe to exempt from a <em>volume</em> cap because the route is no free-read
+     * surface: it still requires a valid bearer token ({@link #requireValidBearerToken} runs
+     * before this filter) and per-file ownership/share access ({@code
+     * CloudUserService#checkFileAccess}) before serving a byte, and serves only small,
+     * pre-generated JPEGs - an enumeration script gains nothing here it couldn't already get
+     * cheaper from the (still-capped) listing routes.
+     *
      * <p><b>Only ever gates {@code GET}/{@code HEAD} (read) requests, as of 2026-09-08 - a
      * {@code WRITE} request (upload/delete/move/rename/share/... - every non-GET/HEAD method)
      * bypasses this filter entirely, with no cap of any kind.</b> A {@code WRITE}-class limit
@@ -1237,6 +1257,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             return;
         }
         if (ctx.method() != HandlerType.GET && ctx.method() != HandlerType.HEAD) {
+            return;
+        }
+        if (ctx.path().startsWith(FILES_PATH + "/") && ctx.path().endsWith(THUMBNAIL_PATH_SUFFIX)) {
             return;
         }
         final long windowSeconds = resolveApiRateLimitReadWindowSeconds();

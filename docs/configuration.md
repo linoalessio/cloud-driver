@@ -45,7 +45,7 @@ next to the running backend process — two required files (below) plus an optio
 | `clamav-port` | int | `3310` | Malware scanning |
 | `clamav-timeout-seconds` | long | `30` | Malware scanning |
 | `content-scan-max-bytes` | long | 100 MiB | Files above this are marked clean unscanned (logged) |
-| `api-rate-limit-read-max-requests` | int | `300` | Per-user read (GET/HEAD) rate limit |
+| `api-rate-limit-read-max-requests` | int | `300` | Per-user read (GET/HEAD) rate limit; `GET /files/{id}/thumbnail` is exempt |
 | `api-rate-limit-read-window-seconds` | long | `60` | Per-user read rate limit window |
 | `file-versioning-max-versions-per-file` | int | `10` | Version pruning (`cloud-driver-extensions-versioning`) |
 | `file-versioning-retention-days` | int | `30` | Version pruning by age |
