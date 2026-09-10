@@ -41,6 +41,37 @@ ships its own systemd unit and idempotent installer under `cloud-driver-intellig
 (run from a local checkout against the target server); `clamd` and Redis are installed through
 the host OS's own package manager and bound to loopback.
 
+## Homepage (cloud-driver.de)
+
+The static informational homepage under [`homepage/`](../homepage/) (`index.html`, the
+English-language legal pages `impressum.html`/`datenschutz.html`, `style.css`, and the
+animation layer `script.js`) is served by the same reverse proxy that fronts the API, directly
+as files — the Java backend is not involved. The pages are deliberately self-contained: the
+only JavaScript is the dependency-free, self-hosted `script.js` (animations only — no cookies,
+no data collection), and nothing is ever loaded from third parties (fonts, analytics, CDNs) —
+which is exactly what `datenschutz.html` claims, so keep it that way. All animation is disabled
+under `prefers-reduced-motion`, and the page renders fully with JS off.
+
+Deploying is a plain file copy plus a Caddy site block for the apex domain:
+
+```bash
+rsync -av --delete homepage/ user@server:/var/www/cloud-driver-homepage/
+```
+
+```caddyfile
+cloud-driver.de {
+    root * /var/www/cloud-driver-homepage
+    file_server
+}
+```
+
+**Before the legal pages go live**: `datenschutz.html` still contains two values marked with
+`class="todo"` — a highlighted span in the rendered page — for the hosting provider and the AWS
+region. Verify both against the actual deployment, then remove the markers.
+
+The pages state facts about the running system (version number, route count, extension count) —
+when those change in a release, update `homepage/index.html` in the same change.
+
 ## Continuous integration
 
 ```mermaid

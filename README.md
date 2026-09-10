@@ -330,6 +330,7 @@ cloud-driver/
 ├── cloud-driver-intelligence/           # Python semantic-search service (own process)
 ├── cloud-driver-multiplatform/          # client SDKs (Java / Swift / Python)
 ├── cloud-driver-platforms/              # client apps (desktop / mobile)
+├── homepage/                            # static informational website for cloud-driver.de
 ├── docs/                                # cross-cutting documentation (incl. requirements.md)
 ├── .github/workflows/                   # CI
 ├── pom.xml                              # Maven reactor root
@@ -727,6 +728,9 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 - The optional companion processes (`clamd`, Redis, the Python intelligence service) run as
   ordinary system services beside the JVM; the intelligence service ships a systemd unit and
   installer under `cloud-driver-intelligence/deploy/`.
+- The apex domain `cloud-driver.de` serves the static informational homepage under
+  [`homepage/`](homepage/) (with legal-notice/privacy pages) straight from the reverse
+  proxy — see [docs/deployment.md](docs/deployment.md#homepage-cloud-driverde).
 - CI (GitHub Actions): build checks for the Maven reactor, the iOS app, and both Python packages
   (with pytest), Qodana static analysis, and a publish workflow that pushes every Maven module to
   GitHub Packages when a release is created. **No workflow deploys to a server automatically** —

@@ -11,14 +11,14 @@ cloud-driver/redis-database.json
 
 architecture
 architecture/*.md
+homepage/*
 
 shell/deploy-cloud.sh
 shell/release-and-package.sh
 shell/test-bootstrap.sh
 
-test
-
 ### IntelliJ IDEA ###
+cloud-driver-bootstrap/dependency-reduced-pom.xml
 .idea
 .idea/modules.xml
 .idea/jarRepositories.xml
@@ -27,7 +27,6 @@ test
 *.iws
 *.iml
 *.ipr
-cloud-driver-bootstrap/dependency-reduced-pom.xml
 
 ### Eclipse ###
 .apt_generated
