@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.Screen
 import de.lino.cloud.platform.desktop.theme.CloudColors
 import de.lino.cloud.platform.desktop.theme.IconTile
+import de.lino.cloud.platform.desktop.theme.PipelineStages
 import de.lino.cloud.platform.desktop.theme.StorageBar
 import de.lino.cloud.platform.desktop.theme.ThemeMode
 import de.lino.cloud.platform.desktop.utils.formatBytes
@@ -128,12 +129,18 @@ private fun KeychainFallbackNotice(onDismiss: () -> Unit) {
 }
 
 /**
- * A status bar fixed to the bottom of the window while [progress] is non-`null` - a determinate
- * [LinearProgressIndicator] (real byte-level progress, not an indeterminate spinner; see
- * [TransferProgress.fraction]) plus a short label ("Uploading 2 of 5 files - 3.10 MB / 7.40 MB").
- * [TransferKind.EXTRACT] (`AppViewModel.extractArchive`'s two-phase download-then-upload) shows
- * as "Extracting" throughout both phases, rather than switching between "Downloading"/"Uploading"
- * mid-operation - from the user's perspective it's one "unarchive" action, not two.
+ * A status bar fixed to the bottom of the window while [progress] is non-`null` - real byte-level
+ * progress (see [TransferProgress.fraction]), not an indeterminate spinner, plus a short label
+ * ("Uploading 2 of 5 files - 3.10 MB / 7.40 MB"). [TransferKind.EXTRACT]
+ * (`AppViewModel.extractArchive`'s two-phase download-then-upload) shows as "Extracting"
+ * throughout both phases, rather than switching between "Downloading"/"Uploading" mid-operation -
+ * from the user's perspective it's one "unarchive" action, not two.
+ *
+ * For [TransferKind.UPLOAD] specifically, [progress.fraction][TransferProgress.fraction] drives
+ * [PipelineStages] instead of a plain [LinearProgressIndicator] - an upload really does pass
+ * through that exact encryption pipeline, so showing it is a genuine description of what's
+ * happening, not decoration. Downloads/extracts keep the plain bar: the encryption-pipeline
+ * metaphor doesn't describe fetching or unpacking a file.
  */
 @Composable
 private fun TransferProgressBar(progress: TransferProgress) {
@@ -168,7 +175,11 @@ private fun TransferProgressBar(progress: TransferProgress) {
             )
         }
         Spacer(Modifier.height(6.dp))
-        LinearProgressIndicator(progress = { progress.fraction }, modifier = Modifier.fillMaxWidth())
+        if (progress.kind == TransferKind.UPLOAD) {
+            PipelineStages(activeFraction = progress.fraction)
+        } else {
+            LinearProgressIndicator(progress = { progress.fraction }, modifier = Modifier.fillMaxWidth())
+        }
     }
 }
 

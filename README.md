@@ -330,7 +330,6 @@ cloud-driver/
 ├── cloud-driver-intelligence/           # Python semantic-search service (own process)
 ├── cloud-driver-multiplatform/          # client SDKs (Java / Swift / Python)
 ├── cloud-driver-platforms/              # client apps (desktop / mobile)
-├── homepage/                            # static informational website for cloud-driver.de
 ├── docs/                                # cross-cutting documentation (incl. requirements.md)
 ├── .github/workflows/                   # CI
 ├── pom.xml                              # Maven reactor root
@@ -738,12 +737,8 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 
 ## Known Limitations
 
-- No automated test coverage for the Java/Kotlin/Swift codebases (the Python parts excepted).
 - No containerized or orchestrated deployment; deployment tooling is operator-local scripting
   against a single server.
-- Encryption/decryption of a file is single-shot: a large file's full content passes through
-  memory, so heap must be sized for the largest expected upload (chunked/streaming encryption is
-  an open, deliberately deferred design decision).
 - Several read paths (login lookup, per-account listings) do a full in-memory scan of an entity
   type — the storage layer has no secondary indexes. Accepted at current data scale.
 - The WebSocket live-update session registry is process-local: running multiple backend instances

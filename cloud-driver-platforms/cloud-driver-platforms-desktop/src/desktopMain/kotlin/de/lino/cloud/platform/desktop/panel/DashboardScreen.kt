@@ -52,14 +52,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.lino.cloud.platform.desktop.model.AccountStats
+import de.lino.cloud.platform.desktop.theme.BreathingGlow
 import de.lino.cloud.platform.desktop.theme.CardShape
 import de.lino.cloud.platform.desktop.theme.CloudColors
+import de.lino.cloud.platform.desktop.theme.CloudDriverMono
 import de.lino.cloud.platform.desktop.theme.IconTile
 import de.lino.cloud.platform.desktop.theme.StorageBar
+import de.lino.cloud.platform.desktop.theme.tiltOnHover
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
 import java.time.Instant
@@ -240,9 +242,13 @@ private fun AccountInfoCard(viewModel: AppViewModel, onUninstallClick: () -> Uni
                 }
             }
             InfoRow(Icons.Filled.AlternateEmail, "Email address", viewModel.currentUserEmail ?: "-")
-            InfoRow(Icons.Filled.Storage, "Storage", formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload))
+            InfoRow(
+                Icons.Filled.Storage, "Storage",
+                formatStorageStatus(viewModel.currentUserUploadedBytes, viewModel.currentUserMaxBytesToUpload),
+                monospace = true,
+            )
             InfoRow(Icons.Filled.CalendarToday, "Joined", viewModel.currentUserCreatedAtEpochMillis?.let(::formatJoinedDate) ?: "-")
-            InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-")
+            InfoRow(Icons.Filled.Badge, "Account ID", viewModel.currentUserId ?: "-", monospace = true)
         }
     }
 
@@ -342,22 +348,24 @@ private fun ChangeEmailDialog(viewModel: AppViewModel, onDismiss: () -> Unit) {
     )
 }
 
+/** [monospace] applies [CloudDriverMono] to [value] - reserved for technical/data values (storage figures, the account id), not prose like an email address or a joined date. */
 @Composable
-private fun InfoRow(icon: ImageVector, label: String, value: String) {
+private fun InfoRow(icon: ImageVector, label: String, value: String, monospace: Boolean = false) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(10.dp))
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(140.dp))
-        Text(value, fontWeight = FontWeight.Medium)
+        Text(value, fontWeight = FontWeight.Medium, fontFamily = if (monospace) CloudDriverMono else null)
     }
 }
 
 /**
  * The combined "Folders"/"Files" stat card (merged into one card, per spec, 2026-09-02 - these two
  * used to be separate [StatCard]s) - two monospaced lines, `"Folders: <n>"`/`"Files  : <n>"`, the
- * padded label keeping both values' colons aligned regardless of digit count. [FontFamily.Monospace]
+ * padded label keeping both values' colons aligned regardless of digit count. [CloudDriverMono]
  * is applied specifically for that alignment guarantee - the surrounding proportional-font labels
- * elsewhere on this screen have no such requirement.
+ * elsewhere on this screen have no such requirement. [tiltOnHover] at a shallow angle matches the
+ * other dashboard stat cards - a hover-only, cursor-driven "living" response, not ambient motion.
  */
 @Composable
 private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: Modifier = Modifier) {
@@ -365,7 +373,7 @@ private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: 
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = modifier,
+        modifier = modifier.tiltOnHover(maxDegrees = 4f),
     ) {
         Column(Modifier.padding(20.dp)) {
             IconTile(Icons.Filled.Folder, CloudColors.Blue)
@@ -373,31 +381,32 @@ private fun FilesAndFoldersStatCard(folderCount: Int, fileCount: Int, modifier: 
             Text(
                 "Folders: $folderCount",
                 style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CloudDriverMono,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
                 "Files  : $fileCount",
                 style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CloudDriverMono,
                 fontWeight = FontWeight.SemiBold,
             )
         }
     }
 }
 
+/** [tiltOnHover] at a shallow angle - three of these sit side by side, so a subtler tilt than the single hero [StorageOverviewCard] keeps the row from feeling busy. */
 @Composable
 private fun StatCard(icon: ImageVector, tileColor: Color, label: String, value: String, modifier: Modifier = Modifier) {
     Card(
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = modifier,
+        modifier = modifier.tiltOnHover(maxDegrees = 4f),
     ) {
         Column(Modifier.padding(20.dp)) {
             IconTile(icon, tileColor)
             Spacer(Modifier.height(14.dp))
-            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, fontFamily = CloudDriverMono)
             Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -420,19 +429,22 @@ private fun StorageOverviewCard(viewModel: AppViewModel, stats: AccountStats?) {
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().tiltOnHover(),
     ) {
         Column(Modifier.padding(24.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconTile(Icons.Filled.Storage, CloudColors.Indigo, size = 38.dp, iconSize = 21.dp)
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text("Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        formatStorageStatus(uploaded, max) + " used",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            Box {
+                BreathingGlow(modifier = Modifier.matchParentSize())
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(Icons.Filled.Storage, CloudColors.Indigo, size = 38.dp, iconSize = 21.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Storage", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            formatStorageStatus(uploaded, max) + " used",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 

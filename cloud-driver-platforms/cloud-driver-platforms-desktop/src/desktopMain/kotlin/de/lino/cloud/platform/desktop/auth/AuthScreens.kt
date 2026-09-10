@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -31,7 +33,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import de.lino.cloud.platform.desktop.theme.BreathingGlow
 import de.lino.cloud.platform.desktop.theme.CardShape
+import de.lino.cloud.platform.desktop.theme.CipherHexStrip
+import de.lino.cloud.platform.desktop.theme.ConstellationBackground
+import de.lino.cloud.platform.desktop.theme.tiltOnHover
 import de.lino.cloud.platform.desktop.utils.PASSWORD_REQUIREMENT_HINT
 import de.lino.cloud.platform.desktop.utils.isValidPasswordFormat
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -41,28 +47,44 @@ import org.jetbrains.compose.resources.painterResource
 
 private val FIELD_SHAPE = RoundedCornerShape(12.dp)
 
+/**
+ * The shared hero surface every auth screen (Login/Register/RegisterConfirm/ResetPasswordRequest/
+ * ResetPasswordConfirm) funnels through - the app's one true "entrance", seen once per session, so
+ * it's the one place in this client with the homepage's full living/tech treatment: a drifting
+ * [ConstellationBackground], a [BreathingGlow] behind the wordmark, and the hero [Card] itself
+ * responding to the cursor via [tiltOnHover]. [showCipher] adds the mutating hex flourish
+ * ([CipherHexStrip]) below the card - on [LoginScreen] only, mirroring the homepage's own restraint
+ * of one cipher exhibit rather than repeating it on every sub-screen.
+ */
 @Composable
-private fun AuthCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun AuthCard(title: String, showCipher: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Box(
         Modifier.fillMaxSize().padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
+        ConstellationBackground(modifier = Modifier.matchParentSize())
+
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Image(
-                painter = painterResource(Res.drawable.app_icon),
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-            )
-            Text(
-                "CloudDriver",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
-            )
+            Box(contentAlignment = Alignment.Center) {
+                BreathingGlow(modifier = Modifier.size(160.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Image(
+                        painter = painterResource(Res.drawable.app_icon),
+                        contentDescription = null,
+                        modifier = Modifier.size(72.dp),
+                    )
+                    Text(
+                        "CloudDriver",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
+                    )
+                }
+            }
 
             Card(
-                modifier = Modifier.widthIn(max = 420.dp),
+                modifier = Modifier.widthIn(max = 420.dp).tiltOnHover(),
                 shape = CardShape,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
@@ -74,6 +96,11 @@ private fun AuthCard(title: String, content: @Composable ColumnScope.() -> Unit)
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                     content()
                 }
+            }
+
+            if (showCipher) {
+                Spacer(Modifier.height(20.dp))
+                CipherHexStrip()
             }
         }
     }
@@ -128,7 +155,7 @@ fun LoginScreen(viewModel: AppViewModel) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
 
-    AuthCard("Sign in") {
+    AuthCard("Sign in", showCipher = true) {
         AuthTextField(email, { email = it }, "Email")
         AuthTextField(password, { password = it }, "Password", isPassword = true)
 

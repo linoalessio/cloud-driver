@@ -13,11 +13,14 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -90,15 +93,47 @@ private val CloudDriverTypography = Typography().let { base ->
  */
 enum class ThemeMode { LIGHT, DARK }
 
+/**
+ * The [ThemeMode] [CloudDriverTheme] is currently applying - read by [cipherBandColor] and any
+ * other helper in `theme/LivingBackground.kt` that needs an exact-parity homepage color the
+ * Material [ColorScheme][androidx.compose.material3.ColorScheme] doesn't expose precisely,
+ * without threading [ThemeMode] through every call site by hand.
+ */
+val LocalThemeMode = compositionLocalOf { ThemeMode.LIGHT }
+
 /** Applies [LightColors]/[DarkColors] depending on [themeMode] plus [CloudDriverTypography], wrapping [content] in a plain [MaterialTheme]. */
 @Composable
 fun CloudDriverTheme(themeMode: ThemeMode, content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (themeMode == ThemeMode.DARK) DarkColors else LightColors,
-        typography = CloudDriverTypography,
-        content = content,
-    )
+    CompositionLocalProvider(LocalThemeMode provides themeMode) {
+        MaterialTheme(
+            colorScheme = if (themeMode == ThemeMode.DARK) DarkColors else LightColors,
+            typography = CloudDriverTypography,
+            content = content,
+        )
+    }
 }
+
+/**
+ * Monospace face for technical/data values - file sizes, account/entry ids, hex, the
+ * [de.lino.cloud.platform.desktop.theme.PipelineStages] stage labels - matching the homepage's
+ * own `--mono` stack (`homepage/style.css`), so numbers/ids read the same "this is raw data" way
+ * in both places.
+ */
+val CloudDriverMono = FontFamily.Monospace
+
+/**
+ * The homepage's `--deep` custom property (`homepage/style.css`: `#00305F` light / `#00284D`
+ * dark) - the dark ciphertext-band background behind [CipherHexStrip]. Not the same as
+ * [DarkColors]/[LightColors]'s own `primaryContainer` (close, but not an exact match in dark
+ * mode), so this is pulled in as its own exact-parity token rather than reused from
+ * [MaterialTheme.colorScheme].
+ */
+@Composable
+fun cipherBandColor(): Color = if (LocalThemeMode.current == ThemeMode.DARK) Color(0xFF00284D) else Color(0xFF00305F)
+
+/** The homepage's `--deep-ink` (`#D9EBFF`, identical in both light and dark) - the ciphertext text color drawn over [cipherBandColor]. */
+@Composable
+fun cipherInkColor(): Color = Color(0xFFD9EBFF)
 
 /**
  * Shared rounded-square corner radius for [IconTile] - a "squircle" proportion close to a real
