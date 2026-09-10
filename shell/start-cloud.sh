@@ -35,7 +35,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
 SESSION_NAME="cloud_driver"
-JVM_XMX="${JVM_XMX:-6g}"
+JVM_XMX="${JVM_XMX:-20g}"
 
 run_loop() {
     cd "$SCRIPT_DIR" || exit 1

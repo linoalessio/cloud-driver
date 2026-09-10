@@ -20,6 +20,7 @@ version control since they hardcode server-specific connection details) handle t
 
 | Script | Runs where | Purpose |
 |---|---|---|
+| `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
 | `deploy-cloud.sh` | Locally | Uploads the already-built, shaded bootstrap jar to the server, compressed and checksum-verified |
 | `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size, auto-restarting it if it ever exits |
 | `test-bootstrap.sh` | Locally | Assembles a clean throwaway run directory for a manual smoke test |
@@ -28,6 +29,50 @@ version control since they hardcode server-specific connection details) handle t
 
 None of these scripts build anything by themselves — always run `mvn clean install` (or the
 targeted `-pl ... -am package` form) first.
+
+Unlike the other scripts above, `provision-root-server.sh` is checked into version control rather
+than kept local-only: it takes the target host as an argument instead of hardcoding
+server-specific connection details, so it carries no secrets of its own.
+
+## Provisioning a new root server
+
+To bring up a brand-new root server (a fresh Debian/Ubuntu box with nothing installed — from
+IONOS, Strato, Hetzner, or any equivalent provider) to the point where only AWS setup and the
+application deploy itself remain, from a local checkout:
+
+```bash
+./shell/provision-root-server.sh <ssh-host-or-alias> [api-domain]
+```
+
+This covers every mandatory and commonly-enabled-optional piece in
+[requirements.md](requirements.md) at the OS level: JDK 21, PostgreSQL (dedicated owner role +
+database, per requirements.md §2.1), the `ufw` firewall (this application does not manage its own
+— requirements.md §6), a 4 GB swapfile (requirements.md §7), `clamd` bound to loopback with raised
+size limits and the systemd socket-activation drop-in (requirements.md §4.3), Redis bound to
+loopback with a generated password, Caddy (installed always; a reverse-proxy site block for
+`api-domain` is added if given), and the `/home/cloud/{cloud-driver,extensions}` layout
+`deploy-cloud.sh`/`start-cloud.sh` already assume. It also scaffolds
+`postgres-database.json`/`redis-database.json` (real, generated credentials) and
+`configuration.json` (a real generated `jwt-signing-key`, but `REPLACE-ME` placeholders for every
+`aws-*` key) — never overwriting files that already exist.
+
+It deliberately stops short of anything requiring your AWS account or an already-built jar; the
+script prints the remaining manual checklist on completion:
+
+1. Create the AWS KMS CMK (required — boot crashes without it) and, if wanted, the S3 bucket and
+   SES sending identity (see requirements.md §4.1/§4.2 for exact IAM permissions and the SES
+   sandbox caveat), then fill the `REPLACE-ME` values into the server's `configuration.json`.
+2. Configure AWS credentials on the host itself (`aws configure`, or a `~/.aws/credentials` file)
+   — never in `configuration.json`, per requirements.md §3.1.
+3. Point DNS at the new server's IP.
+4. `mvn clean install` locally, then `./shell/deploy-cloud.sh` and, on the server,
+   `./start-cloud.sh` (copy `start-cloud.sh` there first — `deploy-cloud.sh` only ships jars and
+   `configuration.json`).
+5. Optional: `cloud-driver-intelligence/deploy/install-on-server.sh` for semantic search.
+
+Cutting production over to the new box afterward is a DNS change plus repointing whatever SSH
+alias `deploy-cloud.sh`/`deploy-homepage.sh` use at the new server — neither script needs editing
+if the alias name is kept the same and `/home/cloud` is the deploy target on both.
 
 **A rebuilt feature-module jar must always be redeployed together with a bootstrap jar built from
 the same commit.** Feature-module jars resolve shared types off the running bootstrap jar's own

@@ -386,6 +386,11 @@ isn't wanted:
 
 ## 9. Quick checklist for a fresh deployment
 
+`shell/provision-root-server.sh` (see [deployment.md](deployment.md#provisioning-a-new-root-server))
+automates every OS-level box below (JDK 21, PostgreSQL, firewall, swap, clamd, Redis, Caddy,
+directory layout, config-file scaffolding) in one idempotent run against a fresh root server — the
+unchecked boxes are exactly what it deliberately leaves for you (AWS, DNS, the jar itself).
+
 - [ ] JDK 21 + Maven installed; GitHub PAT with `read:packages` configured for `database-driver-v2`
 - [ ] PostgreSQL database + dedicated owner role created
 - [ ] AWS account: KMS CMK created, IAM credentials with `kms:Encrypt`/`kms:Decrypt` on the host

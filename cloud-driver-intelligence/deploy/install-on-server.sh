@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$MODULE_DIR/.." && pwd)"
 
-REMOTE_HOST="strato"
+REMOTE_HOST="netcup"
 REMOTE_DIR="/opt/cloud-driver-intelligence"
 ENV_FILE="/etc/cloud-driver-intelligence.env"
 UNIT_NAME="cloud-driver-intelligence.service"
@@ -92,7 +92,7 @@ ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR' && rm -rf '$REMOTE_DIR/src' '$REMOTE_
 # files left behind by an earlier run of this script.
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - -C "$MODULE_DIR" \
     --exclude '__pycache__' --exclude '.pytest_cache' --exclude '*.egg-info' --exclude '._*' \
-    src tests pyproject.toml README.md \
+    src tests pyproject.toml \
     | ssh "$REMOTE_HOST" "tar xzf - -C '$REMOTE_DIR'"
 ssh "$REMOTE_HOST" "find '$REMOTE_DIR' -maxdepth 2 -name '._*' -delete 2>/dev/null || true"
 
@@ -150,8 +150,8 @@ The Python half is running. It does nothing on its own - to actually enable sema
   2. ./shell/deploy-cloud.sh               # deploys the bootstrap jar, ALL extension jars,
                                            # and configuration.json (with the shared secret)
   3. restart the JVM:
-        ssh strato 'screen -S cloud_driver -X quit'
-        ssh strato 'cd /home/cloud && ./start-cloud.sh'
+        ssh netcup 'screen -S cloud_driver -X quit'
+        ssh netcup 'cd /home/cloud && ./start-cloud.sh'
 
 Then check the JVM's own console for "Semantic search ready".
 NEXT
