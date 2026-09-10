@@ -64,7 +64,9 @@ import java.util.Optional;
  *
  * <p><b>Idempotent and resumable by construction, not by tracking progress explicitly</b> - every
  * run re-scans the whole id range from scratch (see {@link #fetchIdPage}) and skips any row
- * that's already {@link StoredFile#isS3Backed()}, so a crash mid-run (or simply running this
+ * that's already {@link StoredFile#isS3Backed()} - or is a {@link StoredFile#isDedupAlias()
+ * dedup alias}, which by construction carries no content of its own (inline or S3) to move,
+ * only a pointer at its canonical file, which this same scan migrates - so a crash mid-run (or simply running this
  * command again later, e.g. against files uploaded since the last run while S3-backed s3storage
  * wasn't configured yet) always converges toward "every row migrated" rather than needing its own
  * separate resume-point bookkeeping.
@@ -147,6 +149,7 @@ public class MigrateToS3Command implements Command {
 
         long migrated = 0;
         long alreadyMigrated = 0;
+        long aliasesSkipped = 0;
         long failed = 0;
         long bytesMoved = 0;
         String lastId = null;
@@ -168,6 +171,12 @@ public class MigrateToS3Command implements Command {
                         alreadyMigrated++;
                         continue;
                     }
+                    if (file.isDedupAlias()) {
+                        // an alias carries no content of its own - inline or S3 - only a pointer
+                        // at its canonical file, which this same scan migrates; nothing to move
+                        aliasesSkipped++;
+                        continue;
+                    }
 
                     bytesMoved += migrateFile(dataFactory, objectStorageService, contentChannel, file);
                     migrated++;
@@ -178,16 +187,16 @@ public class MigrateToS3Command implements Command {
             }
 
             terminal.displayApproved(
-                    "&8...&7 migrated &b%s&7, already S3-backed &b%s&7, failed &b%s&7 so far (&b%s&7 moved)",
-                    migrated, alreadyMigrated, failed, UnitParser.parseByteUnit(bytesMoved));
+                    "&8...&7 migrated &b%s&7, already S3-backed &b%s&7, dedup aliases &b%s&7, failed &b%s&7 so far (&b%s&7 moved)",
+                    migrated, alreadyMigrated, aliasesSkipped, failed, UnitParser.parseByteUnit(bytesMoved));
 
             lastId = ids.getLast();
             if (ids.size() < PAGE_SIZE) break; // last, not-full page - done
         }
 
         terminal.displayApproved(
-                "S3 migration finished: &b%s&7 migrated, &b%s&7 already S3-backed, &b%s&7 failed (&b%s&7 moved)",
-                migrated, alreadyMigrated, failed, UnitParser.parseByteUnit(bytesMoved));
+                "S3 migration finished: &b%s&7 migrated, &b%s&7 already S3-backed, &b%s&7 dedup aliases (no content of their own), &b%s&7 failed (&b%s&7 moved)",
+                migrated, alreadyMigrated, aliasesSkipped, failed, UnitParser.parseByteUnit(bytesMoved));
     }
 
     /**

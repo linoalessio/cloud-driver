@@ -445,7 +445,7 @@ code:
 | `recomputeStorage <email>` / `recomputeStorage all` | `recompute` | Recompute an account's uploaded-bytes total from its actual files |
 | `admin grant <email>` / `admin revoke <email>` | `isAdmin` | The only writer of the admin flag anywhere in this codebase |
 | `auditLog` / `auditLog all` / `auditLog <email>` | `audit`, `log` | Browse the persisted security-audit trail |
-| `migrateToS3` | `migrateS3` | Move every not-yet-S3-backed file's content onto the configured bucket |
+| `migrateToS3` | `migrateS3` | Move every not-yet-S3-backed file's content onto the configured bucket (dedup aliases own no content and are skipped, reported in their own counter) |
 | `hardReset` (run twice within 5s to confirm) | `reset` | Wipe every entity section — irreversible, no undo |
 
 Registering your own command from a new extension:

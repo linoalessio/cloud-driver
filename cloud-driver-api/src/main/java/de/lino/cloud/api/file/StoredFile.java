@@ -730,13 +730,19 @@ public final class StoredFile extends Serialized {
      * them reach this entity's own serialized JSON as {@link #contentBase64}.
      *
      * @return the raw, base64-decoded (but not decompressed) content bytes
-     * @throws IllegalStateException if this file is already {@link #isS3Backed()} and carries no {@link #contentBase64} to decode
+     * @throws IllegalStateException if this file carries no {@link #contentBase64} to decode -
+     *     because it is already {@link #isS3Backed()}, or because it is a {@link #isDedupAlias()
+     *     dedup alias} and owns no content at all
      */
     public byte[] rawStorableBytes() {
         if (contentBase64 == null) {
+            final String reason = this.isS3Backed()
+                    ? "it is already S3-backed (objectStorageKey '" + this.objectStorageKey + "')"
+                    : this.isDedupAlias()
+                            ? "it is a dedup alias of file '" + this.dedupOfFileId + "' and owns no content itself"
+                            : "it is neither inline, nor S3-backed, nor a dedup alias (unexpected state)";
             throw new IllegalStateException(
-                    "@StoredFile.rawStorableBytes: file '" + fileId + "' has no inline content to read - "
-                            + "it is already S3-backed (objectStorageKey '" + objectStorageKey + "')"
+                    "@StoredFile.rawStorableBytes: file '" + fileId + "' has no inline content to read - " + reason
             );
         }
         return Base64.getDecoder().decode(contentBase64);
