@@ -11,6 +11,7 @@ import de.lino.cloud.plugin.security.entity.SecureEntityChannel;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
 import de.lino.database.database.DatabaseSection;
+import de.lino.database.database.SectionConfig;
 import de.lino.database.database.entity.DatabaseEntry;
 import de.lino.database.database.entity.Serialized;
 import de.lino.database.database.exception.DataAlreadyExist;
