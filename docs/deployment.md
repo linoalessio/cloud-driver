@@ -65,9 +65,8 @@ script prints the remaining manual checklist on completion:
 2. Configure AWS credentials on the host itself (`aws configure`, or a `~/.aws/credentials` file)
    — never in `configuration.json`, per requirements.md §3.1.
 3. Point DNS at the new server's IP.
-4. `mvn clean install` locally, then `./shell/deploy-cloud.sh` and, on the server,
-   `./start-cloud.sh` (copy `start-cloud.sh` there first — `deploy-cloud.sh` only ships jars and
-   `configuration.json`).
+4. `mvn clean install` locally, then `./shell/deploy-cloud.sh` (ships the jars, `configuration.json`,
+   and `start-cloud.sh` itself, restoring its executable bit) and, on the server, `./start-cloud.sh`.
 5. Optional: `cloud-driver-intelligence/deploy/install-on-server.sh` for semantic search.
 
 Cutting production over to the new box afterward is a DNS change plus repointing whatever SSH

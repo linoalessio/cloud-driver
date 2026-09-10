@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Starts cloud-driver-bootstrap-1.0.7.jar inside a detached `screen` session
-# named "cloud_driver". If the process ever exits - crash or otherwise - it
+# named "cloud". If the process ever exits - crash or otherwise - it
 # is restarted after a 3 second countdown. Re-running this script while the
 # session is already running is a no-op.
 # JVM_XMX (default 6g, see below) is passed as -Xmx explicitly - without it, the
@@ -27,14 +27,14 @@
 # swapfile was added the same day as the kernel-OOM safety net.
 #
 # Usage: ./start-cloud.sh            (from the directory containing the jar)
-#        screen -r cloud_driver      (to attach and watch/interact with it)
-#        screen -d cloud_driver      (to detach again, Ctrl-A d also works)
+#        screen -r cloud             (to attach and watch/interact with it)
+#        screen -d cloud             (to detach again, Ctrl-A d also works)
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
-SESSION_NAME="cloud_driver"
+SESSION_NAME="cloud"
 JVM_XMX="${JVM_XMX:-20g}"
 
 run_loop() {

@@ -60,7 +60,7 @@ repo) is Postgres-only. There is no supported alternative database backend as cu
      `SQLExecution` failure (which fails *silently to stderr*, not as a thrown exception, so a
      missing grant can otherwise go unnoticed).
 - **Network reachability**: the application host must be able to reach this database's host:port.
-  On the reference deployment (`strato`) Postgres is co-located on the same box as the app — this
+  On the reference deployment (`cloud_driver`) Postgres is co-located on the same box as the app — this
   matters in code: `CloudBootstrap` deliberately wires an always-`true` `ConnectivityChecker`
   instead of the real internet-probing default, on the assumption the DB is local. If your
   Postgres instance is **not** co-located, revert that (`CloudBootstrap.ALWAYS_AVAILABLE_CONNECTIVITY_CHECKER`)
@@ -318,12 +318,20 @@ concurrency level.
 
 ## 6. Networking & security
 
-- **This application does not manage its own firewall.** Confirmed the hard way on `strato`
-  (2026-09-08): the box had **no firewall at all** (`ufw` not installed, `iptables` chains empty,
-  default-`ACCEPT`) — meaning anything bound to `0.0.0.0` is reachable from the entire internet by
-  default. Bind every service that has no authentication of its own (`clamd`'s TCP socket) strictly
-  to `127.0.0.1`/loopback, and put a real firewall or cloud-provider security group in front of the
-  host regardless.
+- **This application does not manage its own firewall.** Confirmed the hard way on the reference
+  deployment (2026-09-08, then under the `strato` alias): the box had **no firewall at all** (`ufw`
+  not installed, `iptables` chains empty, default-`ACCEPT`) — meaning anything bound to `0.0.0.0` is
+  reachable from the entire internet by default. Bind every service that has no authentication of
+  its own (`clamd`'s TCP socket) strictly to `127.0.0.1`/loopback, and put a real firewall or
+  cloud-provider security group in front of the host regardless.
+- **SSH access for deployment**: `shell/deploy-cloud.sh`, `shell/deploy-homepage.sh`,
+  `shell/provision-root-server.sh`, and `cloud-driver-intelligence/deploy/install-on-server.sh` all
+  shell out to `ssh`/`scp` against the `cloud_driver` host alias — a passwordless, key-based root
+  login must already exist in `~/.ssh/config` (`HostName`, `User root`, `IdentityFile` pointing at a
+  private key whose public half is in the server's `/root/.ssh/authorized_keys`) before any of
+  these scripts will work; none of them prompt for a password or provision the key itself. The
+  alias has been renamed before (`strato` → `netcup` → `cloud_driver`) — if it's renamed again,
+  update `REMOTE_HOST` in all four scripts above to match.
 - **`rest-server-bind-host`** is typically `127.0.0.1` on the reference deployment — a reverse
   proxy (the reference deployment uses **Caddy**) terminates TLS on 80/443 and forwards to it. This
   is an operational choice, not a hard code requirement, but is the realistic way to expose the API
@@ -406,4 +414,7 @@ unchecked boxes are exactly what it deliberately leaves for you (AWS, DNS, the j
 - [ ] `extensions/` populated with whichever extension jars are wanted
 - [ ] Firewall/security group confirmed — do not assume the host has one by default
 - [ ] Reverse proxy (TLS termination) in front of `rest-server-bind-host` for anything public-facing
+- [ ] Passwordless root SSH key configured under the `cloud_driver` host alias in `~/.ssh/config` —
+      required before any of `shell/deploy-cloud.sh`, `shell/deploy-homepage.sh`,
+      `shell/provision-root-server.sh`, or `install-on-server.sh` (§6) will work
 - [ ] `-Xmx` set explicitly when launching the jar

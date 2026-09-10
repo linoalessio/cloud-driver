@@ -319,8 +319,8 @@ scripted without your AWS account and an already-built jar):
        # ssh alias with that exact name in ~/.ssh/config), then:
        ./shell/deploy-cloud.sh
        ssh $REMOTE_HOST 'cd $REMOTE_DIR && ./start-cloud.sh'
-     (shell/start-cloud.sh itself must be copied to $REMOTE_DIR on the server -
-     deploy-cloud.sh does not do this, it only ships the jars + configuration.json.)
+     (deploy-cloud.sh ships the jars, configuration.json, and start-cloud.sh itself,
+     restoring its executable bit - nothing needs to be copied to $REMOTE_DIR by hand.)
 
   7. If content scanning matters immediately: wait for freshclam's first
      database sync to finish (systemctl status clamav-freshclam) before

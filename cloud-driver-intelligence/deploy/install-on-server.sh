@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$MODULE_DIR/.." && pwd)"
 
-REMOTE_HOST="netcup"
+REMOTE_HOST="cloud_driver"
 REMOTE_DIR="/opt/cloud-driver-intelligence"
 ENV_FILE="/etc/cloud-driver-intelligence.env"
 UNIT_NAME="cloud-driver-intelligence.service"
@@ -150,8 +150,8 @@ The Python half is running. It does nothing on its own - to actually enable sema
   2. ./shell/deploy-cloud.sh               # deploys the bootstrap jar, ALL extension jars,
                                            # and configuration.json (with the shared secret)
   3. restart the JVM:
-        ssh netcup 'screen -S cloud_driver -X quit'
-        ssh netcup 'cd /home/cloud && ./start-cloud.sh'
+        ssh cloud_driver 'screen -S cloud -X quit'
+        ssh cloud_driver 'cd /home/cloud && ./start-cloud.sh'
 
 Then check the JVM's own console for "Semantic search ready".
 NEXT
