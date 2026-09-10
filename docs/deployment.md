@@ -24,6 +24,7 @@ version control since they hardcode server-specific connection details) handle t
 | `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size, auto-restarting it if it ever exits |
 | `test-bootstrap.sh` | Locally | Assembles a clean throwaway run directory for a manual smoke test |
 | `release-and-package.sh` | Locally | One-shot release automation: bumps every version reference, builds, tags, pushes, and cuts a release |
+| `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
 
 None of these scripts build anything by themselves — always run `mvn clean install` (or the
 targeted `-pl ... -am package` form) first.
