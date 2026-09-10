@@ -26,6 +26,7 @@
 		770E16807DE69C247EF810D3 /* CloudDriverMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */; };
 		87EAD1EBB497CB4D9D456F78 /* AuthScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEE5D34BAD64B4EAE599C4C9 /* AuthScreens.swift */; };
 		9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1E4109F19145B980EE9E021 /* FileIcons.swift */; };
+		B1A6956E7F0A215411813207 /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9377FA7549C209A9F67558AD /* Motion.swift */; };
 		B30F9AB753AF1DF2A00562C2 /* ByteFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFB4A126AB08B165C247BF1 /* ByteFormat.swift */; };
 		BF044CFC9B64B554FFEA8C2E /* ActivityFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595D54B461940D2A9FFD454E /* ActivityFeedView.swift */; };
 		C77A6D09C25289CABC801A57 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28674A06893A4308FF4A0528 /* FileBrowserView.swift */; };
@@ -41,7 +42,7 @@
 /* Begin PBXFileReference section */
 		1B94506B9257E25501BB2203 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		214585E76E1C85FD94E6B7F2 /* FolderColorPickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderColorPickerSheet.swift; sourceTree = "<group>"; };
-		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		23DEF454370915BF0C9455DC /* CloudDriverMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudDriverMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		278F4310AD868CB0DBDA9118 /* TrashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashView.swift; sourceTree = "<group>"; };
 		28674A06893A4308FF4A0528 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
 		2DF2FDAC649212A535D0C68B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
@@ -58,6 +59,7 @@
 		88DF4365F0C76396A0A3A8D4 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		8EFEB74D7D773895E9F1C63F /* MoveToFolderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveToFolderSheet.swift; sourceTree = "<group>"; };
 		9276B56056E583D86D9CFFFE /* cloud-driver-multiplatform-swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "cloud-driver-multiplatform-swift"; path = "../../cloud-driver-multiplatform/cloud-driver-multiplatform-swift"; sourceTree = SOURCE_ROOT; };
+		9377FA7549C209A9F67558AD /* Motion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Motion.swift; sourceTree = "<group>"; };
 		987C521008C46D41B98F9680 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		AE3727D1F5AC703E6D7C2F2D /* ArchiveSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSupport.swift; sourceTree = "<group>"; };
 		B16ED61AD9CEBE4BE9FD1A15 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 				5A82838EF64D7E6021D64710 /* CloudDriverMobileApp.swift */,
 				CF9CFB2EC84C1AC6BC289D85 /* Concurrency.swift */,
 				B1E4109F19145B980EE9E021 /* FileIcons.swift */,
+				9377FA7549C209A9F67558AD /* Motion.swift */,
 				987C521008C46D41B98F9680 /* PreviewSupport.swift */,
 				865D1691864B7E2FF12ED265 /* QuickActionMenu.swift */,
 				88DF4365F0C76396A0A3A8D4 /* RootView.swift */,
@@ -190,8 +193,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = 4907A71CA8D7D2066C42706E /* Build configuration list for PBXProject "CloudDriverMobile" */;
 			developmentRegion = en;
@@ -247,6 +248,7 @@
 				9E6D1AA1862191E0642945BC /* FileIcons.swift in Sources */,
 				04F54EC65B32136532FF90FF /* FilePreviewView.swift in Sources */,
 				2B6088C28C2BB2A4AAC66F82 /* FolderColorPickerSheet.swift in Sources */,
+				B1A6956E7F0A215411813207 /* Motion.swift in Sources */,
 				ED9B038466C119AAD543DAB8 /* MoveToFolderSheet.swift in Sources */,
 				4B839FAB6BAA0B3453F5E641 /* PreviewSupport.swift in Sources */,
 				19FEB89901626E0643F5BB3A /* QuickActionMenu.swift in Sources */,
@@ -328,6 +330,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";
@@ -352,6 +355,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = UX2GCKZ2H8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cloud Driver";

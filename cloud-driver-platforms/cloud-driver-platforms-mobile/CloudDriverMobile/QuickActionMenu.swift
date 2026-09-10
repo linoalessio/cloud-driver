@@ -48,7 +48,7 @@ struct QuickActionMenu: View {
                     .padding(.vertical, 11)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CloudPressStyle(scale: 0.96))
 
                 if index != actions.count - 1 {
                     Divider()

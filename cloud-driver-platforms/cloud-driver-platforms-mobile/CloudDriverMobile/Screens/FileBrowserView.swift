@@ -181,7 +181,7 @@ struct FileBrowserView: View {
                                                 }
                                             }
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(CloudPressStyle(scale: 0.98))
                                         // Tracks this row's own on-screen frame so the *one*
                                         // shared `quickActionGesture` (attached once, to the
                                         // whole `ScrollView` - see its own doc comment) can tell
@@ -193,6 +193,7 @@ struct FileBrowserView: View {
                                     }
                                 }
                             }
+                            .cardEntrance(index: 0)
                         }
 
                         if !viewModel.files.isEmpty {
@@ -242,7 +243,7 @@ struct FileBrowserView: View {
                                                 }
                                             }
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(CloudPressStyle(scale: 0.98))
                                         .opacity(isAccessible || viewModel.isSelecting ? 1 : 0.5)
                                         .onAppear { viewModel.loadThumbnailIfNeeded(for: file) }
                                         // Same frame-tracking the folder rows above get - see that
@@ -253,6 +254,7 @@ struct FileBrowserView: View {
                                     }
                                 }
                             }
+                            .cardEntrance(index: 1)
                         }
 
                         if viewModel.folders.isEmpty && viewModel.files.isEmpty && !viewModel.busy {
@@ -274,7 +276,7 @@ struct FileBrowserView: View {
                                     Text("Load more")
                                 }
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(CloudPressStyle())
                             .foregroundStyle(CloudTheme.accent)
                             .padding(.vertical, 8)
                             .disabled(viewModel.busy)
@@ -315,7 +317,9 @@ struct FileBrowserView: View {
 
                 if isContentHidden {
                     Button {
-                        isContentHidden = false
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            isContentHidden = false
+                        }
                     } label: {
                         VStack(spacing: 12) {
                             Image(systemName: "eye.slash.fill")
@@ -331,8 +335,8 @@ struct FileBrowserView: View {
                         .padding(28)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
-                    .buttonStyle(.plain)
-                    .transition(.opacity)
+                    .buttonStyle(CloudPressStyle())
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
                 }
 
                 // The instantly-appearing dropdown itself - rendered as the topmost `ZStack`
@@ -375,10 +379,14 @@ struct FileBrowserView: View {
                 } else {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            isContentHidden.toggle()
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                isContentHidden.toggle()
+                            }
                         } label: {
                             Image(systemName: isContentHidden ? "eye.slash.fill" : "eye.fill")
                                 .foregroundStyle(CloudTheme.accent)
+                                // Morphs eye <-> eye.slash in place instead of hard-swapping.
+                                .contentTransition(.symbolEffect(.replace))
                         }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -802,11 +810,13 @@ struct FileBrowserView: View {
             Image(systemName: "tray")
                 .font(.system(size: 40))
                 .foregroundStyle(CloudTheme.textSecondary)
+                .gentleFloat()
             Text("This folder is empty")
                 .foregroundStyle(CloudTheme.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60)
+        .cardEntrance(index: 0)
     }
 
     private func itemCountText(_ count: Int) -> String {
@@ -832,6 +842,7 @@ struct FileBrowserView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
+                .symbolEffect(.pulse)
         default:
             EmptyView()
         }

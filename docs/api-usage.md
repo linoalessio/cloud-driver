@@ -441,7 +441,7 @@ code:
 | `extensions` | `extension`, `ext` | List every registered extension and its status |
 | `dispatch` | `exec`, `sudo`, `d` | Run a system-level command through the terminal |
 | `statistics` | `stats` | Basic counts (accounts, files, uploaded bytes) |
-| `cloudUser list` / `info <email>` / `reset <email>` / `delete <email>` / `update <email> <bytes>` | `cu`, `user` | Inspect/manage one or every account |
+| `cloudUser list` / `info <email>` / `reset <email>` / `delete <email>` / `limit <email> <bytes> <unit>` (unit: `B`/`KB`/`MB`/`GB`) | `cu`, `user` | Inspect/manage one or every account |
 | `recomputeStorage <email>` / `recomputeStorage all` | `recompute` | Recompute an account's uploaded-bytes total from its actual files |
 | `admin grant <email>` / `admin revoke <email>` | `isAdmin` | The only writer of the admin flag anywhere in this codebase |
 | `auditLog` / `auditLog all` / `auditLog <email>` | `audit`, `log` | Browse the persisted security-audit trail |

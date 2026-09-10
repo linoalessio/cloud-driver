@@ -88,13 +88,18 @@ struct RootView: View {
         .safeAreaInset(edge: .bottom) {
             if let progress = viewModel.transferProgress, progress.kind != .emptyTrash {
                 TransferProgressBar(progress: progress)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .overlay {
             if let progress = viewModel.transferProgress, progress.kind == .emptyTrash {
                 EmptyingTrashOverlay()
+                    .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
         }
+        // Drives both transitions above: the bar slides up from the bottom edge when a transfer
+        // starts (and back down when it finishes), the trash overlay springs in/out.
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: viewModel.transferProgress?.kind)
         // Both owned here (not per-screen) so they keep working regardless of which tab is
         // currently selected inside the .browser TabView above - a TabView's non-selected tab
         // stays part of the view hierarchy, but an .alert()/.sheet() attached inside it may not
@@ -168,6 +173,8 @@ private struct TransferProgressBar: View {
                     .foregroundStyle(CloudTheme.textSecondary)
                 ProgressView(value: progress.fraction)
                     .tint(CloudTheme.accent)
+                    // Glides between byte-progress updates instead of stepping.
+                    .animation(.linear(duration: 0.25), value: progress.fraction)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

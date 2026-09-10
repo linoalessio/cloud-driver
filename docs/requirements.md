@@ -110,7 +110,7 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `aws-kms-region` | string | `CloudBootstrap.initiateCloudDriver()` | **Crashes the whole process at boot** (`NullPointerException` from `JsonDocument#getString` on a missing key) — `AwsKmsKeyEncryptionService` is unconditionally constructed, no fallback exists in current code. |
 | `aws-kms-key-id` | string | same | same — crashes at boot. |
 | `jwt-signing-key` | string, `openssl rand -base64 32` | `CloudRestExtension.startRestApi` | Not fatal to the process, but the entire REST API/JWT auth layer is skipped (logged warning) — every client-facing route stays down. |
-| `cloud-server-max-bytes-available` | long (bytes) | `CloudUserCommand`/`StatisticsCommand` (terminal) | Not checked at boot, but **`cloudUser update`/`stats`/`ab`** throw `NullPointerException` the moment they're run without it set — no default exists. |
+| `cloud-server-max-bytes-available` | long (bytes) | `CloudUserCommand`/`StatisticsCommand` (terminal) | Not checked at boot, but **`cloudUser limit`/`stats`/`ab`** throw `NullPointerException` the moment they're run without it set — no default exists. |
 
 ### 3.2 Optional, with a real default
 

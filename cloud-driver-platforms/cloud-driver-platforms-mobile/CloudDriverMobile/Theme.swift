@@ -36,30 +36,13 @@ enum CloudTheme {
         .system(style, design: .rounded).weight(.semibold)
     }
 
-    /// The gradient canvas every screen sits on - two soft, blurred color washes over a diagonal
-    /// navy-to-royal-blue gradient, echoing the reference's own organic background blobs without
-    /// copying its exact shapes.
+    /// The canvas every screen sits on - a diagonal navy-to-royal-blue gradient with soft,
+    /// slowly-drifting color washes, echoing the reference's own organic background blobs
+    /// without copying its exact shapes. Since the living-design pass this is `AuroraBackground`
+    /// (Motion.swift) - the same composition as the original static version, but its glows
+    /// drift and breathe (statically rendered under Reduce Motion).
     static var backgroundGradient: some View {
-        ZStack {
-            LinearGradient(
-                colors: [backgroundTop, backgroundBottom],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            GeometryReader { proxy in
-                Circle()
-                    .fill(Color.white.opacity(0.05))
-                    .frame(width: proxy.size.width * 1.1)
-                    .blur(radius: 70)
-                    .offset(x: -proxy.size.width * 0.35, y: -proxy.size.height * 0.18)
-                Circle()
-                    .fill(accent.opacity(0.16))
-                    .frame(width: proxy.size.width * 0.95)
-                    .blur(radius: 80)
-                    .offset(x: proxy.size.width * 0.55, y: proxy.size.height * 0.62)
-            }
-        }
-        .ignoresSafeArea()
+        AuroraBackground()
     }
 }
 
@@ -134,6 +117,7 @@ struct CloudCard<Content: View>: View {
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
                     }
+                    .shadow(color: iconColor.opacity(0.5), radius: 6, y: 2)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
                         .font(CloudTheme.headline())
@@ -164,6 +148,8 @@ struct CloudCard<Content: View>: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(CloudTheme.cardBorder, lineWidth: 1)
         )
+        // Depth: cards float above the animated canvas instead of sitting flush on it.
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
     }
 }
 
@@ -266,22 +252,29 @@ struct PrimaryButton: View {
     let action: () -> Void
 
     var body: some View {
+        // All chrome lives on the *label* (not the Button) so `CloudPressStyle`'s springy
+        // press-scale shrinks the whole pill, background and glow included.
         Button(action: action) {
-            if busy {
-                ProgressView()
-                    .tint(.white)
-                    .frame(maxWidth: .infinity)
-            } else {
-                Text(title)
-                    .font(CloudTheme.headline(.body))
-                    .frame(maxWidth: .infinity)
+            Group {
+                if busy {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text(title)
+                        .font(CloudTheme.headline(.body))
+                }
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .foregroundStyle(.white)
+            .background(CloudTheme.accent.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: CloudTheme.accent.opacity(busy || disabled ? 0 : 0.35), radius: 12, y: 6)
         }
-        .padding(.vertical, 14)
-        .foregroundStyle(.white)
-        .background(CloudTheme.accent.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .buttonStyle(CloudPressStyle(scale: 0.97))
         .opacity(busy || disabled ? 0.5 : 1)
         .disabled(busy || disabled)
+        .animation(.easeOut(duration: 0.2), value: disabled)
+        .animation(.easeOut(duration: 0.2), value: busy)
     }
 }
 

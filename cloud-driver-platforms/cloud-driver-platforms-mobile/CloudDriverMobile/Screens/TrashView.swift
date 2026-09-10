@@ -35,6 +35,8 @@ struct TrashView: View {
                     // 2026-09-05 per Lino's own request) sits alongside "Empty Trash" (red -
                     // destructive, irreversible) so the two opposite bulk actions read as a
                     // deliberate pair, not one favored over the other.
+                    // Chrome on each label (not the Button) so CloudPressStyle scales the whole
+                    // pill - same shape PrimaryButton uses.
                     HStack(spacing: 12) {
                         Button {
                             viewModel.restoreAllTrash()
@@ -42,10 +44,11 @@ struct TrashView: View {
                             Text("Restore Trash")
                                 .font(CloudTheme.headline(.body))
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .foregroundStyle(.white)
+                                .background(Color.green.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .padding(.vertical, 14)
-                        .foregroundStyle(.white)
-                        .background(Color.green.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .buttonStyle(CloudPressStyle(scale: 0.97))
                         .disabled(isTrashEmpty)
 
                         Button(role: .destructive) {
@@ -54,12 +57,14 @@ struct TrashView: View {
                             Text("Empty Trash")
                                 .font(CloudTheme.headline(.body))
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .foregroundStyle(.white)
+                                .background(Color.red.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .padding(.vertical, 14)
-                        .foregroundStyle(.white)
-                        .background(Color.red.opacity(isTrashEmpty ? 0.35 : 0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .buttonStyle(CloudPressStyle(scale: 0.97))
                         .disabled(isTrashEmpty)
                     }
+                    .animation(.easeOut(duration: 0.2), value: isTrashEmpty)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
 
@@ -87,10 +92,12 @@ struct TrashView: View {
                                                     Image(systemName: "arrow.uturn.backward.circle")
                                                         .foregroundStyle(CloudTheme.accent)
                                                 }
+                                                .buttonStyle(CloudPressStyle(scale: 0.85))
                                             }
                                         }
                                     }
                                 }
+                                .cardEntrance(index: 0)
                             }
 
                             if !viewModel.trashFiles.isEmpty {
@@ -115,10 +122,12 @@ struct TrashView: View {
                                                     Image(systemName: "arrow.uturn.backward.circle")
                                                         .foregroundStyle(CloudTheme.accent)
                                                 }
+                                                .buttonStyle(CloudPressStyle(scale: 0.85))
                                             }
                                         }
                                     }
                                 }
+                                .cardEntrance(index: 1)
                             }
 
                             if isTrashEmpty && !viewModel.busy {
@@ -167,11 +176,13 @@ struct TrashView: View {
             Image(systemName: "trash")
                 .font(.system(size: 40))
                 .foregroundStyle(CloudTheme.textSecondary)
+                .gentleFloat()
             Text("Trash is empty")
                 .foregroundStyle(CloudTheme.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60)
+        .cardEntrance(index: 0)
     }
 
     private func itemCountText(_ count: Int) -> String {

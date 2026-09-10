@@ -38,6 +38,26 @@ public final class UnitParser {
     }
 
     /**
+     * Converts a value expressed in a byte unit into its plain byte count - the inverse of
+     * {@link #parseByteUnit(long)}, restricted to the units a terminal operator may enter
+     * (e.g. {@code 2, "KB"} -&gt; {@code 2048}).
+     *
+     * @param value the amount, in {@code unit}s
+     * @param unit one of {@code B}, {@code KB}, {@code MB}, {@code GB}, case-insensitively
+     * @return {@code value} converted to bytes
+     * @throws IllegalArgumentException if {@code unit} is none of the four accepted units
+     */
+    public static long parseUnitToBytes(final long value, final String unit) {
+        return switch (unit.toUpperCase()) {
+            case "B" -> value;
+            case "KB" -> value * 1024L;
+            case "MB" -> value * 1024L * 1024L;
+            case "GB" -> value * 1024L * 1024L * 1024L;
+            default -> throw new IllegalArgumentException("@UnitParser.parseUnitToBytes: unknown byte unit '" + unit + "'");
+        };
+    }
+
+    /**
      * Formats {@code milliseconds} in its largest whole unit (e.g. {@code 90_000} -&gt;
      * {@code "1.50 min"}).
      *

@@ -44,10 +44,11 @@ struct SharedWithMeView: View {
                                                     .foregroundStyle(CloudTheme.textSecondary)
                                             }
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(CloudPressStyle(scale: 0.98))
                                     }
                                 }
                             }
+                            .cardEntrance(index: 0)
                         }
 
                         if !viewModel.sharedFiles.isEmpty {
@@ -72,10 +73,12 @@ struct SharedWithMeView: View {
                                                 Image(systemName: "arrow.down.circle")
                                                     .foregroundStyle(CloudTheme.accent)
                                             }
+                                            .buttonStyle(CloudPressStyle(scale: 0.85))
                                         }
                                     }
                                 }
                             }
+                            .cardEntrance(index: 1)
                         }
 
                         if viewModel.sharedFiles.isEmpty && viewModel.sharedFolders.isEmpty && !viewModel.busy {
@@ -109,11 +112,13 @@ struct SharedWithMeView: View {
             Image(systemName: "person.2")
                 .font(.system(size: 40))
                 .foregroundStyle(CloudTheme.textSecondary)
+                .gentleFloat()
             Text("Nothing has been shared with you yet")
                 .foregroundStyle(CloudTheme.textSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60)
+        .cardEntrance(index: 0)
     }
 
     private func itemCountText(_ count: Int) -> String {

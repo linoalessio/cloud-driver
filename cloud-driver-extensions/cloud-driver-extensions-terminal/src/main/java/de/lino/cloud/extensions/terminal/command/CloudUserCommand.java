@@ -19,10 +19,11 @@ import java.util.Optional;
  * count; {@code cloudUser info <email>} prints one account's detail; {@code cloudUser reset
  * <email>} wipes that account's files/folders via {@link ICloudUserService#resetCloudUser};
  * {@code cloudUser delete <email>} deletes the account entirely via {@link
- * ICloudUserService#deleteCloudUser}; {@code cloudUser update <email> <bytes>} changes that
- * account's upload quota via {@link ICloudUserService#updateCloudUserBytesLimit}, rejecting a
- * non-positive value and a value that would push the whole server's already-stored bytes past
- * the {@code "cloud-server-max-bytes-available"} configuration limit.
+ * ICloudUserService#deleteCloudUser}; {@code cloudUser limit <email> <bytes> <unit>} (unit one
+ * of {@code B}/{@code KB}/{@code MB}/{@code GB}, case-insensitively) changes that account's
+ * upload quota via {@link ICloudUserService#updateCloudUserBytesLimit}, rejecting a
+ * non-positive value, an unknown unit, and a value that would push the whole server's
+ * already-stored bytes past the {@code "cloud-server-max-bytes-available"} configuration limit.
  */
 public class CloudUserCommand implements Command {
 
@@ -46,7 +47,7 @@ public class CloudUserCommand implements Command {
 
     /**
      * Dispatches to one of {@code list}/{@code info}/{@code reset}/{@code delete}/{@code
-     * update} based on {@code arguments}' first token, printing a usage message if it is empty
+     * limit} based on {@code arguments}' first token, printing a usage message if it is empty
      * or unrecognized.
      *
      * @param arguments the sub-command and its own arguments, split on whitespace
@@ -130,12 +131,13 @@ public class CloudUserCommand implements Command {
             return;
         }
 
-        if (arguments.hasCommand(0, "update") && arguments.hasLength(2)) {
+        if (arguments.hasCommand(0, "limit") && arguments.hasLength(3)) {
 
             try {
 
                 final String emailAddress = arguments.command(1);
-                final long bytes = Long.parseLong(arguments.command(2));
+                final long value = Long.parseLong(arguments.command(2));
+                final long bytes = UnitParser.parseUnitToBytes(value, arguments.command(3));
                 final Optional<ICloudUser> cloudUser = cloudUserService.getCloudUserByEmail(emailAddress);
 
                 if (cloudUser.isEmpty()) {
@@ -144,7 +146,7 @@ public class CloudUserCommand implements Command {
                 }
 
                 if (bytes <= 0) {
-                    terminal.displayApproved("New bytes value cannot be below or equal 0");
+                    terminal.displayApproved("New limit cannot be below or equal 0");
                     return;
                 }
 
@@ -160,10 +162,12 @@ public class CloudUserCommand implements Command {
                 cloudUserService.updateCloudUserBytesLimit(cloudUser.get().getAuthUserId(), bytes);
                 terminal.displayApproved("Cloud user '&b%s&7' can now upload up to &a%s", cloudUser.get().getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(bytes));
 
-
             } catch (final NumberFormatException e) {
-                terminal.displayApproved("Please enter a valid bytes value");
-                return;
+                terminal.displayApproved("Please enter a valid numeric value");
+            } catch (final IllegalArgumentException e) {
+                // NumberFormatException is a subclass, so this catch only ever sees
+                // UnitParser.parseUnitToBytes rejecting the unit token.
+                terminal.displayApproved("Unknown unit '&b%s&7' - valid units: &bB&7, &bKB&7, &bMB&7, &bGB", arguments.command(3));
             }
 
             return;
@@ -178,7 +182,7 @@ public class CloudUserCommand implements Command {
     private void sendHelp() {
         final Terminal terminal = this.terminal();
         terminal.displayApproved("&fcloudUser list");
-        terminal.displayApproved("&fcloudUser update <email> <bytes>");
+        terminal.displayApproved("&fcloudUser limit <email> <bytes> <unit> &8(&7unit: &bB&7, &bKB&7, &bMB&7, &bGB&8)");
         terminal.displayApproved("&fcloudUser <info:delete:reset> <email>");
     }
 

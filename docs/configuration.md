@@ -50,7 +50,7 @@ next to the running backend process — two required files (below) plus an optio
 | `file-versioning-max-versions-per-file` | int | `10` | Version pruning (`cloud-driver-extensions-versioning`) |
 | `file-versioning-retention-days` | int | `30` | Version pruning by age |
 | `presigned-upload-ticket-retention-hours` | long | `6` | Orphaned presigned-upload cleanup (S3 deployments only) |
-| `cloud-server-max-bytes-available` | long | **no default** — the terminal's `cloudUser update`/`stats` commands fail without it | Operator terminal storage commands |
+| `cloud-server-max-bytes-available` | long | **no default** — the terminal's `cloudUser limit`/`stats` commands fail without it | Operator terminal storage commands |
 
 ## Notes
 

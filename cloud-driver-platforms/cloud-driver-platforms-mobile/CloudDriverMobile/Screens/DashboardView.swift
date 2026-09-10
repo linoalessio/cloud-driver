@@ -10,6 +10,9 @@ struct DashboardView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var showingChangeEmail = false
     @State private var showingResetPasswordConfirmation = false
+    /// Drives the storage bar's fill-up entrance: the bar renders at zero width until this flips
+    /// in `.onAppear`, so the fill visibly grows to its real fraction instead of appearing static.
+    @State private var storageBarRevealed = false
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -37,6 +40,7 @@ struct DashboardView: View {
                                 CloudFieldRow(label: "Joined", value: joinedText, showDivider: false)
                             }
                         }
+                        .cardEntrance(index: 0)
 
                         CloudCard(
                             icon: "chart.pie.fill",
@@ -51,14 +55,22 @@ struct DashboardView: View {
                                             .fill(Color.white.opacity(0.1))
                                         Capsule()
                                             .fill(CloudTheme.iconStorage.gradient)
-                                            .frame(width: proxy.size.width * storageFraction)
+                                            .frame(width: proxy.size.width * (storageBarRevealed ? storageFraction : 0))
+                                            .shimmer()
+                                            .clipShape(Capsule())
                                     }
                                 }
                                 .frame(height: 10)
+                                // Springs from zero on first appearance, and re-springs whenever a
+                                // refresh changes the real fraction.
+                                .animation(.spring(response: 0.9, dampingFraction: 0.85), value: storageBarRevealed)
+                                .animation(.spring(response: 0.9, dampingFraction: 0.85), value: storageFraction)
+                                .onAppear { storageBarRevealed = true }
                             }
                             .padding(.horizontal, 16)
                             .padding(.bottom, 16)
                         }
+                        .cardEntrance(index: 1)
 
                         CloudCard(
                             icon: "list.bullet.rectangle",
@@ -94,6 +106,7 @@ struct DashboardView: View {
                                 .foregroundStyle(CloudTheme.accent)
                             }
                         }
+                        .cardEntrance(index: 2)
 
                         CloudCard(
                             icon: "gearshape.fill",
@@ -110,7 +123,7 @@ struct DashboardView: View {
                                             .foregroundStyle(CloudTheme.textSecondary)
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(CloudPressStyle())
                                 .disabled(viewModel.currentUserEmail == nil)
 
                                 Button {
@@ -122,20 +135,25 @@ struct DashboardView: View {
                                             .foregroundStyle(CloudTheme.textSecondary)
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(CloudPressStyle())
                             }
                         }
+                        .cardEntrance(index: 3)
 
+                        // Chrome on the label (not the Button) so CloudPressStyle scales the
+                        // whole pill - same shape PrimaryButton uses.
                         Button(role: .destructive) {
                             viewModel.logout()
                         } label: {
                             Text("Sign Out")
                                 .font(CloudTheme.headline(.body))
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .foregroundStyle(.white)
+                                .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .padding(.vertical, 14)
-                        .foregroundStyle(.white)
-                        .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .buttonStyle(CloudPressStyle(scale: 0.97))
+                        .cardEntrance(index: 4)
                     }
                     .padding(16)
                 }

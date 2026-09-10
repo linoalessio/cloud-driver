@@ -29,17 +29,13 @@ struct LoginView: View {
             VStack(spacing: 20) {
                 Spacer(minLength: 56)
 
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(CloudTheme.accent.gradient)
-                    .frame(width: 72, height: 72)
-                    .overlay {
-                        Image(systemName: "cloud.fill")
-                            .font(.system(size: 32, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
+                // The 3D, floating evolution of the old static logo mark - see Motion.swift.
+                FloatingCloudLogo()
+                    .cardEntrance(index: 0)
                 Text("Cloud Driver")
                     .font(CloudTheme.headline(.largeTitle))
                     .foregroundStyle(CloudTheme.textPrimary)
+                    .cardEntrance(index: 1)
 
                 VStack(spacing: 12) {
                     GlassField {
@@ -54,16 +50,19 @@ struct LoginView: View {
                             .textContentType(.password)
                     }
                 }
+                .cardEntrance(index: 2)
 
                 PrimaryButton(title: "Sign In", busy: viewModel.busy, disabled: email.isEmpty || password.isEmpty) {
                     viewModel.login(email: email, password: password)
                 }
+                .cardEntrance(index: 3)
 
                 Button("Forgot password?") {
                     viewModel.screen = .resetPasswordRequest
                 }
                 .foregroundStyle(CloudTheme.textSecondary)
                 .font(.footnote)
+                .cardEntrance(index: 4)
 
                 Spacer(minLength: 40)
 
