@@ -150,6 +150,12 @@ same HTTP/WebSocket API).
   misbehaving type can't starve another's throughput.
 - The decryption cache is bounded and time-limited (default 30 seconds / 1,000 entries) since it
   holds decrypted plaintext in memory.
+- Independent of that decryption cache, each entity type's underlying database section also has
+  its own cache mode (`database-driver` ≥ 1.3.15 `SectionConfig`/`CacheMode` — `FULL`/`LAZY`/
+  `BOUNDED`/`NONE`), defaulting to `FULL` (every row loaded once, kept for the process's
+  lifetime). `StoredFile` overrides this to `NONE` in `EntityDatabaseClient`/`FactoryContainer`,
+  since a legacy row can still carry a file's full inline content and the decryption cache above
+  already serves its hot path — `FULL` there would hold that content twice.
 - REST handlers never block a request-handling thread — the underlying database/encryption work
   always runs on a virtual thread.
 - Change notification uses push (Postgres `LISTEN`/`NOTIFY`), not a polling loop, so latency is

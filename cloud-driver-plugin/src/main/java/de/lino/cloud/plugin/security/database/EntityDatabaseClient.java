@@ -49,7 +49,11 @@ import java.util.concurrent.Semaphore;
  * <p><b>Caching.</b> Each entity type gets its own read-through,
  * write-through {@link Cache}, bounded by default to {@link
  * #DEFAULT_CACHE_TTL}/{@link #DEFAULT_CACHE_MAX_SIZE} since it holds
- * decrypted plaintext in memory. Tune via the second constructor.
+ * decrypted plaintext in memory. Tune via the second constructor. Independent of that, {@link
+ * #sectionFor} decides under which {@link SectionConfig} a type's underlying {@link
+ * DatabaseSection} - the database layer's own row cache, holding ciphertext rather than this
+ * class's decrypted plaintext - is created; see {@link #sectionConfigOverrides} for why a
+ * content-heavy type overrides the {@link SectionConfig#full()} default.
  */
 public final class EntityDatabaseClient {
 
@@ -117,6 +121,20 @@ public final class EntityDatabaseClient {
      * - defaults to {@link Map#of()} on the constructors that don't take one explicitly.
      */
     private final Map<Class<?>, Duration> listCacheTtlOverrides;
+
+    /**
+     * Per-type override of the {@link SectionConfig} a type's {@link DatabaseSection} is created
+     * under - see {@link #sectionFor}. Any type absent here gets {@link SectionConfig#full()} (the
+     * historical, and still generally correct, behavior: every row loaded once and kept in memory).
+     * Entries here are how a type whose rows can carry substantial payload - {@code StoredFile},
+     * which can still hold a legacy file's full base64 content inline (see {@link #listCacheTtlOverrides}'s
+     * own {@code StoredFile} entry for the matching concern one layer up) - opts out of having its
+     * entire table's ciphertext held in the database layer's own row cache for the process's whole
+     * lifetime, independent of and in addition to this class's own bounded, decrypted {@link #caches}.
+     * Never {@code null} - defaults to {@link Map#of()} on the constructors that don't take one
+     * explicitly.
+     */
+    private final Map<Class<?>, SectionConfig> sectionConfigOverrides;
 
     /** One cache per entity type, created lazily via {@link #cacheFor}. */
     private final Map<Class<? extends Serialized>, Cache<String, ? extends Serialized>> caches = new ConcurrentHashMap<>();
@@ -197,7 +215,10 @@ public final class EntityDatabaseClient {
      * long, Duration)}, additionally taking {@link #listCacheTtlOverrides} so specific entity types
      * (e.g. one whose {@link #getEntities} result carries full content) can use a shorter, or
      * disabled ({@link Duration#ZERO}), list-cache TTL than every other type - see that field's own
-     * Javadoc for why.
+     * Javadoc for why. {@link #sectionConfigOverrides} defaults to {@link Map#of()} (every type's
+     * {@link DatabaseSection} created under {@link SectionConfig#full()}) - use {@link
+     * #EntityDatabaseClient(DatabaseProvider, EnvelopeEncryptionService, Duration, long, Duration,
+     * Map, Map)} for a deployment that wants that decoupled too.
      *
      * @param databaseProvider the provider meta sections are resolved against
      * @param envelopeEncryptionService the envelope-encryption service backing this client's {@link SecureEntityChannel}
@@ -213,6 +234,32 @@ public final class EntityDatabaseClient {
                                  @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
                                  final Duration cacheTtl, final long cacheMaxSize, final Duration listCacheTtl,
                                  @NotNull final Map<Class<?>, Duration> listCacheTtlOverrides) {
+        this(databaseProvider, envelopeEncryptionService, cacheTtl, cacheMaxSize, listCacheTtl, listCacheTtlOverrides, Map.of());
+    }
+
+    /**
+     * Same as {@link #EntityDatabaseClient(DatabaseProvider, EnvelopeEncryptionService, Duration,
+     * long, Duration, Map)}, additionally taking {@link #sectionConfigOverrides} so specific entity
+     * types can be created under a {@link SectionConfig} other than {@link SectionConfig#full()} -
+     * see that field's own Javadoc for why.
+     *
+     * @param databaseProvider the provider meta sections are resolved against
+     * @param envelopeEncryptionService the envelope-encryption service backing this client's {@link SecureEntityChannel}
+     * @param cacheTtl how long a decrypted meta stays cached; {@code null} for unbounded
+     * @param cacheMaxSize maximum cached entries per meta type; {@code <= 0} for unbounded
+     * @param listCacheTtl how long a {@link #getEntities} scan result stays cached, for any type
+     *     with no entry in {@code listCacheTtlOverrides}; {@code null} for unbounded
+     * @param listCacheTtlOverrides per-type list-cache TTL overrides; must not be {@code null} (use
+     *     {@link Map#of()} for none)
+     * @param sectionConfigOverrides per-type {@link DatabaseSection} cache-mode overrides; must not
+     *     be {@code null} (use {@link Map#of()} for none - every type then gets {@link SectionConfig#full()})
+     * @throws NullPointerException if {@code databaseProvider}/{@code envelopeEncryptionService}/{@code listCacheTtlOverrides}/{@code sectionConfigOverrides} is {@code null}
+     */
+    public EntityDatabaseClient(@NotNull final DatabaseProvider databaseProvider,
+                                 @NotNull final EnvelopeEncryptionService envelopeEncryptionService,
+                                 final Duration cacheTtl, final long cacheMaxSize, final Duration listCacheTtl,
+                                 @NotNull final Map<Class<?>, Duration> listCacheTtlOverrides,
+                                 @NotNull final Map<Class<?>, SectionConfig> sectionConfigOverrides) {
         this.databaseProvider = Asserts.requireNonNull(databaseProvider, "@EntityDatabaseClient: databaseProvider cannot be null");
         this.secureEntityChannel = new SecureEntityChannel(
                 Asserts.requireNonNull(envelopeEncryptionService, "@EntityDatabaseClient: envelopeEncryptionService cannot be null")
@@ -221,13 +268,19 @@ public final class EntityDatabaseClient {
         this.cacheMaxSize = cacheMaxSize;
         this.listCacheTtl = listCacheTtl;
         this.listCacheTtlOverrides = Asserts.requireNonNull(listCacheTtlOverrides, "@EntityDatabaseClient: listCacheTtlOverrides cannot be null");
+        this.sectionConfigOverrides = Asserts.requireNonNull(sectionConfigOverrides, "@EntityDatabaseClient: sectionConfigOverrides cannot be null");
     }
 
-    /** Returns {@code type}'s {@link DatabaseSection} (named after its simple class name), creating it if needed. */
+    /**
+     * Returns {@code type}'s {@link DatabaseSection} (named after its simple class name), creating
+     * it - under {@link #sectionConfigOverrides}'s entry for {@code type}, or {@link
+     * SectionConfig#full()} if it has none - if needed.
+     */
     private DatabaseSection sectionFor(final Class<?> type) {
         return sections.computeIfAbsent(type, key -> {
             final String sectionName = key.getSimpleName();
-            return databaseProvider.getSection(sectionName).orElseGet(() -> databaseProvider.createSection(sectionName));
+            final SectionConfig config = sectionConfigOverrides.getOrDefault(key, SectionConfig.full());
+            return databaseProvider.getSection(sectionName).orElseGet(() -> databaseProvider.createSection(sectionName, config));
         });
     }
 

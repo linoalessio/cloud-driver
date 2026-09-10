@@ -13,6 +13,7 @@ import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.SectionConfig;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.SneakyThrows;
@@ -58,6 +59,24 @@ public class FactoryContainer implements IFactoryContainer {
      * content is never held any longer than the single call that produced it.
      */
     private static final Map<Class<?>, Duration> ENTITY_LIST_CACHE_TTL_OVERRIDES = Map.of(StoredFile.class, Duration.ZERO);
+
+    /**
+     * Per-type override of {@link EntityDatabaseClient}'s default {@code
+     * SectionConfig.full()} - passed to its {@code sectionConfigOverrides} constructor argument.
+     * {@code StoredFile} is the one type overridden, to {@link SectionConfig#none()}: unlike every
+     * other type this container persists, a {@code StoredFile} row can still carry a legacy file's
+     * entire base64 content inline (see {@link #ENTITY_LIST_CACHE_TTL_OVERRIDES}'s own {@code
+     * StoredFile} entry for the matching concern at the list-cache layer), so letting the database
+     * layer hold every such row's ciphertext in its own row cache - on top of, and independent of,
+     * this container's already-bounded decrypted {@code EntityDatabaseClient} cache - grew the
+     * process's heap floor in lockstep with the total size of stored file content, once fully
+     * proportional to the whole database (root cause of the 2026-09-09 boot OOM crash loop, see
+     * docs/troubleshooting.md). {@code SectionConfig.none()} means every {@code StoredFile}
+     * operation is pushed straight to Postgres instead of duplicating rows into a second, unbounded
+     * in-memory cache the application never needed - {@code EntityDatabaseClient}'s own cache
+     * already serves the hot path.
+     */
+    private static final Map<Class<?>, SectionConfig> SECTION_CONFIG_OVERRIDES = Map.of(StoredFile.class, SectionConfig.none());
 
     /** Encrypted entity persistence, backed by a fresh {@link EntityDatabaseClient}. */
     private final DataFactory dataFactory;
@@ -146,7 +165,7 @@ public class FactoryContainer implements IFactoryContainer {
         this.dataFactory = new DefaultDataFactory(new EntityDatabaseClient(
                 databaseProvider, envelopeEncryptionService,
                 EntityDatabaseClient.DEFAULT_CACHE_TTL, EntityDatabaseClient.DEFAULT_CACHE_MAX_SIZE, ENTITY_LIST_CACHE_TTL,
-                ENTITY_LIST_CACHE_TTL_OVERRIDES
+                ENTITY_LIST_CACHE_TTL_OVERRIDES, SECTION_CONFIG_OVERRIDES
         ));
         this.objectStorageService = objectStorageService;
         this.fileFactory = new DefaultFileFactory(
