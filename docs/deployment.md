@@ -53,11 +53,14 @@ no data collection), and nothing is ever loaded from third parties (fonts, analy
 which is exactly what `datenschutz.html` claims, so keep it that way. All animation is disabled
 under `prefers-reduced-motion`, and the page renders fully with JS off.
 
-Deploying is a plain file copy plus a Caddy site block for the apex domain:
+Deploying is one command — [`shell/deploy-homepage.sh`](../shell/deploy-homepage.sh):
 
 ```bash
-rsync -av --delete homepage/ user@server:/var/www/cloud-driver-homepage/
+./shell/deploy-homepage.sh
 ```
+
+It uploads every file in `homepage/` to `/var/www/cloud-driver-homepage` on the server
+(checksum-verified, stale remote files removed), ensures the Caddyfile's apex block is
 
 ```caddyfile
 cloud-driver.de {
@@ -66,9 +69,11 @@ cloud-driver.de {
 }
 ```
 
-**Before the legal pages go live**: `datenschutz.html` still contains two values marked with
-`class="todo"` — a highlighted span in the rendered page — for the hosting provider and the AWS
-region. Verify both against the actual deployment, then remove the markers.
+(replacing the original block that reverse-proxied the apex to the REST API — the reason the
+domain used to show no homepage), validates the rewritten Caddyfile before swapping it in
+(timestamped backup kept), reloads Caddy without touching the `api.`/`auth.` blocks, and
+smoke-tests `https://cloud-driver.de`. It refuses to deploy while any page still contains a
+`class="todo"` placeholder, so unfinished legal text can never go live.
 
 The pages state facts about the running system (version number, route count, extension count) —
 when those change in a release, update `homepage/index.html` in the same change.
