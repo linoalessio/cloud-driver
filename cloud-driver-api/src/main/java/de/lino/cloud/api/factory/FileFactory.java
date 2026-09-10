@@ -27,8 +27,8 @@ import java.util.concurrent.CompletionException;
  * #download(String)}, {@link #download(String[])}, {@link #findById}, {@link
  * #getEntities()}, {@link #delete(String)}, {@link #delete(String[])},
  * {@link #clear()}, and {@link #deleteSection()} are abstract; every {@code
- * *Async} variant plus {@link #metadata} is implemented here generically in
- * terms of those.
+ * *Async} variant plus {@link #metadata}/{@link #getEntitiesMetadata()} is
+ * implemented here generically in terms of those.
  */
 public abstract class FileFactory {
 
@@ -157,6 +157,29 @@ public abstract class FileFactory {
         return findById(fileId).map(StoredFile::metadata);
     }
 
+    /**
+     * The descriptive attributes of every stored file, without content - what a caller that only
+     * needs counts/names/sizes (e.g. the terminal's {@code stats} command summing every file's
+     * size) should use instead of {@link #getEntities()}, which additionally resolves every
+     * S3-backed file's content from the object store and checksum-verifies it - a full-corpus
+     * download paid for numbers already present in the metadata.
+     *
+     * <p>This generic implementation is still built on {@link #getEntities()} (correct for any
+     * implementation, no faster); {@code DefaultFileFactory} overrides it with a genuinely
+     * content-free fast path.
+     *
+     * @return every stored file's metadata, in no particular order
+     * @throws DatabaseClientException if the persistence operation fails
+     * @throws KeyWrapException if a file's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws AuthenticationFailedException if a retrieved payload fails authentication
+     * @throws FileIntegrityException if a decrypted content does not match its recorded checksum
+     */
+    @NotNull
+    public List<FileMetadata> getEntitiesMetadata()
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
+        return getEntities().stream().map(StoredFile::metadata).toList();
+    }
+
     /** Async counterpart of {@link #upload(StoredFile)}. */
     @NotNull
     public CompletableFuture<Void> uploadAsync(@NotNull final StoredFile file) {
@@ -223,6 +246,18 @@ public abstract class FileFactory {
         return MultiTaskingFactory.getInstance().supplyAsync(() -> {
             try {
                 return this.getEntities();
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+
+    /** Async counterpart of {@link #getEntitiesMetadata()}. */
+    @NotNull
+    public CompletableFuture<List<FileMetadata>> getEntitiesMetadataAsync() {
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> {
+            try {
+                return this.getEntitiesMetadata();
             } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
                 throw new CompletionException(e);
             }

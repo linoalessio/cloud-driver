@@ -440,7 +440,7 @@ code:
 | `screen-leave` | `l`, `sl` | Detach the terminal session without killing the process |
 | `extensions` | `extension`, `ext` | List every registered extension and its status |
 | `dispatch` | `exec`, `sudo`, `d` | Run a system-level command through the terminal |
-| `statistics` | `stats` | Basic counts (accounts, files, uploaded bytes) |
+| `statistics` | `stats` | Basic counts (accounts, files, uploaded bytes) — computed from row metadata only, never by fetching file content. One caveat: the first run against a corpus migrated to S3 before 2026-09-10 resolves each still-sizeless row's content once and backfills its size onto the row, so that run is slow and every later one fast |
 | `cloudUser list` / `info <email>` / `reset <email>` / `delete <email>` / `limit <email> <bytes> <unit>` (unit: `B`/`KB`/`MB`/`GB`) | `cu`, `user` | Inspect/manage one or every account |
 | `recomputeStorage <email>` / `recomputeStorage all` | `recompute` | Recompute an account's uploaded-bytes total from its actual files |
 | `admin grant <email>` / `admin revoke <email>` | `isAdmin` | The only writer of the admin flag anywhere in this codebase |

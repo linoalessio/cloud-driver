@@ -172,11 +172,16 @@ public final class StoredFile extends Serialized {
     private final boolean directTransfer;
 
     /**
-     * This file's size, as declared by the uploading client and verified against the object
-     * store's own real content length at upload-completion time - set only on a {@link
-     * #directTransfer} instance, {@code null} otherwise. {@link #sizeBytes()} returns this
-     * directly when present, since a direct-transfer file's content is never fetched by this
-     * server just to learn its size the way {@link #resolveContent()} would otherwise require.
+     * This file's original, uncompressed content size in bytes, recorded so it can be answered
+     * without content in hand - {@link #sizeBytes()} returns this directly when present, since an
+     * S3-backed file's content should never be fetched just to learn its length the way {@link
+     * #resolveContent()} would otherwise require. Set on a {@link #directTransfer} instance (as
+     * declared by the uploading client and verified against the object store's own real content
+     * length at upload-completion time), on a dedup alias (copied from the canonical file), and -
+     * since 2026-09-10 - on every {@link #withObjectStorageKey(String)} result too. {@code null}
+     * only on an app-encrypted S3-backed row persisted before that date; {@code
+     * DefaultFileFactory#getEntitiesMetadata} lazily backfills such legacy rows via {@link
+     * #withDeclaredSizeBytes(long)} the first time it has to resolve one's content anyway.
      */
     private final Long declaredSizeBytes;
 
@@ -302,6 +307,12 @@ public final class StoredFile extends Serialized {
      * constructor backs {@code DefaultFileFactory#upload}'s app-encrypted S3 path only; a
      * direct-transfer instance is only ever built via {@link #StoredFile(String, String, long,
      * FileChecksum, Instant, Instant, String)}.
+     *
+     * <p>{@link #declaredSizeBytes} is captured from {@code source.sizeBytes()} (cheap here -
+     * every caller reaches this with {@code source}'s content still in hand) so the resulting
+     * metadata-only row can answer {@link #sizeBytes()} forever without its content ever being
+     * fetched back from the object store - the fix (2026-09-10) for the terminal's {@code stats}
+     * command re-downloading and decrypting the entire S3 corpus just to sum file sizes.
      */
     private StoredFile(final StoredFile source, final String objectStorageKey) {
         this.fileId = source.fileId;
@@ -317,11 +328,37 @@ public final class StoredFile extends Serialized {
                 objectStorageKey, "@StoredFile: objectStorageKey cannot be null"
         );
         this.directTransfer = false;
-        this.declaredSizeBytes = null;
+        this.declaredSizeBytes = source.sizeBytes();
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
         this.scanStatus = source.scanStatus;
         this.decodedContent = null;
+    }
+
+    /**
+     * Copy constructor backing {@link #withDeclaredSizeBytes(long)} - carries every field over
+     * from {@code source} unchanged except {@link #declaredSizeBytes}. The trailing {@code
+     * boolean} parameter exists purely to give this constructor a distinct signature from {@link
+     * #StoredFile(StoredFile, Long)} (backing {@link #markedDeleted()}/{@link #restored()}),
+     * which a bare {@code long} argument would otherwise silently rebind away from.
+     */
+    private StoredFile(final StoredFile source, final long declaredSizeBytes, final boolean sizing) {
+        this.fileId = source.fileId;
+        this.fileName = source.fileName;
+        this.contentType = source.contentType;
+        this.contentBase64 = source.contentBase64;
+        this.contentCompressed = source.contentCompressed;
+        this.checksum = source.checksum;
+        this.createdAtEpochMilli = source.createdAtEpochMilli;
+        this.updatedAtEpochMilli = source.updatedAtEpochMilli;
+        this.deletedAtEpochMillis = source.deletedAtEpochMillis;
+        this.objectStorageKey = source.objectStorageKey;
+        this.directTransfer = source.directTransfer;
+        this.declaredSizeBytes = declaredSizeBytes;
+        this.dedupOfFileId = source.dedupOfFileId;
+        this.dedupRefCount = source.dedupRefCount;
+        this.scanStatus = source.scanStatus;
+        this.decodedContent = source.decodedContent;
     }
 
     /**
@@ -602,6 +639,28 @@ public final class StoredFile extends Serialized {
         return declaredSizeBytes != null ? declaredSizeBytes : resolveContent().length;
     }
 
+    /**
+     * {@link #sizeBytes()} if it can be answered from this instance alone - {@link
+     * #declaredSizeBytes} when recorded, otherwise the resolved content's length when the content
+     * is locally available (inline in {@link #contentBase64}, or already hydrated via {@link
+     * #withResolvedContent(byte[])}) - or {@code null} when answering would require fetching
+     * external content first (an unhydrated app-encrypted S3-backed row persisted before {@link
+     * #declaredSizeBytes} was recorded there). Lets {@code DefaultFileFactory#getEntitiesMetadata}
+     * report sizes without the object-store round trip {@link #sizeBytes()}'s {@link
+     * IllegalStateException} would otherwise demand.
+     *
+     * @return this file's original, uncompressed content size in bytes, or {@code null} if unknowable without external content
+     */
+    public Long sizeBytesIfKnown() {
+        if (declaredSizeBytes != null) {
+            return declaredSizeBytes;
+        }
+        if (decodedContent != null || contentBase64 != null) {
+            return (long) resolveContent().length;
+        }
+        return null;
+    }
+
     /** The plaintext checksum this file's content must match on every future download. */
     public FileChecksum checksum() {
         return checksum;
@@ -705,13 +764,32 @@ public final class StoredFile extends Serialized {
      *     #objectStorageKey} set to {@code objectStorageKey}, {@link #contentBase64} nulled, and no
      *     cached {@link #decodedContent} carried over. A metadata-only reference: {@link #content()}
      *     and every method built on {@link #resolveContent()} throw {@link IllegalStateException}
-     *     on the result until {@link #withResolvedContent(byte[])} hydrates a fetched copy. Used by
+     *     on the result until {@link #withResolvedContent(byte[])} hydrates a fetched copy - except
+     *     {@link #sizeBytes()}, which keeps working: the size is captured into {@link
+     *     #declaredSizeBytes} here, while the content is still in hand. Used by
      *     {@code DefaultFileFactory#upload} once this file's content has already been written to
      *     external object s3storage separately.
      * @throws NullPointerException if {@code objectStorageKey} is {@code null}
      */
     public StoredFile withObjectStorageKey(final String objectStorageKey) {
         return new StoredFile(this, objectStorageKey);
+    }
+
+    /**
+     * @param sizeBytes this file's original, uncompressed content size in bytes
+     * @return a copy of this file with {@link #declaredSizeBytes} recorded as {@code sizeBytes};
+     *     every other field, content included, is left unchanged. Used by {@code
+     *     DefaultFileFactory#getEntitiesMetadata} to backfill a legacy S3-backed row (persisted
+     *     before {@link #withObjectStorageKey(String)} recorded sizes, 2026-09-10) once it has had
+     *     to resolve that row's content anyway - so the resolve is paid at most once per row, ever.
+     * @throws IllegalArgumentException if {@code sizeBytes} is negative
+     */
+    @NotNull
+    public StoredFile withDeclaredSizeBytes(final long sizeBytes) {
+        if (sizeBytes < 0) {
+            throw new IllegalArgumentException("@StoredFile.withDeclaredSizeBytes: sizeBytes cannot be negative, got " + sizeBytes);
+        }
+        return new StoredFile(this, sizeBytes, true);
     }
 
     /**

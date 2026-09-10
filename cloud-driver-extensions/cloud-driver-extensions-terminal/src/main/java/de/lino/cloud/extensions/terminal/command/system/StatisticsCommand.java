@@ -3,7 +3,7 @@ package de.lino.cloud.extensions.terminal.command.system;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUserService;
@@ -54,6 +54,14 @@ public class StatisticsCommand implements Command {
      * decode, this command was one of the two real call sites behind a live {@code
      * OutOfMemoryError} on {@code strato}. Now calls it once and reuses the same list for both.
      *
+     * <p><b>Fixed again (2026-09-10), for speed this time:</b> once S3-backed content went live,
+     * even the single {@code getEntitiesAsync()} call meant re-downloading, decrypting, and
+     * checksum-verifying the whole corpus from the object store just to count rows and sum sizes.
+     * Now goes through {@link FileFactory#getEntitiesMetadataAsync()}, which answers both from row
+     * metadata alone - see {@code DefaultFileFactory#getEntitiesMetadata()}'s own Javadoc,
+     * including the one-time legacy-row backfill that makes the first invocation against an old
+     * corpus as slow as before and every later one fast.
+     *
      * @param arguments unused
      */
     @Override
@@ -65,10 +73,10 @@ public class StatisticsCommand implements Command {
         final ExtensionFactory extensionFactory = CloudDriver.getInstance().getFactoryContainer().getExtensionFactory();
         final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
 
-        final List<StoredFile> allFiles = fileFactory.getEntitiesAsync().join();
+        final List<FileMetadata> allFiles = fileFactory.getEntitiesMetadataAsync().join();
 
         final String cloudRunningFor = UnitParser.parseTimeUnit(System.currentTimeMillis() - Constraints.CLOUD_START_TIME_STAMP.get());
-        final String usedStorage = UnitParser.parseByteUnit(allFiles.stream().mapToLong(StoredFile::sizeBytes).sum());
+        final String usedStorage = UnitParser.parseByteUnit(allFiles.stream().mapToLong(FileMetadata::sizeBytes).sum());
         final String totalCloudServerStorage = UnitParser.parseByteUnit(CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available"));
 
         final String totalFiles = String.valueOf(allFiles.size());

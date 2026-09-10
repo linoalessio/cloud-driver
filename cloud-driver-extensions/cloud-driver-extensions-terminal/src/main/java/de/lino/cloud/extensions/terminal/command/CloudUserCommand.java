@@ -2,7 +2,7 @@ package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.FileFactory;
-import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.user.ICloudUser;
@@ -151,7 +151,10 @@ public class CloudUserCommand implements Command {
                 }
 
                 final FileFactory fileFactory = CloudDriver.getInstance().getFactoryContainer().getFileFactory();
-                final long uploadedBytesToDatabase = fileFactory.getEntitiesAsync().join().stream().mapToLong(StoredFile::sizeBytes).sum();
+                // Metadata-only listing - summing sizes must not re-download the whole S3-backed
+                // corpus, see DefaultFileFactory#getEntitiesMetadata (the same 2026-09-10 fix as
+                // StatisticsCommand's).
+                final long uploadedBytesToDatabase = fileFactory.getEntitiesMetadataAsync().join().stream().mapToLong(FileMetadata::sizeBytes).sum();
                 final long exisingBytesInServer = CloudDriver.getInstance().getConfiguration().getLong("cloud-server-max-bytes-available");
 
                 if ((uploadedBytesToDatabase + bytes) >= exisingBytesInServer) {

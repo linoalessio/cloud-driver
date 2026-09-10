@@ -6,6 +6,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.metrics.MetricsRecorder;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
@@ -24,6 +25,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.function.Consumer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -346,6 +348,74 @@ public final class DefaultFileFactory extends FileFactory {
     public List<StoredFile> getEntities()
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
         return verifyAll(this.dataFactory.getEntities(StoredFile.class));
+    }
+
+    /**
+     * Content-free fast path over the generic {@link FileFactory#getEntitiesMetadata()}: lists
+     * the rows via {@link #dataFactory} and answers each file's size from the row alone ({@link
+     * StoredFile#sizeBytesIfKnown()}) - no object-store fetch, no per-file content decryption, no
+     * checksum verification. <b>The fix (2026-09-10) for the terminal's {@code stats} command
+     * taking minutes:</b> it only ever needed a row count and a size sum, but reached them through
+     * {@link #getEntities()}, which since S3-backed content went live meant re-downloading,
+     * KMS-unwrapping, decrypting, and checksum-verifying the entire corpus on every invocation.
+     *
+     * <p>The only rows that can't answer locally are app-encrypted S3-backed rows persisted before
+     * {@link StoredFile#withObjectStorageKey(String)} started recording {@code declaredSizeBytes}
+     * (2026-09-10). Those legacy rows are resolved the old way - through {@link #verifyAll}'s
+     * bounded pipeline - and their learned size is then <b>backfilled</b> onto the row ({@link
+     * StoredFile#withDeclaredSizeBytes(long)}, best-effort, see {@link #backfillDeclaredSize}),
+     * so each such row pays the resolve at most once ever, after which it takes the fast path
+     * like every other row. A corpus of only legacy rows therefore makes the first call as slow
+     * as before and every later call fast.
+     */
+    @NotNull
+    @Override
+    public List<FileMetadata> getEntitiesMetadata()
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
+        final List<StoredFile> rows = this.dataFactory.getEntities(StoredFile.class);
+
+        final List<FileMetadata> result = new ArrayList<>(rows.size());
+        final List<StoredFile> legacyRowsWithoutSize = new ArrayList<>();
+        for (final StoredFile row : rows) {
+            final Long knownSize = row.sizeBytesIfKnown();
+            if (knownSize != null) {
+                result.add(new FileMetadata(row.fileId(), row.fileName(), row.contentType(),
+                        knownSize, row.checksum(), row.createdAt(), row.updatedAt()));
+            } else {
+                legacyRowsWithoutSize.add(row);
+            }
+        }
+
+        if (!legacyRowsWithoutSize.isEmpty()) {
+            final List<StoredFile> resolved = verifyAll(legacyRowsWithoutSize);
+            for (int i = 0; i < resolved.size(); i++) {
+                final StoredFile resolvedFile = resolved.get(i);
+                result.add(resolvedFile.metadata());
+                backfillDeclaredSize(legacyRowsWithoutSize.get(i), resolvedFile.sizeBytes());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Persists {@code sizeBytes} onto {@code legacyRow} (via {@link
+     * StoredFile#withDeclaredSizeBytes(long)} on the original, unhydrated row - so the update
+     * stays metadata-only, no content re-serialized) so future {@link #getEntitiesMetadata()}
+     * calls never have to resolve this row's content again. Best-effort: a failure is logged
+     * rather than thrown, since the caller already has the answer it needed - the backfill is an
+     * optimization for next time, never worth failing this call over.
+     *
+     * @param legacyRow the row as read from {@link #dataFactory}, still without a recorded size
+     * @param sizeBytes the row's now-known original, uncompressed content size in bytes
+     */
+    private void backfillDeclaredSize(final StoredFile legacyRow, final long sizeBytes) {
+        try {
+            this.dataFactory.update(legacyRow.withDeclaredSizeBytes(sizeBytes));
+        } catch (final Exception backfillFailed) {
+            CloudDriver.getInstance().getLogger().log(
+                    Level.WARNING, "@DefaultFileFactory: failed to backfill declaredSizeBytes for file '" + legacyRow.fileId() + "'", backfillFailed
+            );
+        }
     }
 
     /**
