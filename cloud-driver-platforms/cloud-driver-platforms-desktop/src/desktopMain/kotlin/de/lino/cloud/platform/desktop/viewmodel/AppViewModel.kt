@@ -1487,23 +1487,18 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     }
 
     /**
-     * Moves every entry in [entriesToMove] into [targetFolderId], concurrently (capped - see
-     * [mapConcurrently]) - the action a drag-and-drop drop in [FileBrowserScreen] resolves to.
-     * [targetFolderId] is always a real folder id here (never root/`null`) since the only drop
-     * targets [FileBrowserScreen] currently offers are folder rows within the listing being
-     * dragged from. See [moveEntryToFolder] for a single-entry move that *can* target the root
-     * (the context menu's "Move to...").
+     * Moves every entry in [entriesToMove] into [targetFolderId] (`null` = the root),
+     * concurrently (capped - see [mapConcurrently]). Backs both a drag-and-drop drop in
+     * [FileBrowserScreen] (whose drop targets are always real folder rows in the current listing,
+     * so it never passes `null`) and the "Move to..." dialog, which can target any folder in the
+     * account - the root included - and, since 2026-09-10, carries the whole multi-selection
+     * rather than only the row it was opened from (the "moving multiple objects doesn't work"
+     * fix: bulk move used to exist solely as the long-press drag, while the dialog silently
+     * moved just one entry of a multi-selection).
      */
-    fun moveEntriesToFolder(entriesToMove: List<Entry>, targetFolderId: String) = run {
+    fun moveEntriesToFolder(entriesToMove: List<Entry>, targetFolderId: String?) = run {
         entriesToMove.mapConcurrently { entry -> this.moveEntry(entry, targetFolderId) }
-        this.selected.clear()
-        this.refreshCurrentFolder()
-    }
-
-    /** Moves a single [entry] into [targetFolderId] (`null` = the root) - backs the context menu's "Move to..." dialog, which (unlike drag-and-drop) can target the root directly. */
-    fun moveEntryToFolder(entry: Entry, targetFolderId: String?) = run {
-        this.moveEntry(entry, targetFolderId)
-        this.selected.remove(entry)
+        this.selected.removeAll(entriesToMove)
         this.refreshCurrentFolder()
     }
 

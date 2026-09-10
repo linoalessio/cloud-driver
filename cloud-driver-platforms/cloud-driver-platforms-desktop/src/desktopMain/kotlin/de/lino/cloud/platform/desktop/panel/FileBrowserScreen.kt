@@ -255,12 +255,14 @@ private fun promptForName(title: String, message: String): String? =
 fun FileBrowserScreen(viewModel: AppViewModel) {
     LaunchedEffect(Unit) { viewModel.loadCurrentFolder() }
 
-    // The entry a right-click "Move to..." was requested for, if any - drives the dialog
+    // The entries a "Move to..." was requested for (`null` = dialog closed) - a right-click on a
+    // row carries the whole multi-selection when that row is part of it (see onMoveRequest below),
+    // and the toolbar's "Move selected" always carries the full selection. Drives the dialog
     // rendered below, outside AuthenticatedShell's own content so it overlays the whole screen
     // (sidebar included) rather than just the file listing. Declared here, at this composable's
     // own top level, rather than inside AuthenticatedShell's content lambda, precisely so it's
     // still in scope down there.
-    var moveDialogEntry by remember { mutableStateOf<Entry?>(null) }
+    var moveDialogEntries by remember { mutableStateOf<List<Entry>?>(null) }
 
     // The entry a right-click "Share" was requested for, if any - drives ShareDialog, rendered
     // below the same "declared at this composable's own top level, outside AuthenticatedShell's
@@ -373,7 +375,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                 // width once "Delete selected" was added - which pushed "Delete selected" itself
                 // off-screen with no scroll affordance to reach it, the exact bug this fixes.
                 if (viewModel.selected.isNotEmpty()) {
-                    SelectionOptionsMenuButton(viewModel)
+                    SelectionOptionsMenuButton(viewModel, onMoveSelected = { moveDialogEntries = viewModel.selected.toList() })
                 }
 
                 // Pushes Refresh/Sort to the toolbar's trailing edge, per Lino's own request -
@@ -502,7 +504,13 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
                                 viewModel.downloadEntries(listOf(entry), it)
                             }
                         },
-                        onMoveRequest = { moveDialogEntry = entry },
+                        // Same convention as onDragStart above: "Move to..." on a row that's part
+                        // of the current multi-selection moves the whole selection; on any other
+                        // row, only that one entry - this used to always move just the clicked
+                        // row, silently ignoring the rest of the selection.
+                        onMoveRequest = {
+                            moveDialogEntries = if (viewModel.selected.contains(entry)) viewModel.selected.toList() else listOf(entry)
+                        },
                         onDuplicateRequest = { viewModel.duplicateEntries(listOf(entry)) },
                         onDeleteRequest = { viewModel.deleteEntries(listOf(entry)) },
                         onShareRequest = { shareDialogEntry = entry },
@@ -560,8 +568,8 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
         }
     }
 
-    moveDialogEntry?.let { entry ->
-        MoveToFolderDialog(viewModel = viewModel, entry = entry, onDismiss = { moveDialogEntry = null })
+    moveDialogEntries?.let { entries ->
+        MoveToFolderDialog(viewModel = viewModel, entries = entries, onDismiss = { moveDialogEntries = null })
     }
 
     shareDialogEntry?.let { entry ->
@@ -850,16 +858,17 @@ private fun SortMenuButton(viewModel: AppViewModel) {
 }
 
 /**
- * The context menu's "Move to..." action: lets the user navigate the caller's own folder tree
- * (starting at the root) and move [entry] into whichever folder they land on, including the root
- * itself - unlike drag-and-drop (which can only target a folder already visible in the current
- * listing), this reaches any folder in the account. Loads one level of subfolders at a time via
+ * The "Move to..." dialog (the row context menu's action, and the toolbar's "Move selected"):
+ * lets the user navigate the caller's own folder tree (starting at the root) and move every
+ * entry in [entries] into whichever folder they land on, including the root itself - unlike
+ * drag-and-drop (which can only target a folder already visible in the current listing), this
+ * reaches any folder in the account. Loads one level of subfolders at a time via
  * [AppViewModel.client] directly (a listings-only call, not a full [AppViewModel] action) since
  * this dialog's own navigation is local, transient state that has no reason to go through
  * [AppViewModel.run]'s busy-guarded action machinery.
  */
 @Composable
-private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss: () -> Unit) {
+private fun MoveToFolderDialog(viewModel: AppViewModel, entries: List<Entry>, onDismiss: () -> Unit) {
     var targetFolderId by remember { mutableStateOf<String?>(null) }
     var targetFolderName by remember { mutableStateOf("Home") }
     val path = remember { mutableStateListOf<FolderResponse>() }
@@ -894,7 +903,7 @@ private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss:
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Move \"${entry.name}\"") },
+        title = { Text(if (entries.size == 1) "Move \"${entries.first().name}\"" else "Move ${entries.size} items") },
         text = {
             Column(Modifier.fillMaxWidth().height(320.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -910,11 +919,12 @@ private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss:
                     loading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
                     loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
                     else -> {
-                        // A folder can't be moved into itself - excluded here so it's never an
-                        // option to navigate into in the first place, rather than relying solely
-                        // on the server's own cycle check (which still guards deeper cases, e.g.
-                        // moving into a descendant of entry, that this shallow filter doesn't).
-                        val selectable = subfolders.filter { it.folderId() != entry.id }
+                        // A folder can't be moved into itself - any folder among [entries] is
+                        // excluded here so it's never an option to navigate into in the first
+                        // place, rather than relying solely on the server's own cycle check
+                        // (which still guards deeper cases, e.g. moving into a descendant of a
+                        // moved folder, that this shallow filter doesn't).
+                        val selectable = subfolders.filter { candidate -> entries.none { it.id == candidate.folderId() } }
                         if (selectable.isEmpty()) {
                             Text("No subfolders here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } else {
@@ -941,7 +951,7 @@ private fun MoveToFolderDialog(viewModel: AppViewModel, entry: Entry, onDismiss:
         },
         confirmButton = {
             Button(onClick = {
-                viewModel.moveEntryToFolder(entry, targetFolderId)
+                viewModel.moveEntriesToFolder(entries, targetFolderId)
                 onDismiss()
             }) {
                 Text("Move here")
@@ -1484,16 +1494,20 @@ private fun UploadMenuButton(viewModel: AppViewModel) {
 }
 
 /**
- * "Options" - the toolbar's bulk actions on the current selection (Download/Duplicate/Delete
- * selected), bundled behind one dropdown button the same way [UploadMenuButton] bundles its own
- * two upload actions, rather than three always-visible buttons. Fixes a real layout bug: with
- * three separate buttons inline, this toolbar's total width could exceed the available `Row`
- * width once a selection was made, and "Delete selected" - the last of the three - was the one
- * that ended up pushed off-screen, with no scroll affordance to reach it. One fixed-width trigger
- * button avoids that regardless of how many bulk actions this menu ever grows to.
+ * "Options" - the toolbar's bulk actions on the current selection (Download/Move/Duplicate/
+ * Delete selected), bundled behind one dropdown button the same way [UploadMenuButton] bundles
+ * its own two upload actions, rather than separate always-visible buttons. Fixes a real layout
+ * bug: with three separate buttons inline, this toolbar's total width could exceed the available
+ * `Row` width once a selection was made, and "Delete selected" - the last of the three - was the
+ * one that ended up pushed off-screen, with no scroll affordance to reach it. One fixed-width
+ * trigger button avoids that regardless of how many bulk actions this menu ever grows to.
+ *
+ * [onMoveSelected] opens [MoveToFolderDialog] with the full selection - added 2026-09-10, when
+ * the only way to move a multi-selection was the long-press drag (easy to miss entirely), while
+ * the context menu's "Move to..." silently moved just the clicked row.
  */
 @Composable
-private fun SelectionOptionsMenuButton(viewModel: AppViewModel) {
+private fun SelectionOptionsMenuButton(viewModel: AppViewModel, onMoveSelected: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
 
     Column {
@@ -1508,6 +1522,14 @@ private fun SelectionOptionsMenuButton(viewModel: AppViewModel) {
                 onClick = {
                     expanded = false
                     chooseDirectory("Select download destination", DEFAULT_DOWNLOAD_DIRECTORY)?.let { viewModel.downloadSelected(it) }
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Move selected") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onMoveSelected()
                 },
             )
             DropdownMenuItem(
