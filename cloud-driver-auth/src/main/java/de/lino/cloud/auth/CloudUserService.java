@@ -529,6 +529,18 @@ public final class CloudUserService implements ICloudUserService {
      * s3storage (see {@link #deleteFile}'s own Javadoc: trashing alone never decrements the usage
      * total, only {@link #hardDeleteFile} does) - so this recompute must agree with that same
      * accounting rule rather than silently under-counting relative to it.
+     *
+     * <p><b>Counts each distinct content once, not each row</b> (fixed 2026-09-10; previously
+     * summed every row, silently switching the counter from the physical convention every other
+     * writer uses to a logical one): the incremental accounting is dedup-aware - {@link
+     * #uploadFile} never charges a deduplication alias ("consumes no new physical storage") and
+     * {@link #deleteDeduplicatedFile} only decrements when content is actually freed - so this
+     * recompute must be too. Rows are therefore grouped by {@link
+     * StoredFileOwnership#resolvedDedupCanonicalFileId()} (an alias resolves to its canonical, a
+     * plain row to itself) and each group's size counted once. Deliberately <em>not</em> "skip
+     * alias rows": when a canonical's own upload was already hard-deleted while its aliases live
+     * on, only alias rows remain for content that is still stored and still charged - grouping by
+     * canonical id counts that content exactly once either way.
      */
     @Override
     public long recomputeUploadedBytes(@NonNull final String authUserId) {
@@ -537,7 +549,12 @@ public final class CloudUserService implements ICloudUserService {
 
         final long total = this.ownedFileOwnershipsIncludingDeleted(authUserId).stream()
                 .filter(StoredFileOwnership::hasMetadata)
-                .mapToLong(StoredFileOwnership::getSizeBytes)
+                .collect(Collectors.toMap(
+                        StoredFileOwnership::resolvedDedupCanonicalFileId,
+                        StoredFileOwnership::getSizeBytes,
+                        (firstSize, duplicateSize) -> firstSize))
+                .values().stream()
+                .mapToLong(Long::longValue)
                 .sum();
 
         final ICloudUser existing = cloudUser.get();

@@ -442,7 +442,7 @@ code:
 | `dispatch` | `exec`, `sudo`, `d` | Run a system-level command through the terminal |
 | `statistics` | `stats` | Basic counts (accounts, files, uploaded bytes) — computed from row metadata only, never by fetching file content. One caveat: the first run against a corpus migrated to S3 before 2026-09-10 resolves each still-sizeless row's content once and backfills its size onto the row, so that run is slow and every later one fast |
 | `cloudUser list` / `info <email>` / `reset <email>` / `delete <email>` / `limit <email> <bytes> <unit>` (unit: `B`/`KB`/`MB`/`GB`) | `cu`, `user` | Inspect/manage one or every account |
-| `recomputeStorage <email>` / `recomputeStorage all` | `recompute` | Recompute an account's uploaded-bytes total from its actual files |
+| `recomputeStorage <email>` / `recomputeStorage all` | `recompute` | Recompute an account's uploaded-bytes total from its actual files — physical, dedup-aware: each distinct content is counted once no matter how many alias copies point at it, matching what upload/delete accounting would have produced |
 | `admin grant <email>` / `admin revoke <email>` | `isAdmin` | The only writer of the admin flag anywhere in this codebase |
 | `auditLog` / `auditLog all` / `auditLog <email>` | `audit`, `log` | Browse the persisted security-audit trail |
 | `migrateToS3` | `migrateS3` | Move every not-yet-S3-backed file's content onto the configured bucket (dedup aliases own no content and are skipped, reported in their own counter) |

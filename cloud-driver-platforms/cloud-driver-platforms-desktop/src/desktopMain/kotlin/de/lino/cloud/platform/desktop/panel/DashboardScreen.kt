@@ -136,7 +136,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     FilesAndFoldersStatCard(stats.folderCount, stats.fileCount, Modifier.weight(1f))
-                    StatCard(Icons.Filled.Storage, CloudColors.Indigo, "Used storage", formatBytes(stats.totalBytes), Modifier.weight(1f))
+                    StatCard(Icons.Filled.Storage, CloudColors.Indigo, "Total file size", formatBytes(stats.totalBytes), Modifier.weight(1f))
                     StatCard(Icons.Filled.Delete, CloudColors.Gray, "Trash", formatBytes(stats.trashBytes), Modifier.weight(1f))
                     StatCard(Icons.Filled.FolderShared, CloudColors.Purple, "Shared files", stats.sharedFileCount.toString(), Modifier.weight(1f))
                 }
@@ -419,6 +419,14 @@ private fun StatCard(icon: ImageVector, tileColor: Color, label: String, value: 
  * [SidebarStorageSummary] already shows in miniature - this is the full-size version, with a
  * breakdown [Sidebar] has no room for. Renders a loading notice until both [stats] and
  * [AppViewModel.currentUserUploadedBytes]/[AppViewModel.currentUserMaxBytesToUpload] are available.
+ *
+ * The headline and the legend deliberately come from different accounting conventions: the
+ * headline's `currentUserUploadedBytes` is the server's *physical*, dedup-aware quota counter
+ * (an upload whose content the account already owns is aliased, stored once, and never charged -
+ * see `CloudUserService#uploadFile` server-side), while the legend sums each listed file's
+ * *logical* size, duplicates counted per copy (see [AccountStats.totalBytes]). Whenever the two
+ * differ, the card names the gap as deduplication savings rather than showing two silently
+ * disagreeing numbers.
  */
 @Composable
 private fun StorageOverviewCard(viewModel: AppViewModel, stats: AccountStats?) {
@@ -465,6 +473,18 @@ private fun StorageOverviewCard(viewModel: AppViewModel, stats: AccountStats?) {
                         MaterialTheme.colorScheme.outline,
                         "Free",
                         formatBytes((max - uploaded).coerceAtLeast(0)),
+                    )
+                }
+                // The legend sums logical file sizes while the "used of total" headline is the
+                // physical, dedup-aware quota counter - when they differ, name the gap instead of
+                // leaving two silently disagreeing numbers on one card.
+                val dedupSavedBytes = (stats.totalBytes + stats.trashBytes - uploaded).coerceAtLeast(0)
+                if (dedupSavedBytes > 0) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Duplicate files are stored once - ${formatBytes(dedupSavedBytes)} saved by deduplication",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             } else {

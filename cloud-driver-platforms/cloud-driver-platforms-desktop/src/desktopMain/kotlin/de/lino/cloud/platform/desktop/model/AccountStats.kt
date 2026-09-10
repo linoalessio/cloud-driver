@@ -21,6 +21,12 @@ import java.util.concurrent.atomic.AtomicLong
  * fixed 2026-09-03, this field used to hold that count instead, the wrong direction entirely). Not
  * a subset of [fileCount]/[totalBytes] - a shared file is still counted there too, since it's still
  * owned by this account.
+ *
+ * [totalBytes] is *logical* size - every listed file's `sizeBytes()` summed, duplicates counted
+ * once per copy - and can therefore exceed the account's `currentUploadedBytes`, which is the
+ * server's *physical*, dedup-aware quota counter (a duplicate upload becomes an alias, stored
+ * once and never charged). The two are equal only for an account with no dedup aliases; the
+ * Dashboard's storage card surfaces the difference as deduplication savings.
  */
 data class AccountStats(
     val fileCount: Int,

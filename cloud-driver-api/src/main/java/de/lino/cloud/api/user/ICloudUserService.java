@@ -183,7 +183,12 @@ public interface ICloudUserService {
      * currently-tracked {@link de.lino.cloud.api.file.StoredFile}'s recorded size (including
      * files currently in the trash, which still occupy s3storage until a purge job removes them -
      * see {@code CloudUserService#deleteFile}'s Javadoc for why trashing alone never decrements
-     * this total), then persists the result as a direct overwrite - unlike {@link
+     * this total), counting each distinct content exactly once regardless of how many
+     * deduplication aliases point at it - the counter is <em>physical</em> storage, the same
+     * dedup-aware convention {@code uploadFile}'s charge-skip for aliases and {@code
+     * hardDeleteFile}'s decrement-on-actual-free already implement, so this repair converges on
+     * the value the incremental accounting would have produced - then persists the result as a
+     * direct overwrite - unlike {@link
      * #updateCloudUserBytesUsage(String, long)}, which only ever applies a relative delta. A
      * row written before per-row size metadata was captured (see {@code
      * StoredFileOwnership#hasMetadata()}) is skipped, the same limitation {@code
