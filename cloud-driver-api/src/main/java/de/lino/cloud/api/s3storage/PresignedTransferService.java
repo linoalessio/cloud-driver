@@ -14,13 +14,16 @@ import java.time.Duration;
  * {@link ObjectStorageService} implementation could support it (a hypothetical local-disk one,
  * for instance).
  *
- * <p>Unlike {@link ObjectStorageService}, a file transferred this way is <b>not</b> encrypted by
- * this application's own {@code EnvelopeEncryptionService} - the whole point is that content
- * never reaches this server, so there is nothing here to encrypt. Confidentiality at rest instead
- * comes from the object store's own server-side encryption (see {@code S3PresignedTransferService}'s
- * own Javadoc for exactly which mode) - a deliberate, explicit deviation from this codebase's
- * documented app-controlled DEK/KEK guarantee, scoped
- * only to files that took this specific path.
+ * <p>Unlike {@link ObjectStorageService}, a file transferred this way is not encrypted by this
+ * server's own {@code EnvelopeEncryptionService} - content never reaches this server, so there is
+ * nothing here to encrypt. The app-controlled DEK/KEK guarantee still holds, though: the
+ * <b>client</b> encrypts before its {@code PUT} (and decrypts after its {@code GET}) under a
+ * per-file content key the server issues and recovers via {@link ContentKeyService}, producing an
+ * object byte-identical in layout to a server-encrypted one. This interface itself stays entirely
+ * encryption-agnostic - it signs URLs for whatever byte length it is given; pairing a signed URL
+ * with key material is the caller's ({@code CloudUserService}'s) job. The object store's own
+ * server-side encryption remains enabled underneath as defense-in-depth (see {@code
+ * S3PresignedTransferService}'s Javadoc for exactly which mode).
  */
 public interface PresignedTransferService {
 

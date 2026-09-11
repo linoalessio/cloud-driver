@@ -30,10 +30,13 @@ import java.util.Map;
  * S3ObjectStorageService}'s {@code S3TransferManager} - no bytes move through this process at all
  * for either operation.
  *
- * <p><strong>Encryption: SSE-S3 (AES256), not this project's own AES-256-GCM/DEK-KEK scheme.</strong>
+ * <p><strong>Encryption: client-side chunked AEAD first, SSE-S3 (AES256) as defense-in-depth.</strong>
  * A file uploaded through this path never reaches this server, so there is no plaintext here for
- * {@code EnvelopeEncryptionService} to encrypt - confidentiality at rest instead comes from S3's
- * own server-side encryption, applied transparently by AWS. {@link #presignUpload} signs the
+ * {@code EnvelopeEncryptionService} to encrypt - instead the client itself encrypts under a
+ * per-file key issued through {@link de.lino.cloud.api.s3storage.ContentKeyService} (same
+ * DEK/KEK scheme, same stored layout as a server-encrypted object), so what crosses these
+ * presigned URLs is ciphertext. S3's own server-side encryption stays enabled on top of that,
+ * applied transparently by AWS. {@link #presignUpload} signs the
  * upload with {@code x-amz-server-side-encryption: AES256} as part of the request (returned in
  * {@link PresignedUpload#requiredHeaders()} - the client's actual {@code PUT} must replay it
  * exactly, or the signature no longer matches and S3 rejects the request); {@link #presignDownload}

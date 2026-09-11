@@ -164,6 +164,25 @@ Available when the webhooks extension is running (`503` otherwise).
 Clients fall back to the ordinary upload/download routes automatically if this isn't configured on
 a given deployment (surfaced as a `503` response).
 
+Content transferred this way is still encrypted under the app's own DEK/KEK scheme — by the
+client. Both begin responses carry an `encryption` object alongside the URL:
+
+- `POST /files/upload-url` returns `encryption` with `contentKeyBase64` (the raw per-file
+  content key, issued fresh by the server and wrapped under the KMS-held KEK before it's ever
+  returned), `headerBase64` (the streaming header the client writes verbatim at offset 0),
+  `associatedDataPrefix`, `chunkSizeBytes`, and `objectLengthBytes` — the exact ciphertext
+  length the declared plaintext size must produce. The client chunk-encrypts locally (same
+  v2 streaming AES-GCM layout the server writes) and `PUT`s ciphertext only.
+- `POST /files/{id}/complete-upload` verifies the stored object's real length equals
+  `objectLengthBytes` exactly, rejecting and deleting the object otherwise. `checksumSha256`
+  in its body is always computed over the *plaintext*.
+- `GET /files/{id}/download-url` returns `encryption` with `contentKeyBase64` (the recovered
+  raw key), `associatedDataPrefix`, and `headerLengthBytes` (leading bytes to skip); the client
+  fetches ciphertext directly and decrypts locally.
+
+`encryption` is `null` only for legacy objects uploaded before client-side encryption existed
+(on download) — clients must treat that as "use the fetched bytes as-is."
+
 ## Observability
 
 | Route | Method | Purpose | Runs on |
