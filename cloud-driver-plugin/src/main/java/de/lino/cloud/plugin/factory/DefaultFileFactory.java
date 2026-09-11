@@ -23,6 +23,9 @@ import de.lino.cloud.plugin.s3storage.StoredFileContentChannel;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.function.Consumer;
 
 import java.util.ArrayList;
@@ -207,9 +210,10 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * If S3-backed s3storage is configured ({@link #objectStorageService} non-{@code null}),
-     * encrypts {@code file}'s raw content bytes ({@link StoredFile#rawStorableBytes()}) via {@link
-     * #contentChannel}, writes the result to {@link #objectStorageService} under {@code
-     * file.fileId()}, and returns a metadata-only copy ({@link
+     * chunk-encrypts {@code file}'s raw content bytes ({@link StoredFile#rawStorableBytes()}) via
+     * {@link StoredFileContentChannel#sendStream}, streams the result to {@link
+     * #objectStorageService} under {@code file.fileId()} (the ciphertext is never held in memory
+     * as one array), and returns a metadata-only copy ({@link
      * StoredFile#withObjectStorageKey(String)}) ready for {@link DataFactory#register} - otherwise
      * returns {@code file} itself unchanged.
      *
@@ -238,9 +242,14 @@ public final class DefaultFileFactory extends FileFactory {
         if (this.objectStorageService == null) {
             return file;
         }
+        // Streamed, not one-shot: sendStream chunk-encrypts on the fly, so the ciphertext is
+        // never materialized as a second full-size array next to rawBytes - see
+        // StoredFileContentChannel's Javadoc on the two coexisting stored layouts.
         final byte[] rawBytes = file.rawStorableBytes();
-        final byte[] encrypted = this.contentChannel.send(file.fileId(), rawBytes);
-        this.objectStorageService.putObject(file.fileId(), encrypted);
+        final StoredFileContentChannel.StreamingPayload payload = this.contentChannel.sendStream(
+                file.fileId(), new ByteArrayInputStream(rawBytes), rawBytes.length
+        );
+        this.objectStorageService.putObject(file.fileId(), payload.content(), payload.contentLength());
         return file.withObjectStorageKey(file.fileId());
     }
 
@@ -466,9 +475,10 @@ public final class DefaultFileFactory extends FileFactory {
 
     /**
      * Resolves {@code file}'s content from {@link #objectStorageService} if it is {@link
-     * StoredFile#isS3Backed()}, otherwise returns it unchanged - for each such file, fetches via
-     * {@code objectStorageService.getObject(...)} and attaches the result via
-     * {@code withResolvedContent} before {@code verifyIntegrity} runs.
+     * StoredFile#isS3Backed()}, otherwise returns it unchanged - for each such file, streams via
+     * {@code objectStorageService.getObjectStream(...)} through {@link
+     * StoredFileContentChannel#receiveFully} (decrypting chunk by chunk, either stored layout)
+     * and attaches the result via {@code withResolvedContent} before {@code verifyIntegrity} runs.
      *
      * <p>Branches on {@link StoredFile#isDirectTransfer()}: a direct-transfer file's object is
      * already plaintext (uploaded raw by the client itself, decrypted transparently by S3's own
@@ -498,8 +508,16 @@ public final class DefaultFileFactory extends FileFactory {
             final byte[] plaintext = this.objectStorageService.getObject(file.objectStorageKey());
             return file.withResolvedContent(plaintext);
         }
-        final byte[] storedBytes = this.objectStorageService.getObject(file.objectStorageKey());
-        final byte[] rawBytes = this.contentChannel.receive(file.fileId(), storedBytes);
+        // Streamed, not getObject: receiveFully decrypts chunk by chunk straight off the S3
+        // stream, so only the plaintext is ever materialized - never the full ciphertext too.
+        final byte[] rawBytes;
+        try (InputStream storedContent = this.objectStorageService.getObjectStream(file.objectStorageKey())) {
+            rawBytes = this.contentChannel.receiveFully(file.fileId(), storedContent);
+        } catch (final IOException e) {
+            throw new ObjectStorageException(
+                    "@DefaultFileFactory: failed reading object s3storage content for file '" + file.fileId() + "'", e
+            );
+        }
         return file.withResolvedContent(file.decompressIfNeeded(rawBytes));
     }
 

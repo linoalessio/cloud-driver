@@ -98,10 +98,11 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
   shape: a handful of abstract synchronous primitives a concrete class must implement, plus every
   async variant implemented once, generically, on the abstract class itself. Adding a new facade
   means implementing the primitives; the async surface comes for free.
-- **A layered security stack.** Raw AEAD → DEK/KEK envelope encryption → hashing/password →
-  secret redaction → entity binding (ties an entity's type and primary key into the encryption's
-  authenticated data) → the one class that actually touches the database. Each layer is
-  independently replaceable.
+- **A layered security stack.** Raw AEAD (one-shot for in-memory payloads, chunked streaming for
+  file content of any size — STREAM-style AES-GCM, O(chunk size) memory) → DEK/KEK envelope
+  encryption → hashing/password → secret redaction → entity binding (ties an entity's type and
+  primary key into the encryption's authenticated data) → the one class that actually touches the
+  database. Each layer is independently replaceable.
 - **Extensions are host-agnostic plugins, not compiled-in features.** A jar dropped into the
   configured extensions folder is picked up purely by declaring a concrete extension class and
   shipping a small manifest file — no compile-time dependency on `cloud-driver-bootstrap` required.

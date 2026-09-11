@@ -8,6 +8,7 @@
 | Cipher | AES-256-GCM, a fresh random nonce per call, authentication tag always verified — a failed check throws rather than returning tampered plaintext |
 | Key structure | DEK/KEK envelope encryption with rotation: a fresh data-encryption key is generated per payload and wrapped under the currently active key-encryption key |
 | Type/identity binding | An entity's type name and primary key are bound into the encryption's authenticated data, so a swapped ciphertext of the same size can't silently decrypt as the wrong record |
+| S3-backed file content | Same envelope scheme, applied to the file's content bytes before they leave the process; the file's id is bound into the authenticated data. Large content is chunk-encrypted as a stream (STREAM-style chunked AES-GCM: per-chunk nonce = random base + counter, chunk index and final-chunk flag authenticated, truncation fails closed), so memory use is O(chunk size), not O(file size). Objects written before the streaming layout existed remain readable — both layouts carry a version tag and are dispatched on read |
 
 ```mermaid
 flowchart LR
@@ -82,6 +83,26 @@ instance:
 | Reverse-proxy IP spoofing | Rate-limit identity is only ever read from a forwarded-for header when explicitly enabled for a confirmed single-trusted-proxy deployment; otherwise the raw connection address is used |
 | Metrics endpoint | Loopback-only bind by default, unauthenticated by design — widen the bind host only deliberately, behind a firewall or reverse-proxy allowlist |
 | Oversized uploads | A per-account upload quota and a hard request-size ceiling, both enforced before an oversized payload is fully read into memory |
+
+## Transport security (TLS)
+
+Encryption in transit is terminated **outside** the Java process, at a reverse proxy — the
+process itself only ever speaks plain HTTP/WebSocket on its bind address:
+
+- In the reference deployment (see `shell/provision-root-server.sh`), **Caddy terminates TLS**
+  for the API domain and reverse-proxies to Javalin at `127.0.0.1:8080`. Caddy provisions and
+  renews certificates itself (ACME/Let's Encrypt); no certificate material ever touches the Java
+  process or its configuration.
+- The REST server is expected to bind loopback only (`rest-server-bind-host`: `127.0.0.1`, as
+  the provisioning script writes) so it is reachable exclusively through the proxy — the same
+  "loopback-only by default, widen deliberately" convention the metrics endpoint documents above.
+  ClamAV and Redis are likewise loopback-bound; PostgreSQL is co-located.
+- An operator who widens the bind host without putting a TLS-terminating proxy in front has a
+  plaintext-HTTP deployment: credentials, JWTs, and file content would cross the network
+  unencrypted. Don't — nothing in the application layer compensates for a missing TLS hop.
+- The forwarded-for/rate-limit interplay for such a proxy is covered in "Network-facing
+  hardening" above: forwarded-header trust is opt-in and only correct behind exactly one trusted
+  proxy.
 
 ## What "deleted" actually means
 
