@@ -116,13 +116,29 @@ public struct BeginUploadUrlRequest: Encodable {
     }
 }
 
+/// The `encryption` object nested in `BeginUploadUrlResponse` - the per-file content key and
+/// parameters the client **must** encrypt with before its `PUT` (see `ChunkedContentCipher`):
+/// write `headerBase64`'s bytes verbatim first, then chunk-encrypt under `contentKeyBase64`'s
+/// key with `associatedDataPrefix`/`chunkSizeBytes`; the finished file is exactly
+/// `objectLengthBytes` bytes, which the server verifies at completion.
+public struct UploadEncryptionInfo: Decodable {
+    public let contentKeyBase64: String
+    public let headerBase64: String
+    public let associatedDataPrefix: String
+    public let chunkSizeBytes: Int
+    public let objectLengthBytes: Int64
+}
+
 /// Response from `POST /files/upload-url` - `requiredHeaders` must be replayed exactly on this
 /// app's own `PUT` to `uploadUrl`, or the object store rejects the request's signature.
+/// `encryption` is `nil` only on a server without client-side presigned encryption - then the
+/// file is uploaded plaintext (legacy behavior).
 public struct BeginUploadUrlResponse: Decodable {
     public let fileId: String
     public let uploadUrl: String
     public let requiredHeaders: [String: String]
     public let expiresAtEpochMillis: Int64
+    public let encryption: UploadEncryptionInfo?
 }
 
 /// Body for `POST /files/{id}/complete-upload` - the second step of a presigned upload. No
@@ -139,10 +155,22 @@ public struct CompleteUploadRequest: Encodable {
     }
 }
 
-/// Response from `GET /files/{id}/download-url` - this app `GET`s `downloadUrl` directly, bypassing the server.
+/// The `encryption` object nested in `BeginDownloadUrlResponse` - present for a file that was
+/// uploaded client-encrypted: skip the fetched object's first `headerLengthBytes` bytes and
+/// chunk-decrypt the rest under `contentKeyBase64`'s key, verifying `associatedDataPrefix`
+/// (see `ChunkedContentCipher`). `nil` for a legacy plaintext file, usable as-is.
+public struct DownloadEncryptionInfo: Decodable {
+    public let contentKeyBase64: String
+    public let associatedDataPrefix: String
+    public let headerLengthBytes: Int
+}
+
+/// Response from `GET /files/{id}/download-url` - this app `GET`s `downloadUrl` directly,
+/// bypassing the server, then decrypts locally iff `encryption` is present.
 public struct BeginDownloadUrlResponse: Decodable {
     public let downloadUrl: String
     public let expiresAtEpochMillis: Int64
+    public let encryption: DownloadEncryptionInfo?
 }
 
 /// Body for `PUT /folders/{id}` - a full replace of both fields (matching `PUT`'s

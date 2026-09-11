@@ -52,6 +52,9 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.UpdateThemeRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookDeliveryAttemptResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionCreatedResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionSummaryResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.DownloadEncryptionInfo;
+import de.lino.cloud.platform.rest.api.dto.Dtos.UploadEncryptionInfo;
+import de.lino.cloud.platform.rest.crypto.ChunkedContentCipher;
 
 import java.io.Closeable;
 import java.io.FileNotFoundException;
@@ -74,11 +77,16 @@ import java.net.http.HttpResponse.BodySubscriber;
 import java.net.http.HttpResponse.BodySubscribers;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.DigestInputStream;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1014,8 +1022,77 @@ public final class ApiClient implements AutoCloseable {
         }
 
         final BeginUploadUrlResponse begin = this.beginUploadUrl(fileName, sizeBytes, folderId);
-        this.putToPresignedUrl(begin.uploadUrl(), begin.requiredHeaders(), filePath, onBytesTransferred);
+        if (begin.encryption() == null) {
+            // Legacy server without client-side presigned encryption - upload the plaintext as-is.
+            this.putToPresignedUrl(begin.uploadUrl(), begin.requiredHeaders(), filePath, onBytesTransferred);
+        } else {
+            // Encrypt to a temp file first (memory stays O(chunk size), and the PUT needs a
+            // replayable, known-length body), then upload the ciphertext. onBytesTransferred
+            // reports ciphertext bytes - marginally more than the plaintext (~37 bytes/MiB plus
+            // a small header), indistinguishable in any progress bar.
+            final Path encrypted = this.encryptForPresignedUpload(filePath, begin.encryption());
+            try {
+                this.putToPresignedUrl(begin.uploadUrl(), begin.requiredHeaders(), encrypted, onBytesTransferred);
+            } finally {
+                try {
+                    Files.deleteIfExists(encrypted);
+                } catch (final IOException ignored) {
+                    // temp-file cleanup only - nothing actionable
+                }
+            }
+        }
         return this.completeUpload(begin.fileId(), fileName, checksumSha256, folderId);
+    }
+
+    /**
+     * Encrypts {@code filePath} into a fresh temp file per {@code encryption}'s parameters (see
+     * {@link ChunkedContentCipher#encrypt}) and verifies the result is exactly the ticket's
+     * {@code objectLengthBytes} - the length the server will verify the completed upload against,
+     * so a mismatch is caught here, before any bytes move.
+     *
+     * @param filePath the plaintext file to encrypt
+     * @param encryption the ticket's encryption material
+     * @return the encrypted temp file - the caller deletes it after uploading
+     * @throws ApiException if encrypting fails or the produced length doesn't match the ticket
+     */
+    private Path encryptForPresignedUpload(final Path filePath, final UploadEncryptionInfo encryption) throws ApiException {
+        final Path encrypted;
+        try {
+            encrypted = Files.createTempFile("cloud-driver-upload-", ".enc");
+        } catch (final IOException e) {
+            throw new ApiException(0, "failed to create a temp file for the encrypted upload", e);
+        }
+        try {
+            try (InputStream plaintext = new BufferedInputStream(Files.newInputStream(filePath));
+                 OutputStream sink = new BufferedOutputStream(Files.newOutputStream(encrypted))) {
+                ChunkedContentCipher.encrypt(plaintext, sink,
+                        Base64.getDecoder().decode(encryption.contentKeyBase64()),
+                        Base64.getDecoder().decode(encryption.headerBase64()),
+                        encryption.associatedDataPrefix(), encryption.chunkSizeBytes());
+            }
+            final long producedLength = Files.size(encrypted);
+            if (producedLength != encryption.objectLengthBytes()) {
+                throw new ApiException(0, "encrypted upload is " + producedLength
+                        + " bytes but the ticket requires exactly " + encryption.objectLengthBytes()
+                        + " - did the file change since the upload began?", null);
+            }
+            return encrypted;
+        } catch (final IOException | GeneralSecurityException e) {
+            deleteQuietly(encrypted);
+            throw new ApiException(0, "failed to encrypt file for presigned upload: " + filePath, e);
+        } catch (final ApiException e) {
+            deleteQuietly(encrypted);
+            throw e;
+        }
+    }
+
+    /** Best-effort delete of a temp file - a cleanup failure never masks the real error being thrown. */
+    private static void deleteQuietly(final Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (final IOException ignored) {
+            // temp-file cleanup only - nothing actionable
+        }
     }
 
     /**
@@ -1121,7 +1198,43 @@ public final class ApiClient implements AutoCloseable {
      */
     public Path downloadFileViaPresignedUrl(final String fileId, final Path destination, final LongConsumer onBytesTransferred) throws ApiException {
         final BeginDownloadUrlResponse begin = this.beginDownloadUrl(fileId);
-        final HttpRequest request = HttpRequest.newBuilder(URI.create(begin.downloadUrl())).timeout(TRANSFER_TIMEOUT).GET().build();
+        if (begin.encryption() == null) {
+            // Legacy plaintext file - stream it straight to the destination, as always.
+            return this.fetchPresignedObject(begin.downloadUrl(), destination, onBytesTransferred);
+        }
+        // Client-encrypted file: fetch the ciphertext to a temp file, then decrypt (verifying
+        // every chunk's tag) into the destination. onBytesTransferred reports ciphertext bytes.
+        final Path encrypted;
+        try {
+            encrypted = Files.createTempFile("cloud-driver-download-", ".enc");
+            // The download handler mirrors the plain path's "destination must not already exist"
+            // contract, so hand it a reserved-but-vacated temp path.
+            Files.delete(encrypted);
+        } catch (final IOException e) {
+            throw new ApiException(0, "failed to create a temp file for the encrypted download", e);
+        }
+        try {
+            this.fetchPresignedObject(begin.downloadUrl(), encrypted, onBytesTransferred);
+            final DownloadEncryptionInfo encryption = begin.encryption();
+            try (InputStream stored = new BufferedInputStream(Files.newInputStream(encrypted));
+                 OutputStream plaintext = new BufferedOutputStream(Files.newOutputStream(destination))) {
+                ChunkedContentCipher.decrypt(stored, plaintext,
+                        Base64.getDecoder().decode(encryption.contentKeyBase64()),
+                        encryption.associatedDataPrefix(), encryption.headerLengthBytes());
+            } catch (final IOException | GeneralSecurityException e) {
+                // Never leave a partial/unverified plaintext behind a failed decrypt.
+                deleteQuietly(destination);
+                throw new ApiException(0, "failed to decrypt downloaded file " + fileId + " - download rejected", e);
+            }
+            return destination;
+        } finally {
+            deleteQuietly(encrypted);
+        }
+    }
+
+    /** {@code GET}s a presigned URL's object straight to {@code destination} - the shared raw-fetch step of {@link #downloadFileViaPresignedUrl}. */
+    private Path fetchPresignedObject(final String url, final Path destination, final LongConsumer onBytesTransferred) throws ApiException {
+        final HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(TRANSFER_TIMEOUT).GET().build();
 
         final HttpResponse<Path> response;
         try {

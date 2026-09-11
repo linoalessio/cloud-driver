@@ -277,6 +277,75 @@ public final class EnvelopeEncryptionService {
     }
 
     /**
+     * A {@link #issueStreamingContentKey} result: the raw key material (for a client that will
+     * encrypt content itself) and the streaming header carrying the KEK-wrapped copy of the same
+     * key - byte-identical to what {@link #encryptStream} would write, so an object a client
+     * produces with this key (header verbatim, then chunk frames) is indistinguishable from a
+     * server-encrypted one.
+     *
+     * @param header the serialized streaming header
+     * @param rawKeyMaterial the unwrapped key material - the caller hands it out transiently and drops it
+     */
+    public record IssuedStreamingContentKey(byte[] header, byte[] rawKeyMaterial) {
+    }
+
+    /**
+     * Issues a fresh content-encryption key for a payload this process will <b>not</b> encrypt
+     * itself (a presigned, client-encrypted upload): generates and wraps a DEK exactly like
+     * {@link #encryptStream}, but instead of encrypting anything returns the raw key material
+     * alongside the streaming header. The internal {@link DataEncryptionKey} is destroyed before
+     * returning; only the returned copy remains, owned by the caller.
+     *
+     * @return the issued key
+     * @throws KeyWrapException if wrapping the freshly generated data-encryption key fails
+     */
+    @NotNull
+    public IssuedStreamingContentKey issueStreamingContentKey() throws KeyWrapException {
+        final DataEncryptionKey dataEncryptionKey = this.dataEncryptionKeyGenerator.generate(this.dataEncryptionKeyAlgorithm);
+        final byte[] rawKeyMaterial;
+        final WrappedKey wrappedKey;
+        try {
+            rawKeyMaterial = dataEncryptionKey.asSecretKey().getEncoded();
+            wrappedKey = this.keyEncryptionService.wrap(dataEncryptionKey);
+        } finally {
+            dataEncryptionKey.destroy();
+        }
+        return new IssuedStreamingContentKey(serializeStreamingHeader(wrappedKey, this.dataEncryptionKeyAlgorithm.id()), rawKeyMaterial);
+    }
+
+    /**
+     * Recovers the raw key material from a streaming header previously produced by {@link
+     * #issueStreamingContentKey} (or {@link #encryptStream}), by unwrapping the header's wrapped
+     * DEK via the KMS/HSM - the download-side counterpart of {@link #issueStreamingContentKey},
+     * for handing a client the key to decrypt a fetched object locally.
+     *
+     * @param header the streaming header, exactly as originally serialized
+     * @return the raw key material - the caller hands it out transiently and drops it
+     * @throws NullPointerException if {@code header} is {@code null}
+     * @throws KeyWrapException if unwrapping the header's data-encryption key fails
+     * @throws AuthenticationFailedException if {@code header} is truncated or malformed
+     */
+    @NotNull
+    public byte[] recoverStreamingContentKey(@NotNull final byte[] header) throws KeyWrapException, AuthenticationFailedException {
+        Asserts.requireNonNull(header, "@EnvelopeEncryptionService.recoverStreamingContentKey: header cannot be null");
+        final WrappedKey wrappedKey;
+        try {
+            wrappedKey = deserializeStreamingHeader(new ByteArrayInputStream(header));
+        } catch (final IOException e) {
+            // Reading from an in-memory array only fails by running out of bytes - malformed, not I/O.
+            throw new AuthenticationFailedException(
+                    "@EnvelopeEncryptionService.recoverStreamingContentKey: malformed streaming header", e
+            );
+        }
+        final DataEncryptionKey dataEncryptionKey = this.keyEncryptionService.unwrap(wrappedKey);
+        try {
+            return dataEncryptionKey.asSecretKey().getEncoded();
+        } finally {
+            dataEncryptionKey.destroy();
+        }
+    }
+
+    /**
      * Serializes the streaming header {@link #encryptStream} prepends to the chunk frames -
      * {@value #STREAMING_SCHEMA_VERSION}, then the {@link WrappedKey}'s components and the payload
      * algorithm id, every {@code byte[]}/{@code String} (UTF-8) length-prefixed with a 4-byte

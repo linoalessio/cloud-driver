@@ -134,7 +134,11 @@ public class CloudRestExtension extends Extension {
         // both modules, so it's the natural place to close that gap via constructor injection.
         final AuditLogService auditLogService = new AuditLogServiceImpl(dataFactory, SecretRedactor::redact);
         final PresignedTransferService presignedTransferService = this.resolvePresignedTransferService(this.cloudDriver().getConfiguration());
-        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService, presignedTransferService);
+        // The content-key facet makes every presigned upload client-encrypted under the same
+        // KEK as server-encrypted content (see ContentKeyService) - always present on the
+        // container, only ever exercised when presignedTransferService is configured.
+        final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService,
+                presignedTransferService, this.cloudDriver().getFactoryContainer().getContentKeyService());
         final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService, auditLogService);
 
         // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal

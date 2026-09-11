@@ -42,10 +42,14 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.s3storage.ContentKeyService;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.PresignedDownload;
 import de.lino.cloud.api.s3storage.PresignedTransferService;
 import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
+import de.lino.cloud.api.file.PresignedDownloadEncryption;
+import de.lino.cloud.api.file.PresignedDownloadTicket;
+import de.lino.cloud.api.file.PresignedUploadEncryption;
 import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
@@ -110,9 +114,19 @@ public final class CloudUserService implements ICloudUserService {
     private final PresignedTransferService presignedTransferService;
 
     /**
+     * Issues/recovers the per-file content keys a presigned transfer's client-side encryption
+     * uses (see {@link ContentKeyService}) - {@code null} only in tests/legacy wirings, in which
+     * case {@link #beginPresignedUpload} issues unencrypted (legacy-behavior) tickets. Unused
+     * unless {@link #presignedTransferService} is configured.
+     */
+    @Nullable
+    private final ContentKeyService contentKeyService;
+
+    /**
      * Same as {@link #CloudUserService(DataFactory, FileFactory, AuditLogService,
-     * PresignedTransferService)} with {@link #presignedTransferService} defaulted to {@code null} -
-     * presigned direct-to-client transfer not configured.
+     * PresignedTransferService, ContentKeyService)} with {@link #presignedTransferService}/{@link
+     * #contentKeyService} defaulted to {@code null} - presigned direct-to-client transfer not
+     * configured.
      *
      * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
      * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
@@ -120,7 +134,24 @@ public final class CloudUserService implements ICloudUserService {
      */
     public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
                              @NonNull final AuditLogService auditLogService) {
-        this(dataFactory, fileFactory, auditLogService, null);
+        this(dataFactory, fileFactory, auditLogService, null, null);
+    }
+
+    /**
+     * Same as {@link #CloudUserService(DataFactory, FileFactory, AuditLogService,
+     * PresignedTransferService, ContentKeyService)} with {@link #contentKeyService} defaulted to
+     * {@code null} - presigned tickets stay unencrypted (legacy behavior). Kept for
+     * source-compatibility with pre-client-side-encryption callers.
+     *
+     * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
+     * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
+     * @param presignedTransferService generates presigned URLs for direct-to-client transfer, or
+     *     {@code null} if this deployment hasn't configured one
+     */
+    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
+                             @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService) {
+        this(dataFactory, fileFactory, auditLogService, presignedTransferService, null);
     }
 
     /**
@@ -131,10 +162,14 @@ public final class CloudUserService implements ICloudUserService {
      * @param auditLogService records this class's security-relevant actions to the persisted audit trail
      * @param presignedTransferService generates presigned URLs for direct-to-client transfer, or
      *     {@code null} if this deployment hasn't configured one
+     * @param contentKeyService issues/recovers per-file content keys for presigned client-side
+     *     encryption, or {@code null} to issue unencrypted (legacy-behavior) tickets
      */
     public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
-                             @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService) {
+                             @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService,
+                             @Nullable final ContentKeyService contentKeyService) {
         this.presignedTransferService = presignedTransferService;
+        this.contentKeyService = contentKeyService;
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
         this.auditLogService = auditLogService;
@@ -888,6 +923,32 @@ public final class CloudUserService implements ICloudUserService {
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final String fileId = UUID.randomUUID().toString();
+
+        if (this.contentKeyService != null) {
+            // Client-side encryption (see ContentKeyService): issue a fresh per-file key, and
+            // presign for the exact ciphertext length the declared plaintext size must produce -
+            // the client's upload only completes verifiably if it encrypted exactly sizeBytes.
+            final ContentKeyService.IssuedContentKey issuedKey;
+            try {
+                issuedKey = this.contentKeyService.issueContentKey();
+            } catch (final KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.beginPresignedUpload: failed to issue a content key for '" + fileId + "'", e);
+            }
+            final byte[] header = issuedKey.header();
+            final long objectLengthBytes = this.contentKeyService.objectLength(header.length, sizeBytes);
+            // Mandatory, unlike the unencrypted branch's best-effort tracking below: this row is
+            // the only durable carrier of the wrapped content key between begin and complete -
+            // losing it would leave the client's uploaded ciphertext permanently undecryptable,
+            // so a persist failure must fail the ticket, not merely log.
+            this.trackPendingPresignedUpload(fileId, authUserId, Base64.getEncoder().encodeToString(header), sizeBytes);
+            return new PresignedUploadTicket(
+                    fileId,
+                    presignedTransferService.presignUpload(fileId, objectLengthBytes, PRESIGNED_URL_EXPIRY),
+                    new PresignedUploadEncryption(issuedKey.keyMaterial(), header,
+                            this.contentKeyService.associatedDataPrefix(fileId), this.contentKeyService.chunkSizeBytes(), objectLengthBytes)
+            );
+        }
+
         // Fixed a real gap (2026-09-09): this method used to persist nothing at all, so a client
         // that abandoned the upload after this point (crash, closed app, network failure, or
         // simply never calling completePresignedUpload) left its already-uploaded S3 object
@@ -905,11 +966,44 @@ public final class CloudUserService implements ICloudUserService {
                                                        @NonNull final String checksumSha256Hex, @Nullable final String folderId) {
         final PresignedTransferService presignedTransferService = requirePresignedTransferService();
 
-        final long realSizeBytes;
+        final long confirmedObjectBytes;
         try {
-            realSizeBytes = presignedTransferService.headObjectContentLength(fileId);
+            confirmedObjectBytes = presignedTransferService.headObjectContentLength(fileId);
         } catch (final ObjectStorageException e) {
             throw new IllegalArgumentException("@CloudUserService.completePresignedUpload: no object uploaded yet under '" + fileId + "'", e);
+        }
+
+        // An encrypted ticket's pending row (see beginPresignedUpload) carries the wrapped content
+        // key and the declared plaintext size; its absence means a legacy/unencrypted ticket whose
+        // object is plaintext and whose real size is simply what the store confirmed.
+        final PendingPresignedUpload pendingTicket = this.findPendingPresignedUpload(fileId).orElse(null);
+        final String contentKeyHeaderBase64 = pendingTicket == null ? null : pendingTicket.getContentKeyHeaderBase64();
+
+        final long realSizeBytes;
+        if (contentKeyHeaderBase64 != null) {
+            if (this.contentKeyService == null) {
+                throw new IllegalStateException(
+                        "@CloudUserService.completePresignedUpload: ticket '" + fileId
+                                + "' was issued with a content key but no ContentKeyService is configured");
+            }
+            // The stored object is ciphertext; the recorded/quota-counted size is the plaintext's.
+            // The declared size is only trusted because the object's confirmed length must equal
+            // exactly what that size produces under the issued key's chunked scheme - an
+            // under-declared (or tampered/truncated-in-flight) upload can't match and is deleted.
+            final Long declaredSizeBytes = pendingTicket.getDeclaredSizeBytes();
+            final int headerLengthBytes = Base64.getDecoder().decode(contentKeyHeaderBase64).length;
+            final long expectedObjectBytes = declaredSizeBytes == null
+                    ? -1 : this.contentKeyService.objectLength(headerLengthBytes, declaredSizeBytes);
+            if (declaredSizeBytes == null || confirmedObjectBytes != expectedObjectBytes) {
+                deleteOrphanedPresignedObjectQuietly(presignedTransferService, fileId);
+                throw new IllegalArgumentException(
+                        "@CloudUserService.completePresignedUpload: object under '" + fileId + "' is "
+                                + confirmedObjectBytes + " bytes but the ticket's declared plaintext size ("
+                                + declaredSizeBytes + ") requires exactly " + expectedObjectBytes + " - upload rejected");
+            }
+            realSizeBytes = declaredSizeBytes;
+        } else {
+            realSizeBytes = confirmedObjectBytes;
         }
 
         final ICloudUser cloudUser = this.getOrCreate(authUserId);
@@ -924,7 +1018,8 @@ public final class CloudUserService implements ICloudUserService {
 
         final Instant now = Instant.now();
         final StoredFile storedFile = new StoredFile(
-                fileId, fileName, realSizeBytes, new FileChecksum(HashAlgorithm.SHA_256, checksumSha256Hex), now, now, fileId
+                fileId, fileName, realSizeBytes, new FileChecksum(HashAlgorithm.SHA_256, checksumSha256Hex), now, now, fileId,
+                contentKeyHeaderBase64
         );
 
         try {
@@ -975,7 +1070,7 @@ public final class CloudUserService implements ICloudUserService {
     /** {@inheritDoc} */
     @NonNull
     @Override
-    public PresignedDownload beginPresignedDownload(@NonNull final String authUserId, @NonNull final String storedFileId) {
+    public PresignedDownloadTicket beginPresignedDownload(@NonNull final String authUserId, @NonNull final String storedFileId) {
         final PresignedTransferService presignedTransferService = requirePresignedTransferService();
 
         final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
@@ -992,9 +1087,10 @@ public final class CloudUserService implements ICloudUserService {
             throw new RuntimeException("@CloudUserService.beginPresignedDownload: failed to look up " + storedFileId, e);
         }
 
-        // Only a direct-transfer file's content is plaintext-in-S3 and safe to hand a client a raw
-        // link to - an inline or app-encrypted-S3 file's bytes would be ciphertext the client has
-        // no DEK/KEK access to decrypt, so this reuses the same "not available, fall back" signal
+        // Only a direct-transfer file's object is usable by the client end to end - plaintext for
+        // a legacy one, or decryptable locally with the recovered content key below. A
+        // server-encrypted-S3 or inline file's bytes would be an envelope the client has no way
+        // to unwrap, so this reuses the same "not available, fall back" signal
         // beginPresignedUpload/completePresignedUpload use when nothing is configured at all; the
         // caller doesn't need to distinguish why, only that GET /files/{id}/content is the right
         // route for this particular file instead.
@@ -1002,7 +1098,26 @@ public final class CloudUserService implements ICloudUserService {
             throw new PresignedTransferUnavailableException();
         }
 
-        return presignedTransferService.presignDownload(file.objectStorageKey(), PRESIGNED_URL_EXPIRY);
+        final PresignedDownload download = presignedTransferService.presignDownload(file.objectStorageKey(), PRESIGNED_URL_EXPIRY);
+        if (!file.isContentKeyProtected()) {
+            return new PresignedDownloadTicket(download, null);
+        }
+        if (this.contentKeyService == null) {
+            // The file needs a key this instance can't recover - same fall-back signal as above:
+            // GET /files/{id}/content decrypts server-side and still serves the file correctly.
+            throw new PresignedTransferUnavailableException();
+        }
+        final byte[] header = Base64.getDecoder().decode(file.contentKeyHeaderBase64());
+        final byte[] keyMaterial;
+        try {
+            keyMaterial = this.contentKeyService.recoverContentKey(header);
+        } catch (final KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.beginPresignedDownload: failed to recover the content key for " + storedFileId, e);
+        }
+        return new PresignedDownloadTicket(download, new PresignedDownloadEncryption(
+                keyMaterial, this.contentKeyService.associatedDataPrefix(file.fileId()), header.length
+        ));
     }
 
     /**
@@ -1054,6 +1169,44 @@ public final class CloudUserService implements ICloudUserService {
                     Level.WARNING,
                     "@CloudUserService: failed to persist PendingPresignedUpload tracking row for file '" + fileId + "'", trackingFailed
             );
+        }
+    }
+
+    /**
+     * Persists an <em>encrypted</em> ticket's {@link PendingPresignedUpload} row - unlike {@link
+     * #trackPendingPresignedUploadQuietly}, a failure here is rethrown and fails {@link
+     * #beginPresignedUpload}: this row is the only durable carrier of the ticket's wrapped
+     * content key (and declared size) between begin and complete, so silently losing it would
+     * leave the client's uploaded ciphertext permanently undecryptable.
+     *
+     * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}
+     * @param authUserId the account the ticket was issued to
+     * @param contentKeyHeaderBase64 base64 of the issued content key's streaming header
+     * @param declaredSizeBytes the plaintext size the client declared
+     */
+    private void trackPendingPresignedUpload(final String fileId, final String authUserId,
+                                             final String contentKeyHeaderBase64, final long declaredSizeBytes) {
+        try {
+            this.dataFactory.register(new PendingPresignedUpload(
+                    fileId, authUserId, System.currentTimeMillis(), contentKeyHeaderBase64, declaredSizeBytes));
+        } catch (final DatabaseClientException | KeyWrapException trackingFailed) {
+            throw new RuntimeException(
+                    "@CloudUserService.beginPresignedUpload: failed to persist the ticket's content key for file '"
+                            + fileId + "' - ticket not issued", trackingFailed
+            );
+        }
+    }
+
+    /**
+     * Looks up {@code fileId}'s {@link PendingPresignedUpload} tracking row, if it still exists -
+     * how {@link #completePresignedUpload} recovers the ticket's content key and declared size.
+     */
+    private Optional<PendingPresignedUpload> findPendingPresignedUpload(final String fileId) {
+        try {
+            return this.dataFactory.findById(fileId, PendingPresignedUpload.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.completePresignedUpload: failed to look up the pending ticket for '" + fileId + "'", e);
         }
     }
 

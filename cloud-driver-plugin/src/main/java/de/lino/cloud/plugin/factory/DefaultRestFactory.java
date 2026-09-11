@@ -23,7 +23,10 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.file.FileWithFolder;
+import de.lino.cloud.api.file.PresignedDownloadEncryption;
+import de.lino.cloud.api.file.PresignedUploadEncryption;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
+import de.lino.cloud.api.s3storage.PresignedDownload;
 import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.database.database.notification.RedisCounterService;
@@ -2302,12 +2305,26 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * The {@code {"fileId", "uploadUrl", "requiredHeaders", "expiresAtEpochMillis"}} JSON shape
-     * returned by {@code POST /files/upload-url} - {@code requiredHeaders} must be replayed
-     * exactly by the client's own {@code PUT} to {@code uploadUrl}, or the object store rejects
-     * the signature.
+     * The {@code {"contentKeyBase64", "headerBase64", "associatedDataPrefix", "chunkSizeBytes",
+     * "objectLengthBytes"}} JSON shape nested in {@link BeginUploadResponse#encryption()} - the
+     * client-side encryption material of a {@link
+     * de.lino.cloud.api.file.PresignedUploadEncryption}, byte arrays carried base64-encoded. The
+     * client must encrypt with it before uploading; {@code null} only on a deployment without
+     * client-side presigned encryption, where the upload stays plaintext (legacy behavior).
      */
-    private record BeginUploadResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders, long expiresAtEpochMillis) {
+    private record UploadEncryptionDto(String contentKeyBase64, String headerBase64, String associatedDataPrefix,
+                                        int chunkSizeBytes, long objectLengthBytes) {
+    }
+
+    /**
+     * The {@code {"fileId", "uploadUrl", "requiredHeaders", "expiresAtEpochMillis", "encryption"}}
+     * JSON shape returned by {@code POST /files/upload-url} - {@code requiredHeaders} must be
+     * replayed exactly by the client's own {@code PUT} to {@code uploadUrl}, or the object store
+     * rejects the signature; {@code encryption} (nullable - see {@link UploadEncryptionDto}) is
+     * how the client must encrypt the content first.
+     */
+    private record BeginUploadResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders,
+                                        long expiresAtEpochMillis, UploadEncryptionDto encryption) {
     }
 
     /**
@@ -2340,8 +2357,15 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .handle((ticket, failure) -> {
                     if (failure == null) {
                         final PresignedUpload upload = ticket.upload();
+                        final PresignedUploadEncryption encryption = ticket.encryption();
+                        final UploadEncryptionDto encryptionDto = encryption == null ? null : new UploadEncryptionDto(
+                                Base64.getEncoder().encodeToString(encryption.keyMaterial()),
+                                Base64.getEncoder().encodeToString(encryption.header()),
+                                encryption.associatedDataPrefix(), encryption.chunkSizeBytes(), encryption.objectLengthBytes()
+                        );
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(new BeginUploadResponse(
-                                ticket.fileId(), upload.url().toString(), upload.requiredHeaders(), upload.expiresAt().toEpochMilli()
+                                ticket.fileId(), upload.url().toString(), upload.requiredHeaders(), upload.expiresAt().toEpochMilli(),
+                                encryptionDto
                         )));
                         return null;
                     }
@@ -2373,10 +2397,21 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * The {@code {"downloadUrl", "expiresAtEpochMillis"}} JSON shape returned by {@code GET
-     * /files/{id}/download-url}.
+     * The {@code {"contentKeyBase64", "associatedDataPrefix", "headerLengthBytes"}} JSON shape
+     * nested in {@link BeginDownloadResponse#encryption()} - the client-side decryption material
+     * of a {@link de.lino.cloud.api.file.PresignedDownloadEncryption}, the key carried
+     * base64-encoded. {@code null} for a legacy plaintext direct-transfer file, whose fetched
+     * bytes are usable as-is.
      */
-    private record BeginDownloadResponse(String downloadUrl, long expiresAtEpochMillis) {
+    private record DownloadEncryptionDto(String contentKeyBase64, String associatedDataPrefix, int headerLengthBytes) {
+    }
+
+    /**
+     * The {@code {"downloadUrl", "expiresAtEpochMillis", "encryption"}} JSON shape returned by
+     * {@code GET /files/{id}/download-url} - {@code encryption} (nullable - see {@link
+     * DownloadEncryptionDto}) is how the client decrypts the fetched bytes locally.
+     */
+    private record BeginDownloadResponse(String downloadUrl, long expiresAtEpochMillis, DownloadEncryptionDto encryption) {
     }
 
     /**
@@ -2393,10 +2428,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.beginPresignedDownload(userId, id))
-                .handle((download, failure) -> {
+                .handle((ticket, failure) -> {
                     if (failure == null) {
+                        final PresignedDownload download = ticket.download();
+                        final PresignedDownloadEncryption encryption = ticket.encryption();
+                        final DownloadEncryptionDto encryptionDto = encryption == null ? null : new DownloadEncryptionDto(
+                                Base64.getEncoder().encodeToString(encryption.keyMaterial()),
+                                encryption.associatedDataPrefix(), encryption.headerLengthBytes()
+                        );
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(
-                                new BeginDownloadResponse(download.url().toString(), download.expiresAt().toEpochMilli())
+                                new BeginDownloadResponse(download.url().toString(), download.expiresAt().toEpochMilli(), encryptionDto)
                         ));
                         return null;
                     }
@@ -2570,7 +2611,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 throw new RuntimeException(
                         "@DefaultRestFactory.resolveDownloadableContent: failed to look up metadata for " + storedFileId, e);
             }
-            if (metadata.isPresent() && metadata.get().isS3Backed() && metadata.get().isDirectTransfer()) {
+            // isContentKeyProtected excluded deliberately: such an object is ciphertext in the
+            // standard chunked layout, so streaming it raw would hand the caller undecryptable
+            // bytes - the materializing fall-back below decrypts it server-side instead.
+            if (metadata.isPresent() && metadata.get().isS3Backed() && metadata.get().isDirectTransfer()
+                    && !metadata.get().isContentKeyProtected()) {
                 final StoredFile file = metadata.get();
                 final InputStream stream;
                 try {

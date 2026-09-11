@@ -480,12 +480,14 @@ public final class DefaultFileFactory extends FileFactory {
      * StoredFileContentChannel#receiveFully} (decrypting chunk by chunk, either stored layout)
      * and attaches the result via {@code withResolvedContent} before {@code verifyIntegrity} runs.
      *
-     * <p>Branches on {@link StoredFile#isDirectTransfer()}: a direct-transfer file's object is
-     * already plaintext (uploaded raw by the client itself, decrypted transparently by S3's own
-     * server-side encryption on the way out) and was never DEFLATE-compressed, so it's handed
-     * straight to {@link StoredFile#withResolvedContent(byte[])} with no {@link
-     * #contentChannel}/{@link StoredFile#decompressIfNeeded(byte[])} step - both would be actively
-     * wrong here (there is no app-level envelope to decrypt, and no compression to undo).
+     * <p>Branches on {@link StoredFile#isDirectTransfer()}: a direct-transfer file was never
+     * DEFLATE-compressed, so no {@link StoredFile#decompressIfNeeded(byte[])} step ever applies.
+     * If it {@link StoredFile#isContentKeyProtected()}, the uploading client encrypted the object
+     * itself in the standard chunked streaming layout, so {@link
+     * StoredFileContentChannel#receiveFully} decrypts it like any server-encrypted object; a
+     * legacy (pre-client-side-encryption) direct transfer is plaintext in the store (decrypted
+     * transparently by S3's own server-side encryption on the way out) and is handed straight to
+     * {@link StoredFile#withResolvedContent(byte[])}.
      *
      * @param file the file, as read back from {@link #dataFactory} - possibly S3-backed
      * @return {@code file} itself if not S3-backed, otherwise a hydrated copy with content resolved
@@ -505,6 +507,22 @@ public final class DefaultFileFactory extends FileFactory {
             );
         }
         if (file.isDirectTransfer()) {
+            if (file.isContentKeyProtected()) {
+                // Client-encrypted direct transfer: the object is the standard chunked streaming
+                // layout (the client wrote the server-issued header + chunk frames), so the very
+                // same receive path decrypts it - the one difference from the server-encrypted
+                // branch below is that a direct transfer is never DEFLATE-compressed, so no
+                // decompressIfNeeded step follows.
+                final byte[] plaintext;
+                try (InputStream storedContent = this.objectStorageService.getObjectStream(file.objectStorageKey())) {
+                    plaintext = this.contentChannel.receiveFully(file.fileId(), storedContent);
+                } catch (final IOException e) {
+                    throw new ObjectStorageException(
+                            "@DefaultFileFactory: failed reading object s3storage content for file '" + file.fileId() + "'", e
+                    );
+                }
+                return file.withResolvedContent(plaintext);
+            }
             final byte[] plaintext = this.objectStorageService.getObject(file.objectStorageKey());
             return file.withResolvedContent(plaintext);
         }

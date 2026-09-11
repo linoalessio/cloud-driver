@@ -6,10 +6,12 @@ import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
+import de.lino.cloud.api.s3storage.ContentKeyService;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.plugin.event.database.DefaultFileChangeListenerRegistry;
 import de.lino.cloud.plugin.factory.*;
 import de.lino.cloud.plugin.file.InMemoryPendingUploadCache;
+import de.lino.cloud.plugin.s3storage.StreamingContentKeyService;
 import de.lino.cloud.plugin.security.database.EntityDatabaseClient;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
@@ -96,6 +98,9 @@ public class FactoryContainer implements IFactoryContainer {
     /** Backs {@link #fileFactory}'s optional S3-backed {@code StoredFile} content path, or {@code null} if this deployment hasn't opted into it. */
     private final ObjectStorageService objectStorageService;
 
+    /** Issues/recovers per-file content keys for client-encrypted presigned transfers - built on the same envelope-encryption service as everything else, always present. */
+    private final ContentKeyService contentKeyService;
+
     /** Fan-out point for {@code DatabaseWatchEvent} notifications - see its own Javadoc. Always constructed, regardless of whether {@code cloud-driver-watcher} ever actually runs. */
     private final FileChangeListenerRegistry fileChangeListenerRegistry;
 
@@ -171,6 +176,7 @@ public class FactoryContainer implements IFactoryContainer {
         this.fileFactory = new DefaultFileFactory(
                 this.dataFactory, new InMemoryPendingUploadCache(), connectivityChecker, objectStorageService, envelopeEncryptionService
         );
+        this.contentKeyService = new StreamingContentKeyService(envelopeEncryptionService);
         this.extensionFactory = new DefaultExtensionFactory();
         this.eventFactory = new DefaultEventFactory();
         this.restFactory = new DefaultRestFactory(this.dataFactory);

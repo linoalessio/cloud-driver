@@ -175,6 +175,11 @@ public final class ChunkedAesGcmStreamingService implements StreamingAeadEncrypt
         return this.baseNonceLengthBytes() + frames * perFrameOverhead + plaintextLength;
     }
 
+    /** Plaintext bytes per chunk on the encrypting side - what a compatible external encryptor (e.g. a presigned-upload client) must chunk with for {@link #encryptedLength(long)} to hold. */
+    public int chunkSizeBytes() {
+        return this.chunkSizeBytes;
+    }
+
     /** Length, in bytes, of each stream's random nonce base: the algorithm's nonce length minus the chunk counter's. */
     private int baseNonceLengthBytes() {
         return this.algorithm.nonceLengthBytes() - CHUNK_COUNTER_LENGTH_BYTES;

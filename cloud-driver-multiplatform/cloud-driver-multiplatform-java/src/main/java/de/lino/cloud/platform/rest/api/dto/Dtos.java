@@ -193,23 +193,49 @@ public final class Dtos {
     }
 
     /**
+     * The {@code encryption} object nested in {@link BeginUploadUrlResponse} - the per-file
+     * content key and parameters the client <b>must</b> encrypt with before its {@code PUT} (see
+     * {@code de.lino.cloud.platform.rest.crypto.ChunkedContentCipher}): write {@code
+     * headerBase64}'s bytes verbatim first, then chunk-encrypt under {@code contentKeyBase64}'s
+     * key with {@code associatedDataPrefix}/{@code chunkSizeBytes}; the finished file is exactly
+     * {@code objectLengthBytes} bytes, which the server verifies at completion.
+     */
+    public record UploadEncryptionInfo(String contentKeyBase64, String headerBase64, String associatedDataPrefix,
+                                        int chunkSizeBytes, long objectLengthBytes) {
+    }
+
+    /**
      * Response from {@code POST /files/upload-url} - {@code requiredHeaders} must be replayed
      * exactly on the client's own {@code PUT} to {@code uploadUrl}, or the object store rejects
-     * the request's signature.
+     * the request's signature. {@code encryption} is {@code null} only on a server without
+     * client-side presigned encryption - then the file is uploaded plaintext (legacy behavior).
      */
-    public record BeginUploadUrlResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders, long expiresAtEpochMillis) {
+    public record BeginUploadUrlResponse(String fileId, String uploadUrl, Map<String, String> requiredHeaders,
+                                          long expiresAtEpochMillis, UploadEncryptionInfo encryption) {
     }
 
     /**
      * Body for {@code POST /files/{id}/complete-upload} - the second step of a presigned upload.
      * No {@code sizeBytes} field here: the server always re-reads the real size from the object
-     * store itself, never trusting the client's declared size a second time.
+     * store itself, never trusting the client's declared size a second time. {@code
+     * checksumSha256} is always computed over the <em>plaintext</em>, encrypted upload or not.
      */
     public record CompleteUploadRequest(String fileName, String checksumSha256, String folderId) {
     }
 
-    /** Response from {@code GET /files/{id}/download-url} - the client {@code GET}s {@code downloadUrl} directly, bypassing this server. */
-    public record BeginDownloadUrlResponse(String downloadUrl, long expiresAtEpochMillis) {
+    /**
+     * The {@code encryption} object nested in {@link BeginDownloadUrlResponse} - present for a
+     * file that was uploaded client-encrypted: skip the fetched object's first {@code
+     * headerLengthBytes} bytes and chunk-decrypt the rest under {@code contentKeyBase64}'s key,
+     * verifying {@code associatedDataPrefix} (see {@code
+     * de.lino.cloud.platform.rest.crypto.ChunkedContentCipher}). {@code null} for a legacy
+     * plaintext file, whose fetched bytes are usable as-is.
+     */
+    public record DownloadEncryptionInfo(String contentKeyBase64, String associatedDataPrefix, int headerLengthBytes) {
+    }
+
+    /** Response from {@code GET /files/{id}/download-url} - the client {@code GET}s {@code downloadUrl} directly, bypassing this server, then decrypts locally iff {@code encryption} is present. */
+    public record BeginDownloadUrlResponse(String downloadUrl, long expiresAtEpochMillis, DownloadEncryptionInfo encryption) {
     }
 
     /** Body Javalin's default error responses use ({@code BadRequestResponse} etc. all share this shape). */

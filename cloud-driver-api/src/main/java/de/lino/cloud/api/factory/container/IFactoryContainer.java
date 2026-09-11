@@ -3,6 +3,7 @@ package de.lino.cloud.api.factory.container;
 import de.lino.cloud.api.event.database.FileChangeListenerRegistry;
 import de.lino.cloud.api.factory.*;
 import de.lino.cloud.api.redis.RedisSupport;
+import de.lino.cloud.api.s3storage.ContentKeyService;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import org.jetbrains.annotations.Nullable;
 
@@ -59,6 +60,18 @@ public interface IFactoryContainer {
      */
     @Nullable
     ObjectStorageService getObjectStorageService();
+
+    /**
+     * Returns the content-key facet backing client-side encryption for presigned direct-to-client
+     * transfers (see {@link ContentKeyService}) - built from the same envelope-encryption service
+     * that protects every entity, so a client-encrypted object shares the deployment's one KEK.
+     * Always non-{@code null}: key issuance needs only the encryption stack, which every
+     * deployment has - whether it is ever <em>used</em> depends on a {@code
+     * PresignedTransferService} being configured, which callers gate on separately.
+     *
+     * @return the {@link ContentKeyService}, never {@code null}
+     */
+    ContentKeyService getContentKeyService();
 
     /**
      * Returns the fan-out registry every {@link de.lino.cloud.api.event.database.DatabaseWatchEvent}

@@ -343,7 +343,32 @@ public actor APIClient {
         guard let uploadURL = URL(string: begin.uploadUrl) else {
             throw APIError.network(URLError(.badURL))
         }
-        try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: fileURL, onProgress: onProgress)
+        if let encryption = begin.encryption {
+            // Client-side encryption (see ChunkedContentCipher): encrypt to a temp file first
+            // (memory stays O(chunk size), and the PUT needs a replayable known-length body),
+            // then upload the ciphertext. onProgress reports ciphertext bytes - marginally more
+            // than the plaintext, indistinguishable in any progress bar.
+            guard let keyMaterial = Data(base64Encoded: encryption.contentKeyBase64),
+                  let header = Data(base64Encoded: encryption.headerBase64) else {
+                throw APIError.decoding(URLError(.cannotDecodeContentData))
+            }
+            let encrypted = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cloud-driver-upload-\(UUID().uuidString).enc")
+            defer { try? FileManager.default.removeItem(at: encrypted) }
+            try ChunkedContentCipher.encrypt(source: fileURL, destination: encrypted, keyMaterial: keyMaterial,
+                                             header: header, associatedDataPrefix: encryption.associatedDataPrefix,
+                                             chunkSizeBytes: encryption.chunkSizeBytes)
+            // The server verifies the completed upload against exactly this length - catch a
+            // mismatch here, before any bytes move.
+            let producedLength = ((try FileManager.default.attributesOfItem(atPath: encrypted.path))[.size] as? NSNumber)?.int64Value ?? -1
+            guard producedLength == encryption.objectLengthBytes else {
+                throw APIError.server(status: 0, message: "encrypted upload is \(producedLength) bytes but the ticket requires exactly \(encryption.objectLengthBytes) - did the file change since the upload began?")
+            }
+            try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: encrypted, onProgress: onProgress)
+        } else {
+            // Legacy server without client-side presigned encryption - upload the plaintext as-is.
+            try await putToPresignedURL(url: uploadURL, requiredHeaders: begin.requiredHeaders, fileURL: fileURL, onProgress: onProgress)
+        }
         return try await completeUpload(fileId: begin.fileId, fileName: fileName, checksumSha256: checksumSha256, folderId: folderId)
     }
 
@@ -359,7 +384,29 @@ public actor APIClient {
         guard let downloadURL = URL(string: begin.downloadUrl) else {
             throw APIError.network(URLError(.badURL))
         }
-        try await downloadFromPresignedURL(url: downloadURL, destination: destination, onProgress: onProgress)
+        guard let encryption = begin.encryption else {
+            // Legacy plaintext file - stream it straight to the destination, as always.
+            try await downloadFromPresignedURL(url: downloadURL, destination: destination, onProgress: onProgress)
+            return
+        }
+        // Client-encrypted file: fetch the ciphertext to a temp file, then decrypt (verifying
+        // every chunk's tag) into the destination. onProgress reports ciphertext bytes.
+        guard let keyMaterial = Data(base64Encoded: encryption.contentKeyBase64) else {
+            throw APIError.decoding(URLError(.cannotDecodeContentData))
+        }
+        let encrypted = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-driver-download-\(UUID().uuidString).enc")
+        defer { try? FileManager.default.removeItem(at: encrypted) }
+        try await downloadFromPresignedURL(url: downloadURL, destination: encrypted, onProgress: onProgress)
+        do {
+            try ChunkedContentCipher.decrypt(source: encrypted, destination: destination, keyMaterial: keyMaterial,
+                                             associatedDataPrefix: encryption.associatedDataPrefix,
+                                             headerLengthBytes: encryption.headerLengthBytes)
+        } catch {
+            // Never leave a partial/unverified plaintext behind a failed decrypt.
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
 
     private func beginUploadURL(fileName: String, sizeBytes: Int64, folderId: String?) async throws -> BeginUploadUrlResponse {

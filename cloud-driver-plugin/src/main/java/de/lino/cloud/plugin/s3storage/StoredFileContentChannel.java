@@ -263,6 +263,22 @@ public final class StoredFileContentChannel {
      * appended per chunk by the streaming service itself.
      */
     private static byte[] streamingAssociatedDataPrefix(final String fileId) {
-        return (STREAMING_PROTOCOL_VERSION + ":" + fileId).getBytes(StandardCharsets.UTF_8);
+        return streamingAssociatedDataPrefixString(fileId).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * The associated-data prefix for {@code fileId}'s streaming-layout content, as a string - the
+     * exact value {@link #sendStream}/{@link #receiveStream} bind, exposed so a compatible
+     * external encryptor (a presigned-upload client, via {@code StreamingContentKeyService}) can
+     * bind the very same prefix and produce objects this channel decrypts.
+     *
+     * @param fileId the id of the file the content belongs to
+     * @return the prefix string, {@code "s3-content-v2:<fileId>"}
+     * @throws NullPointerException if {@code fileId} is {@code null}
+     */
+    @NotNull
+    public static String streamingAssociatedDataPrefixString(@NotNull final String fileId) {
+        Asserts.requireNonNull(fileId, "@StoredFileContentChannel.streamingAssociatedDataPrefixString: fileId cannot be null");
+        return STREAMING_PROTOCOL_VERSION + ":" + fileId;
     }
 }

@@ -152,12 +152,14 @@ public final class StoredFile extends Serialized {
      * Whether this file's content was uploaded directly by the client to {@link
      * #objectStorageKey} via a presigned URL (see {@code PresignedTransferService}), rather than
      * through this server or moved there afterward by {@code DefaultFileFactory#upload}. A
-     * direct-transfer file's content is never DEFLATE-compressed and never encrypted by this
-     * application's own {@code EnvelopeEncryptionService} - confidentiality at rest comes from the
-     * object store's own server-side encryption instead (see {@code S3PresignedTransferService}'s
-     * Javadoc) - so {@link #resolveContent()} for such a file, once hydrated via {@link
-     * #withResolvedContent(byte[])}, is exactly the bytes the object store returned, no
-     * decompression step involved (harmless either way, since {@link #contentCompressed} is always
+     * direct-transfer file's content is never DEFLATE-compressed. Whether it is encrypted depends
+     * on {@link #contentKeyHeaderBase64}: when set, the uploading client encrypted the content
+     * itself under a server-issued content key (the stored object is the standard chunked
+     * streaming layout - same DEK/KEK guarantee as every server-encrypted file); when {@code
+     * null} (legacy, pre-client-side-encryption), confidentiality at rest comes from the object
+     * store's own server-side encryption alone (see {@code S3PresignedTransferService}'s Javadoc).
+     * Either way {@link #resolveContent()}, once hydrated via {@link #withResolvedContent(byte[])},
+     * needs no decompression step (harmless either way, since {@link #contentCompressed} is always
      * {@code false} on a direct-transfer instance). Always {@code false} when {@link
      * #objectStorageKey} is {@code null}.
      * -- GETTER --
@@ -170,6 +172,18 @@ public final class StoredFile extends Serialized {
      */
     @Getter
     private final boolean directTransfer;
+
+    /**
+     * For a {@link #directTransfer} file whose content the client encrypted itself before
+     * uploading (see {@code ContentKeyService}): the base64 of the streaming header the client
+     * wrote at offset 0 of the object - carrying the KEK-wrapped copy of the file's
+     * content-encryption key, which {@code beginPresignedDownload} unwraps to hand the raw key to
+     * a downloading client, and which marks the object as the standard chunked streaming layout
+     * for any server-side read. {@code null} on every non-direct-transfer file (a
+     * server-encrypted object carries its own header inside the object itself) and on a legacy
+     * direct-transfer file uploaded plaintext before client-side encryption existed.
+     */
+    private final String contentKeyHeaderBase64;
 
     /**
      * This file's original, uncompressed content size in bytes, recorded so it can be answered
@@ -266,6 +280,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = null;
         this.objectStorageKey = null;
         this.directTransfer = false;
+        this.contentKeyHeaderBase64 = null;
         this.declaredSizeBytes = null;
         this.dedupOfFileId = null;
         this.dedupRefCount = 0;
@@ -291,6 +306,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -328,6 +344,7 @@ public final class StoredFile extends Serialized {
                 objectStorageKey, "@StoredFile: objectStorageKey cannot be null"
         );
         this.directTransfer = false;
+        this.contentKeyHeaderBase64 = null;
         this.declaredSizeBytes = source.sizeBytes();
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -354,6 +371,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -379,6 +397,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -408,6 +427,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -431,6 +451,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = dedupRefCount;
@@ -454,6 +475,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = source.deletedAtEpochMillis;
         this.objectStorageKey = source.objectStorageKey;
         this.directTransfer = source.directTransfer;
+        this.contentKeyHeaderBase64 = source.contentKeyHeaderBase64;
         this.declaredSizeBytes = source.declaredSizeBytes;
         this.dedupOfFileId = source.dedupOfFileId;
         this.dedupRefCount = source.dedupRefCount;
@@ -480,6 +502,28 @@ public final class StoredFile extends Serialized {
      */
     public StoredFile(final String fileId, final String fileName, final long sizeBytes, final FileChecksum checksum,
                        final Instant createdAt, final Instant updatedAt, final String objectStorageKey) {
+        this(fileId, fileName, sizeBytes, checksum, createdAt, updatedAt, objectStorageKey, (String) null);
+    }
+
+    /**
+     * Same as {@link #StoredFile(String, String, long, FileChecksum, Instant, Instant, String)},
+     * for a direct-transfer file whose content the client encrypted itself before uploading -
+     * additionally records {@link #contentKeyHeaderBase64}.
+     *
+     * @param fileId this file's unique id, its {@link #primaryKey()}
+     * @param fileName the original file name; also the source of {@link #contentType()}
+     * @param sizeBytes the file's real plaintext size, as verified against the object store's confirmed ciphertext length
+     * @param checksum the checksum the uploading client itself computed and reported over the plaintext
+     * @param createdAt when this file was first uploaded
+     * @param updatedAt when this file's content was last changed
+     * @param objectStorageKey the key this file's content is stored under in the external object store
+     * @param contentKeyHeaderBase64 base64 of the streaming header carrying the file's wrapped
+     *     content-encryption key, or {@code null} for a plaintext (legacy) direct transfer
+     * @throws NullPointerException if any argument except {@code contentKeyHeaderBase64} is {@code null}
+     */
+    public StoredFile(final String fileId, final String fileName, final long sizeBytes, final FileChecksum checksum,
+                       final Instant createdAt, final Instant updatedAt, final String objectStorageKey,
+                       final String contentKeyHeaderBase64) {
         this.fileId = Asserts.requireNonNull(fileId, "@StoredFile: fileId cannot be null");
         this.fileName = Asserts.requireNonNull(fileName, "@StoredFile: fileName cannot be null");
         this.contentType = normalizeContentType(this.fileName);
@@ -491,6 +535,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = null;
         this.objectStorageKey = Asserts.requireNonNull(objectStorageKey, "@StoredFile: objectStorageKey cannot be null");
         this.directTransfer = true;
+        this.contentKeyHeaderBase64 = contentKeyHeaderBase64;
         this.declaredSizeBytes = sizeBytes;
         this.dedupOfFileId = null;
         this.dedupRefCount = 0;
@@ -544,6 +589,7 @@ public final class StoredFile extends Serialized {
         this.deletedAtEpochMillis = null;
         this.objectStorageKey = null;
         this.directTransfer = false;
+        this.contentKeyHeaderBase64 = null;
         this.declaredSizeBytes = sizeBytes;
         this.dedupOfFileId = dedupOfFileId;
         this.dedupRefCount = 0;
@@ -679,6 +725,21 @@ public final class StoredFile extends Serialized {
     /** The key this file's content is stored under in an external object store, or {@code null} if {@link #isS3Backed()} is {@code false}. */
     public String objectStorageKey() {
         return objectStorageKey;
+    }
+
+    /** Base64 of the streaming header carrying this file's wrapped content-encryption key, or {@code null} if {@link #isContentKeyProtected()} is {@code false} - see {@link #contentKeyHeaderBase64}. */
+    public String contentKeyHeaderBase64() {
+        return contentKeyHeaderBase64;
+    }
+
+    /**
+     * @return {@code true} if this {@link #isDirectTransfer() direct-transfer} file's content was
+     *     encrypted by the uploading client itself under a server-issued content key (the stored
+     *     object is the standard chunked streaming layout, not plaintext) - see {@link
+     *     #contentKeyHeaderBase64}
+     */
+    public boolean isContentKeyProtected() {
+        return contentKeyHeaderBase64 != null;
     }
 
     /** @return {@code true} if this file's content is a per-account deduplication alias of another file's content - see {@link #dedupOfFileId} */

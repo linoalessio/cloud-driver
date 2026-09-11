@@ -7,6 +7,7 @@ import de.lino.cloud.api.intelligence.SemanticSearchResult;
 import de.lino.cloud.api.intelligence.TagSuggestion;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
+import de.lino.cloud.api.file.PresignedDownloadTicket;
 import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.file.PublicFileLinkSummary;
 import de.lino.cloud.api.file.SharePermission;
@@ -237,9 +238,14 @@ public interface ICloudUserService {
      * Begins a presigned, direct-to-client upload: checks {@code authUserId}'s quota against
      * the declared {@code sizeBytes} and that {@code folderId} (if given) is actually owned by
      * {@code authUserId}, then returns a fresh {@link PresignedUploadTicket} the caller uploads its
-     * content to directly, bypassing this server for the data path entirely. <b>Persists nothing</b>
-     * - call {@link #completePresignedUpload} once the upload has actually finished; an abandoned
-     * ticket just leaves an orphaned, unlinked object once its URL expires.
+     * content to directly, bypassing this server for the data path entirely. On a deployment with
+     * a {@code ContentKeyService} the ticket carries {@link PresignedUploadTicket#encryption()}:
+     * a freshly issued per-file content key the client <b>must</b> encrypt with before uploading
+     * (see {@link de.lino.cloud.api.file.PresignedUploadEncryption}) - preserving the app-controlled
+     * DEK/KEK guarantee even though the bytes never pass through this server. Persists only the
+     * pending-upload tracking row - call {@link #completePresignedUpload} once the upload has
+     * actually finished; an abandoned ticket just leaves an orphaned, unlinked object once its
+     * URL expires.
      *
      * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param fileName the file's original name
@@ -258,9 +264,12 @@ public interface ICloudUserService {
      * Confirms a presigned upload begun via {@link #beginPresignedUpload} actually completed,
      * verifies its real size against the object store (not the {@code sizeBytes} originally
      * declared - a client could otherwise under-declare to dodge the quota check in {@link
-     * #beginPresignedUpload}), and persists the resulting {@link StoredFile}/ownership/usage
-     * update - the same effect {@link #uploadFile(String, String, byte[], String)} has, just
-     * without this server ever holding the content itself.
+     * #beginPresignedUpload}; for a client-encrypted upload the object's confirmed length must
+     * equal <em>exactly</em> what the declared plaintext size produces under the issued key's
+     * chunked scheme, or the object is deleted and the completion rejected), and persists the
+     * resulting {@link StoredFile}/ownership/usage update - the same effect {@link
+     * #uploadFile(String, String, byte[], String)} has, just without this server ever holding the
+     * content itself.
      *
      * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - must match the ticket's own {@link #beginPresignedUpload} caller
      * @param fileId the {@link PresignedUploadTicket#fileId()} returned by {@link #beginPresignedUpload}
@@ -279,16 +288,19 @@ public interface ICloudUserService {
     /**
      * Begins a presigned, direct-to-client download of an already-owned (or shared-with-{@code
      * authUserId}) file - the same ownership/share rules {@link #getFile} applies, but without
-     * this server ever fetching the file's content itself.
+     * this server ever fetching the file's content itself. For a client-encrypted file (see
+     * {@link StoredFile#isContentKeyProtected()}) the ticket carries {@link
+     * de.lino.cloud.api.file.PresignedDownloadTicket#encryption()}: the file's raw content key,
+     * recovered via the KMS/HSM, which the client uses to decrypt the fetched ciphertext locally.
      *
      * @param authUserId the requesting user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
      * @param storedFileId the {@link StoredFile#fileId()} to download
-     * @return where to download the file's content directly from
+     * @return where to download the file's content directly from, plus how to decrypt it if needed
      * @throws IllegalArgumentException if {@code storedFileId} isn't owned by, or shared with, {@code authUserId}
      * @throws PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured, or {@code storedFileId} doesn't have its content in that store
      */
     @NotNull
-    PresignedDownload beginPresignedDownload(@NotNull String authUserId, @NotNull String storedFileId);
+    PresignedDownloadTicket beginPresignedDownload(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
      * @param authUserId the {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} whose files to list
