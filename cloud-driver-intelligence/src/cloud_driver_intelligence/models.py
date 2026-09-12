@@ -102,3 +102,11 @@ class HealthResponse(BaseModel):
     #: Whether a multimodal (CLIP) model is loaded, so image *content* is searchable by text.
     imageEmbeddingsAvailable: bool
     indexedDocuments: int
+    #: Text vectors written under a *different* embedding model than the one configured now.
+    #: Non-zero after a model change: those files behave as "not indexed" until the operator
+    #: re-embeds them (``intelligence backfill --content`` on the Java terminal) - without this
+    #: number, a model change silently degrades search with nothing anywhere saying why.
+    staleTextVectors: int
+    #: Image vectors written under a different CLIP model than the one configured now - same
+    #: remediation as ``staleTextVectors``; ``0`` when no CLIP model is loaded at all.
+    staleImageVectors: int

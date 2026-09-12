@@ -30,6 +30,10 @@ class StubEmbeddingModel:
 
     available = True
 
+    #: Plain attribute (the real model exposes a property) so a test can reassign it to simulate
+    #: an operator changing the configured model between indexing and querying.
+    model_id = "stub-model-v1"
+
     @staticmethod
     def _vector(text: str) -> list[float]:
         lowered = text.lower()
@@ -238,6 +242,7 @@ def test_limit_caps_the_result_count(client):
 def test_search_returns_nothing_when_no_embedding_backend_is_available(client, monkeypatch):
     class Unavailable:
         available = False
+        model_id = "unavailable-model"
 
         def encode(self, texts):
             return None
@@ -254,6 +259,7 @@ def test_index_still_succeeds_without_an_embedding_backend(client, monkeypatch):
     """A missing optional extra must not make every upload's index call retry and log SEVERE."""
     class Unavailable:
         available = False
+        model_id = "unavailable-model"
 
         def encode(self, texts):
             return None

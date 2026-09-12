@@ -58,18 +58,30 @@ def _namespaced(kind: str, file_id: str) -> str:
 
 
 class VectorStore(Protocol):
-    """The surface :mod:`.app` needs, satisfied by all three implementations below."""
+    """The surface :mod:`.app` needs, satisfied by all three implementations below.
+
+    **Every vector records the model that produced it** (``model_id``, added 2026-09-12): reads
+    only ever return vectors written under the *same* model id they are queried for, so a vector
+    from a previously configured model behaves like "not indexed" rather than being silently
+    compared in an incompatible vector space - see this service's model-versioning handoff
+    (``architecture/4. INTELLIGENCE MODEL VERSIONING.md``). ``model_id`` is deliberately a
+    required, explicit argument on both ``upsert`` and ``vectors_for`` - a caller must always
+    decide which model's space it is operating in, the same way ``kind`` is never allowed to
+    silently default when it matters.
+    """
 
     persistent: bool
     encrypted: bool
 
-    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], kind: str = KIND_TEXT) -> None: ...
+    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], model_id: str, kind: str = KIND_TEXT) -> None: ...
 
     def delete(self, file_id: str) -> None: ...
 
     def update_owner(self, file_id: str, owner_user_id: str) -> None: ...
 
-    def vectors_for(self, file_ids: Iterable[str], kind: str = KIND_TEXT) -> dict[str, list[float]]: ...
+    def vectors_for(self, file_ids: Iterable[str], model_id: str, kind: str = KIND_TEXT) -> dict[str, list[float]]: ...
+
+    def count_stale(self, model_id: str, kind: str = KIND_TEXT) -> int: ...
 
     def count(self) -> int: ...
 
@@ -86,13 +98,14 @@ class InMemoryVectorStore:
     encrypted = False
 
     def __init__(self) -> None:
-        self._vectors: dict[str, list[float]] = {}
+        #: ``entry_key -> (vector, model_id)`` - the model id travels with every vector.
+        self._vectors: dict[str, tuple[list[float], str]] = {}
         self._owners: dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], kind: str = KIND_TEXT) -> None:
+    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], model_id: str, kind: str = KIND_TEXT) -> None:
         with self._lock:
-            self._vectors[_namespaced(kind, file_id)] = vector
+            self._vectors[_namespaced(kind, file_id)] = (vector, model_id)
             self._owners[file_id] = owner_user_id
 
     def delete(self, file_id: str) -> None:
@@ -106,14 +119,23 @@ class InMemoryVectorStore:
             if any(_namespaced(kind, file_id) in self._vectors for kind in (KIND_TEXT, KIND_IMAGE)):
                 self._owners[file_id] = owner_user_id
 
-    def vectors_for(self, file_ids: Iterable[str], kind: str = KIND_TEXT) -> dict[str, list[float]]:
+    def vectors_for(self, file_ids: Iterable[str], model_id: str, kind: str = KIND_TEXT) -> dict[str, list[float]]:
         with self._lock:
             found = {}
             for file_id in file_ids:
-                vector = self._vectors.get(_namespaced(kind, file_id))
-                if vector is not None:
-                    found[file_id] = vector
+                entry = self._vectors.get(_namespaced(kind, file_id))
+                if entry is not None and entry[1] == model_id:
+                    found[file_id] = entry[0]
             return found
+
+    def count_stale(self, model_id: str, kind: str = KIND_TEXT) -> int:
+        with self._lock:
+            prefix = f"{kind}:"
+            return sum(
+                1
+                for key, (_, stored_model) in self._vectors.items()
+                if key.startswith(prefix) and stored_model != model_id
+            )
 
     def count(self) -> int:
         with self._lock:
@@ -159,11 +181,29 @@ class SqliteVectorStore:
                     file_id       TEXT NOT NULL,
                     kind          TEXT NOT NULL,
                     owner_user_id TEXT NOT NULL,
-                    vector        BLOB NOT NULL
+                    vector        BLOB NOT NULL,
+                    model_id      TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
             connection.execute("CREATE INDEX IF NOT EXISTS vectors_file_id ON vectors (file_id)")
+            # Migration for stores created before model_id existed - SQLite has no portable
+            # "ADD COLUMN IF NOT EXISTS", so check PRAGMA table_info first. Option A (signed off
+            # by Lino, 2026-09-12): legacy rows are backfilled with the *currently configured*
+            # model id - exactly right for a deployment that never changed the model, and no
+            # worse than today for one that already did. Only rows the migration itself just
+            # defaulted to '' are touched, so re-running on a migrated store is a no-op.
+            existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(vectors)").fetchall()}
+            if "model_id" not in existing_columns:
+                connection.execute("ALTER TABLE vectors ADD COLUMN model_id TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                "UPDATE vectors SET model_id = ? WHERE kind = ? AND model_id = ''",
+                (settings.embedding_model, KIND_TEXT),
+            )
+            connection.execute(
+                "UPDATE vectors SET model_id = ? WHERE kind = ? AND model_id = ''",
+                (settings.clip_model, KIND_IMAGE),
+            )
             connection.commit()
             _LOGGER.info("Using encrypted SQLite vector store at %s", database_path)
             return cls(connection, cipher)
@@ -171,13 +211,15 @@ class SqliteVectorStore:
             _LOGGER.exception("Failed to open the encrypted SQLite store at %s", settings.store_path)
             return None
 
-    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], kind: str = KIND_TEXT) -> None:
+    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], model_id: str, kind: str = KIND_TEXT) -> None:
         blob = self._cipher.encrypt(vector)
         with self._lock:
             self._connection.execute(
-                "INSERT INTO vectors (entry_key, file_id, kind, owner_user_id, vector) VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(entry_key) DO UPDATE SET owner_user_id = excluded.owner_user_id, vector = excluded.vector",
-                (_namespaced(kind, file_id), file_id, kind, owner_user_id, blob),
+                "INSERT INTO vectors (entry_key, file_id, kind, owner_user_id, vector, model_id) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(entry_key) DO UPDATE SET owner_user_id = excluded.owner_user_id, "
+                "vector = excluded.vector, model_id = excluded.model_id",
+                (_namespaced(kind, file_id), file_id, kind, owner_user_id, blob, model_id),
             )
             self._connection.commit()
 
@@ -193,7 +235,7 @@ class SqliteVectorStore:
             )
             self._connection.commit()
 
-    def vectors_for(self, file_ids: Iterable[str], kind: str = KIND_TEXT) -> dict[str, list[float]]:
+    def vectors_for(self, file_ids: Iterable[str], model_id: str, kind: str = KIND_TEXT) -> dict[str, list[float]]:
         ids = list(file_ids)
         if not ids:
             return {}
@@ -205,8 +247,8 @@ class SqliteVectorStore:
                 chunk = ids[start : start + 500]
                 placeholders = ",".join("?" * len(chunk))
                 rows = self._connection.execute(
-                    f"SELECT file_id, vector FROM vectors WHERE kind = ? AND file_id IN ({placeholders})",  # noqa: S608 - placeholders only
-                    (kind, *chunk),
+                    f"SELECT file_id, vector FROM vectors WHERE kind = ? AND model_id = ? AND file_id IN ({placeholders})",  # noqa: S608 - placeholders only
+                    (kind, model_id, *chunk),
                 ).fetchall()
                 for file_id, blob in rows:
                     try:
@@ -217,6 +259,14 @@ class SqliteVectorStore:
                         # it takes part in.
                         _LOGGER.warning("Undecryptable vector for %s - skipping it", file_id)
         return found
+
+    def count_stale(self, model_id: str, kind: str = KIND_TEXT) -> int:
+        with self._lock:
+            return int(
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM vectors WHERE kind = ? AND model_id != ?", (kind, model_id)
+                ).fetchone()[0]
+            )
 
     def count(self) -> int:
         with self._lock:
@@ -260,11 +310,23 @@ class ChromaVectorStore:
             _LOGGER.exception("Failed to open the Chroma store at %s", settings.store_path)
             return None
 
-    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], kind: str = KIND_TEXT) -> None:
+    @staticmethod
+    def _legacy_default_model_id(kind: str) -> str:
+        """The model id a pre-``modelId`` entry is assumed to carry (Option A, signed off).
+
+        Unlike SQLite's one-shot ``UPDATE`` backfill, Chroma has no cheap ALTER-TABLE-style
+        migration - rewriting every row just to stamp a metadata key is a far heavier operation -
+        so the Option-A assumption is applied *at read time* instead: a missing ``modelId`` key
+        is treated as matching the currently configured model for its modality. Observable
+        behavior is identical to the SQLite backfill.
+        """
+        return settings.embedding_model if kind == KIND_TEXT else settings.clip_model
+
+    def upsert(self, file_id: str, owner_user_id: str, vector: list[float], model_id: str, kind: str = KIND_TEXT) -> None:
         self._collection.upsert(
             ids=[_namespaced(kind, file_id)],
             embeddings=[vector],
-            metadatas=[{"ownerUserId": owner_user_id, "fileId": file_id, "kind": kind}],
+            metadatas=[{"ownerUserId": owner_user_id, "fileId": file_id, "kind": kind, "modelId": model_id}],
         )
 
     def delete(self, file_id: str) -> None:
@@ -273,33 +335,52 @@ class ChromaVectorStore:
     def update_owner(self, file_id: str, owner_user_id: str) -> None:
         # Chroma has no partial-metadata update that leaves the embedding alone, so each existing
         # entry is re-upserted with its own vector read back first. Cheap: at most two entries.
+        # modelId is read back alongside the embedding and carried forward - re-upserting without
+        # it would silently reset every owner-updated entry to "legacy, no recorded model".
         for kind in (KIND_TEXT, KIND_IMAGE):
             entry_key = _namespaced(kind, file_id)
-            result = self._collection.get(ids=[entry_key], include=["embeddings"])
+            result = self._collection.get(ids=[entry_key], include=["embeddings", "metadatas"])
             embeddings = result.get("embeddings")
             if not result.get("ids") or embeddings is None or len(embeddings) == 0:
                 continue
+            metadatas = result.get("metadatas") or [{}]
+            model_id = (metadatas[0] or {}).get("modelId", self._legacy_default_model_id(kind))
             self._collection.upsert(
                 ids=[entry_key],
                 embeddings=[list(map(float, embeddings[0]))],
-                metadatas=[{"ownerUserId": owner_user_id, "fileId": file_id, "kind": kind}],
+                metadatas=[{"ownerUserId": owner_user_id, "fileId": file_id, "kind": kind, "modelId": model_id}],
             )
 
-    def vectors_for(self, file_ids: Iterable[str], kind: str = KIND_TEXT) -> dict[str, list[float]]:
+    def vectors_for(self, file_ids: Iterable[str], model_id: str, kind: str = KIND_TEXT) -> dict[str, list[float]]:
         ids = list(file_ids)
         if not ids:
             return {}
-        result = self._collection.get(ids=[_namespaced(kind, file_id) for file_id in ids], include=["embeddings"])
+        result = self._collection.get(
+            ids=[_namespaced(kind, file_id) for file_id in ids], include=["embeddings", "metadatas"]
+        )
         found_keys = result.get("ids") or []
         embeddings = result.get("embeddings")
         if embeddings is None:
             return {}
+        metadatas = result.get("metadatas") or [{}] * len(found_keys)
         prefix = f"{kind}:"
         return {
             entry_key[len(prefix) :]: list(map(float, vector))
-            for entry_key, vector in zip(found_keys, embeddings)
-            if vector is not None and entry_key.startswith(prefix)
+            for entry_key, vector, metadata in zip(found_keys, embeddings, metadatas)
+            if vector is not None
+            and entry_key.startswith(prefix)
+            and (metadata or {}).get("modelId", self._legacy_default_model_id(kind)) == model_id
         }
+
+    def count_stale(self, model_id: str, kind: str = KIND_TEXT) -> int:
+        prefix = f"{kind}:"
+        result = self._collection.get(where={"kind": kind}, include=["metadatas"])
+        return sum(
+            1
+            for key, metadata in zip(result.get("ids") or [], result.get("metadatas") or [])
+            if key.startswith(prefix)
+            and (metadata or {}).get("modelId", self._legacy_default_model_id(kind)) != model_id
+        )
 
     def count(self) -> int:
         return self._collection.count()

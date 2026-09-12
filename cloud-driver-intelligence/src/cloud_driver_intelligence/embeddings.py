@@ -172,6 +172,16 @@ class EmbeddingModel:
         self._load_attempted = False
 
     @property
+    def model_id(self) -> str:
+        """The configured model id - stamped onto every vector this model produces.
+
+        Every ``VectorStore.upsert``/``vectors_for`` call carries it, so vectors from one model
+        are never compared against a query embedded by another - two models' vector spaces are
+        not compatible, and a cross-model dot product is meaningless noise, not a low score.
+        """
+        return self._model_id
+
+    @property
     def available(self) -> bool:
         """Whether embedding can currently be performed (loading the model if not yet attempted)."""
         self._ensure_loaded()

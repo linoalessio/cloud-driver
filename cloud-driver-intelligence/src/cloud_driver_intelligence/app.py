@@ -72,6 +72,8 @@ async def health() -> HealthResponse:
         encryptedStore=store.encrypted,
         imageEmbeddingsAvailable=clip_model is not None and clip_model.available,
         indexedDocuments=store.count(),
+        staleTextVectors=store.count_stale(embedding_model.model_id, KIND_TEXT),
+        staleImageVectors=store.count_stale(clip_model.model_id, KIND_IMAGE) if clip_model is not None else 0,
     )
 
 
@@ -97,11 +99,14 @@ async def index(request: IndexRequest) -> Response:
         _LOGGER.debug("No embedding backend available - not indexing %s", request.fileId)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    store.upsert(request.fileId, request.ownerUserId, vectors[0], KIND_TEXT)
+    store.upsert(request.fileId, request.ownerUserId, vectors[0], embedding_model.model_id, KIND_TEXT)
 
     image_vector = encode_image_vector(request.contentType, content)
-    if image_vector is not None:
-        store.upsert(request.fileId, request.ownerUserId, image_vector, KIND_IMAGE)
+    if image_vector is not None and clip_model is not None:
+        # clip_model is non-None whenever encode_image_vector produced a vector in production
+        # (both names are the same module-level object) - the extra check keeps this honest
+        # under test doubles that stub encode_image_vector directly.
+        store.upsert(request.fileId, request.ownerUserId, image_vector, clip_model.model_id, KIND_IMAGE)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -165,13 +170,13 @@ async def search(request: SearchRequest) -> list[SearchHit]:
         return []
 
     best: dict[str, float] = {}
-    for file_id, vector in store.vectors_for(request.candidateFileIds, KIND_TEXT).items():
+    for file_id, vector in store.vectors_for(request.candidateFileIds, embedding_model.model_id, KIND_TEXT).items():
         best[file_id] = _cosine(query_vectors[0], vector)
 
     if clip_model is not None:
         clip_query = clip_model.encode([request.queryText])
         if clip_query is not None:
-            for file_id, vector in store.vectors_for(request.candidateFileIds, KIND_IMAGE).items():
+            for file_id, vector in store.vectors_for(request.candidateFileIds, clip_model.model_id, KIND_IMAGE).items():
                 score = _cosine(clip_query[0], vector)
                 if score > best.get(file_id, float("-inf")):
                     best[file_id] = score
@@ -208,7 +213,7 @@ async def duplicates(request: DuplicatesRequest) -> list[DuplicateGroupResponse]
         return []
 
     threshold = request.minimumSimilarity if request.minimumSimilarity is not None else settings.duplicate_threshold
-    vectors = store.vectors_for(ids, KIND_TEXT)
+    vectors = store.vectors_for(ids, embedding_model.model_id, KIND_TEXT)
     known = [file_id for file_id in ids if file_id in vectors]
     if len(known) < 2:
         return []
@@ -272,7 +277,7 @@ async def tags(request: TagsRequest) -> list[TagSuggestionResponse]:
     deliberately not a ``404``, since "no suggestions" is a perfectly good answer to render and the
     caller has already established the file exists.
     """
-    vectors = store.vectors_for([request.fileId], KIND_TEXT)
+    vectors = store.vectors_for([request.fileId], embedding_model.model_id, KIND_TEXT)
     file_vector = vectors.get(request.fileId)
     if file_vector is None:
         return []

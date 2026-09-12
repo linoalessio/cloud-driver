@@ -27,6 +27,7 @@ class StubEmbeddingModel:
     """Deterministic 3-dimensional stand-in, matching ``test_app.py``'s own stub."""
 
     available = True
+    model_id = "stub-model-v1"
 
     @staticmethod
     def _vector(text: str) -> list[float]:
@@ -222,8 +223,8 @@ def test_image_vectors_are_stored_separately_from_text(client, monkeypatch):
 
     _index(client, "img", "ignored", content_type="image/png", file_name="photo.png")
 
-    assert app_module.store.vectors_for(["img"], KIND_TEXT)
-    assert app_module.store.vectors_for(["img"], KIND_IMAGE) == {"img": [1.0, 0.0, 0.0]}
+    assert app_module.store.vectors_for(["img"], "stub-model-v1", KIND_TEXT)
+    assert app_module.store.vectors_for(["img"], "stub-model-v1", KIND_IMAGE) == {"img": [1.0, 0.0, 0.0]}
 
 
 def test_delete_removes_every_modality(client, monkeypatch):
@@ -231,8 +232,8 @@ def test_delete_removes_every_modality(client, monkeypatch):
     _index(client, "img", "ignored", content_type="image/png", file_name="photo.png")
 
     assert client.delete("/index/img", headers=AUTH).status_code == 204
-    assert app_module.store.vectors_for(["img"], KIND_TEXT) == {}
-    assert app_module.store.vectors_for(["img"], KIND_IMAGE) == {}
+    assert app_module.store.vectors_for(["img"], "stub-model-v1", KIND_TEXT) == {}
+    assert app_module.store.vectors_for(["img"], "stub-model-v1", KIND_IMAGE) == {}
 
 
 # --------------------------------------------------------------------------- extraction
@@ -337,13 +338,13 @@ def test_encrypted_sqlite_store_round_trips_and_persists(tmp_path, monkeypatch):
 
     store = SqliteVectorStore.try_create(cipher)
     assert store is not None
-    store.upsert("f1", "user-1", [0.5, 0.5, 0.0])
+    store.upsert("f1", "user-1", [0.5, 0.5, 0.0], "model-x")
     assert store.count() == 1
 
     # A *second* store over the same directory is the actual restart path this exists for.
     reopened = SqliteVectorStore.try_create(cipher)
     assert reopened is not None
-    assert reopened.vectors_for(["f1"])["f1"] == pytest.approx([0.5, 0.5, 0.0], abs=1e-6)
+    assert reopened.vectors_for(["f1"], "model-x")["f1"] == pytest.approx([0.5, 0.5, 0.0], abs=1e-6)
 
 
 def test_encrypted_sqlite_store_writes_no_plaintext_vector_to_disk(tmp_path, monkeypatch):
@@ -355,7 +356,7 @@ def test_encrypted_sqlite_store_writes_no_plaintext_vector_to_disk(tmp_path, mon
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     vector = [0.5, -0.25, 0.125]
     store = SqliteVectorStore.try_create(VectorCipher(b"\x07" * 32))
-    store.upsert("f1", "user-1", vector)
+    store.upsert("f1", "user-1", vector, "model-x")
 
     on_disk = (tmp_path / "vectors.sqlite3").read_bytes()
     assert struct.pack("<3f", *vector) not in on_disk
@@ -367,10 +368,10 @@ def test_a_vector_written_under_another_key_is_skipped_not_returned(tmp_path, mo
     from cloud_driver_intelligence.store import SqliteVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
-    SqliteVectorStore.try_create(VectorCipher(b"\x08" * 32)).upsert("f1", "user-1", [1.0, 0.0, 0.0])
+    SqliteVectorStore.try_create(VectorCipher(b"\x08" * 32)).upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x")
 
     other = SqliteVectorStore.try_create(VectorCipher(b"\x09" * 32))
-    assert other.vectors_for(["f1"]) == {}
+    assert other.vectors_for(["f1"], "model-x") == {}
 
 
 def test_a_broken_encryption_key_falls_back_to_memory_never_to_plaintext_persistence(monkeypatch):
@@ -391,12 +392,12 @@ def test_sqlite_store_deletes_every_modality(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     store = SqliteVectorStore.try_create(VectorCipher(b"\x0a" * 32))
-    store.upsert("f1", "user-1", [1.0, 0.0, 0.0], KIND_TEXT)
-    store.upsert("f1", "user-1", [0.0, 1.0, 0.0], KIND_IMAGE)
+    store.upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x", KIND_TEXT)
+    store.upsert("f1", "user-1", [0.0, 1.0, 0.0], "model-x", KIND_IMAGE)
 
     store.delete("f1")
-    assert store.vectors_for(["f1"], KIND_TEXT) == {}
-    assert store.vectors_for(["f1"], KIND_IMAGE) == {}
+    assert store.vectors_for(["f1"], "model-x", KIND_TEXT) == {}
+    assert store.vectors_for(["f1"], "model-x", KIND_IMAGE) == {}
 
 
 def test_sqlite_store_updates_owner_across_modalities(tmp_path, monkeypatch):
@@ -406,8 +407,8 @@ def test_sqlite_store_updates_owner_across_modalities(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     store = SqliteVectorStore.try_create(VectorCipher(b"\x0b" * 32))
-    store.upsert("f1", "user-1", [1.0, 0.0, 0.0], KIND_TEXT)
-    store.upsert("f1", "user-1", [0.0, 1.0, 0.0], KIND_IMAGE)
+    store.upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x", KIND_TEXT)
+    store.upsert("f1", "user-1", [0.0, 1.0, 0.0], "model-x", KIND_IMAGE)
 
     store.update_owner("f1", "user-2")
     rows = store._connection.execute("SELECT DISTINCT owner_user_id FROM vectors WHERE file_id = 'f1'").fetchall()

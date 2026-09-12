@@ -48,7 +48,7 @@ flowchart LR
 | `cloud-driver-extensions-metrics` | Prometheus-scrapeable `/metrics` endpoint on its own loopback-only port |
 | `cloud-driver-extensions-thumbnails` | Generates preview thumbnails for images and PDF first pages |
 | `cloud-driver-extensions-versioning` | Keeps prior versions of a file's content on overwrite, with a restore path |
-| `cloud-driver-extensions-search` | Keyword search index over file names and extracted text |
+| `cloud-driver-extensions-search` | Keyword search index over file names and extracted text — Postgres `tsvector`/GIN-backed (persistent, restart-surviving, shared across instances; a documented plaintext exception, see docs/security.md), with an in-memory fallback when Postgres isn't available |
 | `cloud-driver-extensions-webhooks` | Delivers signed, retried HTTP callbacks for file events |
 | `cloud-driver-extensions-scan` | Malware-scans uploaded content via an external `clamd` daemon |
 | `cloud-driver-extensions-intelligence` | Bridges uploads to the `cloud-driver-intelligence` Python service, and backs semantic search |
@@ -82,7 +82,8 @@ flowchart TD
 
 Reading reverses every step, additionally verifying the AES-256-GCM authentication tag and (for
 files) a plaintext checksum before the caller ever sees decrypted data. Nothing plaintext is ever
-written to the database.
+written to the database — with one deliberate, documented exception: the keyword-search index
+table (derived lexemes, see docs/security.md).
 
 ## Layering rule
 

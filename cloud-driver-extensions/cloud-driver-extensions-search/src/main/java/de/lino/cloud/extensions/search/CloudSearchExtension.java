@@ -9,8 +9,9 @@ import de.lino.cloud.auth.entity.StoredFileOwnership;
 import java.util.logging.Level;
 
 /**
- * Search/Indexing - publishes an {@link
- * InMemorySearchIndexService} into {@code IServiceContainer#setSearchIndexService}. See {@code
+ * Search/Indexing - publishes a {@link PostgresSearchIndexService} (persistent
+ * tsvector/GIN-backed, on a Postgres deployment) or an {@link InMemorySearchIndexService}
+ * (fallback) into {@code IServiceContainer#setSearchIndexService}. See {@code
  * SearchIndexService}'s own Javadoc for the full design, in particular why indexing is driven
  * synchronously from {@code de.lino.cloud.auth.CloudUserService}'s own mutation methods rather
  * than the async {@code FileChangeListener} mechanism.
@@ -28,18 +29,47 @@ public class CloudSearchExtension extends Extension {
     /** The freshly constructed index {@link #onLoading()} publishes - kept here too so {@link #backfillIndexAsync()} doesn't have to re-resolve it off the service container. */
     private SearchIndexService searchIndexService;
 
-    /** Publishes a fresh {@link InMemorySearchIndexService}. */
+    /**
+     * Publishes a {@link PostgresSearchIndexService} when this deployment's registered database
+     * is a Postgres {@code SQLDatabaseProvider} (the persistent, GIN-indexed, restart-surviving
+     * index - roadmap Phase 3.1, sharing the very same {@code SQLExecution} connection pool
+     * every entity table already runs through), falling back to a fresh {@link
+     * InMemorySearchIndexService} otherwise (a JSON-file deployment, or the schema probe
+     * failing) - search must keep working either way, matching the "must keep working with
+     * every optional dependency off" constraint every extension here applies.
+     */
     @Override
     public void onLoading() {
-        this.searchIndexService = new InMemorySearchIndexService();
+        this.searchIndexService = this.buildBestAvailableIndex();
         this.cloudDriver().getServiceContainer().setSearchIndexService(this.searchIndexService);
+    }
+
+    /** Builds the Postgres-backed index if possible, the in-memory one otherwise - see {@link #onLoading()}. */
+    private SearchIndexService buildBestAvailableIndex() {
+        try {
+            for (final de.lino.database.database.DatabaseProvider provider
+                    : de.lino.database.DatabaseRepository.getInstance()
+                            .getDatabaseProviderPool(de.lino.database.database.DatabaseType.POSTGRES_SQL)) {
+                if (provider instanceof de.lino.database.database.sql.SQLDatabaseProvider sqlProvider) {
+                    return new PostgresSearchIndexService(sqlProvider.getSqlExecution());
+                }
+            }
+            this.getLogger().info("No Postgres database registered - using the in-memory search index (lost on restart).");
+        } catch (final Exception postgresUnavailable) {
+            this.getLogger().log(Level.WARNING,
+                    "Could not build the Postgres search index - falling back to the in-memory index (lost on restart).",
+                    postgresUnavailable);
+        }
+        return new InMemorySearchIndexService();
     }
 
     /** Kicks off {@link #backfillIndexAsync()}, then prints a confirmation once {@link #onLoading()} has published the search index. */
     @Override
     public void onRunning(final String[] args) {
         this.backfillIndexAsync();
-        this.cloudDriver().getTerminal().displayApproved("&3Search index &bready &7- indexing filenames and text-file content on upload");
+        this.cloudDriver().getTerminal().displayApproved(this.searchIndexService instanceof PostgresSearchIndexService
+                ? "&3Search index &bready &7- Postgres tsvector/GIN-backed, survives restarts"
+                : "&3Search index &bready &7- in-memory, indexing filenames and text-file content on upload");
     }
 
     /**
@@ -82,10 +112,10 @@ public class CloudSearchExtension extends Extension {
         });
     }
 
-    /** Nothing to shut down - see this class's own Javadoc. */
+    /** Nothing to shut down - the Postgres index runs over the database provider's own shared pool, which the provider owns. */
     @Override
     public void onEnding() {
-        // No background resources to release.
+        // No resources of this extension's own to release.
     }
 
     /**

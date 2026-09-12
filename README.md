@@ -294,7 +294,7 @@ See [docs/security.md](docs/security.md) for the complete model.
 | `cloud-driver-extensions-metrics` | Prometheus-scrapeable `/metrics` endpoint on its own port |
 | `cloud-driver-extensions-thumbnails` | Image/PDF preview thumbnail generation |
 | `cloud-driver-extensions-versioning` | File version capture on overwrite, with restore |
-| `cloud-driver-extensions-search` | In-memory keyword search index over names and text content |
+| `cloud-driver-extensions-search` | Keyword search index over names and text content (Postgres tsvector/GIN-backed, in-memory fallback) |
 | `cloud-driver-extensions-webhooks` | Signed, retried outbound HTTP callbacks for file events |
 | `cloud-driver-extensions-scan` | Malware scanning via an external `clamd` daemon |
 | `cloud-driver-extensions-intelligence` | Java bridge to the Python semantic-search service |
