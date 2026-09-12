@@ -1,5 +1,6 @@
 package de.lino.cloud.api.audit;
 
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -8,6 +9,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -31,7 +33,21 @@ import java.util.UUID;
  */
 @Getter @ToString
 @EqualsAndHashCode(callSuper = false)
-public final class AuditEvent extends Serialized {
+public final class AuditEvent extends Serialized implements SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getTargetId()} - the per-file activity feed. */
+    public static final String INDEX_TARGET_ID = "targetId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_TARGET_ID} → this event's target, omitted for an
+     * event with no target (e.g. a login) - such events are simply unfindable by target, matching
+     * what the equivalent filter scan produced.
+     */
+    @NotNull
+    @Override
+    public Map<String, String> secondaryIndexKeys() {
+        return this.targetId == null ? Map.of() : Map.of(INDEX_TARGET_ID, this.targetId);
+    }
 
     /** This entry's own primary key - a fresh random id, since an audit entry has no natural key of its own. */
     private final String id;

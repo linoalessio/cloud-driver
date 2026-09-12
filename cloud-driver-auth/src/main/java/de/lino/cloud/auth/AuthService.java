@@ -194,8 +194,8 @@ public final class AuthService implements IAuthService {
 
         final boolean alreadyRegistered;
         try {
-            alreadyRegistered = this.dataFactory.getEntities(AuthUser.class).stream()
-                    .anyMatch(candidate -> candidate.getEmailAddress().equals(emailAddress));
+            alreadyRegistered = this.dataFactory.getEntitiesByIndex(AuthUser.class, AuthUser.INDEX_EMAIL_ADDRESS, emailAddress).stream()
+                    .findAny().isPresent();
         } catch (final AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.register: failed to check for an existing account under " + emailAddress, e);
         }
@@ -428,8 +428,7 @@ public final class AuthService implements IAuthService {
 
         final Optional<AuthUser> userOpt;
         try {
-            userOpt = this.dataFactory.getEntities(AuthUser.class).stream()
-                    .filter(candidate -> candidate.getEmailAddress().equals(emailAddress))
+            userOpt = this.dataFactory.getEntitiesByIndex(AuthUser.class, AuthUser.INDEX_EMAIL_ADDRESS, emailAddress).stream()
                     .findFirst();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.login: failed to look up user '" + emailAddress + "'", e);
@@ -524,8 +523,8 @@ public final class AuthService implements IAuthService {
 
         final boolean accountExists;
         try {
-            accountExists = this.dataFactory.getEntities(AuthUser.class).stream()
-                    .anyMatch(candidate -> candidate.getEmailAddress().equals(emailAddress));
+            accountExists = this.dataFactory.getEntitiesByIndex(AuthUser.class, AuthUser.INDEX_EMAIL_ADDRESS, emailAddress).stream()
+                    .findAny().isPresent();
         } catch (final AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.requestPasswordReset: failed to look up account for " + emailAddress, e);
         }
@@ -605,8 +604,7 @@ public final class AuthService implements IAuthService {
 
         final AuthUser existing;
         try {
-            existing = this.dataFactory.getEntities(AuthUser.class).stream()
-                    .filter(candidate -> candidate.getEmailAddress().equals(emailAddress))
+            existing = this.dataFactory.getEntitiesByIndex(AuthUser.class, AuthUser.INDEX_EMAIL_ADDRESS, emailAddress).stream()
                     .findFirst()
                     .orElseThrow(() -> new InvalidVerificationCodeException("invalid or expired verification code"));
         } catch (final AuthenticationFailedException e) {
@@ -654,8 +652,8 @@ public final class AuthService implements IAuthService {
 
         final boolean alreadyRegistered;
         try {
-            alreadyRegistered = this.dataFactory.getEntities(AuthUser.class).stream()
-                    .anyMatch(candidate -> candidate.getEmailAddress().equals(newEmailAddress));
+            alreadyRegistered = this.dataFactory.getEntitiesByIndex(AuthUser.class, AuthUser.INDEX_EMAIL_ADDRESS, newEmailAddress).stream()
+                    .findAny().isPresent();
         } catch (final AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.requestEmailChange: failed to check for an existing account under " + newEmailAddress, e);
         }

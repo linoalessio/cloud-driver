@@ -254,6 +254,13 @@ public final class StreamedUploadSample {
             throw new UnsupportedOperationException("not used by this sample");
         }
 
+        @NotNull
+        @Override
+        public <T extends Serialized> List<T> getEntitiesByIndex(@NotNull final Class<T> type,
+                                                                  @NotNull final String indexName, @NotNull final String indexKey) {
+            throw new UnsupportedOperationException("not used by this sample");
+        }
+
         @Override
         public <T extends Serialized> void delete(@NotNull final String objectId, @NotNull final Class<T> type) {
             throw new UnsupportedOperationException("not used by this sample");

@@ -1,5 +1,6 @@
 package de.lino.cloud.api.jwt.user;
 
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -7,6 +8,7 @@ import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -34,7 +36,22 @@ import java.util.Objects;
  */
 @Getter @ToString(exclude = {"passwordHash"})
 @EqualsAndHashCode(callSuper = false)
-public final class AuthUser extends Serialized {
+public final class AuthUser extends Serialized implements SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getEmailAddress()} - the login/registration hot path. */
+    public static final String INDEX_EMAIL_ADDRESS = "emailAddress";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_EMAIL_ADDRESS} → this account's email address.
+     * Defensive against a {@code null} field (Gson rehydration bypasses the constructor's null
+     * checks): a keyless row is simply unfindable by that index, matching what the equivalent
+     * filter scan produced.
+     */
+    @NotNull
+    @Override
+    public Map<String, String> secondaryIndexKeys() {
+        return this.emailAddress == null ? Map.of() : Map.of(INDEX_EMAIL_ADDRESS, this.emailAddress);
+    }
 
     /** This account's unique id, its {@link #primaryKey()}. */
     private final String id;

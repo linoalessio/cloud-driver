@@ -169,6 +169,11 @@ same HTTP/WebSocket API).
   bounded by notification delivery rather than a poll interval.
 - The backup job uses keyset pagination rather than a single unbounded query, since file-content
   tables can reach sizes that would otherwise exhaust client memory.
-- Some read paths (login lookup, an account's own file listing) still do a full in-memory scan of
-  an entity type, because the underlying storage layer has no secondary index. This is a known,
-  accepted limitation at the current data scale, not an oversight.
+- Hot per-user/per-file lookups (login by email, an account's file/folder listings, share and
+  version resolution) go through keyed in-memory secondary indexes (`SecondaryIndexed` /
+  `DataFactory.getEntitiesByIndex`), not full scans: each entity hand-declares its index keys (no
+  reflection), and `EntityDatabaseClient` builds a per-type `index → key → entities` snapshot
+  over the decrypted list cache, rebuilt only when that cached list itself changes (any write to
+  the type, a reload, or the list-cache TTL). These are deliberately not SQL indexes — rows are
+  ciphertext, so the database can't see fields to index. A few deliberate full scans remain
+  (purge-scheduler sweeps, the cross-owner folder-tree walk, the multi-target activity feed).

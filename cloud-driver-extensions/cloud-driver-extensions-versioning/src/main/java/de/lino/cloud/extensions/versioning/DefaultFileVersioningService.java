@@ -91,8 +91,7 @@ final class DefaultFileVersioningService implements FileVersioningService {
      */
     private List<FileVersion> retainedVersions(final String sourceFileId) {
         try {
-            return this.dataFactory.getEntities(FileVersion.class).stream()
-                    .filter(version -> version.getSourceFileId().equals(sourceFileId))
+            return this.dataFactory.getEntitiesByIndex(FileVersion.class, FileVersion.INDEX_SOURCE_FILE_ID, sourceFileId).stream()
                     .sorted(Comparator.comparingInt(FileVersion::getVersionNumber))
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {

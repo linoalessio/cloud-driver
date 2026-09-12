@@ -89,6 +89,15 @@ public final class DefaultDataFactory extends DataFactory {
         return this.entityDatabaseClient.getEntities(type);
     }
 
+    /** Delegates to {@link EntityDatabaseClient#getEntitiesByIndex}. */
+    @NotNull
+    @Override
+    public <T extends Serialized> List<T> getEntitiesByIndex(@NotNull final Class<T> type,
+                                                              @NotNull final String indexName, @NotNull final String indexKey)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        return this.entityDatabaseClient.getEntitiesByIndex(type, indexName, indexKey);
+    }
+
     /** Delegates to {@link EntityDatabaseClient#delete(String, Class)}. */
     @Override
     public <T extends Serialized> void delete(@NotNull final String objectId, @NotNull final Class<T> type) throws DatabaseClientException {

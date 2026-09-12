@@ -2,6 +2,7 @@ package de.lino.cloud.extensions.webhooks;
 
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.webhook.WebhookEventType;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -25,7 +26,22 @@ import java.util.UUID;
  */
 @Getter @ToString(exclude = "secret")
 @EqualsAndHashCode(callSuper = false)
-public final class WebhookSubscription extends Serialized implements Owned {
+public final class WebhookSubscription extends Serialized implements Owned, SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getOwnerAuthUserId()} - every per-user subscription listing/dispatch. */
+    public static final String INDEX_OWNER_AUTH_USER_ID = "ownerAuthUserId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_OWNER_AUTH_USER_ID} → the subscribing account.
+     * Defensive against a {@code null} field (Gson rehydration bypasses the constructor's null
+     * checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        return this.ownerAuthUserId == null ? java.util.Map.of() : java.util.Map.of(INDEX_OWNER_AUTH_USER_ID, this.ownerAuthUserId);
+    }
+
 
     /** Length, in bytes, of the random signing-secret material generated for a fresh subscription. */
     private static final int SECRET_LENGTH_BYTES = 32;

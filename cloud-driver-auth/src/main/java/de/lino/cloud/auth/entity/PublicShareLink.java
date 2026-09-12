@@ -1,6 +1,7 @@
 package de.lino.cloud.auth.entity;
 
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -30,7 +31,22 @@ import java.util.Objects;
  */
 @Getter @ToString(exclude = "token")
 @EqualsAndHashCode(callSuper = false)
-public final class PublicShareLink extends Serialized {
+public final class PublicShareLink extends Serialized implements SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getStoredFileId()} - link listing/revocation for one file. */
+    public static final String INDEX_STORED_FILE_ID = "storedFileId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_STORED_FILE_ID} → the linked file. Lookups by
+     * token need no index - the token is this entity's primary key. Defensive against a {@code
+     * null} field (Gson rehydration bypasses the constructor's null checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        return this.storedFileId == null ? java.util.Map.of() : java.util.Map.of(INDEX_STORED_FILE_ID, this.storedFileId);
+    }
+
 
     /** Length, in bytes, of the random token material generated for a fresh {@link PublicShareLink} - matches {@link RefreshToken#RAW_TOKEN_LENGTH_BYTES}. */
     public static final int RAW_TOKEN_LENGTH_BYTES = 48;

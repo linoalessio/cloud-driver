@@ -3,6 +3,7 @@ package de.lino.cloud.auth.entity;
 import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.rest.Owned;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -44,7 +45,32 @@ import java.util.Objects;
  * actually applies to it in practice.
  */
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
-public final class SharedFileGrant extends Serialized implements Owned {
+public final class SharedFileGrant extends Serialized implements Owned, SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getGranteeAuthUserId()} - the "shared with me" listing. */
+    public static final String INDEX_GRANTEE_AUTH_USER_ID = "granteeAuthUserId";
+
+    /** Secondary-index name for lookups by {@link #getOwnerAuthUserId()} - the "shared by me" listing/count. */
+    public static final String INDEX_OWNER_AUTH_USER_ID = "ownerAuthUserId";
+
+    /** Secondary-index name for lookups by {@link #getStoredFileId()} - share resolution for one file. */
+    public static final String INDEX_STORED_FILE_ID = "storedFileId";
+
+    /**
+     * {@inheritDoc} Hand-declared: grantee, owner, and file - see the {@code INDEX_*} constants.
+     * Defensive against {@code null} fields (Gson rehydration bypasses the constructor's null
+     * checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        final java.util.Map<String, String> keys = new java.util.HashMap<>(3);
+        if (this.granteeAuthUserId != null) keys.put(INDEX_GRANTEE_AUTH_USER_ID, this.granteeAuthUserId);
+        if (this.ownerAuthUserId != null) keys.put(INDEX_OWNER_AUTH_USER_ID, this.ownerAuthUserId);
+        if (this.storedFileId != null) keys.put(INDEX_STORED_FILE_ID, this.storedFileId);
+        return keys;
+    }
+
 
     /** The account this grant was extended to - the only account that can read the file through this grant. */
     private final String granteeAuthUserId;

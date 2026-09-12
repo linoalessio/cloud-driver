@@ -1,5 +1,6 @@
 package de.lino.cloud.plugin.security.database;
 
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.database.EncryptedEntityRecord;
@@ -23,6 +24,8 @@ import de.lino.database.utils.cache.provider.Caches;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -598,6 +601,112 @@ public final class EntityDatabaseClient {
     /** @return {@code true} if a snapshot cached at {@code cachedAtEpochMillis} is now past {@code effectiveListCacheTtl} */
     private static boolean isExpired(final long cachedAtEpochMillis, final Duration effectiveListCacheTtl) {
         return effectiveListCacheTtl != null && System.currentTimeMillis() - cachedAtEpochMillis >= effectiveListCacheTtl.toMillis();
+    }
+
+    /**
+     * One type's secondary-index snapshot, derived from exactly one {@link #getEntities} result
+     * list - {@code sourceList} is compared by <em>identity</em> against the current {@link
+     * #getEntities} result to decide staleness, so this snapshot's lifetime is tied precisely to
+     * the list cache's own (write-invalidation, reload, TTL expiry) with no invalidation hooks of
+     * its own to keep in sync.
+     *
+     * @param sourceList the exact list instance this snapshot was built from
+     * @param byIndex {@code index name → index key → matching entities} - inner lists unmodifiable
+     */
+    private record IndexSnapshot<T extends Serialized>(List<T> sourceList, Map<String, Map<String, List<T>>> byIndex) {
+    }
+
+    /** One {@link IndexSnapshot} per entity type, built lazily by {@link #getEntitiesByIndex} - see that method's Javadoc. */
+    private final Map<Class<?>, IndexSnapshot<?>> indexSnapshots = new ConcurrentHashMap<>();
+
+    /**
+     * Retrieves every entity of {@code type} whose {@link SecondaryIndexed#secondaryIndexKeys()}
+     * maps {@code indexName} to {@code indexKey} - the O(1) indexed replacement for {@code
+     * getEntities(type).stream().filter(...)} (see {@link
+     * de.lino.cloud.api.factory.DataFactory#getEntitiesByIndex} for the caller-facing contract).
+     *
+     * <p><b>Piggybacks entirely on {@link #getEntities}' list cache for correctness.</b> The
+     * index is a per-type snapshot keyed (by identity) to the exact list instance {@link
+     * #getEntities} returned: any event that changes that list - a write to the type (which
+     * invalidates {@link #entityListCache}), a {@link #reload}, or the list-cache TTL expiring -
+     * makes the next indexed lookup see a different list instance and rebuild the snapshot in one
+     * O(n) in-memory pass over the already-decrypted entities. No separate invalidation paths
+     * exist to forget. For a type whose list caching is disabled ({@link #listCacheTtlOverrides}
+     * maps it to zero, e.g. {@code StoredFile}), every call returns a fresh list, so the snapshot
+     * rebuilds every call - identical total cost to the filter scan this method replaces, so
+     * still never <em>worse</em>; such types simply shouldn't be looked up this way.
+     *
+     * <p>Two threads racing a rebuild both build correct snapshots from their own consistent
+     * lists; last-put wins, which is exactly as stale-or-fresh as losing the same race on {@link
+     * #entityListCache} itself.
+     *
+     * @param type the entity type - must implement {@link SecondaryIndexed}
+     * @param indexName the index to consult - one of the type's hand-declared index names
+     * @param indexKey the key to look up
+     * @param <T> the entity type
+     * @return every entity indexed under {@code indexKey}, unmodifiable; empty if none
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if {@code type} doesn't implement {@link SecondaryIndexed},
+     *     or {@code indexName} was never declared by any entity of a non-empty type
+     * @throws DatabaseClientException if the persistence operation fails
+     * @throws KeyWrapException if unwrapping a data-encryption key fails
+     * @throws AuthenticationFailedException if any authentication tag verification fails
+     */
+    @NotNull
+    @SuppressWarnings("unchecked") // safe: indexSnapshots is only ever written an IndexSnapshot<T> keyed by that same Class<T>
+    public <T extends Serialized> List<T> getEntitiesByIndex(@NotNull final Class<T> type,
+                                                              @NotNull final String indexName, @NotNull final String indexKey)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException {
+        Asserts.requireNonNull(type, "@EntityDatabaseClient.getEntitiesByIndex: type cannot be null");
+        Asserts.requireNonNull(indexName, "@EntityDatabaseClient.getEntitiesByIndex: indexName cannot be null");
+        Asserts.requireNonNull(indexKey, "@EntityDatabaseClient.getEntitiesByIndex: indexKey cannot be null");
+        if (!SecondaryIndexed.class.isAssignableFrom(type)) {
+            throw new IllegalArgumentException(
+                    "@EntityDatabaseClient.getEntitiesByIndex: " + type.getName() + " does not implement SecondaryIndexed"
+            );
+        }
+
+        final List<T> current = this.getEntities(type);
+        IndexSnapshot<T> snapshot = (IndexSnapshot<T>) this.indexSnapshots.get(type);
+        if (snapshot == null || snapshot.sourceList() != current) {
+            snapshot = buildIndexSnapshot(current);
+            this.indexSnapshots.put(type, snapshot);
+        }
+
+        final Map<String, List<T>> index = snapshot.byIndex().get(indexName);
+        if (index == null) {
+            if (current.isEmpty()) {
+                // An empty type has declared no index names at all - indistinguishable from a
+                // typo, but "no rows" must still answer "no matches" rather than throw.
+                return List.of();
+            }
+            throw new IllegalArgumentException(
+                    "@EntityDatabaseClient.getEntitiesByIndex: no entity of " + type.getName()
+                            + " declares an index named '" + indexName + "'"
+            );
+        }
+        return index.getOrDefault(indexKey, List.of());
+    }
+
+    /**
+     * Builds one type's {@link IndexSnapshot} from {@code entities} in a single pass: every
+     * {@code (index name, key)} pair each entity hand-declares via {@link
+     * SecondaryIndexed#secondaryIndexKeys()} files that entity under that name and key. Inner
+     * lists are made unmodifiable, since they're handed to callers as-is.
+     */
+    private static <T extends Serialized> IndexSnapshot<T> buildIndexSnapshot(final List<T> entities) {
+        final Map<String, Map<String, List<T>>> byIndex = new HashMap<>();
+        for (final T entity : entities) {
+            for (final Map.Entry<String, String> key : ((SecondaryIndexed) entity).secondaryIndexKeys().entrySet()) {
+                byIndex.computeIfAbsent(key.getKey(), ignored -> new HashMap<>())
+                        .computeIfAbsent(key.getValue(), ignored -> new ArrayList<>())
+                        .add(entity);
+            }
+        }
+        for (final Map.Entry<String, Map<String, List<T>>> index : byIndex.entrySet()) {
+            index.getValue().replaceAll((key, matches) -> List.copyOf(matches));
+        }
+        return new IndexSnapshot<>(entities, byIndex);
     }
 
     /** Drops {@code type}'s cached {@link #getEntities} snapshot, if any - called from every write path below. */

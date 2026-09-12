@@ -1,5 +1,6 @@
 package de.lino.cloud.api.file;
 
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.database.database.entity.Serialized;
@@ -10,6 +11,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * A folder a user can organize their {@link StoredFile}s into, the way every other cloud
@@ -39,7 +41,20 @@ import java.util.List;
 @Getter
 @ToString
 @EqualsAndHashCode(callSuper = false)
-public final class Folder extends Serialized implements Owned {
+public final class Folder extends Serialized implements Owned, SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getOwnerId()} - every per-user folder listing. */
+    public static final String INDEX_OWNER_ID = "ownerId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_OWNER_ID} → this folder's owner. Defensive
+     * against a {@code null} field (Gson rehydration bypasses the constructor's null checks).
+     */
+    @NotNull
+    @Override
+    public Map<String, String> secondaryIndexKeys() {
+        return this.ownerId == null ? Map.of() : Map.of(INDEX_OWNER_ID, this.ownerId);
+    }
 
     /** This folder's unique id, its {@link #primaryKey()}. */
     private final String folderId;

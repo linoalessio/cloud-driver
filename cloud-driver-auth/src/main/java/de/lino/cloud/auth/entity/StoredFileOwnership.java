@@ -5,6 +5,7 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.auth.CloudUserService;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -42,7 +43,28 @@ import java.util.Objects;
  * and stay O(1).
  */
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
-public final class StoredFileOwnership extends Serialized implements Owned {
+public final class StoredFileOwnership extends Serialized implements Owned, SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getAuthUserId()} - every per-user file listing. */
+    public static final String INDEX_AUTH_USER_ID = "authUserId";
+
+    /** Secondary-index name for lookups by {@link #getStoredFileId()} - owner resolution for one file. */
+    public static final String INDEX_STORED_FILE_ID = "storedFileId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_AUTH_USER_ID} → the owning account, {@link
+     * #INDEX_STORED_FILE_ID} → the tracked file. Defensive against {@code null} fields (Gson
+     * rehydration bypasses the constructor's null checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        final java.util.Map<String, String> keys = new java.util.HashMap<>(2);
+        if (this.authUserId != null) keys.put(INDEX_AUTH_USER_ID, this.authUserId);
+        if (this.storedFileId != null) keys.put(INDEX_STORED_FILE_ID, this.storedFileId);
+        return keys;
+    }
+
 
     /** The owning {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - also this row's {@link #ownerId()}. */
     private final String authUserId;

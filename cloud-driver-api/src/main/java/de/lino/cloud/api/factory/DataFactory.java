@@ -134,6 +134,36 @@ public abstract class DataFactory {
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
 
     /**
+     * Retrieves and decrypts every entity of {@code type} whose {@link
+     * SecondaryIndexed#secondaryIndexKeys()} maps {@code indexName} to {@code indexKey} - the
+     * indexed replacement for the {@code getEntities(type).stream().filter(field::equals)}
+     * full-scan pattern (roadmap Phase 1). O(1) against the type's current in-memory index
+     * snapshot; the snapshot is rebuilt only when the type's cached {@link #getEntities} list
+     * itself changes - see {@link SecondaryIndexed}'s own Javadoc for the full contract, and for
+     * why this is deliberately not a SQL index (rows are ciphertext).
+     *
+     * <p>{@code type} must implement {@link SecondaryIndexed} and declare {@code indexName} -
+     * asking for an undeclared index is a programming error and throws, never silently returns
+     * empty, so a typo'd index name can't masquerade as "no matches".
+     *
+     * @param type the concrete entity type to look up in
+     * @param indexName the index to consult - one of {@code type}'s hand-declared {@code INDEX_*} names
+     * @param indexKey the key to look up
+     * @param <T> the entity type
+     * @return every entity of {@code type} indexed under {@code indexKey}, in no particular order;
+     *     empty if none are
+     * @throws IllegalArgumentException if {@code type} does not implement {@link SecondaryIndexed},
+     *     or no entity of {@code type} has ever declared {@code indexName}
+     * @throws DatabaseClientException if the persistence operation fails
+     * @throws KeyWrapException if any entity's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws AuthenticationFailedException if any retrieved payload fails authentication
+     */
+    @NotNull
+    public abstract <T extends Serialized> List<T> getEntitiesByIndex(
+            @NotNull Class<T> type, @NotNull String indexName, @NotNull String indexKey)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException;
+
+    /**
      * Deletes the entity stored under {@code objectId}.
      *
      * @param objectId the entity's {@link Serialized#primaryKey() primary key}
@@ -288,6 +318,19 @@ public abstract class DataFactory {
         return MultiTaskingFactory.getInstance().supplyAsync(() -> {
             try {
                 return this.getEntities(type);
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+
+    /** Async counterpart of {@link #getEntitiesByIndex(Class, String, String)}. */
+    @NotNull
+    public <T extends Serialized> CompletableFuture<List<T>> getEntitiesByIndexAsync(
+            @NotNull final Class<T> type, @NotNull final String indexName, @NotNull final String indexKey) {
+        return MultiTaskingFactory.getInstance().supplyAsync(() -> {
+            try {
+                return this.getEntitiesByIndex(type, indexName, indexKey);
             } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
                 throw new CompletionException(e);
             }

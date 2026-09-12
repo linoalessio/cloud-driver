@@ -3,6 +3,7 @@ package de.lino.cloud.auth.entity;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.jwt.rest.Owned;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -31,7 +32,32 @@ import java.util.Objects;
  * point-lookup shape {@link SharedFileGrant} uses.
  */
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
-public final class SharedFolderGrant extends Serialized implements Owned {
+public final class SharedFolderGrant extends Serialized implements Owned, SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getGranteeAuthUserId()} - the "shared with me" listing. */
+    public static final String INDEX_GRANTEE_AUTH_USER_ID = "granteeAuthUserId";
+
+    /** Secondary-index name for lookups by {@link #getOwnerAuthUserId()} - the "shared by me" listing. */
+    public static final String INDEX_OWNER_AUTH_USER_ID = "ownerAuthUserId";
+
+    /** Secondary-index name for lookups by {@link #getFolderId()} - share resolution for one folder. */
+    public static final String INDEX_FOLDER_ID = "folderId";
+
+    /**
+     * {@inheritDoc} Hand-declared: grantee, owner, and folder - see the {@code INDEX_*} constants.
+     * Defensive against {@code null} fields (Gson rehydration bypasses the constructor's null
+     * checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        final java.util.Map<String, String> keys = new java.util.HashMap<>(3);
+        if (this.granteeAuthUserId != null) keys.put(INDEX_GRANTEE_AUTH_USER_ID, this.granteeAuthUserId);
+        if (this.ownerAuthUserId != null) keys.put(INDEX_OWNER_AUTH_USER_ID, this.ownerAuthUserId);
+        if (this.folderId != null) keys.put(INDEX_FOLDER_ID, this.folderId);
+        return keys;
+    }
+
 
     /** The account this grant was extended to. */
     private final String granteeAuthUserId;

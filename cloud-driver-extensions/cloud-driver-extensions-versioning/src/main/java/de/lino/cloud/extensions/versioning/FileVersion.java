@@ -2,6 +2,7 @@ package de.lino.cloud.extensions.versioning;
 
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.meta.FileChecksum;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -27,7 +28,21 @@ import java.util.Objects;
  * SharedFileGrant} already make elsewhere in this codebase for a non-primary-key lookup.
  */
 @Getter @ToString @EqualsAndHashCode(callSuper = false)
-public final class FileVersion extends Serialized {
+public final class FileVersion extends Serialized implements SecondaryIndexed {
+
+    /** Secondary-index name for lookups by {@link #getSourceFileId()} - every per-file version listing/purge. */
+    public static final String INDEX_SOURCE_FILE_ID = "sourceFileId";
+
+    /**
+     * {@inheritDoc} Hand-declared: {@link #INDEX_SOURCE_FILE_ID} → the versioned file. Defensive
+     * against a {@code null} field (Gson rehydration bypasses the constructor's null checks).
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        return this.sourceFileId == null ? java.util.Map.of() : java.util.Map.of(INDEX_SOURCE_FILE_ID, this.sourceFileId);
+    }
+
 
     /** The source {@link StoredFile#fileId()} this is a prior version of. */
     private final String sourceFileId;

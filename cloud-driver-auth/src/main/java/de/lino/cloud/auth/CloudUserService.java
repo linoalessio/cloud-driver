@@ -256,8 +256,7 @@ public final class CloudUserService implements ICloudUserService {
     public @NonNull Optional<String> resolveOwnerAuthUserId(@NotNull final String storedFileId) {
         try {
 
-            return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
-                    .filter(ownership -> ownership.getStoredFileId().equals(storedFileId))
+            return this.dataFactory.getEntitiesByIndex(StoredFileOwnership.class, StoredFileOwnership.INDEX_STORED_FILE_ID, storedFileId).stream()
                     .map(StoredFileOwnership::getAuthUserId)
                     .findFirst();
 
@@ -622,8 +621,7 @@ public final class CloudUserService implements ICloudUserService {
     private void deleteAllOwnedFolders(final String authUserId) {
         final List<Folder> remaining;
         try {
-            remaining = new ArrayList<>(this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            remaining = new ArrayList<>(this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .toList());
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.deleteAllOwnedFolders: failed to list folders for " + authUserId, e);
@@ -692,8 +690,7 @@ public final class CloudUserService implements ICloudUserService {
     private void deleteAllTrashedFolders(final String authUserId) {
         final List<Folder> stillExisting;
         try {
-            stillExisting = new ArrayList<>(this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            stillExisting = new ArrayList<>(this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .toList());
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.deleteAllTrashedFolders: failed to list folders for " + authUserId, e);
@@ -1690,8 +1687,7 @@ public final class CloudUserService implements ICloudUserService {
     public List<SharedFileSummary> listSharedWithMe(@NonNull final String authUserId) {
         final List<SharedFileGrant> grants;
         try {
-            grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
-                    .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+            grants = this.dataFactory.getEntitiesByIndex(SharedFileGrant.class, SharedFileGrant.INDEX_GRANTEE_AUTH_USER_ID, authUserId).stream()
                     .filter(grant -> !grant.isExpired())
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
@@ -1777,8 +1773,7 @@ public final class CloudUserService implements ICloudUserService {
     public List<SharedFolderSummary> listSharedFoldersWithMe(@NonNull final String authUserId) {
         final List<SharedFolderGrant> grants;
         try {
-            grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
-                    .filter(grant -> grant.getGranteeAuthUserId().equals(authUserId))
+            grants = this.dataFactory.getEntitiesByIndex(SharedFolderGrant.class, SharedFolderGrant.INDEX_GRANTEE_AUTH_USER_ID, authUserId).stream()
                     .filter(grant -> !grant.isExpired())
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
@@ -1839,8 +1834,8 @@ public final class CloudUserService implements ICloudUserService {
     public List<PublicFileLinkSummary> listPublicFileLinks(@NonNull final String ownerAuthUserId, @NonNull final String fileId) {
         this.requireOwnedFile(ownerAuthUserId, fileId);
         try {
-            return this.dataFactory.getEntities(PublicShareLink.class).stream()
-                    .filter(link -> link.getOwnerAuthUserId().equals(ownerAuthUserId) && link.getStoredFileId().equals(fileId))
+            return this.dataFactory.getEntitiesByIndex(PublicShareLink.class, PublicShareLink.INDEX_STORED_FILE_ID, fileId).stream()
+                    .filter(link -> link.getOwnerAuthUserId().equals(ownerAuthUserId))
                     .filter(link -> !link.isExpired())
                     .map(link -> new PublicFileLinkSummary(link.getToken(), link.getCreatedAtEpochMillis(), link.getExpiresAtEpochMillis()))
                     .toList();
@@ -1893,8 +1888,8 @@ public final class CloudUserService implements ICloudUserService {
     public List<String> listFileShares(@NonNull final String ownerAuthUserId, @NonNull final String fileId) {
         this.requireOwnedFile(ownerAuthUserId, fileId);
         try {
-            return this.dataFactory.getEntities(SharedFileGrant.class).stream()
-                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getStoredFileId().equals(fileId))
+            return this.dataFactory.getEntitiesByIndex(SharedFileGrant.class, SharedFileGrant.INDEX_STORED_FILE_ID, fileId).stream()
+                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId))
                     .filter(grant -> !grant.isExpired())
                     .map(SharedFileGrant::getGranteeAuthUserId)
                     .map(this::resolveEmailForAuthUserId)
@@ -1915,8 +1910,8 @@ public final class CloudUserService implements ICloudUserService {
     public List<String> listFolderShares(@NonNull final String ownerAuthUserId, @NonNull final String folderId) {
         this.requireOwnedFolder(ownerAuthUserId, folderId);
         try {
-            return this.dataFactory.getEntities(SharedFolderGrant.class).stream()
-                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId) && grant.getFolderId().equals(folderId))
+            return this.dataFactory.getEntitiesByIndex(SharedFolderGrant.class, SharedFolderGrant.INDEX_FOLDER_ID, folderId).stream()
+                    .filter(grant -> grant.getOwnerAuthUserId().equals(ownerAuthUserId))
                     .filter(grant -> !grant.isExpired())
                     .map(SharedFolderGrant::getGranteeAuthUserId)
                     .map(this::resolveEmailForAuthUserId)
@@ -1936,8 +1931,7 @@ public final class CloudUserService implements ICloudUserService {
     @Override
     public int countFilesSharedByMe(@NonNull final String authUserId) {
         try {
-            return (int) this.dataFactory.getEntities(SharedFileGrant.class).stream()
-                    .filter(grant -> grant.getOwnerAuthUserId().equals(authUserId))
+            return (int) this.dataFactory.getEntitiesByIndex(SharedFileGrant.class, SharedFileGrant.INDEX_OWNER_AUTH_USER_ID, authUserId).stream()
                     .filter(grant -> !grant.isExpired())
                     .map(SharedFileGrant::getStoredFileId)
                     .distinct()
@@ -1983,8 +1977,7 @@ public final class CloudUserService implements ICloudUserService {
     private void revokeAllFileShares(final String fileId) {
         final List<SharedFileGrant> grants;
         try {
-            grants = this.dataFactory.getEntities(SharedFileGrant.class).stream()
-                    .filter(grant -> grant.getStoredFileId().equals(fileId))
+            grants = this.dataFactory.getEntitiesByIndex(SharedFileGrant.class, SharedFileGrant.INDEX_STORED_FILE_ID, fileId).stream()
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.revokeAllFileShares: failed to list shares of " + fileId, e);
@@ -2012,8 +2005,7 @@ public final class CloudUserService implements ICloudUserService {
     private void revokeAllPublicFileLinks(final String fileId) {
         final List<PublicShareLink> links;
         try {
-            links = this.dataFactory.getEntities(PublicShareLink.class).stream()
-                    .filter(link -> link.getStoredFileId().equals(fileId))
+            links = this.dataFactory.getEntitiesByIndex(PublicShareLink.class, PublicShareLink.INDEX_STORED_FILE_ID, fileId).stream()
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.revokeAllPublicFileLinks: failed to list links for " + fileId, e);
@@ -2042,8 +2034,7 @@ public final class CloudUserService implements ICloudUserService {
     private void revokeAllFolderShares(final String folderId) {
         final List<SharedFolderGrant> grants;
         try {
-            grants = this.dataFactory.getEntities(SharedFolderGrant.class).stream()
-                    .filter(grant -> grant.getFolderId().equals(folderId))
+            grants = this.dataFactory.getEntitiesByIndex(SharedFolderGrant.class, SharedFolderGrant.INDEX_FOLDER_ID, folderId).stream()
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.revokeAllFolderShares: failed to list shares of " + folderId, e);
@@ -2113,8 +2104,7 @@ public final class CloudUserService implements ICloudUserService {
     private StoredFileOwnership requireSharedFileAccess(final String authUserId, final String storedFileId) {
         final StoredFileOwnership ownerOwnership;
         try {
-            ownerOwnership = this.dataFactory.getEntities(StoredFileOwnership.class).stream()
-                    .filter(ownership -> ownership.getStoredFileId().equals(storedFileId))
+            ownerOwnership = this.dataFactory.getEntitiesByIndex(StoredFileOwnership.class, StoredFileOwnership.INDEX_STORED_FILE_ID, storedFileId).stream()
                     .findFirst()
                     .orElseThrow(() -> new IllegalArgumentException(
                             "@CloudUserService.requireSharedFileAccess: no such file " + storedFileId));
@@ -3057,8 +3047,7 @@ public final class CloudUserService implements ICloudUserService {
         // authUserId - see listFileSummaries's own comment for the same reasoning; use
         // listSharedFoldersWithMe(authUserId) instead.
         try {
-            return this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            return this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .filter(folder -> Objects.equals(folder.getParentFolderId(), parentFolderId))
                     .filter(folder -> !folder.isDeleted())
                     .toList();
@@ -3077,8 +3066,7 @@ public final class CloudUserService implements ICloudUserService {
                                                @Nullable final String cursor, final int limit) {
         final List<Folder> sorted;
         try {
-            sorted = this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            sorted = this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .filter(folder -> Objects.equals(folder.getParentFolderId(), parentFolderId))
                     .filter(folder -> !folder.isDeleted())
                     .sorted(Comparator.comparing(Folder::getFolderId))
@@ -3308,14 +3296,13 @@ public final class CloudUserService implements ICloudUserService {
      * #listActivity} also uses, scoped to a single id instead of a whole visible-target set.
      */
     private CursorPage<AuditEvent> activityForTarget(final String targetId, final String cursor, final int limit) {
-        final List<AuditEvent> allEvents;
+        final List<AuditEvent> targetEvents;
         try {
-            allEvents = this.dataFactory.getEntities(AuditEvent.class);
+            targetEvents = this.dataFactory.getEntitiesByIndex(AuditEvent.class, AuditEvent.INDEX_TARGET_ID, targetId);
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
-            throw new RuntimeException("@CloudUserService.activityForTarget: failed to scan audit events for " + targetId, e);
+            throw new RuntimeException("@CloudUserService.activityForTarget: failed to look up audit events for " + targetId, e);
         }
-        final List<AuditEvent> sorted = allEvents.stream()
-                .filter(event -> targetId.equals(event.getTargetId()))
+        final List<AuditEvent> sorted = targetEvents.stream()
                 .sorted(Comparator.comparing(CloudUserService::activityCursorKey))
                 .toList();
         return paginate(sorted, cursor, limit, CloudUserService::activityCursorKey);
@@ -3336,8 +3323,7 @@ public final class CloudUserService implements ICloudUserService {
         this.listSharedWithMe(authUserId).forEach(shared -> targetIds.add(shared.file().fileId()));
 
         try {
-            this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .forEach(folder -> targetIds.add(folder.getFolderId()));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.visibleActivityTargetIds: failed to scan folders for " + authUserId, e);
@@ -3374,8 +3360,7 @@ public final class CloudUserService implements ICloudUserService {
     public List<TrashedFolderSummary> listDeletedFolders(@NonNull final String authUserId) {
         final List<Folder> deleted;
         try {
-            deleted = this.dataFactory.getEntities(Folder.class).stream()
-                    .filter(folder -> folder.getOwnerId().equals(authUserId))
+            deleted = this.dataFactory.getEntitiesByIndex(Folder.class, Folder.INDEX_OWNER_ID, authUserId).stream()
                     .filter(Folder::isDeleted)
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
@@ -3503,8 +3488,7 @@ public final class CloudUserService implements ICloudUserService {
      */
     private List<StoredFileOwnership> ownedFileOwnershipsIncludingDeleted(final String authUserId) {
         try {
-            return this.dataFactory.getEntities(StoredFileOwnership.class).stream()
-                    .filter(ownership -> ownership.getAuthUserId().equals(authUserId))
+            return this.dataFactory.getEntitiesByIndex(StoredFileOwnership.class, StoredFileOwnership.INDEX_AUTH_USER_ID, authUserId).stream()
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@CloudUserService.ownedFileOwnershipsIncludingDeleted: failed to list ownership records for " + authUserId, e);

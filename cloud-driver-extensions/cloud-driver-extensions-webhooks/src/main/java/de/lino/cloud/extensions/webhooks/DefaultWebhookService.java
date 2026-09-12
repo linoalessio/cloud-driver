@@ -146,8 +146,7 @@ public final class DefaultWebhookService implements WebhookService {
 
     private List<WebhookSubscription> ownedSubscriptions(final String authUserId) {
         try {
-            return this.dataFactory.getEntities(WebhookSubscription.class).stream()
-                    .filter(subscription -> subscription.getOwnerAuthUserId().equals(authUserId))
+            return this.dataFactory.getEntitiesByIndex(WebhookSubscription.class, WebhookSubscription.INDEX_OWNER_AUTH_USER_ID, authUserId).stream()
                     .toList();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@DefaultWebhookService.ownedSubscriptions: failed to list subscriptions for " + authUserId, e);
