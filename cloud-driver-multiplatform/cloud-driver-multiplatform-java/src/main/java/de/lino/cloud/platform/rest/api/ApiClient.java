@@ -9,6 +9,9 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.BeginDownloadUrlResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.ChunkManifestResponse;
+import de.lino.cloud.platform.rest.api.dto.Dtos.PatchChunk;
+import de.lino.cloud.platform.rest.api.dto.Dtos.PatchContentRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.BeginUploadUrlRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.BeginUploadUrlResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ChangeEmailRequest;
@@ -91,7 +94,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
+import java.util.Arrays;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -2797,6 +2802,138 @@ public final class ApiClient implements AutoCloseable {
             throw new ApiException(status, extractErrorMessage(body), null);
         } catch (final IOException e) {
             throw new ApiException(0, "I/O error reading response from " + request.uri(), e);
+        }
+    }
+
+    // --- chunk-level content diffing (PATCH /files/{id}/content) ---------------------------
+
+    /**
+     * {@code GET /files/{id}/chunk-manifest}: the file's current per-chunk plaintext-hash
+     * manifest - the server-side half of chunk diffing. {@code null} (not an exception) when the
+     * server has no manifest for this file (a dedup alias, a presigned-upload file, or content
+     * last written before manifests existed) - the caller then simply falls back to a full
+     * {@link #replaceFileContent(String, byte[], Long)}.
+     *
+     * @param fileId the file whose manifest to fetch
+     * @return the manifest, or {@code null} if the server has none for this file
+     * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
+     *                       except the {@code 404} "no manifest" case above
+     */
+    public ChunkManifestResponse getChunkManifest(final String fileId) throws ApiException {
+        try {
+            return this.send(this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/chunk-manifest"), true)
+                    .GET().build(), ChunkManifestResponse.class);
+        } catch (final ApiException e) {
+            if (e.statusCode() == 404) {
+                return null;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * {@code PATCH /files/{id}/content}: replaces {@code fileId}'s content by sending only
+     * {@code changedChunks} (chunk index → new plaintext bytes) plus the new total size - the
+     * low-level half of chunk diffing; most callers want {@link #replaceFileContentDelta}
+     * instead, which does the manifest fetch/diff/fallback dance itself. Semantics otherwise
+     * match {@link #replaceFileContent(String, byte[], Long)} exactly, the optimistic-concurrency
+     * precondition and {@link SyncConflictException} conflicted-copy behavior included.
+     *
+     * @param fileId the file whose content to patch
+     * @param newTotalSizeBytes the new content's full plaintext size
+     * @param changedChunks chunk index → new plaintext bytes, for exactly the chunks that changed
+     * @param expectedUpdatedAtEpochMillis the version token to write against, or {@code null}
+     * @return the file's updated summary
+     * @throws SyncConflictException {@code 409} - see {@link #replaceFileContent(String, byte[], Long)}
+     * @throws ApiException {@code 400} if the chunk set no longer lines up with the server's
+     *                       content (stale manifest - re-fetch it or fall back to a full replace),
+     *                       or any of the replace route's other failures
+     */
+    public StoredFileSummaryResponse patchFileContent(final String fileId, final long newTotalSizeBytes,
+                                                       final Map<Integer, byte[]> changedChunks,
+                                                       final Long expectedUpdatedAtEpochMillis) throws ApiException {
+        final List<PatchChunk> chunks = new ArrayList<>(changedChunks.size());
+        for (final Map.Entry<Integer, byte[]> chunk : changedChunks.entrySet()) {
+            chunks.add(new PatchChunk(chunk.getKey(), Base64.getEncoder().encodeToString(chunk.getValue())));
+        }
+        final String query = "/files/" + fileId + "/content"
+                + (expectedUpdatedAtEpochMillis == null ? "" : "?expectedUpdatedAt=" + expectedUpdatedAtEpochMillis);
+        final HttpRequest request = this.requestBuilder(this.apiBaseUrl.resolve(query), true)
+                .header("Content-Type", "application/json")
+                .timeout(TRANSFER_TIMEOUT)
+                .method("PATCH", BodyPublishers.ofString(GSON.toJson(new PatchContentRequest(newTotalSizeBytes, chunks))))
+                .build();
+        final HttpResponse<InputStream> response;
+        try {
+            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        // Same status handling as PUT - a 409 carries the conflicted copy's structured body.
+        return parseReplaceFileContentResponse(request, response);
+    }
+
+    /**
+     * Bandwidth-aware content replace: fetches the server's chunk manifest, diffs {@code
+     * newContent} against it locally, and sends only the changed chunks via {@link
+     * #patchFileContent} - falling back to a plain full {@link #replaceFileContent(String,
+     * byte[], Long)} whenever diffing can't help (no manifest on the server, a chunk-size
+     * mismatch, a mostly-changed file where the delta wouldn't be smaller, or a {@code 400}
+     * stale-manifest rejection mid-flight). Drop-in replacement for {@code replaceFileContent}:
+     * same result, same {@link SyncConflictException} semantics, at most the same bytes on the
+     * wire - for a small edit to a large file, dramatically fewer.
+     *
+     * @param fileId the file whose content to replace
+     * @param newContent the new full content
+     * @param expectedUpdatedAtEpochMillis the version token to write against, or {@code null}
+     * @return the file's updated summary
+     * @throws SyncConflictException {@code 409} - see {@link #replaceFileContent(String, byte[], Long)}
+     * @throws ApiException any of the replace route's failures
+     */
+    public StoredFileSummaryResponse replaceFileContentDelta(final String fileId, final byte[] newContent,
+                                                              final Long expectedUpdatedAtEpochMillis) throws ApiException {
+        final ChunkManifestResponse manifest = this.getChunkManifest(fileId);
+        if (manifest == null || manifest.chunkSizeBytes() <= 0 || manifest.chunkHashes() == null) {
+            return this.replaceFileContent(fileId, newContent, expectedUpdatedAtEpochMillis);
+        }
+        final int chunkSize = manifest.chunkSizeBytes();
+        final int chunkCount = (int) ((newContent.length + (long) chunkSize - 1) / chunkSize);
+        final Map<Integer, byte[]> changedChunks = new LinkedHashMap<>();
+        try {
+            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (int chunk = 0; chunk < chunkCount; chunk++) {
+                final int offset = chunk * chunkSize;
+                final int length = Math.min(chunkSize, newContent.length - offset);
+                digest.reset();
+                digest.update(newContent, offset, length);
+                final String localHash = HexFormat.of().formatHex(digest.digest());
+                if (chunk >= manifest.chunkHashes().size() || !localHash.equalsIgnoreCase(manifest.chunkHashes().get(chunk))) {
+                    changedChunks.put(chunk, Arrays.copyOfRange(newContent, offset, offset + length));
+                }
+            }
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM does not provide SHA-256", e);
+        }
+        if (changedChunks.isEmpty() && newContent.length == manifest.totalSizeBytes()) {
+            // Byte-identical to what the server already holds - but the caller asked for a write
+            // (version capture, updatedAt bump), so a full replace keeps those semantics.
+            return this.replaceFileContent(fileId, newContent, expectedUpdatedAtEpochMillis);
+        }
+        if (changedChunks.size() >= chunkCount) {
+            return this.replaceFileContent(fileId, newContent, expectedUpdatedAtEpochMillis);
+        }
+        try {
+            return this.patchFileContent(fileId, newContent.length, changedChunks, expectedUpdatedAtEpochMillis);
+        } catch (final ApiException e) {
+            if (e.statusCode() == 400) {
+                // Manifest went stale between the fetch and the PATCH - the full body is still
+                // in hand, so fall back rather than surface a retryable error.
+                return this.replaceFileContent(fileId, newContent, expectedUpdatedAtEpochMillis);
+            }
+            throw e;
         }
     }
 

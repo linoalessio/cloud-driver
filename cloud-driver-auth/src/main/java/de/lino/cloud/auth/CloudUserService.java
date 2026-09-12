@@ -6,6 +6,7 @@ import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.file.FileChunkManifest;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.SharedFileSummary;
@@ -54,6 +55,7 @@ import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import de.lino.cloud.auth.entity.CloudUser;
@@ -379,6 +381,10 @@ public final class CloudUserService implements ICloudUserService {
         // Same idempotency reasoning again - and harmless even if it never runs at all, since a
         // vector outliving its file can never surface (see IntelligenceService#removeAsync).
         removeFromIntelligenceIndex(storedFileId);
+        // Best-effort, idempotent: an orphaned manifest row could only ever mislead a future
+        // file that reused the id - which never happens (ids are random UUIDs) - but tidy it
+        // up anyway rather than accreting rows forever.
+        this.deleteChunkManifestQuietly(storedFileId);
     }
 
     /**
@@ -831,6 +837,11 @@ public final class CloudUserService implements ICloudUserService {
             this.updateCloudUserBytesUsage(authUserId, content.length);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
+        if (dedupCandidate.isEmpty()) {
+            // A dedup alias owns no content of its own, so it gets no manifest - see
+            // FileChunkManifest's own Javadoc on exactly when a manifest exists.
+            this.registerChunkManifest(storedFile.fileId(), content);
+        }
         indexFileForSearch(authUserId, storedFile, folderId, content);
         indexFileForIntelligence(authUserId, storedFile, content);
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, storedFile.fileId());
@@ -926,6 +937,12 @@ public final class CloudUserService implements ICloudUserService {
             this.updateCloudUserBytesUsage(authUserId, sizeBytes);
         }
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
+        if (dedupCandidate.isEmpty()) {
+            // Computed by streaming the scratch file (one extra sequential disk read) - the
+            // manifest is what lets a later small edit to this large file transfer only its
+            // changed chunks instead of the whole thing again.
+            this.registerChunkManifestFromFile(storedFile.fileId(), contentFile);
+        }
         // Content deliberately not passed: extracting indexable text/an embedding would require
         // materializing the very bytes this path exists to keep off the heap - the file is still
         // indexed by name/folder, the same degradation completePresignedUpload already accepts.
@@ -1606,6 +1623,112 @@ public final class CloudUserService implements ICloudUserService {
     public String currentContentChecksumHex(@NonNull final String authUserId, @NonNull final String storedFileId) {
         final StoredFileOwnership ownership = this.requireFileAccess(authUserId, storedFileId, "currentContentChecksumHex");
         return ownership.hasMetadata() ? ownership.getChecksumHex() : null;
+    }
+
+    /** {@link ICloudUserService#getChunkManifest}: access-checked manifest read - see the interface Javadoc. */
+    @NonNull
+    @Override
+    public Optional<FileChunkManifest> getChunkManifest(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        this.requireFileAccess(authUserId, storedFileId, "getChunkManifest");
+        try {
+            return this.dataFactory.findById(storedFileId, FileChunkManifest.class);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService.getChunkManifest: failed to look up the manifest for " + storedFileId, e);
+        }
+    }
+
+    /**
+     * {@link ICloudUserService#patchFileContent}: assembles the new content from the current
+     * content plus {@code changedChunks}, then delegates wholesale to {@link
+     * #replaceFileContent(String, String, byte[], Long)} - every rule that method enforces
+     * (access, optimistic concurrency, dedup guard, quota, version capture, metadata/search/
+     * intelligence refresh, manifest update) applies to a patch identically, by construction.
+     */
+    @NonNull
+    @Override
+    public StoredFileSummary patchFileContent(@NonNull final String authUserId, @NonNull final String storedFileId,
+                                               final long newTotalSizeBytes, @NonNull final Map<Integer, byte[]> changedChunks,
+                                               @Nullable final Long expectedUpdatedAtEpochMillis) {
+        if (changedChunks.isEmpty()) {
+            throw new IllegalArgumentException("@CloudUserService.patchFileContent: changedChunks cannot be empty");
+        }
+        if (newTotalSizeBytes < 0 || newTotalSizeBytes > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("@CloudUserService.patchFileContent: unsupported newTotalSizeBytes " + newTotalSizeBytes);
+        }
+        // Read access is enough to fetch the base content here - replaceFileContent below
+        // enforces the real (stricter, owner-or-EDIT-grant) write rule before anything changes.
+        final FileWithFolder current = this.getFile(authUserId, storedFileId);
+        final byte[] oldContent = current.file().content();
+
+        final int chunkSize = Constraints.CONTENT_CHUNK_SIZE_BYTES;
+        final int newChunkCount = FileChunkManifest.chunkCountFor(newTotalSizeBytes, chunkSize);
+        final int oldChunkCount = FileChunkManifest.chunkCountFor(oldContent.length, chunkSize);
+        final byte[] newContent = new byte[(int) newTotalSizeBytes];
+
+        for (int chunk = 0; chunk < newChunkCount; chunk++) {
+            final int offset = chunk * chunkSize;
+            final int chunkLength = (int) Math.min(chunkSize, newTotalSizeBytes - offset);
+            final byte[] replacement = changedChunks.get(chunk);
+            if (replacement != null) {
+                if (replacement.length != chunkLength) {
+                    throw new IllegalArgumentException("@CloudUserService.patchFileContent: chunk " + chunk
+                            + " must be exactly " + chunkLength + " bytes, got " + replacement.length);
+                }
+                System.arraycopy(replacement, 0, newContent, offset, chunkLength);
+                continue;
+            }
+            // Unchanged chunk: must exist, whole, in the current content. The final old chunk
+            // may be shorter than a full chunk - reusing it unchanged is only sound if it is
+            // also the final NEW chunk of the same length; anything else must be re-sent.
+            final int availableFromOld = chunk < oldChunkCount ? (int) Math.min(chunkSize, (long) oldContent.length - offset) : -1;
+            if (availableFromOld != chunkLength) {
+                throw new IllegalArgumentException("@CloudUserService.patchFileContent: chunk " + chunk
+                        + " is not present unchanged in the current content and was not sent - the client's manifest is stale");
+            }
+            System.arraycopy(oldContent, offset, newContent, offset, chunkLength);
+        }
+        for (final Integer index : changedChunks.keySet()) {
+            if (index == null || index < 0 || index >= newChunkCount) {
+                throw new IllegalArgumentException("@CloudUserService.patchFileContent: chunk index " + index
+                        + " is outside the new content's " + newChunkCount + " chunk(s)");
+            }
+        }
+
+        return this.replaceFileContent(authUserId, storedFileId, newContent, expectedUpdatedAtEpochMillis);
+    }
+
+    /**
+     * Computes and persists {@code fileId}'s {@link FileChunkManifest} for {@code content} -
+     * best-effort by design (see that class's own Javadoc): a failure only disables chunk
+     * diffing for this file until its next content write, and must never fail the upload/replace
+     * it rides along with.
+     */
+    private void registerChunkManifest(final String fileId, final byte[] content) {
+        try {
+            this.dataFactory.register(FileChunkManifest.of(fileId, content));
+        } catch (final Exception manifestFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to persist the chunk manifest for " + fileId + " - chunk diffing stays unavailable for it", manifestFailed);
+        }
+    }
+
+    /** {@link #registerChunkManifest}, reading the content from a scratch file (the streamed-upload path) - same best-effort contract. */
+    private void registerChunkManifestFromFile(final String fileId, final Path contentFile) {
+        try (InputStream content = Files.newInputStream(contentFile)) {
+            this.dataFactory.register(FileChunkManifest.of(fileId, content));
+        } catch (final Exception manifestFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to persist the chunk manifest for " + fileId + " - chunk diffing stays unavailable for it", manifestFailed);
+        }
+    }
+
+    /** Best-effort delete of {@code fileId}'s manifest row - called from {@link #hardDeleteFile}; a leftover row is harmless (see that call site). */
+    private void deleteChunkManifestQuietly(final String storedFileId) {
+        try {
+            this.dataFactory.delete(storedFileId, FileChunkManifest.class);
+        } catch (final Exception ignored) {
+            // Row may simply not exist (no manifest was ever written) - nothing to clean up.
+        }
     }
 
     /**
@@ -2415,6 +2538,7 @@ public final class CloudUserService implements ICloudUserService {
         // The audit entry's actor is the real caller (possibly an EDIT-grantee, not the owner) -
         // this is "who did this", unlike the quota/usage charge above, which is "whose storage".
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
+        this.registerChunkManifest(storedFileId, newContent);
         indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), newContent);
         indexFileForIntelligence(ownerAuthUserId, replaced, newContent);
 

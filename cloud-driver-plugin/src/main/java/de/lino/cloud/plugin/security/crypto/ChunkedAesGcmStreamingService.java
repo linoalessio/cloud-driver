@@ -56,8 +56,8 @@ public final class ChunkedAesGcmStreamingService implements StreamingAeadEncrypt
     /** The AES-GCM variant used when no {@link CryptoAlgorithm} is given explicitly. */
     private static final CryptoAlgorithm DEFAULT_ALGORITHM = CryptoAlgorithm.AES_256_GCM;
 
-    /** Plaintext bytes per chunk when no explicit chunk size is given - 1 MiB. */
-    public static final int DEFAULT_CHUNK_SIZE_BYTES = 1 << 20;
+    /** Plaintext bytes per chunk when no explicit chunk size is given - the one process-wide chunk convention, see {@link de.lino.cloud.api.utility.Constraints#CONTENT_CHUNK_SIZE_BYTES}. */
+    public static final int DEFAULT_CHUNK_SIZE_BYTES = de.lino.cloud.api.utility.Constraints.CONTENT_CHUNK_SIZE_BYTES;
 
     /** Bytes of each chunk's nonce taken by the big-endian chunk counter; the rest is the per-stream random base. */
     private static final int CHUNK_COUNTER_LENGTH_BYTES = Long.BYTES;

@@ -58,6 +58,8 @@ sequenceDiagram
 | `/files/{id}` | GET | Fetch one file's metadata + content |
 | `/files/{id}/content` | GET | Stream a file's content directly (no JSON/base64 wrapping). Conditional requests supported: the response carries `ETag` (the content checksum, quoted) and `Cache-Control: private, must-revalidate`; sending it back as `If-None-Match` answers `304 Not Modified` with no body when the content is unchanged |
 | `/files/{id}/content` | PUT | Replace a file's content in place (raw body; optional `?expectedUpdatedAt=` optimistic-concurrency precondition — a mismatch returns `409` with a "conflicted copy" created instead of silently overwriting) |
+| `/files/{id}/content` | PATCH | Chunk-level content update: JSON body `{"totalSizeBytes", "changedChunks": [{"index", "contentBase64"}]}` sends only the 1 MiB chunks that changed (diffed against `GET /files/{id}/chunk-manifest`); same access rule, `?expectedUpdatedAt=` precondition/`409` conflicted-copy handling, versioning capture, and reindexing as `PUT`. `400` when the chunk set no longer lines up with the current content (stale manifest — re-fetch it or fall back to a full `PUT`) |
+| `/files/{id}/chunk-manifest` | GET | The file's current per-chunk plaintext SHA-256 manifest (`{"chunkSizeBytes", "totalSizeBytes", "chunkHashes": ["<hex>", ...]}`) — compare positionally against a local copy to find what a `PATCH` must send. `404` when no manifest exists (dedup alias, presigned-upload file, or content last written before manifests existed) — fall back to a full upload |
 | `/files/{id}/thumbnail` | GET | A small JPEG preview (images and PDF first pages), if the thumbnails extension is running |
 | `/files/{id}/folder` | PUT | Move a file |
 | `/files/{id}/rename` | PUT | Rename a file |

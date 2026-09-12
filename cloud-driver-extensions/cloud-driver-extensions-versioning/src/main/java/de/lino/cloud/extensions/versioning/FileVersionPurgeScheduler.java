@@ -12,6 +12,7 @@ import org.jetbrains.annotations.NotNull;
 import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -145,15 +146,53 @@ final class FileVersionPurgeScheduler {
             final List<FileVersion> newestFirst = versions.stream()
                     .sorted(Comparator.comparingInt(FileVersion::getVersionNumber).reversed())
                     .toList();
+            // First pass: which versions the count/age rules alone would retain.
+            FileVersion oldestRetained = null;
             for (int index = 0; index < newestFirst.size(); index++) {
                 final FileVersion version = newestFirst.get(index);
                 final boolean exceedsCount = index >= this.maxVersionsPerFile;
                 final boolean expiredByAge = version.getCapturedAtEpochMillis() < cutoffEpochMillis;
-                if (exceedsCount || expiredByAge) {
+                if (!exceedsCount && !expiredByAge) {
+                    oldestRetained = version; // newestFirst order: the last one to pass is the oldest retained
+                }
+            }
+            // Delta chains (roadmap Phase 4): a delta is reconstructed from every older version
+            // back to its keyframe, so the purge boundary must snap BACK to the keyframe the
+            // oldest-retained version's chain starts at - purging that keyframe (or any link)
+            // would leave retained versions unreconstructable. Rows are chained by contiguous
+            // version numbers (capture guarantees it), so "keep everything >= the chain's
+            // keyframe number" is exactly the chain-safe boundary. A legacy full-copy row is its
+            // own keyframe, so pre-delta deployments purge exactly as before.
+            final int keepFromNumber = oldestRetained == null ? Integer.MAX_VALUE
+                    : chainKeyframeNumber(oldestRetained, newestFirst);
+            for (final FileVersion version : newestFirst) {
+                if (version.getVersionNumber() < keepFromNumber) {
                     this.purgeVersion(version);
                 }
             }
         }
+    }
+
+    /**
+     * The version number of the keyframe {@code version}'s delta chain starts at - {@code
+     * version}'s own number if it is itself a keyframe. If the walk hits a gap (a chain already
+     * broken by something else), answers the lowest number actually reachable, so the purge
+     * never widens existing damage.
+     */
+    private static int chainKeyframeNumber(final FileVersion version, final List<FileVersion> allVersions) {
+        final Map<Integer, FileVersion> byNumber = new HashMap<>();
+        for (final FileVersion candidate : allVersions) {
+            byNumber.put(candidate.getVersionNumber(), candidate);
+        }
+        FileVersion cursor = version;
+        while (!cursor.isKeyframe() && cursor.getBaseVersionNumber() != null) {
+            final FileVersion base = byNumber.get(cursor.getBaseVersionNumber());
+            if (base == null) {
+                break;
+            }
+            cursor = base;
+        }
+        return cursor.getVersionNumber();
     }
 
     /** Permanently removes {@code version}'s own {@code StoredFile} content, then the {@link FileVersion} row itself. */

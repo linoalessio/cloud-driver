@@ -10,6 +10,37 @@ import java.util.Map;
  */
 public final class Dtos {
 
+    /**
+     * {@code GET /files/{id}/chunk-manifest} response body - the file's current per-chunk
+     * plaintext SHA-256 list, compared positionally against a local copy's own hashes to find
+     * which chunks a {@code PATCH /files/{id}/content} actually has to send.
+     *
+     * @param chunkSizeBytes plaintext bytes per chunk the hashes were computed with
+     * @param totalSizeBytes the content's total plaintext size
+     * @param chunkHashes every chunk's SHA-256 as lowercase hex, in chunk order
+     */
+    public record ChunkManifestResponse(int chunkSizeBytes, long totalSizeBytes, java.util.List<String> chunkHashes) {
+    }
+
+    /**
+     * One changed chunk inside a {@link PatchContentRequest}.
+     *
+     * @param index the 0-based chunk index
+     * @param contentBase64 the chunk's new plaintext bytes, base64-encoded
+     */
+    public record PatchChunk(int index, String contentBase64) {
+    }
+
+    /**
+     * {@code PATCH /files/{id}/content} request body - the new content's size plus exactly the
+     * chunks that changed.
+     *
+     * @param totalSizeBytes the new content's full plaintext size
+     * @param changedChunks the changed chunks, any order
+     */
+    public record PatchContentRequest(long totalSizeBytes, java.util.List<PatchChunk> changedChunks) {
+    }
+
     /** Not instantiable - a pure namespace for the nested record types below. */
     private Dtos() {
     }

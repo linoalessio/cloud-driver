@@ -260,6 +260,49 @@ public interface ICloudUserService {
                           @Nullable String folderId);
 
     /**
+     * The current per-chunk hash manifest of {@code storedFileId}'s content (see {@link
+     * de.lino.cloud.api.file.FileChunkManifest}), after the same ownership-or-share access check
+     * every content read applies - empty when no manifest exists (a dedup alias, a direct-transfer
+     * file, or a file last written before manifests existed), which a caller must treat as
+     * "chunk diffing unavailable, fall back to a full upload", never as an error.
+     *
+     * @param authUserId the caller, checked for access first
+     * @param storedFileId the file whose manifest to read
+     * @return the manifest, or empty if none exists for this file
+     */
+    @NotNull
+    Optional<de.lino.cloud.api.file.FileChunkManifest> getChunkManifest(@NotNull String authUserId, @NotNull String storedFileId);
+
+    /**
+     * Chunk-level content patch (roadmap Phase 4): replaces {@code storedFileId}'s content with
+     * a new version assembled from its current content plus only the chunks that changed -
+     * {@code changedChunks} maps chunk index → that chunk's new plaintext bytes, and {@code
+     * newTotalSizeBytes} declares the new content's full size (chunks past the old end must all
+     * be present in {@code changedChunks}; a shrink simply drops trailing chunks). Chunk
+     * boundaries are {@link de.lino.cloud.api.utility.Constraints#CONTENT_CHUNK_SIZE_BYTES};
+     * every chunk must be exactly that size except the final one.
+     *
+     * <p>Everything else behaves exactly like {@link #replaceFileContent(String, String, byte[],
+     * Long)}, which this delegates to once the new content is assembled - same owner-or-EDIT-grant
+     * access rule, optimistic concurrency via {@code expectedUpdatedAtEpochMillis} (a mismatch
+     * creates a conflicted copy), dedup guard, quota delta, version capture, metadata/search/
+     * intelligence refresh.
+     *
+     * @param authUserId the caller (owner, or holder of an EDIT grant)
+     * @param storedFileId the file whose content to patch
+     * @param newTotalSizeBytes the new content's full plaintext size
+     * @param changedChunks chunk index → new plaintext bytes, for exactly the chunks that changed
+     * @param expectedUpdatedAtEpochMillis optimistic-concurrency precondition, or {@code null} to skip it
+     * @return a summary of the file's new state
+     * @throws IllegalArgumentException if the chunk set is inconsistent with {@code newTotalSizeBytes}
+     *     (bad index, wrong chunk length, missing new-tail chunk, or nothing changed at all)
+     */
+    @NotNull
+    StoredFileSummary patchFileContent(@NotNull String authUserId, @NotNull String storedFileId,
+                                        long newTotalSizeBytes, @NotNull java.util.Map<Integer, byte[]> changedChunks,
+                                        @Nullable Long expectedUpdatedAtEpochMillis);
+
+    /**
      * Begins a presigned, direct-to-client upload: checks {@code authUserId}'s quota against
      * the declared {@code sizeBytes} and that {@code folderId} (if given) is actually owned by
      * {@code authUserId}, then returns a fresh {@link PresignedUploadTicket} the caller uploads its

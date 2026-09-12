@@ -997,6 +997,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.put(FILES_PATH + "/{id}/folder", this::handleMoveFile);
                 config.routes.put(FILES_PATH + "/{id}/rename", this::handleRenameFile);
                 config.routes.put(FILES_PATH + "/{id}/content", this::handleReplaceFileContent);
+                config.routes.patch(FILES_PATH + "/{id}/content", this::handlePatchFileContent);
+                config.routes.get(FILES_PATH + "/{id}/chunk-manifest", this::handleGetChunkManifest);
                 config.routes.get(FILES_PATH + "/{id}/versions", this::handleListFileVersions);
                 config.routes.get(FILES_PATH + "/{id}/versions/{versionNumber}/content", this::handleDownloadFileVersion);
                 config.routes.post(FILES_PATH + "/{id}/versions/{versionNumber}/restore", this::handleRestoreFileVersion);
@@ -2826,6 +2828,114 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     if (cause instanceof de.lino.cloud.api.file.exception.SyncConflictException conflict) {
                         ctx.status(409).contentType("application/json").result(this.gson.toJson(conflict.conflictedCopy()));
                         return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code GET /files/{id}/chunk-manifest}: the file's current per-chunk plaintext-hash
+     * manifest (see {@link de.lino.cloud.api.file.FileChunkManifest}) - {@code
+     * {"chunkSizeBytes", "totalSizeBytes", "chunkHashes": ["<hex>", ...]}}. Access-checked the
+     * same ownership-or-share way every content read is. {@code 404} when no manifest exists
+     * (a dedup alias, a direct-transfer file, or content last written before manifests existed)
+     * - the client then simply falls back to a full upload, exactly as documented on the entity.
+     */
+    private void handleGetChunkManifest(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.getChunkManifest(userId, id))
+                .handle((manifest, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    if (manifest.isEmpty()) {
+                        throw new NotFoundResponse("No chunk manifest for file '" + id + "'");
+                    }
+                    final JsonObject body = new JsonObject();
+                    body.addProperty("chunkSizeBytes", manifest.get().chunkSizeBytes());
+                    body.addProperty("totalSizeBytes", manifest.get().totalSizeBytes());
+                    body.add("chunkHashes", this.gson.toJsonTree(manifest.get().chunkHashesHex()));
+                    ctx.contentType("application/json").result(this.gson.toJson(body));
+                    return null;
+                }));
+    }
+
+    /**
+     * One changed chunk in a {@link #handlePatchFileContent} request body.
+     *
+     * @param index the 0-based chunk index (chunk size: {@link de.lino.cloud.api.utility.Constraints#CONTENT_CHUNK_SIZE_BYTES})
+     * @param contentBase64 the chunk's new plaintext bytes, base64-encoded
+     */
+    private record PatchChunk(Integer index, String contentBase64) {
+    }
+
+    /**
+     * The {@code PATCH /files/{id}/content} JSON body shape.
+     *
+     * @param totalSizeBytes the new content's full plaintext size
+     * @param changedChunks exactly the chunks that changed, in any order
+     */
+    private record PatchContentRequest(Long totalSizeBytes, List<PatchChunk> changedChunks) {
+    }
+
+    /**
+     * {@code PATCH /files/{id}/content}: chunk-level content update - the client diffs its local
+     * content against {@code GET /files/{id}/chunk-manifest} and sends only the chunks that
+     * changed ({@link PatchContentRequest}), so a small edit to a large file transfers O(edit),
+     * not O(file). Optionally {@code ?expectedUpdatedAt=<epochMillis>}, the exact optimistic-
+     * concurrency precondition {@code PUT /files/{id}/content} has - a mismatch answers {@code
+     * 409} carrying the conflicted copy's summary, identically. Everything downstream (access
+     * rule, versioning, quota, reindexing) is byte-for-byte the {@code PUT} route's behavior -
+     * see {@link CloudUserService#patchFileContent}, which delegates to the same replacement
+     * pipeline. A stale manifest (patching chunks that no longer line up) answers {@code 400} -
+     * the client should re-fetch the manifest, or fall back to a full {@code PUT}.
+     */
+    private void handlePatchFileContent(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        final Long expectedUpdatedAt = parseExpectedUpdatedAt(ctx);
+
+        final PatchContentRequest request = this.gson.fromJson(ctx.body(), PatchContentRequest.class);
+        if (request == null || request.totalSizeBytes() == null || request.totalSizeBytes() < 0
+                || request.changedChunks() == null || request.changedChunks().isEmpty()) {
+            throw new BadRequestResponse("Body must carry 'totalSizeBytes' and a non-empty 'changedChunks' array");
+        }
+        final Map<Integer, byte[]> changedChunks = new HashMap<>();
+        for (final PatchChunk chunk : request.changedChunks()) {
+            if (chunk == null || chunk.index() == null || chunk.index() < 0 || chunk.contentBase64() == null) {
+                throw new BadRequestResponse("Every changed chunk must carry a non-negative 'index' and 'contentBase64'");
+            }
+            final byte[] chunkBytes;
+            try {
+                chunkBytes = Base64.getDecoder().decode(chunk.contentBase64());
+            } catch (final IllegalArgumentException malformed) {
+                throw new BadRequestResponse("Chunk " + chunk.index() + " carries malformed base64");
+            }
+            if (changedChunks.put(chunk.index(), chunkBytes) != null) {
+                throw new BadRequestResponse("Chunk index " + chunk.index() + " appears more than once");
+            }
+        }
+
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.patchFileContent(
+                        userId, id, request.totalSizeBytes(), changedChunks, expectedUpdatedAt))
+                .handle((summary, failure) -> {
+                    if (failure == null) {
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(summary));
+                        return null;
+                    }
+                    final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+                    if (cause instanceof de.lino.cloud.api.file.exception.SyncConflictException conflict) {
+                        ctx.status(409).contentType("application/json").result(this.gson.toJson(conflict.conflictedCopy()));
+                        return null;
+                    }
+                    if (cause instanceof IllegalArgumentException inconsistentChunks
+                            && String.valueOf(inconsistentChunks.getMessage()).contains("patchFileContent")) {
+                        // A stale/inconsistent chunk set is the caller's to fix (re-fetch the
+                        // manifest, or full PUT) - not a 404-shaped "no such file" case.
+                        throw new BadRequestResponse("Chunk set is inconsistent with the file's current content - re-fetch the manifest or fall back to a full upload");
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, id);
                 }));

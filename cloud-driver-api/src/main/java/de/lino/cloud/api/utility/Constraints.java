@@ -44,6 +44,17 @@ public final class Constraints {
      */
     public static final Path UPLOAD_SCRATCH_PATH = WORKING_DIRECTORY.resolve("upload-scratch");
 
+    /**
+     * The one process-wide content chunk size (1 MiB): the boundary used by streaming AEAD
+     * encryption ({@code ChunkedAesGcmStreamingService}'s default), by the per-file chunk-hash
+     * manifest/diff mechanism ({@code FileChunkManifest}, {@code PATCH /files/{id}/content},
+     * version delta storage), and - once resumable multipart upload sessions exist (roadmap
+     * Phase 5) - by their part alignment. Deliberately named in exactly one place, per the
+     * roadmap's Phase-4/5 note: three systems sharing one convention must never each define
+     * their own copy of it.
+     */
+    public static final int CONTENT_CHUNK_SIZE_BYTES = 1 << 20;
+
     /** Timestamp the process started at, set once during bootstrap. */
     public static final AtomicReference<Long> CLOUD_START_TIME_STAMP = new AtomicReference<>();
 

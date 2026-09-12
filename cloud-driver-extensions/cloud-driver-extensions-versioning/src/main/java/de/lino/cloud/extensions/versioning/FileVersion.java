@@ -69,6 +69,44 @@ public final class FileVersion extends Serialized implements SecondaryIndexed {
     private final long capturedAtEpochMillis;
 
     /**
+     * Whether {@link #versionedFileId} holds this version's <b>full</b> content (a keyframe) or
+     * only its changed chunks (a delta - see {@link #deltaChunkIndices}). {@code null} on every
+     * row written before delta storage existed (roadmap Phase 4, 2026-09-12) - such rows always
+     * hold full copies, so {@code null} reads as keyframe via {@link #isKeyframe()}.
+     */
+    private final Boolean keyframe;
+
+    /**
+     * For a delta row: the 0-based chunk indices {@link #versionedFileId}'s content carries, in
+     * ascending order (its content is exactly those chunks of this version's full content,
+     * concatenated). {@code null} for a keyframe.
+     */
+    private final List<Integer> deltaChunkIndices;
+
+    /**
+     * For a delta row: the {@link #versionNumber} this delta applies on top of - always the
+     * immediately preceding retained version at capture time, so a chain back to its keyframe is
+     * a contiguous number range. {@code null} for a keyframe.
+     */
+    private final Integer baseVersionNumber;
+
+    /** Chunk size the delta/hash fields were computed with ({@code Constraints#CONTENT_CHUNK_SIZE_BYTES} today); {@code null} on a legacy row. */
+    private final Integer chunkSizeBytes;
+
+    /**
+     * This version's <b>full</b> content's per-chunk SHA-256 list (concatenated, base64 - the
+     * exact {@code FileChunkManifest#chunkHashesBase64()} shape), stored on keyframes and deltas
+     * alike: the next capture diffs against it without ever resolving this version's content.
+     * {@code null} on a legacy row - the next capture after one is forced to be a keyframe.
+     */
+    private final String chunkHashesBase64;
+
+    /**
+     * Legacy/keyframe convenience constructor - a full-copy row with no chunk metadata, exactly
+     * the shape every row had before delta storage existed. Prefer the full constructor for new
+     * captures, which always records {@link #chunkHashesBase64} so the <em>next</em> capture can
+     * be a delta.
+     *
      * @param sourceFileId the source {@link StoredFile#fileId()} this is a prior version of
      * @param versionNumber a 1-based, per-file sequence number
      * @param versionedFileId the {@link StoredFile#fileId()} holding this version's own content
@@ -82,6 +120,33 @@ public final class FileVersion extends Serialized implements SecondaryIndexed {
     public FileVersion(@NotNull final String sourceFileId, final int versionNumber, @NotNull final String versionedFileId,
                         @NotNull final String fileName, @NotNull final String contentType,
                         final long sizeBytes, @NotNull final FileChecksum contentHash, final long capturedAtEpochMillis) {
+        this(sourceFileId, versionNumber, versionedFileId, fileName, contentType, sizeBytes, contentHash,
+                capturedAtEpochMillis, true, null, null, null, null);
+    }
+
+    /**
+     * Full constructor, delta fields included - see each field's own Javadoc.
+     *
+     * @param sourceFileId the source {@link StoredFile#fileId()} this is a prior version of
+     * @param versionNumber a 1-based, per-file sequence number
+     * @param versionedFileId the {@link StoredFile#fileId()} holding this version's content (full, or delta chunks)
+     * @param fileName the source file's {@link StoredFile#fileName()} at capture time
+     * @param contentType the source file's {@link StoredFile#contentType()} at capture time
+     * @param sizeBytes this version's <b>full</b> content size, in bytes (never the delta's own size)
+     * @param contentHash this version's <b>full</b> content checksum
+     * @param capturedAtEpochMillis when this version was captured, as epoch milliseconds
+     * @param keyframe whether {@code versionedFileId} holds the full content
+     * @param deltaChunkIndices the delta's chunk indices, ascending ({@code null} for a keyframe)
+     * @param baseVersionNumber the version this delta applies on top of ({@code null} for a keyframe)
+     * @param chunkSizeBytes chunk size the chunk metadata was computed with
+     * @param chunkHashesBase64 this version's full per-chunk hash list, concatenated + base64
+     * @throws NullPointerException if {@code sourceFileId}/{@code versionedFileId}/{@code fileName}/{@code contentType}/{@code contentHash} is {@code null}
+     */
+    public FileVersion(@NotNull final String sourceFileId, final int versionNumber, @NotNull final String versionedFileId,
+                        @NotNull final String fileName, @NotNull final String contentType,
+                        final long sizeBytes, @NotNull final FileChecksum contentHash, final long capturedAtEpochMillis,
+                        final boolean keyframe, final List<Integer> deltaChunkIndices, final Integer baseVersionNumber,
+                        final Integer chunkSizeBytes, final String chunkHashesBase64) {
         this.sourceFileId = Objects.requireNonNull(sourceFileId, "@FileVersion.init: sourceFileId cannot be null");
         this.versionNumber = versionNumber;
         this.versionedFileId = Objects.requireNonNull(versionedFileId, "@FileVersion.init: versionedFileId cannot be null");
@@ -90,6 +155,16 @@ public final class FileVersion extends Serialized implements SecondaryIndexed {
         this.sizeBytes = sizeBytes;
         this.contentHash = Objects.requireNonNull(contentHash, "@FileVersion.init: contentHash cannot be null");
         this.capturedAtEpochMillis = capturedAtEpochMillis;
+        this.keyframe = keyframe;
+        this.deltaChunkIndices = deltaChunkIndices;
+        this.baseVersionNumber = baseVersionNumber;
+        this.chunkSizeBytes = chunkSizeBytes;
+        this.chunkHashesBase64 = chunkHashesBase64;
+    }
+
+    /** Whether {@link #getVersionedFileId()} holds this version's full content - {@code true} for every legacy (pre-delta) row, see {@link #keyframe}. */
+    public boolean isKeyframe() {
+        return this.keyframe == null || this.keyframe;
     }
 
     /**

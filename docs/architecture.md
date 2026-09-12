@@ -160,6 +160,15 @@ same HTTP/WebSocket API).
   already serves its hot path — `FULL` there would hold that content twice.
 - REST handlers never block a request-handling thread — the underlying database/encryption work
   always runs on a virtual thread.
+- Chunk-level diffing (roadmap Phase 4): every server-mediated content write also records a
+  per-chunk plaintext SHA-256 manifest (`FileChunkManifest`, envelope-encrypted like every
+  entity; chunk boundary = the 1 MiB encryption chunk, `Constraints.CONTENT_CHUNK_SIZE_BYTES`).
+  A sync client diffs against `GET /files/{id}/chunk-manifest` and sends only changed chunks via
+  `PATCH /files/{id}/content` — the server reassembles and re-encrypts with a fresh DEK (the v2
+  object layout is unchanged; splicing ciphertext in place would reuse GCM nonces). Version
+  history uses the same mechanism: a captured version stores only its changed chunks as a delta
+  against the previous version, with a full keyframe every 10 versions capping reconstruction
+  replay; the purge scheduler never severs a chain (its boundary snaps back to a keyframe).
 - Server-mediated uploads above a 32 MiB threshold stream end to end: the request body lands in a
   scratch file, and the checksum, chunked AES-GCM encryption, and S3 write all run straight off
   that file (`StoredFile.createFromContentFile` → `DefaultFileFactory.prepareForPersistence`) —
