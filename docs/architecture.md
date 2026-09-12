@@ -188,7 +188,9 @@ same HTTP/WebSocket API).
 - Change notification uses push (Postgres `LISTEN`/`NOTIFY`), not a polling loop, so latency is
   bounded by notification delivery rather than a poll interval.
 - The backup job uses keyset pagination rather than a single unbounded query, since file-content
-  tables can reach sizes that would otherwise exhaust client memory.
+  tables can reach sizes that would otherwise exhaust client memory. It backs up exactly the
+  entity tables — those carrying the `id TEXT, data BYTEA` shape the keyset query reads; tables
+  with a different shape (the keyword-search index) are skipped, being rebuildable derived state.
 - Multi-instance coordination is Redis-backed and strictly optional: with a
   Redis configured, the five periodic schedulers (trash purge, version purge, pending-upload
   flush, presigned-ticket purge, database backup) each run on exactly one instance per tick
@@ -197,7 +199,10 @@ same HTTP/WebSocket API).
   pending-upload enqueue is visible across instances (`RedisPendingUploadCache` — only minimal
   metadata crosses Redis, never content or names; the enqueueing instance alone can retry, since
   it alone holds the bytes). No Redis, or a failing Redis, means every instance simply behaves
-  single-instance — Redis is never a hard dependency.
+  single-instance — Redis is never a hard dependency. The lock window is the tick interval, so a
+  restart inside a window whose work is already done is refused (and says so on the console)
+  rather than repeating it; the backup job's `backup now` command deliberately bypasses the lock,
+  since an explicit operator backup must never be a silent no-op.
 - Hot per-user/per-file lookups (login by email, an account's file/folder listings, share and
   version resolution) go through keyed in-memory secondary indexes (`SecondaryIndexed` /
   `DataFactory.getEntitiesByIndex`), not full scans: each entity hand-declares its index keys (no

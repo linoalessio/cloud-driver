@@ -63,7 +63,7 @@ import java.util.zip.ZipOutputStream;
  *     150-200GB cycles.</li>
  * </ul>
  *
- * <p>Currently tailored to PostgreSQL (table list via {@code information_schema.tables}); for
+ * <p>Currently tailored to PostgreSQL (table list via {@code information_schema.columns}); for
  * other SQL dialects supported by {@code database-driver-v2}, {@link #listTables()} would need
  * to be extended with the matching query, analogous to {@code SQLDatabaseProvider.getPattern}.
  */
@@ -227,16 +227,41 @@ public final class DatabaseBackupScheduler {
     }
 
     /**
-     * Scheduled entry point invoked on every tick. Skips this tick if a previous cycle is still
-     * running, otherwise runs {@link #runBackupCycle()} and logs (rather than propagates) any
-     * failure - this runs on the scheduler's own thread, and an uncaught exception here would
-     * silently stop every future tick from ever firing again.
+     * Scheduled entry point invoked on every tick: takes the distributed once-per-window lock,
+     * then hands over to {@link #executeCycle()}.
+     *
+     * <p>The lock window is the tick interval, so a restart inside a window whose backup has
+     * already been taken does <b>not</b> produce another one - the boot tick (initialDelay = 0)
+     * is refused until the window rolls over. That is the intended multi-instance behavior, but
+     * it is invisible unless said out loud, so a refused tick is reported rather than dropped
+     * silently: an operator who restarts the process and sees no backup needs to be able to tell
+     * "the window is already spent" from "the job is broken". {@link #runNow()} is the escape
+     * hatch that ignores the window.
      */
     private void tick() {
 
         // Multi-instance: exactly one instance runs this tick per window - every instance runs
         // when no Redis is configured or Redis fails (see RedisSchedulerLock).
-        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("database-backup", this.lockWindow)) return;
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("database-backup", this.lockWindow)) {
+            CloudDriver.getInstance().getTerminal().displayApproved(
+                    "Backup tick skipped - this window's backup was already taken (window: &b%s&7). Run '&bbackup now&7' to force one.",
+                    this.lockWindow
+            );
+            return;
+        }
+
+        executeCycle();
+
+    }
+
+    /**
+     * Runs one backup cycle on the calling thread, without the distributed window lock: skips if
+     * a previous cycle is still running, otherwise runs {@link #runBackupCycle()} and logs
+     * (rather than propagates) any failure - this runs on the scheduler's own thread, and an
+     * uncaught exception here would silently stop every future tick from ever firing again.
+     */
+    private void executeCycle() {
+
         if (!this.cycleRunning.compareAndSet(false, true)) {
             CloudDriver.getInstance().getTerminal().displayApproved("Backup tick skipped since the there is a remaining cycle running");
             return;
@@ -269,12 +294,19 @@ public final class DatabaseBackupScheduler {
      * deployment has already been bitten by, and the existing {@link #cycleRunning} guard would
      * make the queued run a no-op anyway, reported as a success it never performed.
      *
+     * <p>Deliberately bypasses the distributed once-per-window lock {@link #tick()} takes: this
+     * is an explicit operator action on one named instance ("back up before I do something
+     * risky"), not the periodic schedule that the lock exists to deduplicate across instances.
+     * Routing it through the lock would make the command a silent no-op for the rest of the
+     * window - reported as started, having done nothing, at exactly the moment a backup matters
+     * most.
+     *
      * @return {@code true} if a run was started, {@code false} if one was already in flight
      */
     public boolean runNow() {
         if (this.cycleRunning.get()) return false;
         try {
-            this.scheduledExecutorService.execute(this::tick);
+            this.scheduledExecutorService.execute(this::executeCycle);
             return true;
         } catch (final RuntimeException rejected) {
             // Already shut down - reported as "not started" rather than thrown, since the one
@@ -345,16 +377,26 @@ public final class DatabaseBackupScheduler {
     }
 
     /**
-     * Determines all tables in the {@code public} schema via {@link #sqlExecution}, rather than
-     * via {@code DatabaseProvider}/{@code SQLDatabaseSection} - the latter load the entire table
-     * into an in-memory cache when a section is created, which at 150-200GB is exactly the
+     * Determines the entity tables in the {@code public} schema via {@link #sqlExecution}, rather
+     * than via {@code DatabaseProvider}/{@code SQLDatabaseSection} - the latter load the entire
+     * table into an in-memory cache when a section is created, which at 150-200GB is exactly the
      * problem this class exists to avoid.
      *
-     * @return all table names in the {@code public} schema
+     * <p>Only tables carrying both an {@code id} and a {@code data} column are returned - the
+     * {@code id TEXT, data BYTEA} shape every entity table auto-created by {@code database-driver}
+     * has, and the shape {@link #exportTable(String, Path)}/{@link #fetchBatch(String, String)}
+     * read. The schema also holds purpose-built tables that do not follow it (the keyword-search
+     * index, which carries its own composite key and {@code tsvector} columns); exporting those
+     * with an {@code id}-keyset query fails outright, and they are rebuildable from the encrypted
+     * entity rows anyway, so they are deliberately left out of the backup.
+     *
+     * @return the names of all {@code id}/{@code data}-shaped tables in the {@code public} schema
      */
     private List<String> listTables() {
         return this.sqlExecution.executeQuery(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
+                "SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' "
+                        + "AND column_name IN ('id', 'data') "
+                        + "GROUP BY table_name HAVING COUNT(DISTINCT column_name) = 2",
                 resultSet -> {
                     final List<String> tables = new ArrayList<>();
                     try {
