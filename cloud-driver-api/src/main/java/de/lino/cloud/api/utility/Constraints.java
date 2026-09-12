@@ -48,9 +48,8 @@ public final class Constraints {
      * The one process-wide content chunk size (1 MiB): the boundary used by streaming AEAD
      * encryption ({@code ChunkedAesGcmStreamingService}'s default), by the per-file chunk-hash
      * manifest/diff mechanism ({@code FileChunkManifest}, {@code PATCH /files/{id}/content},
-     * version delta storage), and - once resumable multipart upload sessions exist (roadmap
-     * Phase 5) - by their part alignment. Deliberately named in exactly one place, per the
-     * roadmap's Phase-4/5 note: three systems sharing one convention must never each define
+     * version delta storage), and by resumable upload sessions' part alignment. Deliberately
+     * named in exactly one place: three systems sharing one convention must never each define
      * their own copy of it.
      */
     public static final int CONTENT_CHUNK_SIZE_BYTES = 1 << 20;

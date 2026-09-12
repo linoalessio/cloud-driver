@@ -136,7 +136,7 @@ public final class CloudUserService implements ICloudUserService {
     private final ContentKeyService contentKeyService;
 
     /**
-     * Runs resumable multipart upload sessions against the object store (roadmap Phase 5) -
+     * Runs resumable multipart upload sessions against the object store -
      * {@code null} if this deployment hasn't configured one, in which case every {@code
      * *ResumableUpload*} method throws {@link PresignedTransferUnavailableException}, exactly
      * like {@link #presignedTransferService}'s own contract.
@@ -1383,7 +1383,7 @@ public final class CloudUserService implements ICloudUserService {
         }
     }
 
-    // --- resumable multipart upload sessions (roadmap Phase 5) --------------------------------
+    // --- resumable multipart upload sessions --------------------------------
 
     /**
      * The fixed byte size of every session part except the last - a plain byte range over the
@@ -1628,7 +1628,7 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * The dedup precheck both direct-transfer begin paths share (sign-off resolved 2026-09-12):
+     * The dedup precheck both direct-transfer begin paths share:
      * a declared checksum matching content {@code authUserId}'s account already stores registers
      * a dedup alias immediately - zero bytes uploaded - mirroring {@link #uploadFile}'s own
      * dedup branch (alias row, ref-count increment, ownership, no usage charge, audit,

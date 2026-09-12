@@ -69,7 +69,7 @@ public final class PendingPresignedUpload extends Serialized {
 
     /**
      * The object store's multipart upload id, when this row tracks a <b>resumable session</b>
-     * (roadmap Phase 5) rather than a single-{@code PUT} presigned ticket - what {@code
+     * rather than a single-{@code PUT} presigned ticket - what {@code
      * ListParts}/part-presign/complete/abort address the in-progress upload by. {@code null} on
      * every single-{@code PUT} ticket and every row persisted before sessions existed. A purge
      * sweep must {@code AbortMultipartUpload} a session row it ages out - S3 bills for

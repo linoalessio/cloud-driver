@@ -173,8 +173,13 @@ public class FactoryContainer implements IFactoryContainer {
                 ENTITY_LIST_CACHE_TTL_OVERRIDES, SECTION_CONFIG_OVERRIDES
         ));
         this.objectStorageService = objectStorageService;
+        // RedisPendingUploadCache: with Redis configured, a queued upload is visible across
+        // every instance (only minimal metadata crosses Redis - content never does, see that
+        // class's Javadoc); without Redis it behaves exactly like the plain in-memory cache it
+        // wraps.
         this.fileFactory = new DefaultFileFactory(
-                this.dataFactory, new InMemoryPendingUploadCache(), connectivityChecker, objectStorageService, envelopeEncryptionService
+                this.dataFactory, new de.lino.cloud.plugin.file.RedisPendingUploadCache(redisSupport),
+                connectivityChecker, objectStorageService, envelopeEncryptionService
         );
         this.contentKeyService = new StreamingContentKeyService(envelopeEncryptionService);
         this.extensionFactory = new DefaultExtensionFactory();

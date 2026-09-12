@@ -25,8 +25,8 @@ import java.util.Arrays;
  * InMemoryKeyEncryptionService} (no AWS/KMS/S3 needed), printing pass/fail per check to stdout
  * and exiting non-zero on any failure.
  *
- * <p>Covers exactly what {@code architecture/1. WEAKNESS.md}'s Finding 1 demands of the
- * verification, and the failure modes chunking must stay safe against:
+ * <p>Covers the properties chunked streaming encryption must hold, and the failure modes
+ * chunking must stay safe against:
  *
  * <ul>
  *     <li>multi-chunk round-trip correctness (partial, exact-multiple, and empty plaintexts),

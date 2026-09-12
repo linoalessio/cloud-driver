@@ -102,6 +102,9 @@ public final class DatabaseBackupScheduler {
 
     /** The active schedule, or {@code null} while stopped. */
     private volatile ScheduledFuture<?> scheduledFuture;
+    /** The tick period passed to {@code start} - the distributed scheduler lock's window length (see {@code RedisSchedulerLock}). */
+    private volatile java.time.Duration lockWindow = java.time.Duration.ofMinutes(1);
+
 
     /**
      * Outcome of the most recent cycle, for {@code BackupService#status()}.
@@ -176,6 +179,7 @@ public final class DatabaseBackupScheduler {
         if (this.scheduledFuture != null) {
             return;
         }
+        this.lockWindow = period;
 
         this.scheduledFuture = this.scheduledExecutorService.scheduleAtFixedRate(
                 this::tick, 0L, period.toMillis(), TimeUnit.MILLISECONDS
@@ -230,6 +234,9 @@ public final class DatabaseBackupScheduler {
      */
     private void tick() {
 
+        // Multi-instance: exactly one instance runs this tick per window - every instance runs
+        // when no Redis is configured or Redis fails (see RedisSchedulerLock).
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("database-backup", this.lockWindow)) return;
         if (!this.cycleRunning.compareAndSet(false, true)) {
             CloudDriver.getInstance().getTerminal().displayApproved("Backup tick skipped since the there is a remaining cycle running");
             return;

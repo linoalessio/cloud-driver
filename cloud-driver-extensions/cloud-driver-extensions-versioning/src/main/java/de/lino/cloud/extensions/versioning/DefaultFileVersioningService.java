@@ -40,15 +40,14 @@ final class DefaultFileVersioningService implements FileVersioningService {
 
     /**
      * How many versions a delta chain may hold before the next capture stores a full keyframe
-     * again - caps how many deltas {@link #reconstructContent} ever has to replay, per the
-     * roadmap Phase-4 design signed off 2026-09-12.
+     * again - caps how many deltas {@link #reconstructContent} ever has to replay.
      */
     static final int KEYFRAME_INTERVAL = 10;
 
     /**
      * {@inheritDoc}
      *
-     * <p><b>Delta storage (roadmap Phase 4):</b> when the previous retained version carries a
+     * <p><b>Delta storage:</b> when the previous retained version carries a
      * chunk-hash list, only the chunks of {@code previousContent} that differ from it are stored
      * (as their concatenation, in one versioned {@link StoredFile}) - a full copy ("keyframe")
      * is stored instead for the first version, after any legacy/chunk-size-mismatched

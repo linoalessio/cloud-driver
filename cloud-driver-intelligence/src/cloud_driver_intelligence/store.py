@@ -60,11 +60,10 @@ def _namespaced(kind: str, file_id: str) -> str:
 class VectorStore(Protocol):
     """The surface :mod:`.app` needs, satisfied by all three implementations below.
 
-    **Every vector records the model that produced it** (``model_id``, added 2026-09-12): reads
+    **Every vector records the model that produced it** (``model_id``): reads
     only ever return vectors written under the *same* model id they are queried for, so a vector
     from a previously configured model behaves like "not indexed" rather than being silently
-    compared in an incompatible vector space - see this service's model-versioning handoff
-    (``architecture/4. INTELLIGENCE MODEL VERSIONING.md``). ``model_id`` is deliberately a
+    compared in an incompatible vector space. ``model_id`` is deliberately a
     required, explicit argument on both ``upsert`` and ``vectors_for`` - a caller must always
     decide which model's space it is operating in, the same way ``kind`` is never allowed to
     silently default when it matters.
@@ -188,8 +187,8 @@ class SqliteVectorStore:
             )
             connection.execute("CREATE INDEX IF NOT EXISTS vectors_file_id ON vectors (file_id)")
             # Migration for stores created before model_id existed - SQLite has no portable
-            # "ADD COLUMN IF NOT EXISTS", so check PRAGMA table_info first. Option A (signed off
-            # by Lino, 2026-09-12): legacy rows are backfilled with the *currently configured*
+            # "ADD COLUMN IF NOT EXISTS", so check PRAGMA table_info first. Deliberate default:
+            # legacy rows are backfilled with the *currently configured*
             # model id - exactly right for a deployment that never changed the model, and no
             # worse than today for one that already did. Only rows the migration itself just
             # defaulted to '' are touched, so re-running on a migrated store is a no-op.
@@ -312,7 +311,7 @@ class ChromaVectorStore:
 
     @staticmethod
     def _legacy_default_model_id(kind: str) -> str:
-        """The model id a pre-``modelId`` entry is assumed to carry (Option A, signed off).
+        """The model id a pre-``modelId`` entry is assumed to carry (the deliberate legacy default).
 
         Unlike SQLite's one-shot ``UPDATE`` backfill, Chroma has no cheap ALTER-TABLE-style
         migration - rewriting every row just to stamp a metadata key is a far heavier operation -

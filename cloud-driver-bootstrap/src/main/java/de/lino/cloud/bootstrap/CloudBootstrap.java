@@ -315,8 +315,8 @@ public final class CloudBootstrap {
         final DataFactory dataFactory = CLOUD_DRIVER.getFactoryContainer().getDataFactory();
 
         // Built from the same aws-s3-* keys the object storage itself resolved from - the sweep
-        // must be able to AbortMultipartUpload an abandoned resumable session's parts (roadmap
-        // Phase 5, cost control: S3 bills for incomplete parts until aborted).
+        // must be able to AbortMultipartUpload an abandoned resumable session's parts (cost
+        // control: S3 bills for incomplete parts until aborted).
         final JsonDocument configuration = CLOUD_DRIVER.getConfiguration();
         final String keyPrefix = configuration.contains("aws-s3-key-prefix") ? configuration.getString("aws-s3-key-prefix") : "";
         final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService =

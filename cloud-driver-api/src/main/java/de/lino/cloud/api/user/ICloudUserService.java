@@ -274,7 +274,7 @@ public interface ICloudUserService {
     Optional<de.lino.cloud.api.file.FileChunkManifest> getChunkManifest(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
-     * Chunk-level content patch (roadmap Phase 4): replaces {@code storedFileId}'s content with
+     * Chunk-level content patch: replaces {@code storedFileId}'s content with
      * a new version assembled from its current content plus only the chunks that changed -
      * {@code changedChunks} maps chunk index → that chunk's new plaintext bytes, and {@code
      * newTotalSizeBytes} declares the new content's full size (chunks past the old end must all
@@ -304,8 +304,8 @@ public interface ICloudUserService {
 
     /**
      * Same as {@link #beginPresignedUpload(String, String, long, String)}, additionally taking
-     * the client's already-computed SHA-256 hex checksum for the dedup precheck (sign-off
-     * resolved 2026-09-12): a match against content {@code authUserId}'s account already stores
+     * the client's already-computed SHA-256 hex checksum for the dedup precheck: a match
+     * against content {@code authUserId}'s account already stores
      * skips the upload entirely - a dedup alias is registered and returned in {@link
      * PresignedUploadBegin#alreadyStored()}, zero bytes transferred. {@code null} (or a
      * malformed) checksum simply skips the precheck and behaves exactly like the checksum-less
@@ -324,7 +324,7 @@ public interface ICloudUserService {
                                                                       @Nullable String folderId);
 
     /**
-     * Begins a resumable multipart upload session (roadmap Phase 5) - the large-file
+     * Begins a resumable multipart upload session - the large-file
      * counterpart of {@link #beginPresignedUpload(String, String, long, String, String)}: same
      * quota/folder checks, same dedup precheck against the (here required) declared checksum,
      * same client-side encryption contract; but instead of one presigned {@code PUT}, the

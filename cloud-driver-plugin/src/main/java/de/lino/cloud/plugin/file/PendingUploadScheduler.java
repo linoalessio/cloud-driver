@@ -63,6 +63,9 @@ public final class PendingUploadScheduler {
 
     /** The active tick schedule, or {@code null} while stopped. */
     private volatile ScheduledFuture<?> scheduledFuture;
+    /** The tick period passed to {@code start} - the distributed scheduler lock's window length (see {@code RedisSchedulerLock}). */
+    private volatile java.time.Duration lockWindow = java.time.Duration.ofMinutes(1);
+
 
     /**
      * Same as {@link #PendingUploadScheduler(DataFactory, PendingUploadCache, ConnectivityChecker,
@@ -109,6 +112,7 @@ public final class PendingUploadScheduler {
         if (this.scheduledFuture != null) {
             return;
         }
+        this.lockWindow = period;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
                 this::tick, period.toMillis(), period.toMillis(), TimeUnit.MILLISECONDS
         );
@@ -141,6 +145,9 @@ public final class PendingUploadScheduler {
      */
     private void tick() {
 
+        // Multi-instance: exactly one instance runs this tick per window - every instance runs
+        // when no Redis is configured or Redis fails (see RedisSchedulerLock).
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("pending-upload", this.lockWindow)) return;
         if (this.pendingUploadCache.isEmpty()) return;
         if (!this.connectivityChecker.isAvailable()) return;
         if (!this.flushing.compareAndSet(false, true)) return;

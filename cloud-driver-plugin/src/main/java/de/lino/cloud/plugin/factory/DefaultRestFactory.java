@@ -287,7 +287,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * one HTTP method).
      */
     private static final String FILES_UPLOAD_URL_PATH = FILES_PATH + "/upload-url";
-    /** Path mounted by {@link #start} for the resumable multipart upload-session routes (roadmap Phase 5) - begin/status/part-url/complete/abort. */
+    /** Path mounted by {@link #start} for the resumable multipart upload-session routes - begin/status/part-url/complete/abort. */
     private static final String FILES_UPLOAD_SESSION_PATH = FILES_PATH + "/upload-session";
     /**
      * Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe}. Unlike {@link
@@ -2284,8 +2284,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .supplyAsync(() -> {
                     // Delete the scratch file on every path out of this block - a successful
                     // upload, a business-rule failure (e.g. UploadQuotaExceededException), or an
-                    // I/O failure reading it back - matching Phase 4's "delete on both success
-                    // and failure" requirement. By the time uploadFile returns (or throws), its
+                    // I/O failure reading it back - deleted on success and failure alike.
+                    // By the time uploadFile returns (or throws), its
                     // content is already fully in hand (streamed to the object store, copied into
                     // the StoredFile it built, or queued as an inline copy by DefaultFileFactory's
                     // offline path) - the scratch file's job is done either way, so this never
@@ -2362,7 +2362,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         return scratchFile;
     }
 
-    /** Best-effort delete of a Phase-3 scratch file - a failure here is logged nowhere, matching this class's other quiet-cleanup helpers; the file is small and transient either way. */
+    /** Best-effort delete of an upload's scratch file - a failure here is logged nowhere, matching this class's other quiet-cleanup helpers; the file is small and transient either way. */
     private static void deleteScratchFileQuietly(final Path scratchFile) {
         try {
             Files.deleteIfExists(scratchFile);
@@ -2501,7 +2501,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 }));
     }
 
-    // --- resumable multipart upload sessions (roadmap Phase 5) --------------------------------
+    // --- resumable multipart upload sessions --------------------------------
 
     /**
      * The session-geometry half of a {@code POST /files/upload-session}/{@code GET
@@ -2520,8 +2520,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * {@code POST /files/upload-session} - begins a resumable multipart upload session (roadmap
-     * Phase 5), the large-file counterpart of {@code POST /files/upload-url}: same {@link
+     * {@code POST /files/upload-session} - begins a resumable multipart upload session, the
+     * large-file counterpart of {@code POST /files/upload-url}: same {@link
      * BeginUploadRequest} body, but {@code checksumSha256} is <b>required</b> here (it drives
      * the dedup precheck and completion metadata). Responds {@code 200} with either {@code
      * {"alreadyStored": <summary>}} (dedup precheck hit - upload nothing) or the session's

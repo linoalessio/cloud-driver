@@ -3,7 +3,7 @@ package de.lino.cloud.api.file;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * One freshly begun resumable upload session (roadmap Phase 5) - what {@code
+ * One freshly begun resumable upload session - what {@code
  * CloudUserService#beginResumableUpload} answers when the declared checksum did <b>not</b>
  * short-circuit into a dedup alias: the session's identity plus the fixed part geometry the
  * client cuts its (encrypted, when {@code encryption} is set) byte stream into. Part URLs are

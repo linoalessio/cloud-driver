@@ -216,8 +216,7 @@ public class CloudRestExtension extends Extension {
      * production shape is {@code rest-server-bind-host: "127.0.0.1"} behind Caddy; a deliberate
      * plain-HTTP deployment (e.g. a LAN-only test box) can simply ignore the warning - it warns,
      * never refuses, matching {@code AwsKmsKeyEncryptionService}'s "operator opts in
-     * deliberately" pattern. Closes the one optional item left open by {@code architecture/1.
-     * WEAKNESS.md} Finding 3.
+     * deliberately" pattern.
      *
      * @param bindHost the address the REST server is about to bind
      */
@@ -397,7 +396,7 @@ public class CloudRestExtension extends Extension {
 
     /**
      * Builds the {@link de.lino.cloud.api.s3storage.ResumableUploadService} for resumable
-     * multipart upload sessions (roadmap Phase 5) from the exact same {@code aws-s3-*}
+     * multipart upload sessions from the exact same {@code aws-s3-*}
      * configuration keys {@link #resolvePresignedTransferService} reads - a deployment that has
      * presigned transfer has sessions too, with no additional configuration. {@code null}
      * (sessions unavailable, the routes answer {@code 503}) when S3 isn't configured.

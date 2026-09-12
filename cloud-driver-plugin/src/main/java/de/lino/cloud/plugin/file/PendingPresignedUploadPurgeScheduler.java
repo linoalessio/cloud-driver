@@ -73,7 +73,7 @@ public final class PendingPresignedUploadPurgeScheduler {
     /** Deletes an abandoned ticket's orphaned S3 object. */
     private final ObjectStorageService objectStorageService;
     /**
-     * Aborts an abandoned <b>session</b> row's multipart upload (roadmap Phase 5) - S3 bills for
+     * Aborts an abandoned <b>session</b> row's multipart upload - S3 bills for
      * incomplete parts until aborted, so this is cost control, not tidying. {@code null} on a
      * deployment without resumable sessions configured; a session row aged out on such an
      * instance is left in place (its parts can only be freed by an abort), never half-purged.
@@ -90,6 +90,9 @@ public final class PendingPresignedUploadPurgeScheduler {
 
     /** The active tick schedule, or {@code null} while stopped. */
     private volatile ScheduledFuture<?> scheduledFuture;
+    /** The tick period passed to {@code start} - the distributed scheduler lock's window length (see {@code RedisSchedulerLock}). */
+    private volatile java.time.Duration lockWindow = java.time.Duration.ofMinutes(1);
+
 
     /**
      * @param dataFactory scans/removes {@link PendingPresignedUpload} rows, and confirms whether a real {@link StoredFile} now exists under a given id
@@ -169,6 +172,7 @@ public final class PendingPresignedUploadPurgeScheduler {
         if (this.scheduledFuture != null) {
             return;
         }
+        this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
                 this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
         );
@@ -196,6 +200,11 @@ public final class PendingPresignedUploadPurgeScheduler {
 
     /** One scheduled sweep, guarded by {@link #purging} against overlapping with a still-running previous tick. */
     private void tick() {
+        // Multi-instance: exactly one instance runs this tick per window - every instance runs
+        // when no Redis is configured or Redis fails (see RedisSchedulerLock).
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("pending-presigned-upload-purge", this.lockWindow)) {
+            return;
+        }
         if (!this.purging.compareAndSet(false, true)) {
             return;
         }
@@ -232,7 +241,7 @@ public final class PendingPresignedUploadPurgeScheduler {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             return; // best-effort - leave this row for the next tick rather than risking a wrong delete on an inconclusive lookup
         }
-        // A resumable session row (roadmap Phase 5): its abandoned state is in-progress multipart
+        // A resumable session row: its abandoned state is in-progress multipart
         // parts, not a finished object - free them via abort (cost control: S3 bills for parts
         // until aborted). No abort service configured -> leave the row untouched; half-purging it
         // would orphan the billed parts with nothing left pointing at them.

@@ -3,14 +3,14 @@
 Mirrors cloud-driver-platforms-rest's ApiClient (Java) endpoint-for-endpoint: every route
 documented under CLAUDE.md's "RestFactory" / "JWT authentication for end-user clients" / "Folder
 organization" / "File/folder sharing between accounts" / "Metrics/observability exporter" sections,
-plus every server-side capability added since under `architecture/MICRO.md` (thumbnails, content
+plus every server-side capability added since under the API reference (thumbnails, content
 versioning, the activity feed, search, sharing permission levels + public links, content-scan
 status, and the sync optimistic-concurrency precondition) is reachable through one of the resource
 namespaces below (`.auth`, `.cloud_users`, `.files`, `.folders`, `.trash`, `.admin`, `.activity`)
 or a top-level method (`.search`, `.download_public_file_to_path`/`_bytes`). See
 `async_client.AsyncCloudDriverClient` for an async facade built on top of this one via a
 thread-pool offload, and `live_updates.LiveUpdateClient` for the GET /ws/updates push channel.
-Webhooks (`architecture/MICRO.md` section 8) are deliberately not mirrored here - CLAUDE.md
+Webhooks () are deliberately not mirrored here - CLAUDE.md
 documents that capability as Java-only.
 """
 
@@ -224,7 +224,7 @@ class CloudDriverClient:
 
         return LiveUpdateClient(self.base_url, lambda: self._access_token, reconnect_delay=reconnect_delay)
 
-    # -- search (architecture/MICRO.md section 5) ----------------------------------------------
+    # -- search  ----------------------------------------------
 
     def search(self, query: str, *, limit: int = 25) -> list[SearchResult]:
         """GET /search?q=&limit= - filename/indexed-text-content search over the caller's own
@@ -273,7 +273,7 @@ class CloudDriverClient:
         resp = self._request("GET", f"/files/{file_id}/tags", params={"limit": limit})
         return [TagSuggestion.model_validate(x) for x in resp.json()]
 
-    # -- public share links (architecture/MICRO.md section 6) ---------------------------------
+    # -- public share links  ---------------------------------
 
     def download_public_file_to_path(
         self,
@@ -520,7 +520,7 @@ class _FilesResource(_Resource):
     ) -> StoredFileSummary:
         """PUT /files/{id}/content - overwrites file_id's content in place, capturing whatever was
         live beforehand as a new retained version (see .list_versions/.restore_version;
-        `architecture/MICRO.md` section 2). Pass `expected_updated_at_epoch_millis` (from a prior
+        ). Pass `expected_updated_at_epoch_millis` (from a prior
         .get()/.list() call's `updated_at_epoch_milli`) for optimistic concurrency (section 10): if
         another write already changed the file since that timestamp, the canonical file is left
         completely untouched and this raises SyncConflictError instead of silently overwriting a
@@ -655,7 +655,7 @@ class _FilesResource(_Resource):
         """POST /files/{id}/share. `permission_level` is "VIEW" (default) or "EDIT" - EDIT lets
         the grantee call .replace_content on this exact file (a direct grant only, never
         folder-inherited); `expires_at_epoch_millis` defaults to never-expiring
-        (`architecture/MICRO.md` section 6). Existing callers passing neither keyword argument get
+        (). Existing callers passing neither keyword argument get
         the exact pre-section-6 behavior."""
         self._c._request(
             "POST",
@@ -759,7 +759,7 @@ class _FoldersResource(_Resource):
         expires_at_epoch_millis: int | None = None,
     ) -> None:
         """POST /folders/{id}/share. See `_FilesResource.share`'s docstring for the two new
-        keyword arguments (`architecture/MICRO.md` section 6) - note EDIT permission has no
+        keyword arguments () - note EDIT permission has no
         defined meaning on a folder grant server-side (VIEW-only access is honored either way)."""
         self._c._request(
             "POST",
@@ -815,7 +815,7 @@ class _TrashResource(_Resource):
 
 class _ActivityResource(_Resource):
     """GET /activity - the caller's global activity feed across every file/folder they own or have
-    been shared, newest first (`architecture/MICRO.md` section 3). For a single file/folder's own
+    been shared, newest first (). For a single file/folder's own
     history, use `.files.list_activity`/`.folders.list_activity` instead."""
 
     def list(self, *, limit: int | None = None, cursor: str | None = None) -> Page[ActivityEntry]:

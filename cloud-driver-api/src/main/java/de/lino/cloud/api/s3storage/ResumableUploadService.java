@@ -6,7 +6,7 @@ import java.time.Duration;
 import java.util.Map;
 
 /**
- * The thin object-store boundary behind resumable multipart upload sessions (roadmap Phase 5):
+ * The thin object-store boundary behind resumable multipart upload sessions:
  * explicit control over S3's own multipart-upload primitives - create, per-part presigned URLs,
  * a durable "which parts actually landed" listing, complete, abort - so a client that loses
  * connectivity mid-transfer can ask what the store already holds and re-send only the missing

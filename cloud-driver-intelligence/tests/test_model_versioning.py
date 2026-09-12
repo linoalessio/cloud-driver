@@ -1,9 +1,9 @@
-"""Tests for embedding-model versioning (``architecture/4. INTELLIGENCE MODEL VERSIONING.md``).
+"""Tests for embedding-model versioning.
 
 Every stored vector records the model id that produced it; reads only ever compare vectors from
 the *currently configured* model, and ``/health`` reports how many stored vectors are stale.
-Legacy rows (written before the ``model_id`` column existed) follow Option A - assumed to belong
-to the currently configured model - signed off by Lino, 2026-09-12.
+Legacy rows (written before the ``model_id`` column existed) are assumed to belong to the
+currently configured model - the deliberate, documented default.
 """
 
 from __future__ import annotations

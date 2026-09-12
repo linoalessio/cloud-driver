@@ -54,7 +54,7 @@ import java.util.stream.Stream;
 
 /**
  * Standalone, runnable worked example (same convention as the other samples) exercising the
- * resumable multipart upload sessions (roadmap Phase 5) at the service level, against in-memory
+ * resumable multipart upload sessions at the service level, against in-memory
  * fakes of the two thin object-store boundaries ({@link ResumableUploadService}/{@link
  * PresignedTransferService}) - the real {@code S3ResumableUploadService} is a direct AWS-SDK
  * wrapper, so everything worth testing (session persistence, dedup precheck, status merge,

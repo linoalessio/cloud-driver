@@ -8,8 +8,7 @@ import java.util.Map;
 /**
  * A {@link Serialized} entity that declares keyed secondary-index values for {@link
  * DataFactory#getEntitiesByIndex} - the contract behind the indexed per-entity lookups that
- * replaced the old "decrypt and scan every row of the type" pattern (roadmap Phase 1,
- * 2026-09-12).
+ * replaced the old "decrypt and scan every row of the type" pattern.
  *
  * <p><b>Hand-written, never reflective.</b> Each implementing entity spells out its own index
  * names and values explicitly in {@link #secondaryIndexKeys()} - typically alongside {@code

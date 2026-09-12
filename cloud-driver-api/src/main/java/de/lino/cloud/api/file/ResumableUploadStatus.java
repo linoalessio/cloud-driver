@@ -5,7 +5,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 
 /**
- * One resumable upload session's durable progress (roadmap Phase 5) - what {@code
+ * One resumable upload session's durable progress - what {@code
  * CloudUserService#getResumableUploadStatus} answers after a reconnect: the same part geometry
  * the session's {@link ResumableUploadTicket} declared, plus which part numbers the object
  * store confirms it already holds (from the store's own listing, never a local mirror) - the

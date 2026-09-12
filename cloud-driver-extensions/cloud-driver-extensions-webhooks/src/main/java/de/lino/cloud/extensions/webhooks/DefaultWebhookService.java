@@ -72,7 +72,7 @@ public final class DefaultWebhookService implements WebhookService {
     /**
      * {@link #dispatchExecutor}'s work queue, held separately so {@link
      * #pendingDispatchQueueDepth()} can report its depth - the observable half of the pool's
-     * tunability (old roadmap Finding 10): a persistently growing depth tells an operator the
+     * tunability: a persistently growing depth tells an operator the
      * configured pool size no longer keeps up with this deployment's event rate.
      */
     private final LinkedBlockingQueue<Runnable> dispatchQueue;

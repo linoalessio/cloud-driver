@@ -281,7 +281,7 @@ public final class DefaultFileFactory extends FileFactory {
             // Fully streamed end to end: the plaintext is read straight off the scratch file and
             // chunk-encrypted on the fly - neither plaintext nor ciphertext is ever materialized
             // on the heap, closing the "the encryptor streams but what feeds it doesn't" half of
-            // the S3 heap-buffering finding (roadmap Phase 0, V1).
+            // the S3 heap-buffering finding.
             try (InputStream rawContent = Files.newInputStream(file.contentSourceFile())) {
                 final StoredFileContentChannel.StreamingPayload payload = this.contentChannel.sendStream(
                         file.fileId(), rawContent, file.sizeBytes()

@@ -137,7 +137,7 @@ public abstract class DataFactory {
      * Retrieves and decrypts every entity of {@code type} whose {@link
      * SecondaryIndexed#secondaryIndexKeys()} maps {@code indexName} to {@code indexKey} - the
      * indexed replacement for the {@code getEntities(type).stream().filter(field::equals)}
-     * full-scan pattern (roadmap Phase 1). O(1) against the type's current in-memory index
+     * full-scan pattern. O(1) against the type's current in-memory index
      * snapshot; the snapshot is rebuilt only when the type's cached {@link #getEntities} list
      * itself changes - see {@link SecondaryIndexed}'s own Javadoc for the full contract, and for
      * why this is deliberately not a SQL index (rows are ciphertext).

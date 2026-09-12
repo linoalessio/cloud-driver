@@ -168,7 +168,7 @@ class LiveUpdateEvent(_Model):
 
 
 class FileVersionSummary(_Model):
-    """One entry in GET /files/{id}/versions - `architecture/MICRO.md` section 2 (versioning)."""
+    """One entry in GET /files/{id}/versions - (versioning)."""
 
     version_number: int = Field(alias="versionNumber")
     captured_at_epoch_millis: int = Field(alias="capturedAtEpochMillis")
@@ -177,7 +177,7 @@ class FileVersionSummary(_Model):
 
 class ActivityEntry(_Model):
     """One raw AuditEvent entry, as returned by GET /files/{id}/activity, GET /folders/{id}/activity,
-    and GET /activity - `architecture/MICRO.md` section 3. Distinct from AuditLogEntry (which is
+    and GET /activity - . Distinct from AuditLogEntry (which is
     the /admin/audit-log shape, with an already-resolved actor_email instead of a raw
     actor_auth_user_id)."""
 
@@ -190,7 +190,7 @@ class ActivityEntry(_Model):
 
 
 class SearchResult(_Model):
-    """One match returned by GET /search - `architecture/MICRO.md` section 5 (search/indexing)."""
+    """One match returned by GET /search - (search/indexing)."""
 
     stored_file_id: str = Field(alias="storedFileId")
     file_name: str = Field(alias="fileName")
@@ -249,7 +249,7 @@ class TagSuggestion(_Model):
 
 
 class PublicFileLinkSummary(_Model):
-    """An unauthenticated public share link on a file - `architecture/MICRO.md` section 6. `token`
+    """An unauthenticated public share link on a file - . `token`
     is the whole of what's needed to resolve the file's content through the anonymous
     GET /public/files/{token} route (see CloudDriverClient.download_public_file_to_path/_bytes)."""
 

@@ -3,8 +3,8 @@ package de.lino.cloud.api.file;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * The outcome of beginning a resumable upload session - exactly one of the two is set (roadmap
- * Phase 5, dedup sign-off resolved 2026-09-12): when the declared checksum matches content the
+ * The outcome of beginning a resumable upload session - exactly one of the two is set: when
+ * the declared checksum matches content the
  * caller's account already stores, the upload is skipped outright and {@code alreadyStored}
  * carries the freshly registered dedup alias (zero bytes transferred - the whole point of
  * declaring the checksum up front); otherwise {@code ticket} carries the session to upload

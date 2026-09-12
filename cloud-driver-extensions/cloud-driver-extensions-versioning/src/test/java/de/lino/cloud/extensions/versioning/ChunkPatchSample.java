@@ -50,7 +50,7 @@ import java.util.stream.Stream;
 
 /**
  * Standalone, runnable worked example (same convention as the other samples) exercising the
- * chunk-diff mechanism end to end (roadmap Phase 4, format signed off 2026-09-12): the chunk
+ * chunk-diff mechanism end to end: the chunk
  * manifest route, {@code PATCH /files/{id}/content} splicing, and - with a real {@link
  * DefaultFileVersioningService} published - version delta capture, chain reconstruction, and
  * restore. Boots the full JWT-gated REST stack against a throwaway local JSON database and acts

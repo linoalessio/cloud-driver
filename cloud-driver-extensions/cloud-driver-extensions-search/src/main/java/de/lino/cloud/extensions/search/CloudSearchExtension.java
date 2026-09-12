@@ -32,7 +32,7 @@ public class CloudSearchExtension extends Extension {
     /**
      * Publishes a {@link PostgresSearchIndexService} when this deployment's registered database
      * is a Postgres {@code SQLDatabaseProvider} (the persistent, GIN-indexed, restart-surviving
-     * index - roadmap Phase 3.1, sharing the very same {@code SQLExecution} connection pool
+     * index, sharing the very same {@code SQLExecution} connection pool
      * every entity table already runs through), falling back to a fresh {@link
      * InMemorySearchIndexService} otherwise (a JSON-file deployment, or the schema probe
      * failing) - search must keep working either way, matching the "must keep working with

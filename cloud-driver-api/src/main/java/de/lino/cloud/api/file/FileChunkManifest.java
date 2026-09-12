@@ -19,8 +19,7 @@ import java.util.List;
 
 /**
  * The per-chunk plaintext hash manifest of one {@link StoredFile}'s current content - the
- * server-side half of chunk-level diffing (roadmap Phase 4, format signed off by Lino
- * 2026-09-12): a sync client fetches this via {@code GET /files/{id}/chunk-manifest}, hashes its
+ * server-side half of chunk-level diffing: a sync client fetches this via {@code GET /files/{id}/chunk-manifest}, hashes its
  * own local copy the same way, and sends only the chunks that actually differ through {@code
  * PATCH /files/{id}/content} - so the cost of a small edit to a large file scales with the edit,
  * not the file.

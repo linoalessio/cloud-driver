@@ -65,6 +65,9 @@ final class FileVersionPurgeScheduler {
     private final ScheduledExecutorService scheduledExecutorService;
     private final AtomicBoolean purging = new AtomicBoolean(false);
     private volatile ScheduledFuture<?> scheduledFuture;
+    /** The tick period passed to {@code start} - the distributed scheduler lock's window length (see {@code RedisSchedulerLock}). */
+    private volatile java.time.Duration lockWindow = java.time.Duration.ofMinutes(1);
+
 
     FileVersionPurgeScheduler(@NotNull final DataFactory dataFactory, @NotNull final FileFactory fileFactory,
                                final int maxVersionsPerFile, @NotNull final Duration retentionPeriod, @NotNull final Logger logger) {
@@ -96,6 +99,7 @@ final class FileVersionPurgeScheduler {
     /** Starts ticking every {@code tickPeriod}. A no-op if already running - call {@link #stop()} first to change the period. */
     synchronized void start(@NotNull final Duration tickPeriod) {
         if (this.scheduledFuture != null) return;
+        this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
                 this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -116,6 +120,9 @@ final class FileVersionPurgeScheduler {
 
     /** One scheduled sweep, guarded against overlapping with a still-running previous tick. */
     private void tick() {
+        // Multi-instance: exactly one instance runs this tick per window - every instance runs
+        // when no Redis is configured or Redis fails (see RedisSchedulerLock).
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("file-version-purge", this.lockWindow)) return;
         if (!this.purging.compareAndSet(false, true)) return;
         try {
             this.purgeExpiredVersions();
@@ -156,7 +163,7 @@ final class FileVersionPurgeScheduler {
                     oldestRetained = version; // newestFirst order: the last one to pass is the oldest retained
                 }
             }
-            // Delta chains (roadmap Phase 4): a delta is reconstructed from every older version
+            // Delta chains: a delta is reconstructed from every older version
             // back to its keyframe, so the purge boundary must snap BACK to the keyframe the
             // oldest-retained version's chain starts at - purging that keyframe (or any link)
             // would leave retained versions unreconstructable. Rows are chained by contiguous

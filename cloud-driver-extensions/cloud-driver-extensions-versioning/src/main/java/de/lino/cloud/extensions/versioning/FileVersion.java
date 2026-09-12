@@ -71,7 +71,7 @@ public final class FileVersion extends Serialized implements SecondaryIndexed {
     /**
      * Whether {@link #versionedFileId} holds this version's <b>full</b> content (a keyframe) or
      * only its changed chunks (a delta - see {@link #deltaChunkIndices}). {@code null} on every
-     * row written before delta storage existed (roadmap Phase 4, 2026-09-12) - such rows always
+     * row written before delta storage existed - such rows always
      * hold full copies, so {@code null} reads as keyframe via {@link #isKeyframe()}.
      */
     private final Boolean keyframe;

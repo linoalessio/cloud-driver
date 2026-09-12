@@ -35,8 +35,8 @@ import java.util.Optional;
 
 /**
  * Standalone, runnable worked example (not an {@code mvn test} target - see "Testing" in {@code
- * CLAUDE.md}) exercising the content-file-backed streaming upload path added for the roadmap's
- * Phase 0 V1 fix, end to end against an in-memory object store and {@link
+ * CLAUDE.md}) exercising the content-file-backed streaming upload path, end to end against an
+ * in-memory object store and {@link
  * InMemoryKeyEncryptionService} (no AWS/KMS/S3 needed), printing pass/fail per check to stdout
  * and exiting non-zero on any failure.
  *

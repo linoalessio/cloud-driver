@@ -16,15 +16,14 @@ import java.util.regex.Pattern;
 
 /**
  * Persistent, indexed {@link SearchIndexService} backed by a Postgres {@code tsvector}/GIN table
- * (roadmap Phase 3.1) - replaces {@link InMemorySearchIndexService} on every Postgres-backed
+ * - replaces {@link InMemorySearchIndexService} on every Postgres-backed
  * deployment: the index survives restarts (no cold "search is broken" window, no lost content
  * extracts), queries run against a real GIN index instead of a per-account linear scan, and -
  * since Postgres is already the shared store every instance talks to - the index is inherently
- * shared across instances, dissolving {@code CLUSTERING_IMPL.md}'s per-instance-index non-goal
- * as a side effect.
+ * shared across instances - a multi-instance deployment needs no per-instance index rebuild.
  *
  * <p><b>A deliberate, signed-off exception to "nothing plaintext ever reaches the database"</b>
- * (Lino, 2026-09-12 - see {@code docs/security.md}): this table stores file names, folder ids,
+ * (a deliberate, documented decision - see {@code docs/security.md}): this table stores file names, folder ids,
  * and search lexemes <em>derived</em> from extracted file content as plaintext, because that is
  * what makes a database-side {@code tsvector} index possible at all. It never stores the raw
  * content itself, and everything here is derived, rebuildable state. It is also this codebase's

@@ -2939,7 +2939,7 @@ public final class ApiClient implements AutoCloseable {
         }
     }
 
-    // --- resumable multipart upload sessions (roadmap Phase 5) -----------------------------
+    // --- resumable multipart upload sessions -----------------------------
 
     /**
      * {@code POST /files/upload-session}: begins a resumable multipart upload session - the

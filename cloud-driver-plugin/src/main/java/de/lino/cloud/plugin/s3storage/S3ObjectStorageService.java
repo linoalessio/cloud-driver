@@ -73,30 +73,26 @@ import java.util.concurrent.CompletionException;
  * this explicitly once an S3 bucket and IAM credentials are actually provisioned for a
  * deployment, exactly like {@code AwsKmsKeyEncryptionService} today.
  *
- * <p><strong>Streaming/threading verification (roadmap Phase 0, verified 2026-09-12):</strong>
+ * <p><strong>Streaming and threading model, end to end:</strong>
  * <ul>
- *   <li><b>V1 (upload plaintext streaming)</b> - was open, now closed: the chunk encryptor
- *       ({@code StoredFileContentChannel#sendStream}) always streamed, but until 2026-09-12 its
- *       feed was a full in-heap plaintext array ({@code StoredFile#rawStorableBytes()}, itself
- *       decoded from the {@code contentBase64} copy, itself read whole from the request's scratch
- *       file). Uploads above {@code DefaultRestFactory#STREAMED_UPLOAD_THRESHOLD_BYTES} now flow
+ *   <li><b>Upload plaintext streaming</b> - uploads above {@code
+ *       DefaultRestFactory#STREAMED_UPLOAD_THRESHOLD_BYTES} flow
  *       scratch-file → {@code CloudUserService#uploadFile(String, String, Path, String)} →
  *       content-file-backed {@code StoredFile} → {@code DefaultFileFactory#prepareForPersistence}
  *       → {@link #putObject(String, InputStream, long)} with no full plaintext or ciphertext array
  *       at any point. Below the threshold, the in-heap path is a deliberate keep (compression +
  *       search/intelligence text extraction) - see that constant's Javadoc.</li>
- *   <li><b>V2 (download ciphertext streaming)</b> - already closed by the 2026-09-11 streaming
- *       work: {@code DefaultFileFactory#resolveFromObjectStorage} reads via {@link
+ *   <li><b>Download ciphertext streaming</b> -
+ *       {@code DefaultFileFactory#resolveFromObjectStorage} reads via {@link
  *       #getObjectStream(String)} + {@code receiveFully} (ciphertext never materialized;
  *       decrypted chunk by chunk), and {@code DefaultRestFactory#resolveDownloadableContent}
  *       streams a legacy plaintext direct-transfer object straight from S3 to the response with
  *       no array at all. The decrypted <em>plaintext</em> of an app-encrypted file is still
  *       materialized once - required by checksum verification, DEFLATE decompression, and {@code
- *       StoredFile}'s hydration model - a known bound, not a leftover from the old
- *       full-ciphertext-buffer path. The one remaining {@link #getObject(String)} call site
+ *       StoredFile}'s hydration model - a known, deliberate bound. The one remaining {@link #getObject(String)} call site
  *       ({@code resolveFromObjectStorage}'s legacy plaintext direct-transfer branch) buffers
  *       content that {@code withResolvedContent} must materialize anyway.</li>
- *   <li><b>V3 (blocking {@code .join()} thread placement)</b> - confirmed correct as-is: every
+ *   <li><b>Blocking {@code .join()} thread placement</b> - every
  *       REST route that can reach this class's blocking {@code completionFuture().join()} calls
  *       dispatches its work through {@code ctx.future(() -> MultiTaskingFactory.supplyAsync(...))}
  *       onto the shared virtual-thread-per-task executor, and {@code

@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Standalone, runnable worked example (not an {@code mvn test} target - see "Testing" in {@code
  * CLAUDE.md}) exercising {@link EntityDatabaseClient#getEntitiesByIndex} - the in-memory
- * secondary-index engine behind the roadmap's Phase 1 indexed lookups - end to end against an
+ * secondary-index engine behind the hand-declared indexed lookups - end to end against an
  * in-memory fake {@link DatabaseProvider} and {@link InMemoryKeyEncryptionService} (no
  * Postgres/AWS needed), printing pass/fail per check to stdout and exiting non-zero on any
  * failure.

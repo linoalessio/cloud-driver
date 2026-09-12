@@ -5,7 +5,7 @@ import org.jetbrains.annotations.Nullable;
 /**
  * The outcome of beginning a single-{@code PUT} presigned upload with a declared checksum -
  * exactly one of the two is set, with the same dedup-precheck semantics {@link
- * ResumableUploadBegin} documents (sign-off resolved 2026-09-12): a checksum match against
+ * ResumableUploadBegin} documents: a checksum match against
  * content the caller's account already stores skips the upload entirely and registers a dedup
  * alias instead.
  *

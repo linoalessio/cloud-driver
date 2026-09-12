@@ -160,7 +160,7 @@ same HTTP/WebSocket API).
   already serves its hot path — `FULL` there would hold that content twice.
 - REST handlers never block a request-handling thread — the underlying database/encryption work
   always runs on a virtual thread.
-- Chunk-level diffing (roadmap Phase 4): every server-mediated content write also records a
+- Chunk-level diffing: every server-mediated content write also records a
   per-chunk plaintext SHA-256 manifest (`FileChunkManifest`, envelope-encrypted like every
   entity; chunk boundary = the 1 MiB encryption chunk, `Constraints.CONTENT_CHUNK_SIZE_BYTES`).
   A sync client diffs against `GET /files/{id}/chunk-manifest` and sends only changed chunks via
@@ -169,7 +169,7 @@ same HTTP/WebSocket API).
   history uses the same mechanism: a captured version stores only its changed chunks as a delta
   against the previous version, with a full keyframe every 10 versions capping reconstruction
   replay; the purge scheduler never severs a chain (its boundary snaps back to a keyframe).
-- Large direct-transfer uploads (roadmap Phase 5) go through resumable multipart sessions:
+- Large direct-transfer uploads go through resumable multipart sessions:
   `POST /files/upload-session` starts one (the required declared checksum first runs a
   per-account dedup precheck — a match registers an alias with zero bytes uploaded), the client
   uploads fixed 8 MiB byte ranges of its (client-encrypted, deterministic) object stream through
@@ -189,6 +189,15 @@ same HTTP/WebSocket API).
   bounded by notification delivery rather than a poll interval.
 - The backup job uses keyset pagination rather than a single unbounded query, since file-content
   tables can reach sizes that would otherwise exhaust client memory.
+- Multi-instance coordination is Redis-backed and strictly optional: with a
+  Redis configured, the five periodic schedulers (trash purge, version purge, pending-upload
+  flush, presigned-ticket purge, database backup) each run on exactly one instance per tick
+  window (`RedisSchedulerLock`, built on the existing rate-limit counter primitive — a
+  duplicate run on lock failure is harmless, every scheduler is idempotent), and a
+  pending-upload enqueue is visible across instances (`RedisPendingUploadCache` — only minimal
+  metadata crosses Redis, never content or names; the enqueueing instance alone can retry, since
+  it alone holds the bytes). No Redis, or a failing Redis, means every instance simply behaves
+  single-instance — Redis is never a hard dependency.
 - Hot per-user/per-file lookups (login by email, an account's file/folder listings, share and
   version resolution) go through keyed in-memory secondary indexes (`SecondaryIndexed` /
   `DataFactory.getEntitiesByIndex`), not full scans: each entity hand-declares its index keys (no

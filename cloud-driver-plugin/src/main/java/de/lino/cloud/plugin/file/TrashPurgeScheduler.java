@@ -81,6 +81,9 @@ public final class TrashPurgeScheduler {
 
     /** The active tick schedule, or {@code null} while stopped. */
     private volatile ScheduledFuture<?> scheduledFuture;
+    /** The tick period passed to {@code start} - the distributed scheduler lock's window length (see {@code RedisSchedulerLock}). */
+    private volatile java.time.Duration lockWindow = java.time.Duration.ofMinutes(1);
+
 
     /**
      * @param dataFactory removes purged ownership/folder rows, and looks up/updates each owner's usage total
@@ -109,6 +112,7 @@ public final class TrashPurgeScheduler {
         if (this.scheduledFuture != null) {
             return;
         }
+        this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
                 this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
         );
@@ -158,6 +162,11 @@ public final class TrashPurgeScheduler {
 
     /** One scheduled sweep, guarded by {@link #purging} against overlapping with a still-running previous tick. */
     private void tick() {
+        // Multi-instance: exactly one instance runs this tick per window - every instance runs
+        // when no Redis is configured or Redis fails (see RedisSchedulerLock).
+        if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("trash-purge", this.lockWindow)) {
+            return;
+        }
         if (!this.purging.compareAndSet(false, true)) {
             return;
         }

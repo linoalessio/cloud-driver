@@ -45,8 +45,8 @@ import java.util.stream.Stream;
 
 /**
  * Standalone, runnable worked example (same convention as {@link RestFactoryCloudUserSample})
- * exercising the {@code ETag}/{@code If-None-Match} conditional-download handshake added by the
- * roadmap's Phase 2 - self-driving, unlike that sample: it boots the full JWT-gated REST stack
+ * exercising the {@code ETag}/{@code If-None-Match} conditional-download handshake -
+ * self-driving, unlike that sample: it boots the full JWT-gated REST stack
  * against a throwaway local JSON database, then acts as its own HTTP client, printing pass/fail
  * per check to stdout and exiting non-zero on any failure.
  *
