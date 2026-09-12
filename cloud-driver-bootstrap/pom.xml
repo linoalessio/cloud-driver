@@ -46,7 +46,7 @@
         </dependency>
 
         <!-- Not used by any class in this module directly - needed at runtime by
-             cloud-driver-extensions-thumbnails (section 1, architecture/MICRO.md), for the exact
+             cloud-driver-extensions-thumbnails, for the exact
              same classloading reason as the micrometer-registry-prometheus dependency above:
              every extension jar is unshaded and loaded via its own URLClassLoader, parent-first
              against this jar's own shaded classpath, so a third-party dependency an extension

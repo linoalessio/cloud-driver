@@ -16,6 +16,7 @@ next to the running backend process — two required files (below) plus an optio
 | `jwt-signing-key` | string | REST API start is skipped (with a warning) if unset | JWT-authenticated REST API |
 | `rest-server-port` | int | **required** — startup fails if unset | REST API |
 | `rest-server-bind-host` | string | `0.0.0.0` (every interface) | REST API — set to `127.0.0.1` when fronted by a TLS-terminating reverse proxy. A non-loopback value logs a startup warning (Javalin serves plain HTTP; see docs/security.md "Transport security") |
+| `aws-s3-max-concurrency` | int | `50` | Concurrent-connection cap of the shared async S3 client; with several instances against one bucket, size it per instance count, not per process |
 | `webhook-dispatch-pool-size` | int | `4` | Webhook first-attempt delivery concurrency; queue depth is observable as the `cloud_driver_webhook_dispatch_queue_depth` gauge |
 | `smtp-host` | string | Falls back to logging verification codes instead of e-mailing them | Outgoing verification e-mails |
 | `smtp-port` | int | — | SMTP sending |
@@ -78,7 +79,9 @@ next to the running backend process — two required files (below) plus an optio
   embeddable anyway. A value in the low tens of MiB is more proportionate.
 - A second credentials file, `redis-database.json` (same directory, same
   `address`/`userName`/`password`/`port`/`database`/`fileRepository` shape as
-  `postgres-database.json`), optionally enables Redis-backed rate limiting and durable webhook
-  delivery history — absent, malformed, or unreachable simply falls back to in-process behavior.
+  `postgres-database.json`), optionally enables Redis-backed rate limiting, durable webhook
+  delivery history, and multi-instance coordination (once-per-window scheduler locks and
+  cross-instance pending-upload visibility) — absent, malformed, or unreachable simply falls
+  back to in-process, single-instance behavior.
 - [`requirements.md`](requirements.md) §3 documents the same keys from the operator's
   perspective, including which ones fail loudly versus silently when misconfigured.

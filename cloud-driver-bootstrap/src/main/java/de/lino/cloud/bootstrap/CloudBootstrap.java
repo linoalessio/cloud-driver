@@ -183,8 +183,13 @@ public final class CloudBootstrap {
         final String bucket = configuration.getString("aws-s3-bucket");
         final Region s3Region = Region.of(configuration.getString("aws-s3-region"));
         final String keyPrefix = configuration.contains("aws-s3-key-prefix") ? configuration.getString("aws-s3-key-prefix") : "";
+        // Concurrent-connection cap for the shared async S3 client - see
+        // S3ObjectStorageService#DEFAULT_MAX_CONCURRENCY's multi-instance sizing note.
+        final int maxConcurrency = configuration.contains("aws-s3-max-concurrency")
+                ? configuration.getInteger("aws-s3-max-concurrency")
+                : S3ObjectStorageService.DEFAULT_MAX_CONCURRENCY;
 
-        return new S3ObjectStorageService(s3Region, bucket, keyPrefix);
+        return new S3ObjectStorageService(s3Region, bucket, keyPrefix, maxConcurrency);
     }
 
     /**

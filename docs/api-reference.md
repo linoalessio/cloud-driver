@@ -54,7 +54,7 @@ sequenceDiagram
 | Route | Method | Purpose |
 |---|---|---|
 | `/files` | POST | Upload a file (raw body, not JSON) into a folder or the root |
-| `/files` | GET | List the caller's files (optionally scoped to a folder, optionally paginated) |
+| `/files` | GET | List the caller's files (optionally scoped to a folder). Without `?limit=`, the bare-array response is capped at 500 items — use cursor pagination (`?limit=`/`?cursor=`) for complete listings |
 | `/files/{id}` | GET | Fetch one file's metadata + content |
 | `/files/{id}/content` | GET | Stream a file's content directly (no JSON/base64 wrapping). Conditional requests supported: the response carries `ETag` (the content checksum, quoted) and `Cache-Control: private, must-revalidate`; sending it back as `If-None-Match` answers `304 Not Modified` with no body when the content is unchanged |
 | `/files/{id}/content` | PUT | Replace a file's content in place (raw body; optional `?expectedUpdatedAt=` optimistic-concurrency precondition — a mismatch returns `409` with a "conflicted copy" created instead of silently overwriting) |

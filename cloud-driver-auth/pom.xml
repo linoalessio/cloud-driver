@@ -52,7 +52,7 @@
         </dependency>
 
         <!-- JjwtSigner: HMAC-SHA256 JWT issuing/verification for end-user login
-             (see architecture/AUTH_REQUIREMENTS.md). jjwt-impl/jjwt-jackson are only
+             . jjwt-impl/jjwt-jackson are only
              needed at runtime (service-loaded by jjwt-api). -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

@@ -154,7 +154,8 @@ public final class S3ObjectStorageService implements ObjectStorageService {
     }
 
     /**
-     * Same as {@link #S3ObjectStorageService(Region, String)}, with an explicit {@code keyPrefix}.
+     * Same as {@link #S3ObjectStorageService(Region, String)}, with an explicit {@code keyPrefix}
+     * and the default connection tuning ({@link #DEFAULT_MAX_CONCURRENCY}).
      *
      * @param region the AWS region {@code bucket} lives in
      * @param bucket the S3 bucket to store/read objects in
@@ -162,11 +163,58 @@ public final class S3ObjectStorageService implements ObjectStorageService {
      * @throws NullPointerException if any argument is {@code null}
      */
     public S3ObjectStorageService(@NotNull final Region region, @NotNull final String bucket, @NotNull final String keyPrefix) {
-        this(buildDefaultS3AsyncClient(Asserts.requireNonNull(region, "@S3ObjectStorageService: region cannot be null")), bucket, keyPrefix);
+        this(region, bucket, keyPrefix, DEFAULT_MAX_CONCURRENCY);
     }
 
-    private static S3AsyncClient buildDefaultS3AsyncClient(final Region region) {
-        return S3AsyncClient.builder().region(region).multipartEnabled(true).build();
+    /**
+     * Same as {@link #S3ObjectStorageService(Region, String, String)}, with an explicit
+     * concurrent-connection cap ({@code aws-s3-max-concurrency} in {@code configuration.json},
+     * resolved by the caller per this class's "caller resolves config" convention).
+     *
+     * @param region the AWS region {@code bucket} lives in
+     * @param bucket the S3 bucket to store/read objects in
+     * @param keyPrefix prepended (with a separating {@code /}) to every {@code objectKey}; {@code ""} for no prefix
+     * @param maxConcurrency the connection pool's concurrent-connection cap; values below 1 fall back to {@link #DEFAULT_MAX_CONCURRENCY}
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    public S3ObjectStorageService(@NotNull final Region region, @NotNull final String bucket, @NotNull final String keyPrefix,
+                                   final int maxConcurrency) {
+        this(buildTunedS3AsyncClient(Asserts.requireNonNull(region, "@S3ObjectStorageService: region cannot be null"), maxConcurrency),
+                bucket, keyPrefix);
+    }
+
+    /**
+     * Default concurrent-connection cap for the convenience constructors - the AWS SDK's own
+     * Netty default (50), stated explicitly here so the number is a visible decision rather
+     * than an inherited accident. <b>Multi-instance note:</b> with several {@code
+     * CloudBootstrap} processes against the same bucket, each holds its own pool of this size -
+     * size {@code aws-s3-max-concurrency} with the instance count in mind, not per-process in
+     * isolation.
+     */
+    public static final int DEFAULT_MAX_CONCURRENCY = 50;
+
+    /** How long establishing one S3 connection may take before failing fast - a hung connect must never stall an upload silently. */
+    private static final java.time.Duration CONNECTION_TIMEOUT = java.time.Duration.ofSeconds(10);
+
+    /** How long a request may wait for a free pooled connection - saturation then surfaces as a clear, bounded error instead of an unbounded queue. */
+    private static final java.time.Duration CONNECTION_ACQUISITION_TIMEOUT = java.time.Duration.ofSeconds(30);
+
+    /**
+     * Builds the tuned async client: Netty NIO with an explicit {@code maxConcurrency},
+     * connection timeout, and acquisition timeout - deliberately <b>no</b> total-call timeout,
+     * since a legitimate multi-hundred-MB transfer on a slow link may take arbitrarily long and
+     * must not be killed mid-flight by a wall-clock guess; per-connection failures are what the
+     * timeouts above bound.
+     */
+    private static S3AsyncClient buildTunedS3AsyncClient(final Region region, final int maxConcurrency) {
+        return S3AsyncClient.builder()
+                .region(region)
+                .multipartEnabled(true)
+                .httpClientBuilder(software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient.builder()
+                        .maxConcurrency(maxConcurrency >= 1 ? maxConcurrency : DEFAULT_MAX_CONCURRENCY)
+                        .connectionTimeout(CONNECTION_TIMEOUT)
+                        .connectionAcquisitionTimeout(CONNECTION_ACQUISITION_TIMEOUT))
+                .build();
     }
 
     /** {@inheritDoc} Uploaded via {@link #transferManager} ({@link AsyncRequestBody#fromBytes(byte[])}). */

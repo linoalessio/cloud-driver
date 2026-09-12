@@ -23,7 +23,7 @@
 
         <!-- First-page PDF rendering only - JPEG/PNG thumbnails use the JDK's own built-in
              javax.imageio, no dependency needed. Checked ../../pom.xml (the whole reactor) first,
-             per architecture/MICRO.md section 1's own instruction - nothing in this repo already
+             deliberately - nothing in this repo already
              depends on a PDF-rendering library server-side (cloud-driver-platforms-desktop uses
              PDFBox too, but that's a separate Gradle build, not reachable from here), so this is a
              fresh addition. Version 2.0.29 matches cloud-driver-platforms-desktop's own pinned

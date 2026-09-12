@@ -2704,7 +2704,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code GET /files}, optionally {@code ?folderId=<id-or-{@value #ROOT_FOLDER_SENTINEL}>}:
-     * lists every {@link StoredFile} tracked as belonging to the caller as a {@link
+     * lists the caller's {@link StoredFile}s (capped at {@link #UNPAGINATED_LISTING_CAP} when
+     * called without {@code ?limit=} - use cursor pagination for completeness) as a {@link
      * StoredFileSummary} - descriptive fields plus folder placement, deliberately without content
      * (see {@link CloudUserService#listFileSummaries}), so this route never decrypts/decompresses
      * a single file's content just to render a list. Fetch a specific file's content afterwards
@@ -2730,13 +2731,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     .supplyAsync(() -> folderIdParam == null
                             ? this.cloudUserService.listFileSummaries(userId)
                             : this.cloudUserService.listFileSummaries(userId, resolvedFolderId))
-                    .thenAccept(summaries -> ctx.contentType("application/json").result(this.gson.toJson(summaries))));
+                    .thenAccept(summaries -> ctx.contentType("application/json")
+                            .result(this.gson.toJson(capUnpaginatedListing(summaries)))));
             return;
         }
         final String cursor = ctx.queryParam(CURSOR_QUERY_PARAM);
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> this.cloudUserService.listFileSummariesPage(userId, resolvedFolderId, cursor, limit))
                 .thenAccept(page -> ctx.contentType("application/json").result(this.gson.toJson(toPageEnvelope(page)))));
+    }
+
+    /**
+     * The most items a <b>parameterless</b> (non-paginated) {@code GET /files} call returns -
+     * a deliberate, documented cap: an unbounded listing's cost grows with the account's whole
+     * corpus per call, and every client needing completeness has had cursor pagination
+     * ({@code ?limit=}/{@code ?cursor=}) available (the desktop app already uses it). The
+     * response keeps its bare-array shape - only its length is bounded.
+     */
+    private static final int UNPAGINATED_LISTING_CAP = 500;
+
+    /** Applies {@link #UNPAGINATED_LISTING_CAP} to a listing - the full list back when already within it. */
+    private static <T> List<T> capUnpaginatedListing(final List<T> items) {
+        return items.size() <= UNPAGINATED_LISTING_CAP ? items : List.copyOf(items.subList(0, UNPAGINATED_LISTING_CAP));
     }
 
     /**

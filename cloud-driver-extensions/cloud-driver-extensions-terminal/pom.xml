@@ -21,7 +21,7 @@
             <version>1.0.7</version>
         </dependency>
 
-        <!-- MigrateToS3Command (architecture/AWS_S3_IMPL.md section 7) needs EnvelopeEncryptionService/
+        <!-- MigrateToS3Command needs EnvelopeEncryptionService/
              StoredFileContentChannel/AwsKmsKeyEncryptionService (all plugin-level types - see that
              command's own Javadoc for why) - the first cloud-driver-plugin dependency this
              otherwise-thin module has needed, mirroring the same precedent

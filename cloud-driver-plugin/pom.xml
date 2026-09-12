@@ -22,7 +22,7 @@
         </dependency>
 
         <!-- AuthService/JwtSigner, for DefaultRestFactory's JWT-gated constructor
-             (see architecture/AUTH_REQUIREMENTS.md) - the Owned marker interface it
+             - the Owned marker interface it
              checks for per-user data scoping lives here too. -->
         <dependency>
             <groupId>de.lino.cloud.auth</groupId>
@@ -105,7 +105,7 @@
         </dependency>
 
         <!-- S3ObjectStorageService (s3storage.object) - the production ObjectStorageService,
-             backing StoredFile's optional S3-backed content path (architecture/AWS_S3_IMPL.md).
+             backing StoredFile's optional S3-backed content path.
              Not wired in as CloudBootstrap's default; an operator opts in explicitly, same as
              AwsKmsKeyEncryptionService above. Version pinned to match the kms dependency's own
              AWS SDK v2 release. -->
@@ -117,6 +117,14 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3-transfer-manager</artifactId>
+            <version>2.46.7</version>
+        </dependency>
+        <!-- Netty NIO HTTP client, explicit rather than the s3 artifact's runtime-scoped pull:
+             S3ObjectStorageService configures its maxConcurrency/connection timeouts directly
+             (NettyNioAsyncHttpClient.builder()), which needs the classes at compile time. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>netty-nio-client</artifactId>
             <version>2.46.7</version>
         </dependency>
 
