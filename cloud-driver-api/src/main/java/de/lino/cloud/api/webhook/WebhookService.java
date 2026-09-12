@@ -98,4 +98,20 @@ public interface WebhookService {
      */
     void dispatchEvent(@NotNull String authUserId, @NotNull WebhookEventType eventType, @NotNull String targetId);
 
+    /**
+     * How many dispatched deliveries are currently queued waiting for a free dispatch worker -
+     * an operator-facing health signal (surfaced as the {@code
+     * cloud_driver_webhook_dispatch_queue_depth} gauge by {@code cloud-driver-extensions-metrics}):
+     * a persistently growing depth means the configured dispatch pool ({@code
+     * webhook-dispatch-pool-size}) no longer keeps up with this deployment's event rate.
+     *
+     * <p>{@code default 0} so implementations without an inspectable queue keep compiling and
+     * report the same value a real, empty queue would.
+     *
+     * @return the number of queued, not-yet-started delivery attempts
+     */
+    default int pendingDispatchQueueDepth() {
+        return 0;
+    }
+
 }

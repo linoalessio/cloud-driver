@@ -58,4 +58,24 @@ public interface FileVersioningService {
     @NotNull
     Optional<FileVersionContent> getVersionContent(@NotNull String sourceFileId, int versionNumber);
 
+    /**
+     * One specific version's plaintext-checksum hex digest, without resolving its content -
+     * backs {@code DefaultRestFactory}'s {@code ETag}/{@code If-None-Match} conditional handling
+     * on {@code GET /files/{id}/versions/{n}/content} (a version's content is immutable once
+     * captured, so a matching checksum means the transfer can be skipped outright).
+     *
+     * <p>{@code default} (answering {@link Optional#empty()}, i.e. "no conditional support")
+     * so implementations written before this method keep compiling; the shipped {@code
+     * DefaultFileVersioningService} overrides it with a real answer.
+     *
+     * @param sourceFileId the source file the version belongs to
+     * @param versionNumber the version whose checksum to read
+     * @return the version's checksum hex digest, or empty if the version isn't retained (or this
+     *     implementation predates the method)
+     */
+    @NotNull
+    default Optional<String> versionChecksumHex(@NotNull final String sourceFileId, final int versionNumber) {
+        return Optional.empty();
+    }
+
 }

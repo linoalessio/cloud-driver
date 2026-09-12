@@ -81,6 +81,7 @@ public class CloudMetricsExtension extends Extension {
 
         this.registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         this.registerPendingUploadQueueDepthGauge();
+        this.registerWebhookDispatchQueueDepthGauge();
         this.registerExtensionStatusGauges();
 
         this.cloudDriver().getServiceContainer().setMetricsRecorder(new MicrometerMetricsRecorder(this.registry));
@@ -105,6 +106,25 @@ public class CloudMetricsExtension extends Extension {
         Gauge.builder("cloud_driver_pending_upload_queue_depth", defaultFileFactory,
                         factory -> factory.getPendingUploadCache().size())
                 .description("Files currently queued in PendingUploadCache, awaiting connectivity to persist")
+                .register(this.registry);
+    }
+
+    /**
+     * Registers a gauge reporting {@code WebhookService#pendingDispatchQueueDepth()} - how many
+     * webhook deliveries are queued waiting for a free dispatch worker (see {@code
+     * webhook-dispatch-pool-size}). The webhook service is resolved off the {@code
+     * IServiceContainer} <em>at sample time</em>, not registration time - extension load order
+     * between this extension and {@code cloud-driver-extensions-webhooks} is unspecified, and
+     * the facet is {@code null} on a deployment not running webhooks at all, in which case the
+     * gauge simply reports {@code 0} (the same value a real, empty queue would).
+     */
+    private void registerWebhookDispatchQueueDepthGauge() {
+        Gauge.builder("cloud_driver_webhook_dispatch_queue_depth", this.cloudDriver().getServiceContainer(),
+                        container -> {
+                            final de.lino.cloud.api.webhook.WebhookService webhookService = container.getWebhookService();
+                            return webhookService == null ? 0 : webhookService.pendingDispatchQueueDepth();
+                        })
+                .description("Webhook deliveries queued waiting for a free dispatch worker (see webhook-dispatch-pool-size)")
                 .register(this.registry);
     }
 

@@ -28,7 +28,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -64,7 +66,31 @@ public final class DefaultWebhookService implements WebhookService {
      */
     private final WebhookDeliveryLog deliveryLog;
 
+    /** Default {@link #dispatchExecutor} size, used when {@code webhook-dispatch-pool-size} isn't configured - the fixed value this pool always had. */
+    public static final int DEFAULT_DISPATCH_POOL_SIZE = 4;
+
+    /**
+     * {@link #dispatchExecutor}'s work queue, held separately so {@link
+     * #pendingDispatchQueueDepth()} can report its depth - the observable half of the pool's
+     * tunability (old roadmap Finding 10): a persistently growing depth tells an operator the
+     * configured pool size no longer keeps up with this deployment's event rate.
+     */
+    private final LinkedBlockingQueue<Runnable> dispatchQueue;
+
+    /** Same as {@link #DefaultWebhookService(DataFactory, Logger, int)} with {@link #DEFAULT_DISPATCH_POOL_SIZE}. */
     public DefaultWebhookService(@NotNull final DataFactory dataFactory, @NotNull final Logger logger) {
+        this(dataFactory, logger, DEFAULT_DISPATCH_POOL_SIZE);
+    }
+
+    /**
+     * @param dataFactory the factory {@link WebhookSubscription}s are persisted through
+     * @param logger where delivery failures/retries are reported
+     * @param dispatchPoolSize how many first-attempt deliveries may run concurrently ({@code
+     *     webhook-dispatch-pool-size} in {@code configuration.json}); values below {@code 1} are
+     *     clamped to {@code 1} rather than rejected - a misconfigured size shouldn't stop the
+     *     whole extension from starting
+     */
+    public DefaultWebhookService(@NotNull final DataFactory dataFactory, @NotNull final Logger logger, final int dispatchPoolSize) {
         this.dataFactory = dataFactory;
         this.logger = logger;
         this.deliveryLog = new WebhookDeliveryLog(logger);
@@ -72,8 +98,23 @@ public final class DefaultWebhookService implements WebhookService {
                 .connectTimeout(REQUEST_TIMEOUT)
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .build();
-        this.dispatchExecutor = Executors.newFixedThreadPool(4, DefaultWebhookService::newDaemonThread);
+        final int poolSize = Math.max(1, dispatchPoolSize);
+        this.dispatchQueue = new LinkedBlockingQueue<>();
+        // Explicit ThreadPoolExecutor rather than Executors.newFixedThreadPool: identical pool
+        // semantics, but this class keeps a reference to the work queue for
+        // pendingDispatchQueueDepth() - the factory method hides it.
+        this.dispatchExecutor = new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                this.dispatchQueue, DefaultWebhookService::newDaemonThread);
         this.retryScheduler = Executors.newSingleThreadScheduledExecutor(DefaultWebhookService::newDaemonThread);
+    }
+
+    /**
+     * How many first-attempt deliveries are currently waiting for a free {@link
+     * #dispatchExecutor} thread - see {@link de.lino.cloud.api.webhook.WebhookService#pendingDispatchQueueDepth()}.
+     */
+    @Override
+    public int pendingDispatchQueueDepth() {
+        return this.dispatchQueue.size();
     }
 
     private static Thread newDaemonThread(final Runnable runnable) {

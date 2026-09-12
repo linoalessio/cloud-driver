@@ -11,6 +11,7 @@ import de.lino.cloud.api.versioning.FileVersionContent;
 import de.lino.cloud.api.versioning.FileVersionSummary;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.Comparator;
 import java.util.List;
@@ -78,6 +79,27 @@ final class DefaultFileVersioningService implements FileVersioningService {
                     .map(file -> new FileVersionContent(row.getFileName(), row.getContentType(), file.content()));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
             this.logger.log(Level.WARNING, "@DefaultFileVersioningService.getVersionContent: failed to resolve version "
+                    + versionNumber + " of file '" + sourceFileId + "'", e);
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * {@inheritDoc} Answered off the {@link FileVersion} row's own {@link
+     * FileVersion#getContentHash() captured checksum} - the row is metadata-only (the content
+     * lives in a separate versioned {@code StoredFile}), so this never resolves content. A
+     * lookup failure is reported as empty rather than thrown, matching {@link
+     * #getVersionContent}'s own defensive shape - the caller then simply serves the content
+     * unconditionally.
+     */
+    @NotNull
+    @Override
+    public Optional<String> versionChecksumHex(@NonNull final String sourceFileId, final int versionNumber) {
+        try {
+            return this.dataFactory.findById(FileVersion.compositeKey(sourceFileId, versionNumber), FileVersion.class)
+                    .map(version -> version.getContentHash().hexDigest());
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            this.logger.log(Level.WARNING, "@DefaultFileVersioningService.versionChecksumHex: failed to look up version "
                     + versionNumber + " of file '" + sourceFileId + "'", e);
             return Optional.empty();
         }

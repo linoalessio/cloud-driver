@@ -19,10 +19,20 @@ public class CloudWebhooksExtension extends Extension {
 
     private DefaultWebhookService webhookService;
 
-    /** Publishes a {@link DefaultWebhookService}. */
+    /**
+     * Publishes a {@link DefaultWebhookService}, sized by the optional {@code
+     * webhook-dispatch-pool-size} key in {@code configuration.json} ({@link
+     * DefaultWebhookService#DEFAULT_DISPATCH_POOL_SIZE} when unset - the fixed size this pool
+     * always had before it became tunable).
+     */
     @Override
     public void onLoading() {
-        this.webhookService = new DefaultWebhookService(this.cloudDriver().getFactoryContainer().getDataFactory(), this.getLogger());
+        final de.lino.database.json.JsonDocument configuration = this.cloudDriver().getConfiguration();
+        final int dispatchPoolSize = configuration.contains("webhook-dispatch-pool-size")
+                ? configuration.getInteger("webhook-dispatch-pool-size")
+                : DefaultWebhookService.DEFAULT_DISPATCH_POOL_SIZE;
+        this.webhookService = new DefaultWebhookService(
+                this.cloudDriver().getFactoryContainer().getDataFactory(), this.getLogger(), dispatchPoolSize);
         this.cloudDriver().getServiceContainer().setWebhookService(this.webhookService);
     }
 

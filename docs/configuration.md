@@ -15,7 +15,8 @@ next to the running backend process — two required files (below) plus an optio
 |---|---|---|---|
 | `jwt-signing-key` | string | REST API start is skipped (with a warning) if unset | JWT-authenticated REST API |
 | `rest-server-port` | int | **required** — startup fails if unset | REST API |
-| `rest-server-bind-host` | string | `0.0.0.0` (every interface) | REST API — set to `127.0.0.1` when fronted by a TLS-terminating reverse proxy |
+| `rest-server-bind-host` | string | `0.0.0.0` (every interface) | REST API — set to `127.0.0.1` when fronted by a TLS-terminating reverse proxy. A non-loopback value logs a startup warning (Javalin serves plain HTTP; see docs/security.md "Transport security") |
+| `webhook-dispatch-pool-size` | int | `4` | Webhook first-attempt delivery concurrency; queue depth is observable as the `cloud_driver_webhook_dispatch_queue_depth` gauge |
 | `smtp-host` | string | Falls back to logging verification codes instead of e-mailing them | Outgoing verification e-mails |
 | `smtp-port` | int | — | SMTP sending |
 | `smtp-username` | string | — | SMTP sending |

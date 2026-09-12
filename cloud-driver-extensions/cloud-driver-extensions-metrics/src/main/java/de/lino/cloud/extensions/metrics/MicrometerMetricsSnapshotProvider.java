@@ -45,6 +45,7 @@ final class MicrometerMetricsSnapshotProvider implements MetricsSnapshotProvider
                 this.uploadCount("queued"),
                 this.counterValue("cloud_driver_upload_quota_rejections_total"),
                 this.gaugeValue("cloud_driver_pending_upload_queue_depth"),
+                this.gaugeValue("cloud_driver_webhook_dispatch_queue_depth"),
                 this.extensionsByStatus()
         );
     }

@@ -506,6 +506,64 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final long STREAMED_UPLOAD_THRESHOLD_BYTES = 32L * 1024 * 1024;
 
+    /**
+     * {@code Cache-Control} value every conditional content route sends: the response may be
+     * cached by the requesting client only ({@code private} - responses are per-user,
+     * authenticated content) and must be revalidated with {@code If-None-Match} before reuse
+     * ({@code must-revalidate}) - the cheap {@code 304} handshake below is that revalidation.
+     */
+    private static final String CONTENT_CACHE_CONTROL = "private, must-revalidate";
+
+    /**
+     * Whether the request's {@code If-None-Match} header matches {@code checksumHex} - the
+     * conditional-download check backing this class's {@code 304 Not Modified} short-circuits
+     * (see {@link #handleDownloadFileContent}). Accepts the ETag exactly as this server hands it
+     * out ({@code "<hex>"}), plus the forms a well-behaved client/proxy may echo it back in: a
+     * comma-separated candidate list, a {@code W/} weak-validator prefix (content checksums
+     * identify bytes exactly, so weak-vs-strong is moot here), and the {@code *} wildcard.
+     *
+     * @param ctx the request whose {@code If-None-Match} header to check
+     * @param checksumHex the current content checksum's hex digest, or {@code null} if unknown
+     * @return {@code true} if the client already holds content matching {@code checksumHex}
+     */
+    private static boolean clientAlreadyHasContent(final Context ctx, final String checksumHex) {
+        final String header = ctx.header("If-None-Match");
+        if (header == null || checksumHex == null) {
+            return false;
+        }
+        for (final String rawCandidate : header.split(",")) {
+            String candidate = rawCandidate.trim();
+            if (candidate.startsWith("W/")) {
+                candidate = candidate.substring(2);
+            }
+            if (candidate.length() >= 2 && candidate.charAt(0) == '"' && candidate.charAt(candidate.length() - 1) == '"') {
+                candidate = candidate.substring(1, candidate.length() - 1);
+            }
+            if (candidate.equals("*") || candidate.equals(checksumHex)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sets the {@code ETag}/{@code Cache-Control} pair on a content response - both the {@code
+     * 200} that transfers content and the {@code 304} that skips it carry the same two headers
+     * (a {@code 304} must repeat the {@code ETag} the validation succeeded against). A no-op for
+     * {@code null} (a legacy row with no recorded checksum - such a response is simply not
+     * cacheable-with-revalidation, never wrongly tagged).
+     *
+     * @param ctx the response to set the headers on
+     * @param checksumHex the content checksum's hex digest, or {@code null} to set nothing
+     */
+    private static void setConditionalDownloadHeaders(final Context ctx, final String checksumHex) {
+        if (checksumHex == null) {
+            return;
+        }
+        ctx.header("ETag", "\"" + checksumHex + "\"");
+        ctx.header("Cache-Control", CONTENT_CACHE_CONTROL);
+    }
+
     /** The {@link DataFactory} every registered {@code (path, type)} resource is backed by. */
     private final DataFactory dataFactory;
     /** Checked by {@link #requireValidApiKey}, or {@code null} if this instance isn't API-key-gated. */
@@ -2589,16 +2647,42 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final String id = ctx.pathParam("id");
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> resolveDownloadableContent(userId, id))
-                .handle((download, failure) -> {
-                    if (failure == null) {
-                        final String encodedFileName = URLEncoder.encode(download.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
-                        ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
-                        ctx.writeSeekableStream(download.content(), download.contentType(), download.sizeBytes());
+                .supplyAsync(() -> {
+                    // Conditional-download check first: the checksum comes off the (indexed)
+                    // ownership row's cached metadata - if the client already holds these exact
+                    // bytes, every downstream cost (decrypt, S3 stream setup, transfer) is
+                    // skipped entirely, not done-and-discarded.
+                    final String checksumHex = this.cloudUserService.currentContentChecksumHex(userId, id);
+                    if (clientAlreadyHasContent(ctx, checksumHex)) {
+                        return new ConditionalDownload(checksumHex, null);
+                    }
+                    return new ConditionalDownload(checksumHex, resolveDownloadableContent(userId, id));
+                })
+                .handle((result, failure) -> {
+                    if (failure != null) {
+                        throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    }
+                    setConditionalDownloadHeaders(ctx, result.checksumHex());
+                    if (result.download() == null) {
+                        // 304 deliberately carries no Content-Disposition - a 304 must not
+                        // include entity headers implying a body.
+                        ctx.status(304);
                         return null;
                     }
-                    throw notFoundOrPropagate(failure, StoredFile.class, id);
+                    final DownloadableContent download = result.download();
+                    final String encodedFileName = URLEncoder.encode(download.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                    ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
+                    ctx.writeSeekableStream(download.content(), download.contentType(), download.sizeBytes());
+                    return null;
                 }));
+    }
+
+    /**
+     * One conditional content lookup's outcome: the file's current checksum hex ({@code null} for
+     * a legacy row without one), and the resolved content - {@code null} iff the requesting
+     * client's {@code If-None-Match} already matched, i.e. respond {@code 304}.
+     */
+    private record ConditionalDownload(String checksumHex, DownloadableContent download) {
     }
 
     /** One file's downloadable content, as resolved by {@link #resolveDownloadableContent} - either a direct S3 stream or fully materialized bytes. */
@@ -2824,21 +2908,45 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> {
                     this.cloudUserService.checkFileAccess(userId, id);
-                    return versioningService.getVersionContent(id, versionNumber);
+                    // Conditional-download check first, off the version row's captured checksum
+                    // (metadata-only, no content resolution) - a version's content is immutable
+                    // once captured, so a match skips the whole content fetch and transfer.
+                    final String checksumHex = versioningService.versionChecksumHex(id, versionNumber).orElse(null);
+                    if (clientAlreadyHasContent(ctx, checksumHex)) {
+                        return new ConditionalVersionDownload(checksumHex, null, true);
+                    }
+                    final Optional<de.lino.cloud.api.versioning.FileVersionContent> content =
+                            versioningService.getVersionContent(id, versionNumber);
+                    return new ConditionalVersionDownload(checksumHex, content.orElse(null), false);
                 })
-                .handle((content, failure) -> {
+                .handle((result, failure) -> {
                     if (failure != null) {
                         throw notFoundOrPropagate(failure, StoredFile.class, id);
                     }
-                    if (content.isEmpty()) {
+                    setConditionalDownloadHeaders(ctx, result.checksumHex());
+                    if (result.notModified()) {
+                        ctx.status(304);
+                        return null;
+                    }
+                    if (result.version() == null) {
                         throw new NotFoundResponse("No version " + versionNumber + " for file '" + id + "'");
                     }
-                    final de.lino.cloud.api.versioning.FileVersionContent version = content.get();
+                    final de.lino.cloud.api.versioning.FileVersionContent version = result.version();
                     final String encodedFileName = URLEncoder.encode(version.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
                     ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
                     ctx.contentType(version.contentType()).result(version.content());
                     return null;
                 }));
+    }
+
+    /**
+     * One conditional version-content lookup's outcome - like {@link ConditionalDownload}, plus
+     * an explicit {@code notModified} flag, since {@code version == null} here already means
+     * something else ("no such version", a {@code 404}).
+     */
+    private record ConditionalVersionDownload(String checksumHex,
+                                               de.lino.cloud.api.versioning.FileVersionContent version,
+                                               boolean notModified) {
     }
 
     /**

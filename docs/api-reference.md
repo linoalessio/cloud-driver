@@ -56,7 +56,7 @@ sequenceDiagram
 | `/files` | POST | Upload a file (raw body, not JSON) into a folder or the root |
 | `/files` | GET | List the caller's files (optionally scoped to a folder, optionally paginated) |
 | `/files/{id}` | GET | Fetch one file's metadata + content |
-| `/files/{id}/content` | GET | Stream a file's content directly (no JSON/base64 wrapping) |
+| `/files/{id}/content` | GET | Stream a file's content directly (no JSON/base64 wrapping). Conditional requests supported: the response carries `ETag` (the content checksum, quoted) and `Cache-Control: private, must-revalidate`; sending it back as `If-None-Match` answers `304 Not Modified` with no body when the content is unchanged |
 | `/files/{id}/content` | PUT | Replace a file's content in place (raw body; optional `?expectedUpdatedAt=` optimistic-concurrency precondition — a mismatch returns `409` with a "conflicted copy" created instead of silently overwriting) |
 | `/files/{id}/thumbnail` | GET | A small JPEG preview (images and PDF first pages), if the thumbnails extension is running |
 | `/files/{id}/folder` | PUT | Move a file |
@@ -73,7 +73,7 @@ Available when the versioning extension is running (`503` otherwise).
 | Route | Method | Purpose |
 |---|---|---|
 | `/files/{id}/versions` | GET | List a file's captured prior versions |
-| `/files/{id}/versions/{n}/content` | GET | Stream one version's content |
+| `/files/{id}/versions/{n}/content` | GET | Stream one version's content. Same `ETag`/`If-None-Match`/`304` conditional handling as `GET /files/{id}/content` (a version's content is immutable once captured) |
 | `/files/{id}/versions/{n}/restore` | POST | Restore a version (the current content is captured as a new version first) |
 
 ## Trash

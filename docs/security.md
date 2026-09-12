@@ -98,6 +98,10 @@ process itself only ever speaks plain HTTP/WebSocket on its bind address:
   the provisioning script writes) so it is reachable exclusively through the proxy — the same
   "loopback-only by default, widen deliberately" convention the metrics endpoint documents above.
   ClamAV and Redis are likewise loopback-bound; PostgreSQL is co-located.
+- Since 2026-09-12, the REST extension logs a **startup warning** whenever it is about to bind a
+  non-loopback address (including the out-of-the-box `0.0.0.0` default): plain HTTP on a reachable
+  interface exposes every request, JWTs included. The warning never refuses startup — a
+  deliberately plain-HTTP deployment (e.g. LAN-only testing) can ignore it.
 - An operator who widens the bind host without putting a TLS-terminating proxy in front has a
   plaintext-HTTP deployment: credentials, JWTs, and file content would cross the network
   unencrypted. Don't — nothing in the application layer compensates for a missing TLS hop.

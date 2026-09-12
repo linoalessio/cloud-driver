@@ -18,6 +18,10 @@ import java.util.Map;
  * @param pendingUploadQueueDepth {@code cloud_driver_pending_upload_queue_depth} - {@code 0} if this
  *     deployment's {@code FileFactory} isn't a {@code DefaultFileFactory} and the gauge was
  *     therefore never registered, same value a real, empty queue would report
+ * @param webhookDispatchQueueDepth {@code cloud_driver_webhook_dispatch_queue_depth} - webhook
+ *     deliveries queued waiting for a free dispatch worker (see {@code
+ *     webhook-dispatch-pool-size}); {@code 0} if this deployment doesn't run the webhooks
+ *     extension, same value a real, empty queue would report
  * @param extensionsByStatus      {@code cloud_driver_extensions{status=...}}, keyed by {@code
  *     ExtensionStatus} name (e.g. {@code "RUNNING"}, {@code "ERROR"})
  */
@@ -27,6 +31,7 @@ public record MetricsSnapshot(
         long uploadsQueued,
         long uploadQuotaRejections,
         long pendingUploadQueueDepth,
+        long webhookDispatchQueueDepth,
         Map<String, Long> extensionsByStatus
 ) {
 }

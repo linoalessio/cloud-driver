@@ -121,6 +121,7 @@ public class CloudRestExtension extends Extension {
 
         final String configuredBindHost = this.cloudDriver().getConfiguration().getString("rest-server-bind-host");
         final String bindHost = configuredBindHost.isBlank() ? DEFAULT_BIND_HOST : configuredBindHost;
+        warnIfBindHostExposesPlainHttp(bindHost);
 
         final DataFactory dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
         final FileFactory fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();
@@ -202,6 +203,32 @@ public class CloudRestExtension extends Extension {
         REST_FACTORY.fetch("/cloudUsers", CloudUser.class);
 
         REST_FACTORY.start(bindHost, REST_SERVER_PORT);
+    }
+
+    /**
+     * Logs a startup warning when the REST server is about to bind a non-loopback address -
+     * Javalin serves plain HTTP (TLS is expected to terminate at a reverse proxy in front, see
+     * {@code docs/security.md} "Transport security"), so a non-loopback bind exposes every
+     * request, JWTs included, unencrypted to whatever network can reach it. The intended
+     * production shape is {@code rest-server-bind-host: "127.0.0.1"} behind Caddy; a deliberate
+     * plain-HTTP deployment (e.g. a LAN-only test box) can simply ignore the warning - it warns,
+     * never refuses, matching {@code AwsKmsKeyEncryptionService}'s "operator opts in
+     * deliberately" pattern. Closes the one optional item left open by {@code architecture/1.
+     * WEAKNESS.md} Finding 3.
+     *
+     * @param bindHost the address the REST server is about to bind
+     */
+    private void warnIfBindHostExposesPlainHttp(final String bindHost) {
+        final boolean loopback = bindHost.equals("127.0.0.1") || bindHost.equals("::1") || bindHost.equalsIgnoreCase("localhost");
+        if (loopback) {
+            return;
+        }
+        this.getLogger().warning(
+                "@CloudRestExtension.startRestApi: 'rest-server-bind-host' is '" + bindHost + "' (non-loopback) - "
+                        + "Javalin serves plain HTTP, so the REST API (JWTs included) is reachable unencrypted from that "
+                        + "network. Production deployments should set it to \"127.0.0.1\" and terminate TLS at a reverse "
+                        + "proxy (see docs/security.md, \"Transport security\"). Ignore this warning only if plain HTTP "
+                        + "on that interface is a deliberate choice.");
     }
 
     /**

@@ -1586,6 +1586,29 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
+     * The hex digest of {@code storedFileId}'s current plaintext checksum, read off the {@link
+     * StoredFileOwnership} row's cached metadata - no content resolution, no {@link StoredFile}
+     * row decrypt - after the same ownership-or-share access check {@link #checkFileAccess}
+     * applies. Backs {@code DefaultRestFactory}'s {@code ETag}/{@code If-None-Match} conditional
+     * downloads: the ownership metadata is refreshed on every content mutation ({@link
+     * #uploadFile}, {@link #replaceFileContent} - which version restore also routes through -
+     * and {@link #renameFile}), so it always names the bytes a full download would return.
+     *
+     * @param authUserId the caller, checked for ownership-or-share access first
+     * @param storedFileId the file whose current checksum to read
+     * @return the checksum's lowercase hex digest, or {@code null} for a legacy ownership row
+     *     that predates metadata capture (no conditional-request support for it - the caller
+     *     simply omits the {@code ETag} machinery, never guesses)
+     * @throws IllegalArgumentException if {@code authUserId} has no access to {@code storedFileId}
+     * @throws FileScanBlockedException if the file is still being scanned or was flagged
+     */
+    @Nullable
+    public String currentContentChecksumHex(@NonNull final String authUserId, @NonNull final String storedFileId) {
+        final StoredFileOwnership ownership = this.requireFileAccess(authUserId, storedFileId, "currentContentChecksumHex");
+        return ownership.hasMetadata() ? ownership.getChecksumHex() : null;
+    }
+
+    /**
      * Shared ownership-or-share check backing both {@link #getFile} and {@link #checkFileAccess} -
      * see {@link #getFile}'s own Javadoc for the exact rule this applies (plain ownership first,
      * falling back to {@link #requireSharedFileAccess}; a trashed file is treated as inaccessible
