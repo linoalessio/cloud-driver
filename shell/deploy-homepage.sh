@@ -11,7 +11,11 @@
 #      each file landed byte-for-byte intact (SHA-256 on both ends, same convention as
 #      deploy-cloud.sh).
 #   3. Ensures /etc/caddy/Caddyfile's apex "cloud-driver.de { ... }" block is the static
-#      file_server block below. The apex block originally reverse-proxied to the REST API on
+#      file_server block below. That block sets Cache-Control: no-cache on every response:
+#      Caddy's file_server otherwise sends only ETag/Last-Modified, which makes browsers fall
+#      back to *heuristic* freshness (roughly 10% of the file's age) and serve a cached
+#      style.css/script.js without revalidating - i.e. new HTML rendered against old CSS. With
+#      no-cache the browser still caches, but always revalidates and gets a cheap 304. The apex block originally reverse-proxied to the REST API on
 #      127.0.0.1:8080 (which is exactly why visiting cloud-driver.de showed no homepage) - if
 #      the current block differs from the desired one, the Caddyfile is backed up
 #      (Caddyfile.bak-<timestamp>, matching the backups already on the box), the apex block is
@@ -40,6 +44,7 @@ APEX_DOMAIN="cloud-driver.de"
 # "is it already correct?" comparison and the rewrite.
 DESIRED_APEX_BLOCK="$APEX_DOMAIN {
     root * $REMOTE_WEB_ROOT
+    header Cache-Control \"no-cache\"
     file_server
 }"
 
@@ -129,7 +134,7 @@ else
         set -e
         cp '$REMOTE_CADDYFILE' '$backup_name'
         awk '/^$APEX_DOMAIN[[:space:]]*\\{/{inblock=1; next} inblock&&/^\\}/{inblock=0; next} !inblock{print}' '$REMOTE_CADDYFILE' > '$REMOTE_CADDYFILE.new'
-        printf '%s\n' '$APEX_DOMAIN {' '    root * $REMOTE_WEB_ROOT' '    file_server' '}' >> '$REMOTE_CADDYFILE.new'
+        printf '%s\n' '$APEX_DOMAIN {' '    root * $REMOTE_WEB_ROOT' '    header Cache-Control \"no-cache\"' '    file_server' '}' >> '$REMOTE_CADDYFILE.new'
         caddy validate --config '$REMOTE_CADDYFILE.new' --adapter caddyfile >/dev/null 2>&1
         mv '$REMOTE_CADDYFILE.new' '$REMOTE_CADDYFILE'
         systemctl reload caddy

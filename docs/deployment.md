@@ -109,6 +109,7 @@ It uploads every file in `homepage/` to `/var/www/cloud-driver-homepage` on the 
 ```caddyfile
 cloud-driver.de {
     root * /var/www/cloud-driver-homepage
+    header Cache-Control "no-cache"
     file_server
 }
 ```
@@ -118,6 +119,21 @@ domain used to show no homepage), validates the rewritten Caddyfile before swapp
 (timestamped backup kept), reloads Caddy without touching the `api.`/`auth.` blocks, and
 smoke-tests `https://cloud-driver.de`. It refuses to deploy while any page still contains a
 `class="todo"` placeholder, so unfinished legal text can never go live.
+
+### Cache correctness
+
+`Cache-Control: no-cache` in that block is not optional. Caddy's `file_server` sends only
+`ETag` and `Last-Modified`; with no `Cache-Control` at all, browsers fall back to *heuristic*
+freshness — roughly 10% of the time since `Last-Modified` — and reuse a cached `style.css` or
+`script.js` **without revalidating**. A stylesheet untouched for two days therefore stays
+"fresh" for hours after a deploy, so a visitor gets the new `index.html` rendered against the
+old CSS, and new markup lands unstyled. `no-cache` still lets the browser cache; it just forces
+a revalidation that answers `304 Not Modified` when nothing changed.
+
+As a second layer, the HTML links its assets with a version query — `style.css?v=20260912`,
+`script.js?v=20260912`. Bump that stamp in all three pages whenever `style.css` or `script.js`
+changes: a new URL cannot be served from an old cache entry, in any browser or intermediary,
+regardless of headers.
 
 The pages state facts about the running system (version number, route count, extension count) —
 when those change in a release, update `homepage/index.html` in the same change.
