@@ -4,6 +4,9 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.security.hash.HashAlgorithm;
 import de.lino.cloud.api.utility.Asserts;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -56,6 +59,38 @@ public record FileChecksum(HashAlgorithm algorithm, String hexDigest) {
             return new FileChecksum(algorithm, HexFormat.of().formatHex(digest));
         } catch (final NoSuchAlgorithmException e) {
             throw new IllegalStateException("@FileChecksum.of: JVM does not provide " + algorithm.jcaName(), e);
+        }
+    }
+
+    /**
+     * Computes the {@code algorithm} checksum of everything {@code content} yields, reading it
+     * in fixed-size buffers - the streaming counterpart of {@link #of(HashAlgorithm, byte[])},
+     * for content too large to hold in memory as one array (e.g. a scratch-file-backed upload,
+     * see {@code CloudUserService#uploadFile}'s {@code Path} overload). The stream is drained
+     * fully but deliberately not closed - the caller owns it.
+     *
+     * @param algorithm the hash algorithm to checksum with
+     * @param content the plaintext byte stream to checksum; drained fully, not closed
+     * @return the resulting checksum
+     * @throws NullPointerException if {@code algorithm} or {@code content} is {@code null}
+     * @throws UncheckedIOException if reading {@code content} fails
+     */
+    public static FileChecksum of(final HashAlgorithm algorithm, final InputStream content) {
+        Asserts.requireNonNull(algorithm, "@FileChecksum.of: algorithm cannot be null");
+        Asserts.requireNonNull(content, "@FileChecksum.of: content cannot be null");
+
+        try {
+            final MessageDigest digest = MessageDigest.getInstance(algorithm.jcaName());
+            final byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = content.read(buffer)) != -1) {
+                digest.update(buffer, 0, bytesRead);
+            }
+            return new FileChecksum(algorithm, HexFormat.of().formatHex(digest.digest()));
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("@FileChecksum.of: JVM does not provide " + algorithm.jcaName(), e);
+        } catch (final IOException e) {
+            throw new UncheckedIOException("@FileChecksum.of: failed reading the content stream to checksum", e);
         }
     }
 

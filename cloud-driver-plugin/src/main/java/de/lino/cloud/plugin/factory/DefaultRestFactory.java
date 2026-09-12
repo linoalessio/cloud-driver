@@ -490,6 +490,22 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static final int UPLOAD_STREAM_BUFFER_SIZE = 8192;
 
+    /**
+     * Above this size, {@link #handleUploadFile} hands the received scratch file to {@link
+     * de.lino.cloud.api.user.ICloudUserService#uploadFile(String, String, java.nio.file.Path,
+     * String)} (the streaming
+     * path: checksum and chunk encryption run straight off the file, O(chunk size) heap) instead
+     * of reading it back into a {@code byte[]} for the inline path. Below it, the inline path is
+     * deliberately kept: its full-content pass is what powers DEFLATE compression and
+     * search/intelligence text extraction, both of which the streaming path forgoes (see that
+     * method's own Javadoc), and at these sizes its transient heap cost (~2.3x the file: raw
+     * bytes + base64) is modest even under concurrency. 32 MiB splits the two regimes well:
+     * typical documents/photos stay on the fully-featured path, while the archives/media/disk
+     * images that actually caused upload OOMs (2026-09-01) - and anything else up to {@link
+     * #MAX_REQUEST_SIZE_BYTES} - stream with bounded memory.
+     */
+    private static final long STREAMED_UPLOAD_THRESHOLD_BYTES = 32L * 1024 * 1024;
+
     /** The {@link DataFactory} every registered {@code (path, type)} resource is backed by. */
     private final DataFactory dataFactory;
     /** Checked by {@link #requireValidApiKey}, or {@code null} if this instance isn't API-key-gated. */
@@ -2160,9 +2176,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * JSON string field, both pure overhead on top of the size-limit concern below; large uploads
      * pay for both) to a scratch file via {@link #receiveUploadToScratchFile} - <b>not</b> {@link
      * Context#bodyAsBytes()}, which fully buffers the whole body in JVM heap before this method
-     * ever sees it - then uploads the received bytes via {@link
+     * ever sees it - then uploads the received content via {@link
      * CloudUserService#uploadFile(String, String, byte[], String)}, tracked under the caller's
      * own user id (from {@link #USER_ID_ATTRIBUTE}, set by {@link #requireValidBearerToken}).
+     * Above {@link #STREAMED_UPLOAD_THRESHOLD_BYTES}, the scratch file is handed over directly
+     * (the {@code Path} overload) instead of being read back into a {@code byte[]} - see that
+     * constant's own Javadoc for the trade-off both directions of the split are making.
      * {@link #FOLDER_ID_FIELD} is resolved via {@link #resolveFolderIdOrRoot} - omitted (or
      * {@link #ROOT_FOLDER_SENTINEL}) places the file at the root, matching this route's
      * pre-folders behavior.
@@ -2200,11 +2219,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     // upload, a business-rule failure (e.g. UploadQuotaExceededException), or an
                     // I/O failure reading it back - matching Phase 4's "delete on both success
                     // and failure" requirement. By the time uploadFile returns (or throws), its
-                    // content is already fully in hand (copied into the StoredFile it built, or
-                    // queued as one by DefaultFileFactory's offline path) - the scratch file's
-                    // job is done either way, so this never collides with PendingUploadScheduler's
-                    // own, separate retry-later machinery.
+                    // content is already fully in hand (streamed to the object store, copied into
+                    // the StoredFile it built, or queued as an inline copy by DefaultFileFactory's
+                    // offline path) - the scratch file's job is done either way, so this never
+                    // collides with PendingUploadScheduler's own, separate retry-later machinery.
                     try {
+                        if (Files.size(scratchFile) > STREAMED_UPLOAD_THRESHOLD_BYTES) {
+                            // Large upload: hand the scratch file over as-is - see
+                            // STREAMED_UPLOAD_THRESHOLD_BYTES for the split's reasoning.
+                            return this.cloudUserService.uploadFile(userId, fileName, scratchFile, folderId);
+                        }
                         final byte[] content = Files.readAllBytes(scratchFile);
                         return this.cloudUserService.uploadFile(userId, fileName, content, folderId);
                     } catch (final IOException e) {

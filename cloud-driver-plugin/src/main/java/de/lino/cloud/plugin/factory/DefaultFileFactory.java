@@ -26,6 +26,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.util.function.Consumer;
 
 import java.util.ArrayList;
@@ -143,7 +144,7 @@ public final class DefaultFileFactory extends FileFactory {
     @Override
     public void upload(@NotNull final StoredFile file) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
-            this.pendingUploadCache.enqueue(file);
+            this.pendingUploadCache.enqueue(materializeIfContentFileBacked(file));
             recordMetric(MetricsRecorder::recordUploadQueued);
             return;
         }
@@ -166,9 +167,23 @@ public final class DefaultFileFactory extends FileFactory {
             }
             // Re-queue the original, still content-carrying file (not toRegister) - PendingUploadScheduler
             // retries via prepareForPersistence again later, which simply overwrites the same S3 key.
-            this.pendingUploadCache.enqueue(file);
+            this.pendingUploadCache.enqueue(materializeIfContentFileBacked(file));
             recordMetric(MetricsRecorder::recordUploadQueued);
         }
+    }
+
+    /**
+     * Converts a {@link StoredFile#isContentFileBacked() content-file-backed} file to its inline
+     * shape ({@link StoredFile#withInlineContentFromSource()}) before it enters {@link
+     * #pendingUploadCache}, returning every other file unchanged. A queued file may outlive its
+     * request-scoped scratch source (the REST layer deletes it as soon as the upload call
+     * returns), so the queue must hold the content itself - a deliberate, documented exception to
+     * this class's "never materialize a streamed upload on the heap" rule, confined to the
+     * offline-retry path, which production deployments never take at all (see {@code
+     * CloudBootstrap}'s always-available connectivity checker).
+     */
+    private static StoredFile materializeIfContentFileBacked(final StoredFile file) {
+        return file.isContentFileBacked() ? file.withInlineContentFromSource() : file;
     }
 
     /**
@@ -179,7 +194,7 @@ public final class DefaultFileFactory extends FileFactory {
     @Override
     public void upload(@NotNull final StoredFile... files) throws DatabaseClientException, KeyWrapException {
         if (!this.connectivityChecker.isAvailable()) {
-            this.pendingUploadCache.enqueue(files);
+            this.pendingUploadCache.enqueue(materializeAllContentFileBacked(files));
             recordMetric(MetricsRecorder::recordUploadQueued, files.length);
             return;
         }
@@ -203,9 +218,18 @@ public final class DefaultFileFactory extends FileFactory {
             // some files in the batch may already have been stored successfully -
             // re-queueing all of them is harmless, since a retried upload is the
             // same insert-or-update StoredFile#fileId() operation either way.
-            this.pendingUploadCache.enqueue(files);
+            this.pendingUploadCache.enqueue(materializeAllContentFileBacked(files));
             recordMetric(MetricsRecorder::recordUploadQueued, files.length);
         }
+    }
+
+    /** {@link #materializeIfContentFileBacked}, applied to every file in a batch - see its own Javadoc. */
+    private static StoredFile[] materializeAllContentFileBacked(final StoredFile[] files) {
+        final StoredFile[] materialized = new StoredFile[files.length];
+        for (int i = 0; i < files.length; i++) {
+            materialized[i] = materializeIfContentFileBacked(files[i]);
+        }
+        return materialized;
     }
 
     /**
@@ -216,6 +240,14 @@ public final class DefaultFileFactory extends FileFactory {
      * as one array), and returns a metadata-only copy ({@link
      * StoredFile#withObjectStorageKey(String)}) ready for {@link DataFactory#register} - otherwise
      * returns {@code file} itself unchanged.
+     *
+     * <p>A {@link StoredFile#isContentFileBacked() content-file-backed} file (a large streamed
+     * upload, see {@code CloudUserService#uploadFile}'s {@code Path} overload) is read straight
+     * off its scratch file into the chunk encryptor instead - the <em>plaintext</em> is never
+     * materialized on the heap either, completing the end-to-end O(chunk size) upload path. On a
+     * deployment without an {@link #objectStorageService}, such a file is instead converted to
+     * the inline shape ({@link StoredFile#withInlineContentFromSource()}), which necessarily
+     * materializes it - inline storage is a full in-heap copy by definition.
      *
      * <p>Exposed (not just called internally by {@link #upload}) so {@code PendingUploadScheduler}
      * can apply the exact same sequence when retrying a queued file directly via {@code
@@ -240,7 +272,30 @@ public final class DefaultFileFactory extends FileFactory {
             return file;
         }
         if (this.objectStorageService == null) {
-            return file;
+            // No object store to stream into - a content-file-backed instance must fall back to
+            // the inline shape here (fully materialized, unavoidably: that IS the inline shape),
+            // since its transient source path would otherwise never reach the database at all.
+            return file.isContentFileBacked() ? file.withInlineContentFromSource() : file;
+        }
+        if (file.isContentFileBacked()) {
+            // Fully streamed end to end: the plaintext is read straight off the scratch file and
+            // chunk-encrypted on the fly - neither plaintext nor ciphertext is ever materialized
+            // on the heap, closing the "the encryptor streams but what feeds it doesn't" half of
+            // the S3 heap-buffering finding (roadmap Phase 0, V1).
+            try (InputStream rawContent = Files.newInputStream(file.contentSourceFile())) {
+                final StoredFileContentChannel.StreamingPayload payload = this.contentChannel.sendStream(
+                        file.fileId(), rawContent, file.sizeBytes()
+                );
+                try (InputStream encryptedContent = payload.content()) {
+                    this.objectStorageService.putObject(file.fileId(), encryptedContent, payload.contentLength());
+                }
+            } catch (final IOException e) {
+                throw new ObjectStorageException(
+                        "@DefaultFileFactory.prepareForPersistence: failed streaming content source file '"
+                                + file.contentSourceFile() + "' for file '" + file.fileId() + "'", e
+                );
+            }
+            return file.withObjectStorageKey(file.fileId());
         }
         // Streamed, not one-shot: sendStream chunk-encrypts on the fly, so the ciphertext is
         // never materialized as a second full-size array next to rawBytes - see

@@ -67,7 +67,12 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -831,6 +836,104 @@ public final class CloudUserService implements ICloudUserService {
         this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
         indexFileForSearch(authUserId, storedFile, folderId, content);
         indexFileForIntelligence(authUserId, storedFile, content);
+        dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, storedFile.fileId());
+
+        return storedFile;
+    }
+
+    /**
+     * Streaming counterpart of {@link #uploadFile(String, String, byte[], String)}, for uploads
+     * too large to hold in memory: {@code contentFile}'s bytes never reach the heap as one array
+     * on this path - the checksum is computed by streaming the file, the dedup-alias branch needs
+     * no content at all, and a fresh file is handed to {@link FileFactory#upload} as a {@link
+     * StoredFile#createFromContentFile content-file-backed} instance that {@code
+     * DefaultFileFactory#prepareForPersistence} chunk-encrypts straight off the file into the
+     * object store. See {@link ICloudUserService#uploadFile(String, String, Path, String)} for
+     * the two deliberate behavioral differences (no compression, no content-based
+     * search/intelligence extraction - both matching {@link #completePresignedUpload}'s existing
+     * treatment of content this server never holds).
+     *
+     * <p>Every other step - dedup, quota, folder ownership, scan status, ownership tracking,
+     * usage accounting, audit, webhooks - is identical to the {@code byte[]} overload, in the
+     * same order.
+     */
+    @NonNull
+    @Override
+    public StoredFile uploadFile(@NonNull final String authUserId, @NonNull final String fileName,
+                                  @NonNull final Path contentFile, @Nullable final String folderId) {
+
+        final long sizeBytes;
+        final FileChecksum checksum;
+        try {
+            sizeBytes = Files.size(contentFile);
+            try (InputStream content = Files.newInputStream(contentFile)) {
+                checksum = FileChecksum.of(HashAlgorithm.SHA_256, content);
+            }
+        } catch (final IOException e) {
+            throw new UncheckedIOException(
+                    "@CloudUserService.uploadFile: failed reading content file '" + contentFile + "' for '" + fileName + "'", e);
+        }
+        final Optional<StoredFileOwnership> dedupCandidate = this.findDedupCandidate(authUserId, checksum);
+
+        final ICloudUser cloudUser = this.getOrCreate(authUserId);
+        if (dedupCandidate.isEmpty()) {
+            if (cloudUser.isUploadLimitReached(sizeBytes)) {
+                recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+                throw new UploadQuotaExceededException(
+                        authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
+            }
+        }
+        if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
+
+        final boolean scanningEnabled = isContentScanServicePublished();
+
+        final StoredFile storedFile;
+        final String dedupCanonicalFileId;
+        if (dedupCandidate.isPresent()) {
+            dedupCanonicalFileId = dedupCandidate.get().resolvedDedupCanonicalFileId();
+            StoredFile alias = StoredFile.createDedupAlias(
+                    UUID.randomUUID().toString(), fileName, sizeBytes, checksum, Instant.now(), Instant.now(), dedupCanonicalFileId);
+            if (scanningEnabled) alias = alias.withScanStatus(ScanStatus.PENDING);
+            storedFile = alias;
+            this.incrementDedupRefCount(dedupCanonicalFileId);
+            try {
+                this.dataFactory.register(storedFile);
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.uploadFile: failed to register deduplicated '" + fileName + "'", e);
+            }
+        } else {
+            dedupCanonicalFileId = null;
+            StoredFile fresh = StoredFile.createFromContentFile(
+                    UUID.randomUUID().toString(), fileName, sizeBytes, checksum, contentFile);
+            if (scanningEnabled) fresh = fresh.withScanStatus(ScanStatus.PENDING);
+            // The factory registers the persisted shape it derives itself (S3-backed, or inline
+            // on a deployment without an object store); everything downstream here only reads
+            // metadata off this instance - identical either way - never its content.
+            storedFile = fresh;
+            try {
+                this.fileFactory.upload(storedFile);
+            } catch (final DatabaseClientException | KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.uploadFile: failed to upload '" + fileName + "'", e);
+            }
+        }
+
+        try {
+            this.dataFactory.register(StoredFileOwnership.of(authUserId, storedFile, folderId, dedupCanonicalFileId));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException(
+                    "@CloudUserService.uploadFile: failed to track ownership of " + storedFile.fileId() + " for " + authUserId, e
+            );
+        }
+
+        if (dedupCandidate.isEmpty()) {
+            this.updateCloudUserBytesUsage(authUserId, sizeBytes);
+        }
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, storedFile.fileId(), null));
+        // Content deliberately not passed: extracting indexable text/an embedding would require
+        // materializing the very bytes this path exists to keep off the heap - the file is still
+        // indexed by name/folder, the same degradation completePresignedUpload already accepts.
+        indexFileForSearch(authUserId, storedFile, folderId, null);
+        indexFileForIntelligence(authUserId, storedFile, null);
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, storedFile.fileId());
 
         return storedFile;

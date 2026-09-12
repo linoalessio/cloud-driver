@@ -56,6 +56,11 @@ import java.util.zip.Inflater;
  * #withResolvedContent(byte[])} to hydrate a copy - every accessor below throws {@link
  * IllegalStateException} on an S3-backed instance until that hydration has happened.
  *
+ * <p><b>A fresh upload's content can also live transiently in a local file - see {@link
+ * #contentSourceFile}.</b> This shape ({@link #createFromContentFile}) exists only between upload
+ * receipt and persistence, so large uploads never require the full content on the heap; it never
+ * reaches the database, which only ever sees the inline or S3-backed shapes above.
+ *
  * <p><b>Content can also be a per-account deduplication alias of another file's content - see
  * {@link #dedupOfFileId}.</b> An alias (created only by {@code CloudUserService#uploadFile} when
  * an account uploads content it already owns elsewhere) carries no {@link #contentBase64}/{@link #objectStorageKey}
@@ -69,8 +74,8 @@ import java.util.zip.Inflater;
 // callSuper=true would compare via Object's identity equals() and make
 // every pair of distinct instances unequal regardless of field values,
 // defeating value-based equality entirely.
-@ToString(exclude = {"contentBase64", "decodedContent"})
-@EqualsAndHashCode(exclude = "decodedContent", callSuper = false)
+@ToString(exclude = {"contentBase64", "decodedContent", "contentSourceFile"})
+@EqualsAndHashCode(exclude = {"decodedContent", "contentSourceFile"}, callSuper = false)
 public final class StoredFile extends Serialized {
 
     /** Fallback MIME type used when none can be inferred from the file name. */
@@ -247,6 +252,23 @@ public final class StoredFile extends Serialized {
      * to decode it from.
      */
     private transient volatile byte[] decodedContent;
+
+    /**
+     * A local file this instance's not-yet-persisted content lives in instead of {@link
+     * #contentBase64} - the streaming-upload shape created only by {@link
+     * #createFromContentFile}: content stays on disk (a request-scoped scratch file, see {@code
+     * DefaultRestFactory#receiveUploadToScratchFile}) until {@code
+     * DefaultFileFactory#prepareForPersistence} either chunk-encrypts it straight to the object
+     * store (never materializing it on the heap) or, on a deployment without S3-backed s3storage,
+     * converts it to the inline shape via {@link #withInlineContentFromSource()}. Transient so
+     * Gson never serializes it - a content-file-backed instance must therefore <b>never</b> reach
+     * {@code DataFactory#register} as-is (its row would carry no content at all); {@code
+     * DefaultFileFactory} guarantees the conversion happens first on every path, including the
+     * offline-enqueue one. Only meaningful pre-persistence; {@code null} on every instance read
+     * back from the database, and deliberately excluded from {@code equals}/{@code hashCode}/
+     * {@code toString} like {@link #decodedContent}.
+     */
+    private transient volatile Path contentSourceFile;
 
     /**
      * Full constructor, for re-hydrating a file with a known checksum and
@@ -461,9 +483,14 @@ public final class StoredFile extends Serialized {
 
     /**
      * Copy constructor backing {@link #withScanStatus(ScanStatus)} - carries every field over from
-     * {@code source} unchanged except {@link #scanStatus}.
+     * {@code source} unchanged except {@link #scanStatus}. Also carries {@link #contentSourceFile}:
+     * this is the one copy operation {@code CloudUserService#uploadFile} applies to a
+     * content-file-backed instance <em>before</em> it reaches {@code
+     * DefaultFileFactory#prepareForPersistence}, so dropping the source here would strand the
+     * streaming upload path.
      */
     private StoredFile(final StoredFile source, final ScanStatus newScanStatus) {
+        this.contentSourceFile = source.contentSourceFile;
         this.fileId = source.fileId;
         this.fileName = source.fileName;
         this.contentType = source.contentType;
@@ -594,6 +621,125 @@ public final class StoredFile extends Serialized {
         this.dedupOfFileId = dedupOfFileId;
         this.dedupRefCount = 0;
         this.scanStatus = null;
+    }
+
+    /**
+     * Factory for a freshly uploaded file whose content stays in a local file ({@code
+     * contentFile}) instead of being materialized on the heap - the streaming-upload counterpart
+     * of {@link #StoredFile(String, String, byte[])}, used by {@code CloudUserService#uploadFile}'s
+     * {@code Path} overload for uploads too large to hold in memory. See {@link
+     * #contentSourceFile}'s own Javadoc for the lifecycle rules: the result must pass through
+     * {@code DefaultFileFactory} (which streams it to the object store, or converts it inline via
+     * {@link #withInlineContentFromSource()}) before it may be persisted, and {@code contentFile}
+     * must outlive that call.
+     *
+     * <p>Content is never DEFLATE-compressed on this path - unlike {@link #StoredFile(String,
+     * String, byte[])}, which trial-compresses in memory. Deciding compressibility would require
+     * a full extra read pass, and the large binary formats this path exists for (archives, media,
+     * disk images) rarely compress; a direct-transfer upload already makes the same trade.
+     *
+     * @param fileId this file's unique id, its {@link #primaryKey()}
+     * @param fileName the original file name; also the source of {@link #contentType()}
+     * @param sizeBytes {@code contentFile}'s exact size in bytes, recorded as {@link #declaredSizeBytes}
+     * @param checksum the plaintext checksum, computed by the caller while receiving {@code contentFile}
+     * @param contentFile the local file holding the raw, uncompressed content
+     * @return a fresh content-file-backed {@code StoredFile}, stamped with the current time
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if {@code sizeBytes} is negative
+     */
+    @NotNull
+    public static StoredFile createFromContentFile(final String fileId, final String fileName, final long sizeBytes,
+                                                    final FileChecksum checksum, final Path contentFile) {
+        if (sizeBytes < 0) {
+            throw new IllegalArgumentException("@StoredFile.createFromContentFile: sizeBytes cannot be negative, got " + sizeBytes);
+        }
+        return new StoredFile(fileId, fileName, sizeBytes, checksum,
+                Asserts.requireNonNull(contentFile, "@StoredFile.createFromContentFile: contentFile cannot be null"));
+    }
+
+    /**
+     * Private constructor backing {@link #createFromContentFile} - mirrors the dedup-alias
+     * constructor's "no content argument" shape but records {@link #contentSourceFile} instead of
+     * {@link #dedupOfFileId}.
+     */
+    private StoredFile(final String fileId, final String fileName, final long sizeBytes, final FileChecksum checksum,
+                        final Path contentFile) {
+        this.fileId = Asserts.requireNonNull(fileId, "@StoredFile: fileId cannot be null");
+        this.fileName = Asserts.requireNonNull(fileName, "@StoredFile: fileName cannot be null");
+        this.contentType = normalizeContentType(this.fileName);
+        this.contentBase64 = null;
+        this.contentCompressed = false;
+        this.checksum = Asserts.requireNonNull(checksum, "@StoredFile: checksum cannot be null");
+        this.createdAtEpochMilli = Instant.now().toEpochMilli();
+        this.updatedAtEpochMilli = this.createdAtEpochMilli;
+        this.deletedAtEpochMillis = null;
+        this.objectStorageKey = null;
+        this.directTransfer = false;
+        this.contentKeyHeaderBase64 = null;
+        this.declaredSizeBytes = sizeBytes;
+        this.dedupOfFileId = null;
+        this.dedupRefCount = 0;
+        this.scanStatus = null;
+        this.contentSourceFile = contentFile;
+    }
+
+    /**
+     * Whether this instance's not-yet-persisted content lives in a local file rather than inline
+     * or in an object store - see {@link #contentSourceFile}'s own Javadoc. Only ever {@code true}
+     * between {@link #createFromContentFile} and {@code DefaultFileFactory#prepareForPersistence}.
+     */
+    public boolean isContentFileBacked() {
+        return contentSourceFile != null;
+    }
+
+    /**
+     * The local file holding this instance's not-yet-persisted content.
+     *
+     * @return the content file's path
+     * @throws IllegalStateException if {@link #isContentFileBacked()} is {@code false}
+     */
+    @NotNull
+    public Path contentSourceFile() {
+        final Path source = this.contentSourceFile;
+        if (source == null) {
+            throw new IllegalStateException(
+                    "@StoredFile.contentSourceFile: file '" + fileId + "' is not content-file-backed"
+            );
+        }
+        return source;
+    }
+
+    /**
+     * Reads {@link #contentSourceFile} fully and returns an inline copy of this file ({@link
+     * #contentBase64} set, source dropped) - the fallback conversion for the two paths that
+     * cannot stream a content-file-backed instance: persisting inline on a deployment without an
+     * {@code ObjectStorageService}, and queueing into a {@code PendingUploadCache} (which may
+     * outlive the source file). Deliberately materializes the full content on the heap - that is
+     * the point of the conversion, and exactly what the inline shape requires. {@link
+     * #checksum()}/{@link #scanStatus()}/timestamps/{@link #fileId()} are preserved; compression
+     * is re-decided the same way {@link #StoredFile(String, String, byte[], FileChecksum,
+     * Instant, Instant)} decides it for any inline file.
+     *
+     * @return an inline copy of this file, content fully read from {@link #contentSourceFile}
+     * @throws IllegalStateException if {@link #isContentFileBacked()} is {@code false}
+     * @throws java.io.UncheckedIOException if reading {@link #contentSourceFile} fails
+     */
+    @NotNull
+    public StoredFile withInlineContentFromSource() {
+        final Path source = this.contentSourceFile();
+        final byte[] content;
+        try {
+            content = Files.readAllBytes(source);
+        } catch (final IOException e) {
+            throw new java.io.UncheckedIOException(
+                    "@StoredFile.withInlineContentFromSource: failed reading content source file '" + source
+                            + "' for file '" + fileId + "'", e);
+        }
+        StoredFile inline = new StoredFile(fileId, fileName, content, checksum, createdAt(), updatedAt());
+        if (this.scanStatus != null) {
+            inline = inline.withScanStatus(this.scanStatus);
+        }
+        return inline;
     }
 
     /**
@@ -801,7 +947,10 @@ public final class StoredFile extends Serialized {
                     ? "it is already S3-backed (objectStorageKey '" + this.objectStorageKey + "')"
                     : this.isDedupAlias()
                             ? "it is a dedup alias of file '" + this.dedupOfFileId + "' and owns no content itself"
-                            : "it is neither inline, nor S3-backed, nor a dedup alias (unexpected state)";
+                            : this.isContentFileBacked()
+                                    ? "it is content-file-backed ('" + this.contentSourceFile + "') - stream it via"
+                                            + " contentSourceFile(), or convert via withInlineContentFromSource()"
+                                    : "it is neither inline, nor S3-backed, nor a dedup alias (unexpected state)";
             throw new IllegalStateException(
                     "@StoredFile.rawStorableBytes: file '" + fileId + "' has no inline content to read - " + reason
             );

@@ -25,6 +25,7 @@ import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -233,6 +234,30 @@ public interface ICloudUserService {
      */
     @NotNull
     StoredFile uploadFile(@NotNull String authUserId, @NotNull String fileName, byte[] content, @Nullable String folderId);
+
+    /**
+     * Same as {@link #uploadFile(String, String, byte[], String)}, but with the content in a
+     * local file ({@code contentFile}) instead of a heap array - the streaming path for uploads
+     * too large to hold in memory. The checksum is computed by streaming {@code contentFile}, and
+     * the content reaches the object store the same way (chunk-encrypted straight off the file,
+     * O(chunk size) memory) - see {@code StoredFile#createFromContentFile}. {@code contentFile}
+     * must outlive this call; the caller keeps ownership of it (and deletes it) afterward.
+     *
+     * <p>Two deliberate behavioral differences from the {@code byte[]} overloads, both matching
+     * what a presigned direct-transfer upload already does: content is never DEFLATE-compressed,
+     * and no indexable text/embedding is extracted for the search/intelligence extensions (the
+     * file is still indexed by name and folder).
+     *
+     * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()}
+     * @param fileName the original file name of the content being uploaded
+     * @param contentFile the local file holding the raw content to upload
+     * @param folderId the folder to place the new file in, or {@code null} for the root
+     * @return the uploaded {@link StoredFile}
+     * @throws IllegalArgumentException if {@code folderId} is non-null and isn't tracked as belonging to {@code authUserId}
+     */
+    @NotNull
+    StoredFile uploadFile(@NotNull String authUserId, @NotNull String fileName, @NotNull Path contentFile,
+                          @Nullable String folderId);
 
     /**
      * Begins a presigned, direct-to-client upload: checks {@code authUserId}'s quota against

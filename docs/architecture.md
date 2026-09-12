@@ -159,6 +159,12 @@ same HTTP/WebSocket API).
   already serves its hot path — `FULL` there would hold that content twice.
 - REST handlers never block a request-handling thread — the underlying database/encryption work
   always runs on a virtual thread.
+- Server-mediated uploads above a 32 MiB threshold stream end to end: the request body lands in a
+  scratch file, and the checksum, chunked AES-GCM encryption, and S3 write all run straight off
+  that file (`StoredFile.createFromContentFile` → `DefaultFileFactory.prepareForPersistence`) —
+  heap use is O(chunk size) regardless of file size. Below the threshold, the in-memory path is
+  kept deliberately: it is what powers DEFLATE compression and search/intelligence text
+  extraction, which the streaming path forgoes (matching presigned direct transfers).
 - Change notification uses push (Postgres `LISTEN`/`NOTIFY`), not a polling loop, so latency is
   bounded by notification delivery rather than a poll interval.
 - The backup job uses keyset pagination rather than a single unbounded query, since file-content
