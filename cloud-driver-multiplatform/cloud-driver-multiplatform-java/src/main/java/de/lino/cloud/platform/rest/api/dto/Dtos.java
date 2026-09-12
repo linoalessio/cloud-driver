@@ -41,6 +41,48 @@ public final class Dtos {
     public record PatchContentRequest(long totalSizeBytes, java.util.List<PatchChunk> changedChunks) {
     }
 
+    /**
+     * A resumable upload session's geometry and progress - the body of {@code POST
+     * /files/upload-session} (with {@code uploadedPartNumbers} empty) and {@code GET
+     * /files/upload-session/{id}} (with the store's confirmed parts): the client cuts its
+     * (encrypted, when {@code encryption} is set) object stream into {@code partSizeBytes}
+     * ranges and uploads exactly the part numbers missing from {@code uploadedPartNumbers}.
+     *
+     * @param fileId the session's id - what every follow-up call addresses it by
+     * @param partSizeBytes the fixed byte size of every part except the last
+     * @param partCount how many parts the object splits into
+     * @param totalObjectBytes the exact total byte size of the object the parts assemble into
+     * @param uploadedPartNumbers every part number the store already holds, ascending
+     * @param encryption the client-side encryption parameters, or {@code null} for a plaintext session
+     */
+    public record UploadSessionResponse(String fileId, long partSizeBytes, int partCount, long totalObjectBytes,
+                                         java.util.List<Integer> uploadedPartNumbers, UploadEncryptionInfo encryption) {
+    }
+
+    /**
+     * One presigned part upload - the body of {@code POST /files/upload-session/{id}/parts/{n}/url}.
+     *
+     * @param partNumber the 1-based part this URL uploads
+     * @param url the presigned URL to {@code PUT} the part's bytes to
+     * @param requiredHeaders headers that must be replayed exactly on the {@code PUT}
+     * @param expiresAtEpochMilli when the URL stops working
+     */
+    public record UploadSessionPartUrl(int partNumber, String url, Map<String, String> requiredHeaders,
+                                        long expiresAtEpochMilli) {
+    }
+
+    /**
+     * The outcome of beginning an upload (session or single-{@code PUT}) with a declared
+     * checksum - exactly one of the two is set: {@code alreadyStored} when the server's dedup
+     * precheck matched content this account already stores (upload nothing), {@code session}
+     * otherwise.
+     *
+     * @param alreadyStored the registered dedup alias's summary, on a precheck hit
+     * @param session the session to upload through, otherwise
+     */
+    public record BeginUploadSessionResult(StoredFileSummaryResponse alreadyStored, UploadSessionResponse session) {
+    }
+
     /** Not instantiable - a pure namespace for the nested record types below. */
     private Dtos() {
     }

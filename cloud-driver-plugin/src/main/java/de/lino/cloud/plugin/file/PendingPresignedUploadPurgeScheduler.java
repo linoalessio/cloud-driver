@@ -72,6 +72,14 @@ public final class PendingPresignedUploadPurgeScheduler {
     private final DataFactory dataFactory;
     /** Deletes an abandoned ticket's orphaned S3 object. */
     private final ObjectStorageService objectStorageService;
+    /**
+     * Aborts an abandoned <b>session</b> row's multipart upload (roadmap Phase 5) - S3 bills for
+     * incomplete parts until aborted, so this is cost control, not tidying. {@code null} on a
+     * deployment without resumable sessions configured; a session row aged out on such an
+     * instance is left in place (its parts can only be freed by an abort), never half-purged.
+     */
+    @org.jetbrains.annotations.Nullable
+    private final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService;
     /** How long a {@link PendingPresignedUpload} row may sit unconfirmed before being treated as abandoned. */
     private final Duration retentionPeriod;
     /** Single-thread, daemon-backed executor driving the tick schedule. */
@@ -91,9 +99,23 @@ public final class PendingPresignedUploadPurgeScheduler {
      */
     public PendingPresignedUploadPurgeScheduler(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService,
                                                  @NotNull final Duration retentionPeriod) {
+        this(dataFactory, objectStorageService, retentionPeriod, null);
+    }
+
+    /**
+     * @param dataFactory scans/removes {@link PendingPresignedUpload} rows, and confirms whether a real {@link StoredFile} now exists under a given id
+     * @param objectStorageService deletes an abandoned ticket's orphaned S3 object
+     * @param retentionPeriod how long a ticket may sit unconfirmed before this scheduler treats it as abandoned
+     * @param resumableUploadService aborts an abandoned session row's multipart upload, or {@code null} if sessions aren't configured
+     * @throws NullPointerException if any argument except {@code resumableUploadService} is {@code null}
+     */
+    public PendingPresignedUploadPurgeScheduler(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService,
+                                                 @NotNull final Duration retentionPeriod,
+                                                 @org.jetbrains.annotations.Nullable final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService) {
         this.dataFactory = Asserts.requireNonNull(dataFactory, "@PendingPresignedUploadPurgeScheduler: dataFactory cannot be null");
         this.objectStorageService = Asserts.requireNonNull(objectStorageService, "@PendingPresignedUploadPurgeScheduler: objectStorageService cannot be null");
         this.retentionPeriod = Asserts.requireNonNull(retentionPeriod, "@PendingPresignedUploadPurgeScheduler: retentionPeriod cannot be null");
+        this.resumableUploadService = resumableUploadService;
         this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
     }
 
@@ -110,11 +132,28 @@ public final class PendingPresignedUploadPurgeScheduler {
     @NotNull
     public static PendingPresignedUploadPurgeScheduler withConfiguredRetention(@NotNull final DataFactory dataFactory,
                                                                                 @NotNull final ObjectStorageService objectStorageService) {
+        return withConfiguredRetention(dataFactory, objectStorageService, null);
+    }
+
+    /**
+     * Same as {@link #withConfiguredRetention(DataFactory, ObjectStorageService)}, additionally
+     * wiring the multipart-abort service for resumable session rows - see the four-argument
+     * constructor.
+     *
+     * @param dataFactory scans/removes {@link PendingPresignedUpload} rows
+     * @param objectStorageService deletes an abandoned ticket's orphaned S3 object
+     * @param resumableUploadService aborts an abandoned session row's multipart upload, or {@code null} if sessions aren't configured
+     * @return a new, not-yet-started scheduler using the configured (or default) retention window
+     */
+    @NotNull
+    public static PendingPresignedUploadPurgeScheduler withConfiguredRetention(@NotNull final DataFactory dataFactory,
+                                                                                @NotNull final ObjectStorageService objectStorageService,
+                                                                                @org.jetbrains.annotations.Nullable final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService) {
         final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
         final long retentionHours = configuration.contains(RETENTION_HOURS_CONFIG_KEY)
                 ? configuration.getLong(RETENTION_HOURS_CONFIG_KEY)
                 : DEFAULT_RETENTION_HOURS;
-        return new PendingPresignedUploadPurgeScheduler(dataFactory, objectStorageService, Duration.ofHours(retentionHours));
+        return new PendingPresignedUploadPurgeScheduler(dataFactory, objectStorageService, Duration.ofHours(retentionHours), resumableUploadService);
     }
 
     /**
@@ -192,6 +231,26 @@ public final class PendingPresignedUploadPurgeScheduler {
             realFileExists = this.dataFactory.findById(pending.getFileId(), StoredFile.class).isPresent();
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             return; // best-effort - leave this row for the next tick rather than risking a wrong delete on an inconclusive lookup
+        }
+        // A resumable session row (roadmap Phase 5): its abandoned state is in-progress multipart
+        // parts, not a finished object - free them via abort (cost control: S3 bills for parts
+        // until aborted). No abort service configured -> leave the row untouched; half-purging it
+        // would orphan the billed parts with nothing left pointing at them.
+        if (pending.getMultipartUploadId() != null && !realFileExists) {
+            if (this.resumableUploadService == null) {
+                return;
+            }
+            try {
+                this.resumableUploadService.abortMultipartUpload(pending.getFileId(), pending.getMultipartUploadId());
+            } catch (final ObjectStorageException abortFailed) {
+                return; // leave the tracking row in place - retry the abort on the next tick
+            }
+            try {
+                this.dataFactory.delete(pending.getFileId(), PendingPresignedUpload.class);
+            } catch (final DatabaseClientException alreadyGone) {
+                // nothing left to do - already removed by a concurrent completion/abort
+            }
+            return;
         }
         if (!realFileExists) {
             try {

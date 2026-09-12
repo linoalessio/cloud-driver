@@ -287,6 +287,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * one HTTP method).
      */
     private static final String FILES_UPLOAD_URL_PATH = FILES_PATH + "/upload-url";
+    /** Path mounted by {@link #start} for the resumable multipart upload-session routes (roadmap Phase 5) - begin/status/part-url/complete/abort. */
+    private static final String FILES_UPLOAD_SESSION_PATH = FILES_PATH + "/upload-session";
     /**
      * Path mounted by {@link #start} for {@link #handleListFoldersSharedWithMe}. Unlike {@link
      * #FILES_SHARED_WITH_ME_PATH}, this one was never actually broken by the registration-order bug
@@ -1019,6 +1021,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 config.routes.delete(FILES_PATH + "/{id}/public-link/{token}", this::handleRevokePublicFileLink);
                 config.routes.get(PUBLIC_FILES_PATH + "/{token}", this::handleResolvePublicFileLink);
                 config.routes.post(FILES_UPLOAD_URL_PATH, this::handleBeginPresignedUpload);
+                config.routes.post(FILES_UPLOAD_SESSION_PATH, this::handleBeginResumableUpload);
+                config.routes.get(FILES_UPLOAD_SESSION_PATH + "/{id}", this::handleResumableUploadStatus);
+                config.routes.post(FILES_UPLOAD_SESSION_PATH + "/{id}/parts/{partNumber}/url", this::handlePresignResumableUploadPart);
+                config.routes.post(FILES_UPLOAD_SESSION_PATH + "/{id}/complete", this::handleCompleteResumableUpload);
+                config.routes.delete(FILES_UPLOAD_SESSION_PATH + "/{id}", this::handleAbortResumableUpload);
                 config.routes.post(FILES_PATH + "/{id}/complete-upload", this::handleCompletePresignedUpload);
                 config.routes.get(FILES_PATH + "/{id}/download-url", this::handleBeginPresignedDownload);
 
@@ -2377,15 +2384,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * The {@code {"fileName", "sizeBytes", "folderId"}} JSON body shape read by {@code POST
-     * /files/upload-url}.
+     * The {@code {"fileName", "sizeBytes", "folderId", "checksumSha256"}} JSON body shape read
+     * by {@code POST /files/upload-url} and {@code POST /files/upload-session}.
      *
      * @param fileName the file's original name
      * @param sizeBytes the file's declared size, checked against quota now and again (against the
      *                   real uploaded size) at {@code POST /files/{id}/complete-upload}
      * @param folderId the folder the file will be placed in once completed, or {@code null} for the root
+     * @param checksumSha256 the content's SHA-256 (lowercase hex) for the dedup precheck -
+     *     optional on {@code /files/upload-url} (absent keeps the pre-precheck behavior and
+     *     response shape, so older clients are unaffected), required on {@code
+     *     /files/upload-session}
      */
-    private record BeginUploadRequest(String fileName, long sizeBytes, String folderId) {
+    private record BeginUploadRequest(String fileName, long sizeBytes, String folderId, String checksumSha256) {
     }
 
     /**
@@ -2437,9 +2448,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final BeginUploadRequest request = this.gson.fromJson(ctx.body(), BeginUploadRequest.class);
         final String userId = requireUserId(ctx);
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.beginPresignedUpload(userId, request.fileName(), request.sizeBytes(), request.folderId()))
-                .handle((ticket, failure) -> {
+                .supplyAsync(() -> this.cloudUserService.beginPresignedUpload(
+                        userId, request.fileName(), request.sizeBytes(), request.checksumSha256(), request.folderId()))
+                .handle((begin, failure) -> {
                     if (failure == null) {
+                        // Dedup precheck hit (only ever reachable when the client sent a
+                        // checksum, i.e. opted into the new response shape): nothing to upload.
+                        if (begin.alreadyStored() != null) {
+                            final JsonObject body = new JsonObject();
+                            body.add("alreadyStored", this.gson.toJsonTree(begin.alreadyStored()));
+                            ctx.status(200).contentType("application/json").result(this.gson.toJson(body));
+                            return null;
+                        }
+                        final de.lino.cloud.api.file.PresignedUploadTicket ticket = begin.ticket();
                         final PresignedUpload upload = ticket.upload();
                         final PresignedUploadEncryption encryption = ticket.encryption();
                         final UploadEncryptionDto encryptionDto = encryption == null ? null : new UploadEncryptionDto(
@@ -2477,6 +2498,158 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                         return null;
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    // --- resumable multipart upload sessions (roadmap Phase 5) --------------------------------
+
+    /**
+     * The session-geometry half of a {@code POST /files/upload-session}/{@code GET
+     * /files/upload-session/{id}} response body - see each handler's own Javadoc.
+     */
+    private record UploadSessionDto(String fileId, long partSizeBytes, int partCount, long totalObjectBytes,
+                                     List<Integer> uploadedPartNumbers, UploadEncryptionDto encryption) {
+    }
+
+    /** Serializes {@code encryption} the same base64 way {@link #handleBeginPresignedUpload} does, or {@code null} through. */
+    private static UploadEncryptionDto toEncryptionDto(final de.lino.cloud.api.file.PresignedUploadEncryption encryption) {
+        return encryption == null ? null : new UploadEncryptionDto(
+                Base64.getEncoder().encodeToString(encryption.keyMaterial()),
+                Base64.getEncoder().encodeToString(encryption.header()),
+                encryption.associatedDataPrefix(), encryption.chunkSizeBytes(), encryption.objectLengthBytes());
+    }
+
+    /**
+     * {@code POST /files/upload-session} - begins a resumable multipart upload session (roadmap
+     * Phase 5), the large-file counterpart of {@code POST /files/upload-url}: same {@link
+     * BeginUploadRequest} body, but {@code checksumSha256} is <b>required</b> here (it drives
+     * the dedup precheck and completion metadata). Responds {@code 200} with either {@code
+     * {"alreadyStored": <summary>}} (dedup precheck hit - upload nothing) or the session's
+     * geometry ({@link UploadSessionDto}, {@code uploadedPartNumbers} empty) - part URLs are
+     * fetched one at a time via the part-url route as the upload proceeds. {@code 503} when
+     * resumable sessions aren't configured on this deployment.
+     */
+    private void handleBeginResumableUpload(@NotNull final Context ctx) {
+        final BeginUploadRequest request = this.gson.fromJson(ctx.body(), BeginUploadRequest.class);
+        if (request == null || request.fileName() == null || request.checksumSha256() == null) {
+            throw new BadRequestResponse("Body must carry 'fileName', 'sizeBytes' and 'checksumSha256'");
+        }
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.beginResumableUpload(
+                        userId, request.fileName(), request.sizeBytes(), request.checksumSha256(), request.folderId()))
+                .handle((begin, failure) -> {
+                    if (failure == null) {
+                        if (begin.alreadyStored() != null) {
+                            final JsonObject body = new JsonObject();
+                            body.add("alreadyStored", this.gson.toJsonTree(begin.alreadyStored()));
+                            ctx.status(200).contentType("application/json").result(this.gson.toJson(body));
+                            return null;
+                        }
+                        final de.lino.cloud.api.file.ResumableUploadTicket ticket = begin.ticket();
+                        ctx.status(200).contentType("application/json").result(this.gson.toJson(new UploadSessionDto(
+                                ticket.fileId(), ticket.partSizeBytes(), ticket.partCount(), ticket.totalObjectBytes(),
+                                List.of(), toEncryptionDto(ticket.encryption()))));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, request.fileName());
+                }));
+    }
+
+    /**
+     * {@code GET /files/upload-session/{id}} - the session's durable progress (which parts the
+     * object store already holds) plus its geometry and recovered encryption parameters, so a
+     * client resuming after a crash needs nothing but the session id. {@code 404} for an
+     * unknown session or someone else's.
+     */
+    private void handleResumableUploadStatus(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.getResumableUploadStatus(userId, id))
+                .handle((status, failure) -> {
+                    if (failure == null) {
+                        ctx.contentType("application/json").result(this.gson.toJson(new UploadSessionDto(
+                                status.fileId(), status.partSizeBytes(), status.partCount(), status.totalObjectBytes(),
+                                status.uploadedPartNumbers(), toEncryptionDto(status.encryption()))));
+                        return null;
+                    }
+                    throw notFoundOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code POST /files/upload-session/{id}/parts/{partNumber}/url} - presigns one part's
+     * upload URL: {@code {"partNumber", "url", "requiredHeaders", "expiresAtEpochMilli"}}. The
+     * client {@code PUT}s that part's byte range of its object stream there directly.
+     */
+    private void handlePresignResumableUploadPart(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final int partNumber;
+        try {
+            partNumber = Integer.parseInt(ctx.pathParam("partNumber"));
+        } catch (final NumberFormatException notANumber) {
+            throw new BadRequestResponse("'partNumber' must be an integer");
+        }
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.presignResumableUploadPart(userId, id, partNumber))
+                .handle((upload, failure) -> {
+                    if (failure == null) {
+                        final JsonObject body = new JsonObject();
+                        body.addProperty("partNumber", partNumber);
+                        body.addProperty("url", upload.url().toString());
+                        body.add("requiredHeaders", this.gson.toJsonTree(upload.requiredHeaders()));
+                        body.addProperty("expiresAtEpochMilli", upload.expiresAt().toEpochMilli());
+                        ctx.contentType("application/json").result(this.gson.toJson(body));
+                        return null;
+                    }
+                    throw notFoundOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code POST /files/upload-session/{id}/complete} - assembles the parts into the final
+     * object and runs the exact completion pipeline {@code POST /files/{id}/complete-upload}
+     * runs (same {@link CompleteUploadRequest} body, same {@code 201} summary response, same
+     * length-verification rejections). A still-incomplete session (missing parts) answers
+     * {@code 404}-shaped failure with the missing-parts message - fetch {@code GET
+     * /files/upload-session/{id}} and upload what's missing first.
+     */
+    private void handleCompleteResumableUpload(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final CompleteUploadRequest request = this.gson.fromJson(ctx.body(), CompleteUploadRequest.class);
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> this.cloudUserService.completeResumableUpload(userId, id, request.fileName(), request.checksumSha256(), request.folderId()))
+                .handle((summary, failure) -> {
+                    if (failure == null) {
+                        ctx.status(201).contentType("application/json").result(this.gson.toJson(summary));
+                        return null;
+                    }
+                    throw folderFailureOrPropagate(failure, StoredFile.class, id);
+                }));
+    }
+
+    /**
+     * {@code DELETE /files/upload-session/{id}} - aborts the session: the store discards every
+     * uploaded part (it bills for them until told this) and the tracking row is removed. {@code
+     * 204}; idempotent-on-absence.
+     */
+    private void handleAbortResumableUpload(@NotNull final Context ctx) {
+        final String id = ctx.pathParam("id");
+        final String userId = requireUserId(ctx);
+        ctx.future(() -> MultiTaskingFactory.getInstance()
+                .supplyAsync(() -> {
+                    this.cloudUserService.abortResumableUpload(userId, id);
+                    return null;
+                })
+                .handle((ignored, failure) -> {
+                    if (failure == null) {
+                        ctx.status(204);
+                        return null;
+                    }
+                    throw notFoundOrPropagate(failure, StoredFile.class, id);
                 }));
     }
 

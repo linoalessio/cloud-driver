@@ -159,9 +159,14 @@ Available when the webhooks extension is running (`503` otherwise).
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/files/upload-url` | POST | Get a presigned upload URL, bypassing the backend for the data itself |
+| `/files/upload-url` | POST | Get a presigned upload URL, bypassing the backend for the data itself. Body may carry `checksumSha256` (plaintext SHA-256, lowercase hex) to opt into the dedup precheck: a match against content the account already stores answers `{"alreadyStored": <summary>}` instead of a ticket — nothing to upload |
 | `/files/{id}/complete-upload` | POST | Finalize a presigned upload |
 | `/files/{id}/download-url` | GET | Get a presigned download URL |
+| `/files/upload-session` | POST | Begin a **resumable multipart upload session** (large files): same body as `/files/upload-url` but `checksumSha256` required; answers `{"alreadyStored": ...}` on a dedup hit, otherwise the session's geometry (`fileId`, `partSizeBytes` = 8 MiB, `partCount`, `totalObjectBytes`, `encryption`). `503` when not configured |
+| `/files/upload-session/{id}` | GET | The session's durable progress: geometry + `uploadedPartNumbers` (asked of the object store itself) + recovered `encryption` — a crashed client resumes with nothing but the session id, re-sending only missing parts |
+| `/files/upload-session/{id}/parts/{n}/url` | POST | Presign one part's upload URL — the client `PUT`s that part's byte range of its object stream there directly |
+| `/files/upload-session/{id}/complete` | POST | Assemble the parts and run the standard completion (same body/response/verification as `/files/{id}/complete-upload`) |
+| `/files/upload-session/{id}` | DELETE | Abort the session — the store discards uploaded parts (it bills for them until told). Idempotent |
 
 Clients fall back to the ordinary upload/download routes automatically if this isn't configured on
 a given deployment (surfaced as a `503` response).

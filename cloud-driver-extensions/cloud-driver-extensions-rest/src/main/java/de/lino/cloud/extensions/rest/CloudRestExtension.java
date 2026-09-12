@@ -135,11 +135,14 @@ public class CloudRestExtension extends Extension {
         // both modules, so it's the natural place to close that gap via constructor injection.
         final AuditLogService auditLogService = new AuditLogServiceImpl(dataFactory, SecretRedactor::redact);
         final PresignedTransferService presignedTransferService = this.resolvePresignedTransferService(this.cloudDriver().getConfiguration());
+        final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService =
+                this.resolveResumableUploadService(this.cloudDriver().getConfiguration());
         // The content-key facet makes every presigned upload client-encrypted under the same
         // KEK as server-encrypted content (see ContentKeyService) - always present on the
         // container, only ever exercised when presignedTransferService is configured.
         final CloudUserService cloudUserService = new CloudUserService(dataFactory, fileFactory, auditLogService,
-                presignedTransferService, this.cloudDriver().getFactoryContainer().getContentKeyService());
+                presignedTransferService, this.cloudDriver().getFactoryContainer().getContentKeyService(),
+                resumableUploadService);
         final AuthService authService = new AuthService(dataFactory, passwordHasher, jwtSigner, emailSender, cloudUserService, auditLogService);
 
         // Published back onto the shared IServiceContainer so any other caller (e.g. a terminal
@@ -390,6 +393,23 @@ public class CloudRestExtension extends Extension {
         }
         final String keyPrefix = this.configString(configuration, "aws-s3-key-prefix");
         return new S3PresignedTransferService(Region.of(regionName), bucket, keyPrefix);
+    }
+
+    /**
+     * Builds the {@link de.lino.cloud.api.s3storage.ResumableUploadService} for resumable
+     * multipart upload sessions (roadmap Phase 5) from the exact same {@code aws-s3-*}
+     * configuration keys {@link #resolvePresignedTransferService} reads - a deployment that has
+     * presigned transfer has sessions too, with no additional configuration. {@code null}
+     * (sessions unavailable, the routes answer {@code 503}) when S3 isn't configured.
+     */
+    private de.lino.cloud.api.s3storage.ResumableUploadService resolveResumableUploadService(final JsonDocument configuration) {
+        final String bucket = this.configString(configuration, "aws-s3-bucket");
+        final String regionName = this.configString(configuration, "aws-s3-region");
+        if (bucket.isBlank() || regionName.isBlank()) {
+            return null;
+        }
+        final String keyPrefix = this.configString(configuration, "aws-s3-key-prefix");
+        return new de.lino.cloud.plugin.s3storage.S3ResumableUploadService(Region.of(regionName), bucket, keyPrefix);
     }
 
     /**

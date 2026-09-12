@@ -9,6 +9,8 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.BeginDownloadUrlResponse;
+import com.google.gson.JsonObject;
+import de.lino.cloud.platform.rest.api.dto.Dtos;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ChunkManifestResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.PatchChunk;
 import de.lino.cloud.platform.rest.api.dto.Dtos.PatchContentRequest;
@@ -2934,6 +2936,237 @@ public final class ApiClient implements AutoCloseable {
                 return this.replaceFileContent(fileId, newContent, expectedUpdatedAtEpochMillis);
             }
             throw e;
+        }
+    }
+
+    // --- resumable multipart upload sessions (roadmap Phase 5) -----------------------------
+
+    /**
+     * {@code POST /files/upload-session}: begins a resumable multipart upload session - the
+     * large-file counterpart of {@link #beginUploadUrl}: the declared checksum drives the
+     * server's dedup precheck (a match answers {@link
+     * Dtos.BeginUploadSessionResult#alreadyStored()} - nothing to upload at all), and a real
+     * session's object stream is uploaded part by part, resumably. Most callers want {@link
+     * #uploadFileViaResumableSession} instead, which drives the whole flow.
+     *
+     * @param fileName the file's name
+     * @param sizeBytes the plaintext size that will be uploaded
+     * @param checksumSha256 the plaintext content's SHA-256 (lowercase hex) - required
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return the dedup alias, or the session - never both
+     * @throws ApiException {@code 503} if resumable sessions aren't configured server-side,
+     *                       {@code 413} on quota, or any other failure
+     */
+    public Dtos.BeginUploadSessionResult beginUploadSession(final String fileName, final long sizeBytes,
+                                                             final String checksumSha256, final String folderId) throws ApiException {
+        final JsonObject body = this.send(this.postRequest(this.apiBaseUrl.resolve("/files/upload-session"),
+                new BeginUploadSessionRequest(fileName, sizeBytes, folderId, checksumSha256), true), JsonObject.class);
+        if (body.has("alreadyStored")) {
+            return new Dtos.BeginUploadSessionResult(GSON.fromJson(body.get("alreadyStored"), StoredFileSummaryResponse.class), null);
+        }
+        return new Dtos.BeginUploadSessionResult(null, GSON.fromJson(body, Dtos.UploadSessionResponse.class));
+    }
+
+    /** The {@code {"fileName","sizeBytes","folderId","checksumSha256"}} body {@link #beginUploadSession} posts. */
+    private record BeginUploadSessionRequest(String fileName, long sizeBytes, String folderId, String checksumSha256) {
+    }
+
+    /**
+     * {@code GET /files/upload-session/{id}}: the session's durable progress - geometry, the
+     * parts the store already holds, and (for an encrypted session) the recovered encryption
+     * parameters, so resuming needs nothing but the session id.
+     *
+     * @param sessionFileId the session's id, from {@link #beginUploadSession}
+     * @return the session's status
+     * @throws ApiException {@code 404} for an unknown session or someone else's
+     */
+    public Dtos.UploadSessionResponse getUploadSession(final String sessionFileId) throws ApiException {
+        return this.send(this.requestBuilder(this.apiBaseUrl.resolve("/files/upload-session/" + sessionFileId), true)
+                .GET().build(), Dtos.UploadSessionResponse.class);
+    }
+
+    /**
+     * {@code POST /files/upload-session/{id}/parts/{n}/url}: presigns one part's upload URL.
+     *
+     * @param sessionFileId the session's id
+     * @param partNumber the 1-based part to presign
+     * @return the presigned part upload
+     * @throws ApiException {@code 404} for an unknown session, or any other failure
+     */
+    public Dtos.UploadSessionPartUrl presignUploadSessionPart(final String sessionFileId, final int partNumber) throws ApiException {
+        return this.send(this.requestBuilder(
+                        this.apiBaseUrl.resolve("/files/upload-session/" + sessionFileId + "/parts/" + partNumber + "/url"), true)
+                .POST(BodyPublishers.noBody()).build(), Dtos.UploadSessionPartUrl.class);
+    }
+
+    /**
+     * {@code POST /files/upload-session/{id}/complete}: assembles the uploaded parts and runs
+     * the standard presigned-upload completion (length verification included).
+     *
+     * @param sessionFileId the session's id
+     * @param fileName the file's name
+     * @param checksumSha256 the plaintext content's SHA-256, as declared at begin
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return the registered file's summary
+     * @throws ApiException {@code 404}-shaped failure while parts are still missing, or any of
+     *                       the completion route's rejections
+     */
+    public StoredFileSummaryResponse completeUploadSession(final String sessionFileId, final String fileName,
+                                                            final String checksumSha256, final String folderId) throws ApiException {
+        return this.send(this.postRequest(this.apiBaseUrl.resolve("/files/upload-session/" + sessionFileId + "/complete"),
+                new CompleteUploadRequest(fileName, checksumSha256, folderId), true), StoredFileSummaryResponse.class);
+    }
+
+    /**
+     * {@code DELETE /files/upload-session/{id}}: aborts the session, discarding every uploaded
+     * part (the store bills for them until told this). Idempotent-on-absence.
+     *
+     * @param sessionFileId the session's id
+     * @throws ApiException any transport-level failure
+     */
+    public void abortUploadSession(final String sessionFileId) throws ApiException {
+        this.send(this.requestBuilder(this.apiBaseUrl.resolve("/files/upload-session/" + sessionFileId), true)
+                .DELETE().build(), Void.class);
+    }
+
+    /**
+     * Uploads {@code filePath} through a resumable multipart session, end to end: computes the
+     * plaintext checksum, begins the session (a dedup precheck hit returns immediately - zero
+     * bytes uploaded), encrypts the file when the server says to (same {@link
+     * ChunkedContentCipher} contract as {@link #uploadFileViaPresignedUrlAsync}), uploads every
+     * missing part through its own presigned URL, and completes. Crashed midway? Call {@link
+     * #resumeUploadSession} with the same file and the session's id - only the missing parts
+     * are re-sent.
+     *
+     * @param fileName the file's name
+     * @param filePath the local plaintext file to upload
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return the registered (or deduplicated) file's summary
+     * @throws ApiException any of the session routes' failures
+     * @throws IOException if reading/encrypting the local file fails
+     */
+    public StoredFileSummaryResponse uploadFileViaResumableSession(final String fileName, final Path filePath,
+                                                                    final String folderId) throws ApiException, IOException {
+        final String checksumSha256 = sha256HexOf(filePath);
+        final Dtos.BeginUploadSessionResult begin = this.beginUploadSession(
+                fileName, Files.size(filePath), checksumSha256, folderId);
+        if (begin.alreadyStored() != null) {
+            return begin.alreadyStored();
+        }
+        return this.runUploadSession(begin.session(), filePath, fileName, checksumSha256, folderId);
+    }
+
+    /**
+     * Resumes a crashed/interrupted session: fetches its status (recovered encryption
+     * parameters included), regenerates the deterministic object stream from {@code filePath},
+     * uploads only the parts the store doesn't already hold, and completes.
+     *
+     * @param sessionFileId the session's id, as returned by {@link #beginUploadSession}
+     * @param filePath the same local plaintext file the session was begun for
+     * @param fileName the file's name
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return the registered file's summary
+     * @throws ApiException any of the session routes' failures
+     * @throws IOException if reading/encrypting the local file fails
+     */
+    public StoredFileSummaryResponse resumeUploadSession(final String sessionFileId, final Path filePath,
+                                                          final String fileName, final String folderId) throws ApiException, IOException {
+        final Dtos.UploadSessionResponse session = this.getUploadSession(sessionFileId);
+        return this.runUploadSession(session, filePath, fileName, sha256HexOf(filePath), folderId);
+    }
+
+    /**
+     * The shared upload loop behind {@link #uploadFileViaResumableSession}/{@link
+     * #resumeUploadSession}: materializes the session's object stream (encrypting to a temp file
+     * when the session says to - the encryption is deterministic per issued key, so a resume
+     * regenerates byte-identical content), {@code PUT}s every part not already in {@code
+     * session.uploadedPartNumbers()}, then completes.
+     */
+    private StoredFileSummaryResponse runUploadSession(final Dtos.UploadSessionResponse session, final Path filePath,
+                                                        final String fileName, final String checksumSha256,
+                                                        final String folderId) throws ApiException, IOException {
+        final Dtos.UploadEncryptionInfo encryption = session.encryption();
+        final Path objectFile;
+        final Path temporaryCiphertext;
+        if (encryption != null) {
+            temporaryCiphertext = Files.createTempFile("cloud-driver-session-", ".enc");
+            try (InputStream plaintext = Files.newInputStream(filePath);
+                 OutputStream sink = Files.newOutputStream(temporaryCiphertext)) {
+                ChunkedContentCipher.encrypt(plaintext, sink,
+                        Base64.getDecoder().decode(encryption.contentKeyBase64()),
+                        Base64.getDecoder().decode(encryption.headerBase64()),
+                        encryption.associatedDataPrefix(), encryption.chunkSizeBytes());
+            } catch (final GeneralSecurityException e) {
+                Files.deleteIfExists(temporaryCiphertext);
+                throw new IOException("client-side encryption failed for '" + fileName + "'", e);
+            }
+            objectFile = temporaryCiphertext;
+        } else {
+            temporaryCiphertext = null;
+            objectFile = filePath;
+        }
+
+        try {
+            final long objectSize = Files.size(objectFile);
+            if (objectSize != session.totalObjectBytes()) {
+                throw new IOException("local object stream is " + objectSize + " bytes but the session expects "
+                        + session.totalObjectBytes() + " - was the file modified since the session began?");
+            }
+            final java.util.Set<Integer> alreadyUploaded = new java.util.HashSet<>(
+                    session.uploadedPartNumbers() == null ? List.of() : session.uploadedPartNumbers());
+            try (final java.io.RandomAccessFile reader = new java.io.RandomAccessFile(objectFile.toFile(), "r")) {
+                for (int partNumber = 1; partNumber <= session.partCount(); partNumber++) {
+                    if (alreadyUploaded.contains(partNumber)) {
+                        continue;
+                    }
+                    final long offset = (long) (partNumber - 1) * session.partSizeBytes();
+                    final int length = (int) Math.min(session.partSizeBytes(), objectSize - offset);
+                    final byte[] partBytes = new byte[length];
+                    reader.seek(offset);
+                    reader.readFully(partBytes);
+
+                    final Dtos.UploadSessionPartUrl partUrl = this.presignUploadSessionPart(session.fileId(), partNumber);
+                    final HttpRequest.Builder put = HttpRequest.newBuilder(URI.create(partUrl.url()))
+                            .timeout(TRANSFER_TIMEOUT)
+                            .PUT(BodyPublishers.ofByteArray(partBytes));
+                    if (partUrl.requiredHeaders() != null) {
+                        partUrl.requiredHeaders().forEach(put::header);
+                    }
+                    final HttpResponse<String> response;
+                    try {
+                        response = this.httpClient.send(put.build(), HttpResponse.BodyHandlers.ofString());
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new ApiException(0, "interrupted uploading part " + partNumber, e);
+                    }
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                        throw new ApiException(response.statusCode(),
+                                "part " + partNumber + " upload rejected by the object store", null);
+                    }
+                }
+            }
+            return this.completeUploadSession(session.fileId(), fileName, checksumSha256, folderId);
+        } finally {
+            if (temporaryCiphertext != null) {
+                Files.deleteIfExists(temporaryCiphertext);
+            }
+        }
+    }
+
+    /** The SHA-256 of {@code filePath}'s content as lowercase hex, computed streaming. */
+    private static String sha256HexOf(final Path filePath) throws IOException {
+        try {
+            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream in = Files.newInputStream(filePath)) {
+                final byte[] buffer = new byte[8192];
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (final NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM does not provide SHA-256", e);
         }
     }
 

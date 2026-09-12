@@ -50,8 +50,14 @@ import de.lino.cloud.api.s3storage.PresignedTransferService;
 import de.lino.cloud.api.s3storage.PresignedTransferUnavailableException;
 import de.lino.cloud.api.file.PresignedDownloadEncryption;
 import de.lino.cloud.api.file.PresignedDownloadTicket;
+import de.lino.cloud.api.file.PresignedUploadBegin;
 import de.lino.cloud.api.file.PresignedUploadEncryption;
 import de.lino.cloud.api.file.PresignedUploadTicket;
+import de.lino.cloud.api.file.ResumableUploadBegin;
+import de.lino.cloud.api.file.ResumableUploadStatus;
+import de.lino.cloud.api.file.ResumableUploadTicket;
+import de.lino.cloud.api.s3storage.PresignedUpload;
+import de.lino.cloud.api.s3storage.ResumableUploadService;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
@@ -130,6 +136,15 @@ public final class CloudUserService implements ICloudUserService {
     private final ContentKeyService contentKeyService;
 
     /**
+     * Runs resumable multipart upload sessions against the object store (roadmap Phase 5) -
+     * {@code null} if this deployment hasn't configured one, in which case every {@code
+     * *ResumableUpload*} method throws {@link PresignedTransferUnavailableException}, exactly
+     * like {@link #presignedTransferService}'s own contract.
+     */
+    @Nullable
+    private final ResumableUploadService resumableUploadService;
+
+    /**
      * Same as {@link #CloudUserService(DataFactory, FileFactory, AuditLogService,
      * PresignedTransferService, ContentKeyService)} with {@link #presignedTransferService}/{@link
      * #contentKeyService} defaulted to {@code null} - presigned direct-to-client transfer not
@@ -175,8 +190,30 @@ public final class CloudUserService implements ICloudUserService {
     public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
                              @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService,
                              @Nullable final ContentKeyService contentKeyService) {
+        this(dataFactory, fileFactory, auditLogService, presignedTransferService, contentKeyService, null);
+    }
+
+    /**
+     * Creates a {@code CloudUserService} backed by the given collaborators, resumable multipart
+     * upload sessions included.
+     *
+     * @param dataFactory persists/looks up {@link CloudUser}, {@link Folder}, and {@link StoredFileOwnership} rows
+     * @param fileFactory uploads/downloads/deletes the underlying {@link StoredFile} content
+     * @param auditLogService records this class's security-relevant actions to the persisted audit trail
+     * @param presignedTransferService generates presigned URLs for direct-to-client transfer, or
+     *     {@code null} if this deployment hasn't configured one
+     * @param contentKeyService issues/recovers per-file content keys for presigned client-side
+     *     encryption, or {@code null} to issue unencrypted (legacy-behavior) tickets
+     * @param resumableUploadService runs resumable multipart upload sessions, or {@code null} if
+     *     this deployment hasn't configured one
+     */
+    public CloudUserService(@NonNull final DataFactory dataFactory, @NonNull final FileFactory fileFactory,
+                             @NonNull final AuditLogService auditLogService, @Nullable final PresignedTransferService presignedTransferService,
+                             @Nullable final ContentKeyService contentKeyService,
+                             @Nullable final ResumableUploadService resumableUploadService) {
         this.presignedTransferService = presignedTransferService;
         this.contentKeyService = contentKeyService;
+        this.resumableUploadService = resumableUploadService;
         this.dataFactory = dataFactory;
         this.fileFactory = fileFactory;
         this.auditLogService = auditLogService;
@@ -1344,6 +1381,305 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final DatabaseClientException alreadyGoneOrOther) {
             // best-effort only - see this method's own Javadoc
         }
+    }
+
+    // --- resumable multipart upload sessions (roadmap Phase 5) --------------------------------
+
+    /**
+     * The fixed byte size of every session part except the last - a plain byte range over the
+     * final object stream (ciphertext when client-side encryption applies). 8 MiB: comfortably
+     * above S3's 5 MiB non-final-part minimum, small enough that a lost part costs little to
+     * re-send. Deliberately <em>not</em> tied to {@link Constraints#CONTENT_CHUNK_SIZE_BYTES}
+     * arithmetic: the chunked encryption is deterministic per issued key (same key, same nonce
+     * base → identical ciphertext), so a resuming client regenerates any byte range exactly -
+     * part boundaries need no chunk alignment for correctness, and the object assembled from
+     * parts is byte-identical to a single-{@code PUT} upload of the same stream.
+     */
+    public static final long RESUMABLE_PART_SIZE_BYTES = 8L * 1024 * 1024;
+
+    /** {@link #resumableUploadService} or a thrown {@link PresignedTransferUnavailableException} - mirrors {@code requirePresignedTransferService}. */
+    @NonNull
+    private ResumableUploadService requireResumableUploadService() {
+        if (this.resumableUploadService == null) {
+            throw new PresignedTransferUnavailableException();
+        }
+        return this.resumableUploadService;
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PresignedUploadBegin beginPresignedUpload(@NonNull final String authUserId, @NonNull final String fileName,
+                                                      final long sizeBytes, @Nullable final String checksumSha256Hex,
+                                                      @Nullable final String folderId) {
+        final StoredFileSummary deduplicated = this.tryDedupShortCircuit(authUserId, fileName, checksumSha256Hex, folderId);
+        if (deduplicated != null) {
+            return PresignedUploadBegin.deduplicated(deduplicated);
+        }
+        return PresignedUploadBegin.ticket(this.beginPresignedUpload(authUserId, fileName, sizeBytes, folderId));
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public ResumableUploadBegin beginResumableUpload(@NonNull final String authUserId, @NonNull final String fileName,
+                                                      final long sizeBytes, @NonNull final String checksumSha256Hex,
+                                                      @Nullable final String folderId) {
+        final ResumableUploadService resumable = requireResumableUploadService();
+
+        final StoredFileSummary deduplicated = this.tryDedupShortCircuit(authUserId, fileName, checksumSha256Hex, folderId);
+        if (deduplicated != null) {
+            return ResumableUploadBegin.deduplicated(deduplicated);
+        }
+
+        final ICloudUser cloudUser = this.getOrCreate(authUserId);
+        // Soft check only, exactly like beginPresignedUpload's - completion re-verifies against
+        // the store's confirmed object length.
+        if (cloudUser.isUploadLimitReached(sizeBytes)) {
+            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+            throw new UploadQuotaExceededException(
+                    authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
+        }
+        if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
+
+        final String fileId = UUID.randomUUID().toString();
+
+        final String contentKeyHeaderBase64;
+        final PresignedUploadEncryption encryption;
+        final long totalObjectBytes;
+        if (this.contentKeyService != null) {
+            final ContentKeyService.IssuedContentKey issuedKey;
+            try {
+                issuedKey = this.contentKeyService.issueContentKey();
+            } catch (final KeyWrapException e) {
+                throw new RuntimeException("@CloudUserService.beginResumableUpload: failed to issue a content key for '" + fileId + "'", e);
+            }
+            final byte[] header = issuedKey.header();
+            totalObjectBytes = this.contentKeyService.objectLength(header.length, sizeBytes);
+            contentKeyHeaderBase64 = Base64.getEncoder().encodeToString(header);
+            encryption = new PresignedUploadEncryption(issuedKey.keyMaterial(), header,
+                    this.contentKeyService.associatedDataPrefix(fileId), this.contentKeyService.chunkSizeBytes(), totalObjectBytes);
+        } else {
+            contentKeyHeaderBase64 = null;
+            encryption = null;
+            totalObjectBytes = sizeBytes;
+        }
+
+        final String uploadId = resumable.createMultipartUpload(fileId);
+        // Mandatory, like the encrypted single-PUT ticket's tracking: this row is the only
+        // durable carrier of BOTH the wrapped content key and the store's uploadId - losing
+        // either strands the session (undecryptable ciphertext / unabortable billed parts).
+        try {
+            this.dataFactory.register(new PendingPresignedUpload(
+                    fileId, authUserId, System.currentTimeMillis(), contentKeyHeaderBase64, sizeBytes, uploadId));
+        } catch (final DatabaseClientException | KeyWrapException trackingFailed) {
+            abortResumableUploadQuietly(resumable, fileId, uploadId);
+            throw new RuntimeException(
+                    "@CloudUserService.beginResumableUpload: failed to persist session state for '" + fileId + "' - session not started",
+                    trackingFailed);
+        }
+
+        return ResumableUploadBegin.session(new ResumableUploadTicket(
+                fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes), totalObjectBytes, encryption));
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public ResumableUploadStatus getResumableUploadStatus(@NonNull final String authUserId, @NonNull final String fileId) {
+        final ResumableUploadService resumable = requireResumableUploadService();
+        final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
+
+        final List<Integer> uploadedParts;
+        try {
+            uploadedParts = resumable.listUploadedParts(fileId, session.getMultipartUploadId()).keySet().stream().sorted().toList();
+        } catch (final ObjectStorageException e) {
+            throw new RuntimeException("@CloudUserService.getResumableUploadStatus: failed to list parts for '" + fileId + "'", e);
+        }
+
+        final long declaredSizeBytes = session.getDeclaredSizeBytes() == null ? 0 : session.getDeclaredSizeBytes();
+        final PresignedUploadEncryption encryption;
+        final long totalObjectBytes;
+        if (session.getContentKeyHeaderBase64() != null) {
+            if (this.contentKeyService == null) {
+                throw new IllegalStateException("@CloudUserService.getResumableUploadStatus: session '" + fileId
+                        + "' carries a content key but no ContentKeyService is configured");
+            }
+            final byte[] header = Base64.getDecoder().decode(session.getContentKeyHeaderBase64());
+            totalObjectBytes = this.contentKeyService.objectLength(header.length, declaredSizeBytes);
+            final byte[] keyMaterial;
+            try {
+                keyMaterial = this.contentKeyService.recoverContentKey(header);
+            } catch (final KeyWrapException | AuthenticationFailedException e) {
+                throw new RuntimeException("@CloudUserService.getResumableUploadStatus: failed to recover the content key for '" + fileId + "'", e);
+            }
+            encryption = new PresignedUploadEncryption(keyMaterial, header,
+                    this.contentKeyService.associatedDataPrefix(fileId), this.contentKeyService.chunkSizeBytes(), totalObjectBytes);
+        } else {
+            encryption = null;
+            totalObjectBytes = declaredSizeBytes;
+        }
+
+        return new ResumableUploadStatus(fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes),
+                totalObjectBytes, uploadedParts, encryption);
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PresignedUpload presignResumableUploadPart(@NonNull final String authUserId, @NonNull final String fileId, final int partNumber) {
+        final ResumableUploadService resumable = requireResumableUploadService();
+        final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
+        if (partNumber < 1) {
+            throw new IllegalArgumentException("@CloudUserService.presignResumableUploadPart: partNumber must be >= 1, got " + partNumber);
+        }
+        return resumable.presignPart(fileId, session.getMultipartUploadId(), partNumber, PRESIGNED_URL_EXPIRY);
+    }
+
+    /**
+     * {@inheritDoc} Assembly first ({@code CompleteMultipartUpload}, with the part list the
+     * store itself reports), then the whole single-{@code PUT} completion pipeline via {@link
+     * #completePresignedUpload} - the assembled object is byte-identical to what a
+     * single-{@code PUT} of the same stream would have stored, so every check there (confirmed
+     * length vs. declared size, registration, ownership, usage) applies unchanged.
+     */
+    @NonNull
+    @Override
+    public StoredFileSummary completeResumableUpload(@NonNull final String authUserId, @NonNull final String fileId,
+                                                      @NonNull final String fileName, @NonNull final String checksumSha256Hex,
+                                                      @Nullable final String folderId) {
+        final ResumableUploadService resumable = requireResumableUploadService();
+        final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
+
+        final Map<Integer, String> uploadedParts;
+        try {
+            uploadedParts = resumable.listUploadedParts(fileId, session.getMultipartUploadId());
+        } catch (final ObjectStorageException e) {
+            throw new RuntimeException("@CloudUserService.completeResumableUpload: failed to list parts for '" + fileId + "'", e);
+        }
+        final long declaredSizeBytes = session.getDeclaredSizeBytes() == null ? 0 : session.getDeclaredSizeBytes();
+        final long totalObjectBytes = session.getContentKeyHeaderBase64() == null ? declaredSizeBytes
+                : this.contentKeyService == null ? -1
+                : this.contentKeyService.objectLength(Base64.getDecoder().decode(session.getContentKeyHeaderBase64()).length, declaredSizeBytes);
+        final int expectedParts = partCountFor(totalObjectBytes);
+        if (uploadedParts.size() < expectedParts) {
+            throw new IllegalArgumentException("@CloudUserService.completeResumableUpload: session '" + fileId + "' holds "
+                    + uploadedParts.size() + " of " + expectedParts + " parts - upload the missing parts first (see getResumableUploadStatus)");
+        }
+
+        try {
+            resumable.completeMultipartUpload(fileId, session.getMultipartUploadId(), uploadedParts);
+        } catch (final ObjectStorageException e) {
+            throw new RuntimeException("@CloudUserService.completeResumableUpload: failed to assemble '" + fileId + "'", e);
+        }
+
+        // From here the object exists exactly as a single-PUT upload would have left it - the
+        // shared completion pipeline does the rest (and removes the tracking row).
+        return this.completePresignedUpload(authUserId, fileId, fileName, checksumSha256Hex, folderId);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void abortResumableUpload(@NonNull final String authUserId, @NonNull final String fileId) {
+        final ResumableUploadService resumable = requireResumableUploadService();
+        final Optional<PendingPresignedUpload> session = this.findPendingPresignedUpload(fileId);
+        if (session.isEmpty() || session.get().getMultipartUploadId() == null) {
+            return; // idempotent-on-absence, per the interface contract
+        }
+        if (!session.get().getAuthUserId().equals(authUserId)) {
+            throw new IllegalArgumentException("@CloudUserService.abortResumableUpload: session '" + fileId + "' does not belong to " + authUserId);
+        }
+        abortResumableUploadQuietly(resumable, fileId, session.get().getMultipartUploadId());
+        untrackPendingPresignedUploadQuietly(fileId);
+    }
+
+    /** How many {@link #RESUMABLE_PART_SIZE_BYTES}-sized parts {@code totalObjectBytes} splits into - at least one, even for an empty object. */
+    private static int partCountFor(final long totalObjectBytes) {
+        return (int) Math.max(1, (totalObjectBytes + RESUMABLE_PART_SIZE_BYTES - 1) / RESUMABLE_PART_SIZE_BYTES);
+    }
+
+    /**
+     * The session row for {@code fileId}, verified to exist, to be a session (not a
+     * single-{@code PUT} ticket), and to belong to {@code authUserId} - the shared access check
+     * every per-session method applies first.
+     */
+    @NonNull
+    private PendingPresignedUpload requireOwnSession(final String authUserId, final String fileId) {
+        final PendingPresignedUpload session = this.findPendingPresignedUpload(fileId)
+                .filter(row -> row.getMultipartUploadId() != null)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "@CloudUserService: no open resumable upload session under '" + fileId + "'"));
+        if (!session.getAuthUserId().equals(authUserId)) {
+            // Same "don't confirm existence to a non-owner" idiom every file lookup uses.
+            throw new IllegalArgumentException("@CloudUserService: no open resumable upload session under '" + fileId + "'");
+        }
+        return session;
+    }
+
+    /** Best-effort multipart abort - failure logged, never thrown; the purge scheduler retries an orphaned session's abort later. */
+    private static void abortResumableUploadQuietly(final ResumableUploadService resumable, final String fileId, final String uploadId) {
+        try {
+            resumable.abortMultipartUpload(fileId, uploadId);
+        } catch (final ObjectStorageException abortFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to abort multipart upload '" + uploadId + "' for '" + fileId
+                            + "' - the purge scheduler will retry", abortFailed);
+        }
+    }
+
+    /**
+     * The dedup precheck both direct-transfer begin paths share (sign-off resolved 2026-09-12):
+     * a declared checksum matching content {@code authUserId}'s account already stores registers
+     * a dedup alias immediately - zero bytes uploaded - mirroring {@link #uploadFile}'s own
+     * dedup branch (alias row, ref-count increment, ownership, no usage charge, audit,
+     * name-only indexing, webhook). Trusting the declared checksum is safe here precisely
+     * because dedup is per-account: a false claim can only mis-alias the caller to content the
+     * caller already owns. {@code null}/malformed checksums, no candidate, or a candidate row
+     * without cached metadata (no trustworthy size to copy) all answer {@code null} - proceed
+     * with a real upload.
+     *
+     * @return the freshly registered alias's summary, or {@code null} if no dedup applies
+     */
+    @Nullable
+    private StoredFileSummary tryDedupShortCircuit(final String authUserId, final String fileName,
+                                                    @Nullable final String checksumSha256Hex, @Nullable final String folderId) {
+        if (checksumSha256Hex == null) {
+            return null;
+        }
+        final FileChecksum checksum;
+        try {
+            checksum = new FileChecksum(HashAlgorithm.SHA_256, checksumSha256Hex);
+        } catch (final IllegalArgumentException malformed) {
+            return null; // not an error - completion-time verification still applies to the real upload
+        }
+        final Optional<StoredFileOwnership> candidate = this.findDedupCandidate(authUserId, checksum);
+        if (candidate.isEmpty() || !candidate.get().hasMetadata()) {
+            return null;
+        }
+        if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
+
+        final String dedupCanonicalFileId = candidate.get().resolvedDedupCanonicalFileId();
+        final boolean scanningEnabled = isContentScanServicePublished();
+        StoredFile alias = StoredFile.createDedupAlias(
+                UUID.randomUUID().toString(), fileName, candidate.get().getSizeBytes(), checksum,
+                Instant.now(), Instant.now(), dedupCanonicalFileId);
+        if (scanningEnabled) alias = alias.withScanStatus(ScanStatus.PENDING);
+        this.incrementDedupRefCount(dedupCanonicalFileId);
+        try {
+            this.dataFactory.register(alias);
+            this.dataFactory.register(StoredFileOwnership.of(authUserId, alias, folderId, dedupCanonicalFileId));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.tryDedupShortCircuit: failed to register deduplicated '" + fileName + "'", e);
+        }
+        // A deduplicated upload consumes no new physical storage - no usage charge, same as
+        // uploadFile's own dedup branch.
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_UPLOAD, alias.fileId(), null));
+        indexFileForSearch(authUserId, alias, folderId, null);
+        indexFileForIntelligence(authUserId, alias, null);
+        dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, alias.fileId());
+
+        return new StoredFileSummary(alias.fileId(), alias.fileName(), alias.contentType(), alias.sizeBytes(),
+                alias.createdAt().toEpochMilli(), alias.updatedAt().toEpochMilli(), folderId, alias.scanStatus().name());
     }
 
     /**

@@ -169,6 +169,16 @@ same HTTP/WebSocket API).
   history uses the same mechanism: a captured version stores only its changed chunks as a delta
   against the previous version, with a full keyframe every 10 versions capping reconstruction
   replay; the purge scheduler never severs a chain (its boundary snaps back to a keyframe).
+- Large direct-transfer uploads (roadmap Phase 5) go through resumable multipart sessions:
+  `POST /files/upload-session` starts one (the required declared checksum first runs a
+  per-account dedup precheck — a match registers an alias with zero bytes uploaded), the client
+  uploads fixed 8 MiB byte ranges of its (client-encrypted, deterministic) object stream through
+  per-part presigned URLs, and after any interruption asks the session's status — the part list
+  comes from S3's own `ListParts` — to re-send only what's missing. Completion assembles the
+  object and runs the same length-verified registration as a single-`PUT` presigned upload; the
+  pending-upload purge sweep aborts abandoned sessions' multipart uploads (S3 bills for
+  incomplete parts until aborted). There is deliberately no third "single presigned PUT for one
+  large object, no resume" path.
 - Server-mediated uploads above a 32 MiB threshold stream end to end: the request body lands in a
   scratch file, and the checksum, chunked AES-GCM encryption, and S3 write all run straight off
   that file (`StoredFile.createFromContentFile` → `DefaultFileFactory.prepareForPersistence`) —

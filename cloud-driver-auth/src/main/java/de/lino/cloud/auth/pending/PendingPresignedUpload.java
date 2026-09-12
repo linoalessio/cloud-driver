@@ -68,6 +68,40 @@ public final class PendingPresignedUpload extends Serialized {
     private final Long declaredSizeBytes;
 
     /**
+     * The object store's multipart upload id, when this row tracks a <b>resumable session</b>
+     * (roadmap Phase 5) rather than a single-{@code PUT} presigned ticket - what {@code
+     * ListParts}/part-presign/complete/abort address the in-progress upload by. {@code null} on
+     * every single-{@code PUT} ticket and every row persisted before sessions existed. A purge
+     * sweep must {@code AbortMultipartUpload} a session row it ages out - S3 bills for
+     * incomplete parts until aborted - where a single-{@code PUT} row only needs its (possibly
+     * uploaded) object deleted.
+     */
+    @Nullable
+    private final String multipartUploadId;
+
+    /**
+     * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}, also this entity's {@link #primaryKey()}
+     * @param authUserId the account this ticket was issued to
+     * @param createdAtEpochMillis when this ticket was issued (epoch millis)
+     * @param contentKeyHeaderBase64 base64 of the issued content key's streaming header, or {@code null} for an unencrypted ticket
+     * @param declaredSizeBytes the plaintext size the client declared, or {@code null} if unknown
+     * @param multipartUploadId the store's multipart upload id for a resumable session, or {@code null} for a single-{@code PUT} ticket
+     */
+    public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
+                                   @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes,
+                                   @Nullable final String multipartUploadId) {
+        this.fileId = Objects.requireNonNull(fileId, "@PendingPresignedUpload.init: fileId cannot be null");
+        this.authUserId = Objects.requireNonNull(authUserId, "@PendingPresignedUpload.init: authUserId cannot be null");
+        this.createdAtEpochMillis = createdAtEpochMillis;
+        this.contentKeyHeaderBase64 = contentKeyHeaderBase64;
+        this.declaredSizeBytes = declaredSizeBytes;
+        this.multipartUploadId = multipartUploadId;
+    }
+
+    /**
+     * Same as the six-argument constructor with no multipart upload id - a single-{@code PUT}
+     * presigned ticket, exactly the shape every row had before resumable sessions existed.
+     *
      * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}, also this entity's {@link #primaryKey()}
      * @param authUserId the account this ticket was issued to
      * @param createdAtEpochMillis when this ticket was issued (epoch millis)
@@ -76,11 +110,7 @@ public final class PendingPresignedUpload extends Serialized {
      */
     public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
                                    @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes) {
-        this.fileId = Objects.requireNonNull(fileId, "@PendingPresignedUpload.init: fileId cannot be null");
-        this.authUserId = Objects.requireNonNull(authUserId, "@PendingPresignedUpload.init: authUserId cannot be null");
-        this.createdAtEpochMillis = createdAtEpochMillis;
-        this.contentKeyHeaderBase64 = contentKeyHeaderBase64;
-        this.declaredSizeBytes = declaredSizeBytes;
+        this(fileId, authUserId, createdAtEpochMillis, contentKeyHeaderBase64, declaredSizeBytes, null);
     }
 
     /**

@@ -303,6 +303,107 @@ public interface ICloudUserService {
                                         @Nullable Long expectedUpdatedAtEpochMillis);
 
     /**
+     * Same as {@link #beginPresignedUpload(String, String, long, String)}, additionally taking
+     * the client's already-computed SHA-256 hex checksum for the dedup precheck (sign-off
+     * resolved 2026-09-12): a match against content {@code authUserId}'s account already stores
+     * skips the upload entirely - a dedup alias is registered and returned in {@link
+     * PresignedUploadBegin#alreadyStored()}, zero bytes transferred. {@code null} (or a
+     * malformed) checksum simply skips the precheck and behaves exactly like the checksum-less
+     * overload.
+     *
+     * @param authUserId the uploading user's id
+     * @param fileName the file's name
+     * @param sizeBytes the plaintext size the client declares it will upload
+     * @param checksumSha256Hex the content's SHA-256 (lowercase hex), or {@code null} to skip the dedup precheck
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return either the registered dedup alias, or the ticket to upload through - never both
+     */
+    @NotNull
+    de.lino.cloud.api.file.PresignedUploadBegin beginPresignedUpload(@NotNull String authUserId, @NotNull String fileName,
+                                                                      long sizeBytes, @Nullable String checksumSha256Hex,
+                                                                      @Nullable String folderId);
+
+    /**
+     * Begins a resumable multipart upload session (roadmap Phase 5) - the large-file
+     * counterpart of {@link #beginPresignedUpload(String, String, long, String, String)}: same
+     * quota/folder checks, same dedup precheck against the (here required) declared checksum,
+     * same client-side encryption contract; but instead of one presigned {@code PUT}, the
+     * client cuts its (encrypted, when applicable) object stream into the ticket's fixed-size
+     * parts, uploads each through its own presigned URL ({@link #presignResumableUploadPart}),
+     * and can ask {@link #getResumableUploadStatus} after any interruption which parts the
+     * store already holds - re-sending only the missing ones.
+     *
+     * @param authUserId the uploading user's id
+     * @param fileName the file's name
+     * @param sizeBytes the plaintext size the client declares it will upload
+     * @param checksumSha256Hex the content's SHA-256 (lowercase hex) - required, both for the
+     *     dedup precheck and for completion-time integrity metadata
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return either the registered dedup alias, or the session ticket - never both
+     */
+    @NotNull
+    de.lino.cloud.api.file.ResumableUploadBegin beginResumableUpload(@NotNull String authUserId, @NotNull String fileName,
+                                                                      long sizeBytes, @NotNull String checksumSha256Hex,
+                                                                      @Nullable String folderId);
+
+    /**
+     * One session's durable progress - which parts the object store already holds (asked of the
+     * store itself, never a local mirror) plus the session's geometry and recovered encryption
+     * parameters, so a client that crashed with nothing but the session's {@code fileId} can
+     * resume. Only the session's own issuer may ask.
+     *
+     * @param authUserId the caller - must be the account the session was issued to
+     * @param fileId the session's id
+     * @return the session's status
+     * @throws IllegalArgumentException if no such session exists, or it isn't {@code authUserId}'s
+     */
+    @NotNull
+    de.lino.cloud.api.file.ResumableUploadStatus getResumableUploadStatus(@NotNull String authUserId, @NotNull String fileId);
+
+    /**
+     * Presigns one part's upload URL for an open session - asked per part (or small batches) as
+     * the client goes, rather than all up front. Only the session's own issuer may ask.
+     *
+     * @param authUserId the caller - must be the account the session was issued to
+     * @param fileId the session's id
+     * @param partNumber the 1-based part number, within the ticket's {@code partCount}
+     * @return the presigned part upload
+     * @throws IllegalArgumentException if no such session exists, it isn't {@code authUserId}'s,
+     *     or {@code partNumber} is outside the session's part range
+     */
+    @NotNull
+    de.lino.cloud.api.s3storage.PresignedUpload presignResumableUploadPart(@NotNull String authUserId, @NotNull String fileId, int partNumber);
+
+    /**
+     * Completes an open session: verifies every part landed, has the store assemble the final
+     * object, then runs the exact same completion pipeline a single-{@code PUT} presigned upload
+     * runs ({@link #completePresignedUpload} - confirmed-length verification against the
+     * declared size, {@link StoredFile} registration, ownership tracking, usage accounting).
+     *
+     * @param authUserId the caller - must be the account the session was issued to
+     * @param fileId the session's id
+     * @param fileName the file's name
+     * @param checksumSha256Hex the content's SHA-256 (lowercase hex), as declared at begin
+     * @param folderId the folder to place the file in, or {@code null} for the root
+     * @return the registered file's summary
+     * @throws IllegalArgumentException if the session doesn't exist/isn't the caller's, parts
+     *     are still missing, or the assembled object fails length verification
+     */
+    @NotNull
+    StoredFileSummary completeResumableUpload(@NotNull String authUserId, @NotNull String fileId, @NotNull String fileName,
+                                               @NotNull String checksumSha256Hex, @Nullable String folderId);
+
+    /**
+     * Aborts an open session: the store discards every already-uploaded part (it bills for them
+     * until told this) and the session's tracking row is removed. Idempotent-on-absence. Only
+     * the session's own issuer may ask.
+     *
+     * @param authUserId the caller - must be the account the session was issued to
+     * @param fileId the session's id
+     */
+    void abortResumableUpload(@NotNull String authUserId, @NotNull String fileId);
+
+    /**
      * Begins a presigned, direct-to-client upload: checks {@code authUserId}'s quota against
      * the declared {@code sizeBytes} and that {@code folderId} (if given) is actually owned by
      * {@code authUserId}, then returns a fresh {@link PresignedUploadTicket} the caller uploads its
