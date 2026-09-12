@@ -23,12 +23,37 @@ flowchart LR
   mvn -pl <module> -am test-compile
   ```
 
-  then run the compiled class on the built classpath.
-- `shell/test-bootstrap.sh` (operator-only, not part of any build) assembles a clean, throwaway
-  run directory: it builds the bootstrap jar and every feature-module jar, lays them out the way a
-  real deployment expects (bootstrap jar + a sibling `extensions/` folder), and runs the process
-  from inside that directory — the closest thing to an end-to-end smoke test this repo has. Run
-  `mvn clean install` first; this script does not build anything itself.
+  then run the compiled class on the built classpath. The ones that assert something and print a
+  pass/fail tally (rather than just demonstrating an API) are the closest thing to a test suite
+  here:
+
+  | Worked example | Module | Covers |
+  |---|---|---|
+  | `ChunkedStreamingEncryptionSample` | `plugin` | The v2 chunked-AEAD layout: round-trip, truncation, tampering |
+  | `StreamedUploadSample` | `plugin` | Content-file-backed uploads above the 32 MiB threshold |
+  | `ConditionalDownloadSample` | `plugin` | `ETag`/`If-None-Match`/`304` on the content routes |
+  | `IndexedLookupSample` | `plugin` | `SecondaryIndexed` lookups against equivalent full scans |
+  | `ResumableUploadSample` | `plugin` | Multipart session geometry, resume, abort, dedup precheck |
+  | `RedisClusteringSample` | `plugin` | Scheduler locks and the cross-instance pending-upload cache |
+  | `S3ObjectStorageServiceSample` | `plugin` | Object-storage put/get/delete against a real bucket |
+  | `RestFactorySample`, `RestFactoryCloudUserSample` | `plugin` | Generic route mounting and the `/cloudUsers` routes |
+  | `ChunkPatchSample` | `versioning` | Chunk manifests, `PATCH` reassembly, version delta chains |
+  | `PostgresSearchIndexSample` | `search` | The `tsvector`/GIN index and its in-memory fallback |
+- The closest thing to an end-to-end smoke test is assembling a throwaway run directory by hand
+  and starting the process from inside it — the layout a real deployment expects (the bootstrap
+  jar plus a sibling `extensions/` folder holding the feature-module jars, and a `cloud-driver/`
+  folder holding the two config files). Run `mvn clean install` first, then:
+
+  ```bash
+  mkdir -p /tmp/cd-smoke/extensions /tmp/cd-smoke/cloud-driver
+  cp cloud-driver-bootstrap/target/cloud-driver-bootstrap-*.jar /tmp/cd-smoke/
+  cp cloud-driver-extensions/*/target/cloud-driver-extensions-*.jar /tmp/cd-smoke/extensions/
+  cp cloud-driver/*.json /tmp/cd-smoke/cloud-driver/          # real config, never committed
+  cd /tmp/cd-smoke && java -Xmx6g -jar cloud-driver-bootstrap-*.jar
+  ```
+
+  The bootstrap jar and every extension jar must come from the same build — extension jars
+  resolve shared classes off the host jar's classpath, so a mixed pair crashes at startup.
 - New backend functionality is verified by actually running the built jar (or a worked example)
   against a real or local database, not by a unit test suite.
 

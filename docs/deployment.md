@@ -15,24 +15,24 @@ flowchart TD
 ```
 
 The backend deploys as a single jar to one server — there is no orchestration platform (Kubernetes,
-etc.) involved. A handful of shell scripts (kept local to each operator's machine, not tracked in
-version control since they hardcode server-specific connection details) handle the mechanics:
+etc.) involved. A handful of shell scripts under [`shell/`](../shell/) handle the mechanics:
 
 | Script | Runs where | Purpose |
 |---|---|---|
 | `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
 | `deploy-cloud.sh` | Locally | Uploads the already-built, shaded bootstrap jar to the server, compressed and checksum-verified |
 | `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size, auto-restarting it if it ever exits |
-| `test-bootstrap.sh` | Locally | Assembles a clean throwaway run directory for a manual smoke test |
-| `release-and-package.sh` | Locally | One-shot release automation: bumps every version reference, builds, tags, pushes, and cuts a release |
+| `release-and-package.sh` | Locally | One-shot release automation: bumps every version reference, builds, tags, pushes, and cuts a release. **The one script not in version control** — it is operator-local |
 | `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
 
 None of these scripts build anything by themselves — always run `mvn clean install` (or the
 targeted `-pl ... -am package` form) first.
 
-Unlike the other scripts above, `provision-root-server.sh` is checked into version control rather
-than kept local-only: it takes the target host as an argument instead of hardcoding
-server-specific connection details, so it carries no secrets of its own.
+Every script above except `release-and-package.sh` is checked into version control: each takes
+the target host as an argument (or reads it from an SSH alias) instead of hardcoding
+server-specific connection details, so none carries a secret of its own. Keep it that way — a
+script that would need a real hostname, credential, or key baked in belongs outside the
+repository, like `release-and-package.sh` does.
 
 ## Provisioning a new root server
 

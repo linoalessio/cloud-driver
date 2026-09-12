@@ -20,11 +20,13 @@ import java.util.Optional;
  *
  * <h2>Why an operator needs this</h2>
  *
- * The index lives entirely in memory and is lost on every restart. A startup backfill repopulates
- * filenames automatically, but there was previously no way to answer the two questions that
+ * The index is normally a Postgres {@code tsvector}/GIN table, so it survives restarts and is
+ * shared across instances - but it falls back to a purely in-memory index whenever that table
+ * cannot be reached, and an in-memory index is lost on every restart. Either way, a startup
+ * backfill repopulates filenames automatically, and neither mode answers the two questions that
  * actually come up when a user reports "search is broken": <em>is the index populated at all</em>,
  * and <em>does a query work when run server-side</em>. Without those, an empty index and a broken
- * client look identical.
+ * client look identical - and so do the persistent and fallback modes.
  *
  * <p>That distinction is not theoretical - a real report of search returning nothing was traced to
  * an index that had simply never been populated for pre-existing files, with the client-side

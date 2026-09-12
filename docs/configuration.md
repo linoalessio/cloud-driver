@@ -73,10 +73,10 @@ next to the running backend process — two required files (below) plus an optio
   authenticated with a well-known constant would be worse than one that refuses to load. A
   missing or blank value disables only semantic search, exactly as any other extension's load
   failure disables only itself.
-- `intelligence-max-bytes` defaults to the value the design document specifies, but is worth
-  lowering deliberately: content travels base64-encoded in a JSON body (~1.37x), so the default
-  permits a ~137 MiB request for a large binary that will almost certainly yield nothing
-  embeddable anyway. A value in the low tens of MiB is more proportionate.
+- `intelligence-max-bytes` defaults to 100 MiB, but is worth lowering deliberately: content
+  travels base64-encoded in a JSON body (~1.37x), so the default permits a ~137 MiB request for a
+  large binary that will almost certainly yield nothing embeddable anyway. A value in the low tens
+  of MiB is more proportionate.
 - A second credentials file, `redis-database.json` (same directory, same
   `address`/`userName`/`password`/`port`/`database`/`fileRepository` shape as
   `postgres-database.json`), optionally enables Redis-backed rate limiting, durable webhook

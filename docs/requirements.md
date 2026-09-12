@@ -8,7 +8,8 @@ start and run correctly.
 ├── cloud-driver-bootstrap-<version>.jar
 ├── cloud-driver/                  <- Constraints.CONFIGURATION_PATH
 │   ├── postgres-database.json     <- required
-│   └── configuration.json         <- required
+│   ├── configuration.json         <- required
+│   └── redis-database.json        <- optional (absent = single-instance, in-process fallbacks)
 ├── extensions/                    <- Constraints.EXTENSIONS_PATH (drop *.jar here)
 └── upload-scratch/                <- created automatically, scratch space for in-flight uploads
 ```
@@ -39,7 +40,7 @@ Client modules (only needed if building those specific pieces — not needed to 
 
 ## 2. Databases
 
-### 2.1 PostgreSQL — **required**, the only database the application itself talks to
+### 2.1 PostgreSQL — **required**, the system of record
 
 The entire persistence layer (`database-driver-plugin`, an external artifact — not part of this
 repo) is Postgres-only. There is no supported alternative database backend as currently shipped.
@@ -50,6 +51,12 @@ repo) is Postgres-only. There is no supported alternative database backend as cu
   will work. No extensions required.
 - **`LISTEN`/`NOTIFY`** support is used by `cloud-driver-extensions-watcher` for change
   notifications — this is a core, always-available Postgres feature, not a special grant.
+- **Full-text search** uses built-in `tsvector`/GIN, so no Postgres extension needs installing.
+  `cloud-driver-extensions-search` creates and owns one non-entity table,
+  `cloud_driver_search_index`, itself — the single table in the database that is not
+  `id TEXT, data BYTEA`-shaped and the single one holding plaintext (file names and
+  content-derived lexemes; a deliberate, documented trade — see
+  [security.md](security.md)). It is rebuildable derived state and is skipped by the backup job.
 - **Schema/table creation is fully automatic** — do **not** hand-create tables. The application
   creates every table itself the first time an entity of that type is stored. What you *do* need
   to create by hand:
@@ -86,7 +93,25 @@ repo) is Postgres-only. There is no supported alternative database backend as cu
   documented in this repo (it belongs to the external `database-driver-api` artifact).
   **Never commit this file** — `cloud-driver/postgres-database.json` is gitignored.
 
-### 2.2 No other database is used
+### 2.2 Redis — **optional**, and never a source of truth
+
+Redis is the only other data store the application talks to, and it is entirely optional: absent,
+malformed credentials, or an unreachable server all degrade to in-process, single-instance
+behavior rather than failing.
+
+- **Credentials file**: `<working-dir>/cloud-driver/redis-database.json` — the same
+  `address`/`userName`/`password`/`port`/`database`/`fileRepository` shape as
+  `postgres-database.json`. Missing file → Redis support simply stays off, silently and by
+  design. **Never commit this file** — it is gitignored.
+- **What it holds**: rate-limit counters, webhook delivery history, once-per-window scheduler
+  locks, and pending-upload metadata for cross-instance visibility.
+- **What it must never hold**: file content, file names, or any other user data. Everything in
+  Redis is either a counter, a lock, or an identifier — losing the whole instance costs a rate
+  limit window and some delivery history, nothing more.
+- **Deployment**: bind it to loopback and set a password (`provision-root-server.sh` does both).
+  It is not reached across the network in the reference deployment.
+
+### 2.3 No other database is used
 
 No MongoDB, MySQL/MariaDB, SQLite, Elasticsearch, etc. is a dependency of this application, even
 if one happens to be running alongside it on a shared host.
@@ -123,10 +148,8 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `auth-rate-limit-max-requests` | `10` | `DefaultRestFactory` (`/auth/*` limiter) |
 | `auth-rate-limit-window-seconds` | `300` | same |
 | `trust-proxy-headers` | `false` | `DefaultRestFactory` (rate-limit identity via `X-Forwarded-For`) — only enable behind a genuinely trusted single reverse-proxy hop |
-| `api-rate-limit-read-max-requests` | `300` | `DefaultRestFactory` (general API limiter, `GET`/`HEAD`) |
+| `api-rate-limit-read-max-requests` | `300` | `DefaultRestFactory` (general API limiter, `GET`/`HEAD` only — there is no separate write limiter; writes are bounded by the upload quota and the request-size ceiling instead) |
 | `api-rate-limit-read-window-seconds` | `60` | same |
-| `api-rate-limit-write-max-requests` | `60` | same |
-| `api-rate-limit-write-window-seconds` | `60` | same |
 | `metrics-port` | `9404` | `CloudMetricsExtension` |
 | `metrics-bind-host` | `127.0.0.1` | `CloudMetricsExtension` |
 | `clamav-host` | `"localhost"` | `CloudScanExtension` |
@@ -145,6 +168,15 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `smtp-username` | required alongside `smtp-host`, else log-only | same |
 | `smtp-password` | required alongside `smtp-host`, else log-only | same |
 | `smtp-from-address` | required alongside `smtp-host`, else log-only | same |
+| `aws-ses-configuration-set` | unset → no configuration set named on sends | `CloudRestExtension` — SES bounce/complaint event routing; only set once the set actually exists in that account/region, or every send fails |
+| `aws-s3-max-concurrency` | `50` | `S3ObjectStorageService` — concurrent-connection cap of the shared async S3 client. With several instances against one bucket, size it per instance, not per process |
+| `presigned-upload-ticket-retention-hours` | `6` | `PendingPresignedUploadPurgeScheduler` — how long an unfinished presigned/resumable upload survives before its ticket is dropped and its multipart upload aborted (S3 bills for uploaded parts until then). S3 deployments only |
+| `webhook-dispatch-pool-size` | `4` | `DefaultWebhookService` — first-attempt delivery concurrency; queue depth is observable as the `cloud_driver_webhook_dispatch_queue_depth` gauge |
+| `intelligence-shared-secret` | **no default** — `cloud-driver-extensions-intelligence` refuses to load without it | The semantic-search bridge (secret) |
+| `intelligence-host` | `127.0.0.1` | same |
+| `intelligence-port` | `8600` | same |
+| `intelligence-timeout-seconds` | `30` | same |
+| `intelligence-max-bytes` | `104857600` (100 MiB) | same — files above this are left un-indexed. Worth lowering: content travels base64-encoded (~1.37x), so the default permits a ~137 MiB request body |
 
 Example, using AWS SES for email delivery (the current setup):
 
@@ -353,13 +385,21 @@ planning around:
 
 - **JVM heap**: launch with an explicit `-Xmx` (the reference deployment uses `-Xmx6g` on a 7.7 GB
   box, via `JVM_XMX` in `shell/start-cloud.sh`). Without one, JVM ergonomics can cap the heap far
-  below what's actually free, and a single large upload needs several simultaneous in-memory copies
-  of its content before it reaches the database — a real `OutOfMemoryError` was hit on this exact
-  gap persisting a ~195 MB file with no `-Xmx` set. Separately, the persistence layer caches every
-  table's rows in memory for the process's whole lifetime, so the **resident heap floor grows with
-  total database size** — a second real `OutOfMemoryError` boot crash-loop was hit at ~3 GB of
-  stored payload under `-Xmx4g` (2026-09-09; see [troubleshooting.md](troubleshooting.md)). Size
-  `-Xmx` above the database's total payload size, and re-check as data grows.
+  below what's actually free — a real `OutOfMemoryError` was hit on exactly that gap persisting a
+  ~195 MB file with no `-Xmx` set. Both root causes behind the two historical incidents have since
+  been fixed, but neither fix removes the need to size the heap:
+  - Uploads no longer hold several full copies of a file in heap. Above 32 MiB the request body
+    lands in a scratch file and checksumming, encryption and the S3 write all stream off it, so
+    heap use is O(chunk size). Below that threshold the in-memory path is kept deliberately (it is
+    what powers compression and text extraction), so a burst of concurrent mid-size uploads still
+    needs headroom.
+  - The persistence layer no longer caches every table's rows for the process's lifetime: table
+    discovery at boot reads names only, and `StoredFile` — the one type whose rows can be large —
+    is pinned to `CacheMode.NONE`. Every other type still defaults to `FULL`, so the resident
+    floor grows with the size of the *metadata* corpus, just far more slowly than the ~3 GB that
+    crash-looped boot under `-Xmx4g` in 2026-09-09 (see [troubleshooting.md](troubleshooting.md)).
+
+  Re-check `-Xmx` as the corpus grows rather than assuming a one-time setting holds.
 - **Swap**: the reference deployment adds a 4 GB swapfile as a kernel-OOM safety net — with the
   heap floor above, an unswapped box this size has little headroom left for spikes.
 - **`clamav-daemon`**, once its signature database is loaded, resides at roughly 700 MB–1 GB —
@@ -367,7 +407,10 @@ planning around:
 - **Total**: the reference deployment runs on 7.7 GB RAM + 4 GB swap with `-Xmx6g` + `clamd` +
   Postgres all co-located, and headroom is genuinely tight — don't add further memory-hungry
   services to the same box without re-checking.
-- **Recommendation**: the cloud-driver needs x-GB RAM depending on how much data will be scaled.
+- **Sizing rule of thumb**: budget `-Xmx` above the total encrypted payload the database holds,
+  then add ~1 GB for the JVM outside the heap, ~1 GB for Postgres, and ~1 GB for `clamd` if
+  content scanning is enabled. Re-check as the corpus grows — this floor moves with the data,
+  which is exactly what caused the 2026-09-09 boot crash-loop.
 
 ---
 
@@ -387,8 +430,9 @@ isn't wanted:
 | `cloud-driver-extensions-scan` | **`clamd`**, see §4.3 |
 | `cloud-driver-extensions-thumbnails` | none (uses the already-configured storage path) |
 | `cloud-driver-extensions-versioning` | none |
-| `cloud-driver-extensions-search` | none (in-memory index, no external dependency) |
+| `cloud-driver-extensions-search` | none beyond Postgres — the index is a `tsvector`/GIN table the extension creates itself (see §2.1), falling back to an in-memory index if that fails |
 | `cloud-driver-extensions-webhooks` | outbound internet access only (no third-party account) |
+| `cloud-driver-extensions-intelligence` | the `cloud-driver-intelligence` Python service reachable at `intelligence-host`/`-port`, plus a matching `intelligence-shared-secret` on both sides — the extension refuses to load without the secret |
 
 ---
 

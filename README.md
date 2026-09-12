@@ -67,26 +67,38 @@ separate services — the REST API, the operator terminal, the backup job, metri
 versioning, search, webhooks, malware scanning — are *extensions*: independent jars loaded into
 that one process from an `extensions/` folder at startup. Three genuinely separate processes sit
 alongside it, each optional: a ClamAV daemon (malware scanning), Redis (restart-surviving rate
-limits and webhook history), and `cloud-driver-intelligence`, a Python service owning the
-embedding model behind semantic search.
+limits and webhook history, plus cross-instance coordination), and `cloud-driver-intelligence`,
+a Python service owning the embedding model behind semantic search.
 
-Security is the project's central design constraint: nothing plaintext is ever written to the
+Security is the project's central design constraint: no plaintext entity is ever written to the
 database. Every entity — file content included — passes through envelope encryption
 (AES-256-GCM, a fresh data-encryption key per payload, wrapped under a key-encryption key held in
-AWS KMS in production) before persistence, and passwords are hashed with Argon2id.
+AWS KMS in production) before persistence, and passwords are hashed with Argon2id. There is one
+deliberate, documented exception: the keyword-search index table, which necessarily holds file
+names and content-derived search terms in plaintext (see
+[docs/security.md](docs/security.md)).
 
 ## Features
 
 ### Storage
 
 - File upload and download, including a streaming download route with no JSON/base64 wrapping
+- Conditional downloads: content routes carry an `ETag`, and `If-None-Match` answers `304`
 - Folder management: create, rename, move, per-folder display color
 - Recycle bin / trash: soft delete, restore, "empty trash", automatic retention-window purge
 - Per-account upload quotas and usage accounting
-- File versioning: prior content versions kept on overwrite, with restore
-- Per-account content deduplication (byte-identical uploads stored once)
+- File versioning: prior content versions kept on overwrite, with restore — stored as
+  chunk-level deltas against the previous version, with a periodic full keyframe
+- Chunk-level content sync: a per-file chunk-hash manifest plus a `PATCH` route that sends only
+  the 1 MiB chunks that actually changed
+- Per-account content deduplication (byte-identical uploads stored once), including a
+  checksum precheck that skips the transfer entirely on a direct-to-storage upload
 - Thumbnails for images and PDF first pages
-- Optional S3-backed file content and presigned direct-to-storage transfer
+- Optional S3-backed file content and presigned direct-to-storage transfer, with client-side
+  envelope encryption so the bytes bypass the server without bypassing the key hierarchy
+- Resumable multipart upload sessions for large files: fixed byte-range parts, crash-resume
+  from nothing but the session id
+- Server-mediated uploads above 32 MiB stream end to end, never materializing the file in heap
 - Offline-safe uploads: queued locally and retried when connectivity returns
 
 ### Authentication & Accounts
@@ -109,7 +121,8 @@ AWS KMS in production) before persistence, and passwords are hashed with Argon2i
 
 ### Search & Intelligence
 
-- Keyword search over file names and extracted text content
+- Keyword search over file names and extracted text content, backed by a Postgres
+  `tsvector`/GIN index (persistent and restart-surviving, with an in-memory fallback)
 - Semantic ("by meaning") search backed by the separate Python embedding service
 - Near-duplicate detection and zero-shot auto-tag suggestions
 - Optional PDF text extraction, OCR, and CLIP image embeddings
@@ -117,6 +130,7 @@ AWS KMS in production) before persistence, and passwords are hashed with Argon2i
 ### Security
 
 - Envelope encryption at rest: AES-256-GCM, DEK/KEK split, key rotation
+- Chunked streaming AEAD for file content, so encryption memory is O(chunk size), not O(file)
 - Production key management via AWS KMS (key material never leaves AWS HSMs)
 - Argon2id password hashing; general hashing restricted to SHA-256/384/512
 - Malware scanning of uploads via ClamAV, with download gating on the scan verdict
@@ -130,6 +144,8 @@ AWS KMS in production) before persistence, and passwords are hashed with Argon2i
 - Signed, retried outbound webhooks for file events
 - Prometheus-scrapeable metrics endpoint
 - Streaming, keyset-paginated database backups with retention rotation
+- Optional Redis-backed multi-instance coordination: once-per-window scheduler locks and
+  cross-instance pending-upload visibility, degrading to single-instance behavior without it
 - An interactive operator terminal with a diagnostics/operations command catalog
 - A plugin/extension framework for adding backend features without touching the core
 
@@ -163,7 +179,7 @@ flowchart TD
     KMS["AWS KMS<br/>(key wrapping)"]
     S3["AWS S3<br/>(optional file content)"]
     CLAM["clamd<br/>(optional malware scan)"]
-    REDIS[("Redis<br/>(optional counters/history)")]
+    REDIS[("Redis<br/>(optional: rate-limit counters, webhook<br/>history, scheduler locks, upload queue)")]
     INTEL["cloud-driver-intelligence<br/>(Python, semantic search)"]
     PROM["Prometheus"]
 
@@ -175,8 +191,9 @@ flowchart TD
     EXT --> CORE
     CORE -->|AES-256-GCM ciphertext| DB
     CORE --> KMS
-    CORE -.-> S3
+    CORE -.->|chunked AEAD ciphertext| S3
     EXT -.-> CLAM
+    CORE -.-> REDIS
     EXT -.-> REDIS
     EXT -.->|shared-secret HTTP| INTEL
     PROM -.->|scrape /metrics| EXT
@@ -224,16 +241,23 @@ sequenceDiagram
     participant Auth as Auth / CloudUserService
     participant Core as Core (FileFactory)
     participant Enc as Envelope Encryption
+    participant S3 as S3 (if configured)
     participant DB as PostgreSQL
 
     Client->>REST: POST /files (raw bytes + Bearer JWT)
     REST->>Auth: Validate JWT, resolve account
     Auth->>Auth: Quota + folder-ownership check
+    Note over REST,Auth: Above 32 MiB the body lands in a scratch file<br/>and every step below streams off it
     Auth->>Core: Store file entity
     Core->>Enc: Encrypt (fresh DEK, AES-256-GCM)
     Enc->>Enc: Wrap DEK under active KEK (AWS KMS)
     Enc-->>Core: Ciphertext + wrapped DEK
-    Core->>DB: Persist encrypted record
+    alt S3-backed content
+        Core->>S3: PUT chunked-AEAD ciphertext object
+        Core->>DB: Persist encrypted metadata record (no content)
+    else Inline content
+        Core->>DB: Persist encrypted record (content included)
+    end
     DB-->>Core: OK
     Core-->>REST: Stored file summary
     REST-->>Client: 201 Created (metadata, no content echo)
@@ -351,7 +375,7 @@ sizing): [`docs/requirements.md`](docs/requirements.md).
 | GitHub Packages read access | The external `de.lino.database:database-driver-*` dependency is published to `linoalessio/database-driver-v2`, not Maven Central — a PAT with `read:packages` must be configured in `~/.m2/settings.xml` under server id `database-driver-github` |
 | AWS account with a KMS key | **Required at boot** in the current code — the production key service is constructed unconditionally |
 | SMTP or AWS SES (optional) | Verification e-mails; falls back to log-only delivery |
-| AWS S3, `clamd`, Redis (optional) | S3-backed content, malware scanning, durable rate limits |
+| AWS S3, `clamd`, Redis (optional) | S3-backed content, malware scanning, durable rate limits + multi-instance coordination |
 
 ### Clients
 
@@ -448,8 +472,10 @@ Every other key (SMTP/SES, S3, metrics, rate limits, trash retention, ClamAV, se
    [Desktop Client](#desktop-client)), register an account, confirm the e-mailed code, log in,
    and upload a file.
 
-Alternatively, `shell/`-style helper scripts used by the reference deployment (assemble-and-run
-smoke test, deploy, release) exist but are operator-local and deliberately untracked — see
+Alternatively, [`shell/`](shell/) carries the helper scripts the reference deployment uses —
+server provisioning, jar upload, on-server start, homepage deploy. They take the target host as
+an argument rather than hardcoding it, so they are checked in; the one exception,
+`release-and-package.sh`, is deliberately untracked. See
 [docs/deployment.md](docs/deployment.md).
 
 ## REST API
@@ -462,7 +488,8 @@ reference: [docs/api-reference.md](docs/api-reference.md). Code samples for ever
 |---|---|
 | Authentication | Registration, login, e-mail verification, password reset, e-mail change, token refresh, logout |
 | Users | The caller's own account record, quota/usage, theme preference |
-| Files | Upload, download/stream, rename, move, replace content, thumbnails, versions |
+| Files | Upload, download/stream (with `ETag`/`304`), rename, move, replace content, chunk-level patch + manifest, thumbnails, versions |
+| Direct transfer | Presigned upload/download URLs and resumable multipart upload sessions, all client-side encrypted (`503` where not configured) |
 | Folders | Create, list, rename/move, color |
 | Sharing | Grants (with permission level/expiry), shared-with-me, public links |
 | Trash | List, restore, empty |
@@ -531,10 +558,19 @@ pipeline persists them, plus extra integrity checks:
 
 - A **plaintext checksum** is recorded at upload and re-verified on every read, on top of the
   AES-GCM authentication tag.
-- Content is **DEFLATE-compressed before encryption** when that actually shrinks it.
-- Three content modes exist per file: inline in the database row (default), **S3-backed**
-  (ciphertext object in S3, metadata in PostgreSQL), and **direct transfer** (client ⇄ S3 via
-  presigned URLs, SSE-S3 encrypted, bypassing the backend for the bytes).
+- Content is **DEFLATE-compressed before encryption** when that actually shrinks it — on the
+  in-memory path only; the streamed (>32 MiB) and direct-transfer paths skip it deliberately.
+- Three content modes exist per file: inline in the database row (the default when no bucket is
+  configured), **S3-backed** (ciphertext object in S3, metadata in PostgreSQL), and **direct
+  transfer** (client ⇄ S3 via presigned URLs, bypassing the backend for the bytes). Direct
+  transfer does not bypass the key hierarchy: the client performs the same chunked envelope
+  encryption itself under a server-issued, KEK-wrapped per-file key, and S3's own SSE-S3 sits
+  underneath purely as defense in depth.
+- Large direct-transfer uploads run as **resumable multipart sessions** — fixed byte-range
+  parts, a status route that asks the object store itself which parts landed, and resume from
+  nothing but the session id.
+- Overwrites can be **chunk-level**: clients diff against a per-file chunk-hash manifest and
+  `PATCH` only the changed 1 MiB chunks.
 - **Soft delete**: deleting moves a file/folder to the trash; a purge scheduler permanently
   removes trashed items after a configurable retention window (default 30 days).
 - **Deduplication**: a byte-identical re-upload within one account stores an alias, not a second
@@ -564,9 +600,19 @@ documented in [docs/security.md](docs/security.md).
 - **PostgreSQL is required and is the only supported database.** The persistence layer (the
   external `database-driver` artifact group) creates one trivial table per entity type
   (`id TEXT, data BYTEA`) automatically on first use — never hand-create tables.
-- Rows hold **only ciphertext**: the envelope-encrypted entity plus its wrapped DEK.
+- Rows hold **only ciphertext**: the envelope-encrypted entity plus its wrapped DEK. There is
+  exactly one signed-off exception — the keyword-search index table, which holds file names and
+  content-derived `tsvector` lexemes in plaintext because a database-side full-text index cannot
+  work otherwise. It is rebuildable derived state and is excluded from backups; see
+  [docs/security.md](docs/security.md).
 - Each entity type gets its own section and a bounded, time-limited decryption cache (decrypted
   plaintext lives in memory for at most ~30 s / 1,000 entries by default).
+- Independently of that, each type's underlying table has its own cache mode
+  (`FULL`/`LAZY`/`BOUNDED`/`NONE`). `FULL` is the default; `StoredFile` is pinned to `NONE`, since
+  a legacy row can still carry a file's whole inline content and must never be held twice.
+- Hot per-user/per-file lookups go through **in-memory secondary indexes** that entities declare
+  by hand (`SecondaryIndexed` + `DataFactory.getEntitiesByIndex`), not full scans. They cannot be
+  SQL indexes: the database only ever sees ciphertext, so it has no fields to index.
 - `LISTEN`/`NOTIFY` powers live updates: the watcher extension installs a trigger on the stored
   file table and pushes change notifications to connected WebSocket clients — push, not polling.
 - Connection credentials come exclusively from `postgres-database.json` (gitignored).
@@ -719,17 +765,18 @@ Honest summary — full detail in [docs/testing.md](docs/testing.md):
 Full detail: [docs/deployment.md](docs/deployment.md).
 
 - The backend deploys as **one shaded jar plus its extension jars to a single server** — there is
-  no Docker/Kubernetes/containerized deployment. Operator-local shell scripts (untracked, since
-  they hardcode server details) upload the build and run it in a detached, auto-restarting
-  session with an explicit heap size (`-Xmx6g` on the reference deployment).
+  no Docker/Kubernetes/containerized deployment. The [`shell/`](shell/) scripts upload the build
+  and run it in a detached, auto-restarting session with an explicit heap size (`-Xmx6g` on the
+  reference deployment).
 - Put a TLS-terminating reverse proxy in front of the REST port; keep the metrics port
   loopback-only or firewalled.
 - The optional companion processes (`clamd`, Redis, the Python intelligence service) run as
   ordinary system services beside the JVM; the intelligence service ships a systemd unit and
   installer under `cloud-driver-intelligence/deploy/`.
-- The apex domain `cloud-driver.de` serves the static informational homepage under
-  [`homepage/`](homepage/) (with legal-notice/privacy pages) straight from the reverse
-  proxy — see [docs/deployment.md](docs/deployment.md#homepage-cloud-driverde).
+- The apex domain `cloud-driver.de` serves a static informational homepage (with
+  legal-notice/privacy pages) straight from the reverse proxy — see
+  [docs/deployment.md](docs/deployment.md#homepage-cloud-driverde). Its sources live in a
+  `homepage/` directory that is deliberately gitignored, not published with this repository.
 - CI (GitHub Actions): build checks for the Maven reactor, the iOS app, and both Python packages
   (with pytest), Qodana static analysis, and a publish workflow that pushes every Maven module to
   GitHub Packages when a release is created. **No workflow deploys to a server automatically** —
@@ -737,12 +784,16 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 
 ## Known Limitations
 
-- No containerized or orchestrated deployment; deployment tooling is operator-local scripting
-  against a single server.
-- Several read paths (login lookup, per-account listings) do a full in-memory scan of an entity
-  type — the storage layer has no secondary indexes. Accepted at current data scale.
-- The WebSocket live-update session registry is process-local: running multiple backend instances
-  behind a load balancer is not supported today.
+- No containerized or orchestrated deployment; deployment tooling is shell scripting against a
+  single server.
+- A few read paths still do a full in-memory scan of an entity type (purge-scheduler sweeps, the
+  cross-owner folder-tree walk, the multi-target activity feed). The hot per-user/per-file
+  lookups no longer do — they go through in-memory secondary indexes — but the storage layer
+  has no *SQL* indexes and cannot have any, since rows are ciphertext.
+- Multi-instance support is partial: the periodic schedulers and the pending-upload queue
+  coordinate across instances through Redis, but the WebSocket live-update session registry is
+  still process-local, so a client connected to instance A misses a change made through
+  instance B. Running behind a load balancer is not supported today.
 - Client apps hardcode their server URL; pointing them elsewhere requires a rebuild.
 - Malware scanning **fails open**: if the scanner is unreachable after retries, the file is
   marked clean (loudly logged) rather than blocking uploads.
@@ -752,11 +803,15 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 
 ## Roadmap
 
-- [ ] Chunked/streaming encryption so large files never need full-content heap headroom
-- [ ] Client-side sync engine on top of the existing conflict-copy server primitive
+- [x] Chunked/streaming encryption so large files never need full-content heap headroom
+- [x] Secondary-index support to replace the hot full-scan read paths
+- [x] Chunk-level content diffing (`PATCH /files/{id}/content`) as the server half of a sync engine
+- [x] Resumable multipart uploads for large direct-to-storage transfers
+- [x] Multi-instance scheduler/pending-upload coordination through Redis
+- [ ] Client-side sync engine on top of the existing conflict-copy and chunk-diff primitives
+- [ ] Cross-instance WebSocket live-update fan-out (the last blocker for load-balanced instances)
 - [ ] Public links for folders (files-only today)
 - [ ] Automated test coverage for the JVM/Swift codebases
-- [ ] Secondary-index support to replace the remaining full-scan read paths
 
 ## Documentation
 
@@ -776,8 +831,8 @@ Full detail: [docs/deployment.md](docs/deployment.md).
 
 ## License
 
-This repository does not currently contain a license file. Until one is added, all rights are
-reserved by the author — do not assume any open-source license applies.
+Licensed under the **Apache License, Version 2.0** — the full text is in
+[`LICENSE.txt`](LICENSE.txt).
 
 ## Author
 

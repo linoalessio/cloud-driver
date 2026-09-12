@@ -38,7 +38,7 @@ public class CloudRestExtension extends Extension {
     private static int REST_SERVER_PORT;
 
     /**
-     * Default bind interface if {@code "rest-api-bind-host"} isn't set in {@code
+     * Default bind interface if {@code "rest-server-bind-host"} isn't set in {@code
      * configuration.json} - every interface, matching this extension's original (pre-reverse-
      * proxy) behavior. A production deployment fronted by a TLS-terminating reverse proxy (see
      * {@code shell/Caddyfile}) should set that config key to {@code "127.0.0.1"} instead, so

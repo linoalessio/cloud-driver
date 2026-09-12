@@ -107,7 +107,7 @@ public abstract class CloudDriver {
     public abstract void reset();
 
     /**
-     * Loads this deployment's local configuration file (e.g. {@code "rest-api-port"},
+     * Loads this deployment's local configuration file (e.g. {@code "rest-server-port"},
      * {@code "jwt-signing-key"}), re-reading it from disk on every call rather than caching it.
      *
      * @return the parsed {@code configuration.json} document, resolved against {@link

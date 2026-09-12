@@ -244,8 +244,10 @@ trash, sharing, quotas, password reset, e-mail change, refresh tokens, admin).
 ## 2. The REST API, over HTTP
 
 The full route table lives in [api-reference.md](api-reference.md); this section shows the shape of
-an actual request/response for the flows a client goes through most often. Every route other than
-the six auth-flow ones below requires `Authorization: Bearer <access-token>`.
+an actual request/response for the flows a client goes through most often. Every route requires
+`Authorization: Bearer <access-token>` except the nine `/auth/*` flow routes (register, confirm,
+login, refresh, logout, and the password-reset/e-mail-change pairs) and the public-link download
+route — each of those carries its own authority in the request itself.
 
 ### 2.1 Register, confirm, log in
 
@@ -299,7 +301,74 @@ curl -X PUT "https://api.cloud-driver.de/files/<fileId>/folder" \
      -d '{"folderId":"<folderId>"}'
 ```
 
-### 2.3 Folders, sharing, trash
+### 2.3 Conditional download, and patching only what changed
+
+```bash
+# Re-download only if the content actually changed. The ETag is the content checksum, quoted.
+curl -D- -o report.pdf -H "Authorization: Bearer $TOKEN" \
+     "https://api.cloud-driver.de/files/<fileId>/content"
+# -> 200 OK  ETag: "9f2b…"  Cache-Control: private, must-revalidate
+
+curl -D- -o /dev/null -H "Authorization: Bearer $TOKEN" -H 'If-None-Match: "9f2b…"' \
+     "https://api.cloud-driver.de/files/<fileId>/content"
+# -> 304 Not Modified, no body
+
+# A sync client diffs against the per-chunk manifest instead of re-uploading the whole file:
+curl -H "Authorization: Bearer $TOKEN" \
+     "https://api.cloud-driver.de/files/<fileId>/chunk-manifest"
+# -> {"chunkSizeBytes":1048576,"totalSizeBytes":5242880,"chunkHashes":["<hex>", ...]}
+
+# ...then sends only the chunks whose hash moved. Positional index, base64 payload.
+curl -X PATCH "https://api.cloud-driver.de/files/<fileId>/content" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"totalSizeBytes":5242880,"changedChunks":[{"index":3,"contentBase64":"<...>"}]}'
+```
+
+A `404` from the manifest route means the file has none (a dedup alias, a presigned upload, or
+content written before manifests existed) — fall back to a full `PUT`. A `400` from `PATCH` means
+the chunk set no longer lines up with current content: re-fetch the manifest, or fall back.
+
+### 2.4 Large uploads: resumable multipart sessions
+
+Only available where direct-to-storage transfer is configured (`503` otherwise — clients fall
+back to a plain `POST /files`).
+
+```bash
+# Begin. checksumSha256 is required here, and doubles as a dedup precheck.
+curl -X POST https://api.cloud-driver.de/files/upload-session \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"fileName":"archive.zip","sizeBytes":2147483648,"checksumSha256":"<hex>"}'
+# -> {"alreadyStored": {...}}                       # dedup hit: nothing to upload at all
+# -> {"fileId":"...","partSizeBytes":8388608,"partCount":257,
+#     "totalObjectBytes":...,"encryption":{...}}    # otherwise: the session's geometry
+
+# Per part: presign, then PUT that byte range of the client-encrypted object stream directly.
+curl -X POST "https://api.cloud-driver.de/files/upload-session/<fileId>/parts/1/url" \
+     -H "Authorization: Bearer $TOKEN"
+curl -X PUT "<presigned-url>" --data-binary @part-1.bin
+
+# After a crash, the session id alone is enough — the part list comes from the object store itself.
+curl -H "Authorization: Bearer $TOKEN" \
+     "https://api.cloud-driver.de/files/upload-session/<fileId>"
+# -> {..., "uploadedPartNumbers":[1,2,5], "encryption":{...}}   # re-send only what's missing
+
+curl -X POST "https://api.cloud-driver.de/files/upload-session/<fileId>/complete" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"checksumSha256":"<hex>"}'      # checksum is always over the PLAINTEXT
+
+# Abandoning one costs money until aborted — the store bills for uploaded parts. Idempotent:
+curl -X DELETE "https://api.cloud-driver.de/files/upload-session/<fileId>" \
+     -H "Authorization: Bearer $TOKEN"
+```
+
+The `encryption` object on the begin/status responses is not optional bookkeeping: the client
+must chunk-encrypt its content into the same v2 layout the server writes, using the
+server-issued (KEK-wrapped) content key, before uploading any part. Completion verifies the
+stored object's exact length and deletes it on a mismatch. See
+[api-reference.md](api-reference.md#direct-to-storage-transfer-optional-if-configured) for the
+field-by-field contract, and [security.md](security.md) for why it works this way.
+
+### 2.5 Folders, sharing, trash
 
 ```bash
 # Create a folder, then list the caller's top-level folders:
@@ -319,7 +388,7 @@ curl -X DELETE "https://api.cloud-driver.de/files/<fileId>" -H "Authorization: B
 curl -X POST "https://api.cloud-driver.de/files/<fileId>/restore" -H "Authorization: Bearer $TOKEN"
 ```
 
-### 2.4 Live updates (WebSocket)
+### 2.6 Live updates (WebSocket)
 
 `GET /ws/updates` (bearer token via `Authorization` header, or `?token=` for a client that can't set
 one, e.g. a browser) pushes `{"table","operation","id"}` whenever the connected account's own data
@@ -447,6 +516,28 @@ code:
 | `auditLog` / `auditLog all` / `auditLog <email>` | `audit`, `log` | Browse the persisted security-audit trail |
 | `migrateToS3` | `migrateS3` | Move every not-yet-S3-backed file's content onto the configured bucket (dedup aliases own no content and are skipped, reported in their own counter) |
 | `hardReset` (run twice within 5s to confirm) | `reset` | Wipe every entity section — irreversible, no undo |
+
+Diagnostics and operations. These reach optional facets through the service/factory containers and
+null-check them, so all of them are registered unconditionally — on a deployment running none of
+the extensions behind them, each simply reports that its subsystem is absent, which is itself the
+useful answer:
+
+| Command | Aliases | Purpose |
+|---|---|---|
+| `health` | `status`, `facets` | Which optional subsystems are published, and which of the external ones (clamd, the embedding service, Redis, S3) actually answer a live probe. "Published" only means an extension loaded — this draws the distinction |
+| `config` | `cfg`, `configuration` | The configuration this process is *running with*, secrets redacted — not what the file on disk currently says |
+| `reload` | `refresh` | Re-read one entity type's section from the database, discarding this process's cached mirror (a row written by another process is otherwise invisible indefinitely) |
+| `file <id>` | `storedFile` | Everything known about one file in one place — the `StoredFile`, its ownership row, trash state, scan verdict, versions, shares |
+| `session list <email>` / `revoke …` | `sessions` | List and revoke an account's refresh tokens. Only refresh tokens are revocable; the access JWT is stateless and lives out its 12 hours |
+| `share <email>` | `shares` | What an account has shared — grants to other accounts, and public links (the one unauthenticated read path in the system) |
+| `trash` | `recycleBin` | Deployment-wide recycle-bin view: trashed items still occupy storage and still count against quota until the retention window elapses |
+| `backup now` / `backup status` | `db` | Take a backup on demand (deliberately bypassing the Redis scheduler lock, so an explicit operator backup is never a silent no-op) and check whether the scheduled one is actually running |
+| `rateLimit` | `rl` | Inspect and clear the running REST layer's rate-limit windows — otherwise an exhausted window can only be waited out or restarted away |
+| `searchIndex` | `si` | Keyword-index visibility, on-demand rebuild, and a query passthrough |
+| `intelligence` | `ai`, `semantic` | Semantic-search health, on-demand backfill, and the query/duplicate/tag surfaces |
+| `scan` | `contentScan` | Content-scan visibility and on-demand rescans — scanning fails open, so files marked clean unscanned need a way to be revisited |
+| `mail` | `email` | Send a test message through whichever `EmailSender` the startup fallback actually selected (SES → SMTP → log-only) |
+| `s3` | `objectStorage` | Reconcile the bucket against the `StoredFile` rows that reference it and, on explicit confirmation, delete orphaned objects |
 
 Registering your own command from a new extension:
 
