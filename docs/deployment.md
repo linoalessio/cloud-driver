@@ -130,9 +130,9 @@ freshness — roughly 10% of the time since `Last-Modified` — and reuse a cach
 old CSS, and new markup lands unstyled. `no-cache` still lets the browser cache; it just forces
 a revalidation that answers `304 Not Modified` when nothing changed.
 
-As a second layer, the HTML links its assets with a version query — `style.css?v=20260912`,
-`script.js?v=20260912`. Bump that stamp in all three pages whenever `style.css` or `script.js`
-changes: a new URL cannot be served from an old cache entry, in any browser or intermediary,
+As a second layer, the HTML links its assets with a version query — `style.css?v=20260912-2`,
+`script.js?v=20260912-2` (the deploy date, plus a `-N` counter for further changes the same
+day). Bump that stamp in all three pages whenever `style.css` or `script.js` changes: a new URL cannot be served from an old cache entry, in any browser or intermediary,
 regardless of headers.
 
 The pages state facts about the running system (version number, route count, extension count) —
