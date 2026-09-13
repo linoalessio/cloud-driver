@@ -124,6 +124,9 @@ public final class CommandService {
      * Looks {@code name} up and runs it synchronously on the calling thread. Prefer
      * {@link #dispatchAsync(String, String[])} from a terminal's reading loop.
      *
+     * <p>{@code args} is parsed into positionals and flags against the matched service's
+     * {@link Command#flags() declarations} - see {@link Command.CommandArguments}.
+     *
      * @param name the service name or alias to dispatch
      * @param args the arguments following the service name
      * @return {@code true} if a service was found and run, {@code false} otherwise
@@ -133,7 +136,7 @@ public final class CommandService {
         Asserts.requireNonNull(args, "@CommandService.dispatch: args must not be null");
 
         final Optional<Command> command = findByName(name);
-        command.ifPresent(value -> value.execute(new Command.CommandArguments(args)));
+        command.ifPresent(value -> value.execute(new Command.CommandArguments(args, value.flags())));
         return command.isPresent();
     }
 
@@ -141,6 +144,9 @@ public final class CommandService {
      * Looks {@code name} up and, if found, runs it on {@link MultiTaskingFactory}'s shared
      * virtual-thread executor. A thrown {@link RuntimeException} is caught and logged rather
      * than propagated.
+     *
+     * <p>{@code args} is parsed into positionals and flags against the matched service's
+     * {@link Command#flags() declarations} - see {@link Command.CommandArguments}.
      *
      * @param name the service name or alias to dispatch
      * @param args the arguments following the service name
@@ -155,7 +161,7 @@ public final class CommandService {
 
         return command.map(value -> MultiTaskingFactory.getInstance().supplyAsync(() -> {
             try {
-                value.execute(new  Command.CommandArguments(args));
+                value.execute(new Command.CommandArguments(args, value.flags()));
             } catch (final RuntimeException exception) {
                 LOGGER.log(Level.SEVERE, "@CommandService.dispatchAsync: '" + name + "' threw an exception", exception);
             }

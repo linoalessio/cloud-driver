@@ -10,6 +10,7 @@ import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -69,6 +70,14 @@ public class HealthCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Show which optional subsystems are published, and probe the external ones for real";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("health", "Which subsystems are published, and which external ones answer")
+        );
     }
 
     /**

@@ -4,6 +4,7 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.backup.BackupService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Instant;
@@ -48,6 +49,15 @@ public class BackupCommand implements Command {
         return "Run a database backup now, or report the outcome of the most recent one";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("backup status", "How the most recent backup went"),
+                CommandUsage.of("backup now", "Take a database backup right now")
+        );
+    }
+
     /**
      * Dispatches to {@code status} (the default) or {@code now}.
      *
@@ -80,8 +90,7 @@ public class BackupCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fbackup status");
-        terminal.displayApproved("&fbackup now");
+        this.sendUsage();
     }
 
     /** Prints the most recent cycle's outcome. */

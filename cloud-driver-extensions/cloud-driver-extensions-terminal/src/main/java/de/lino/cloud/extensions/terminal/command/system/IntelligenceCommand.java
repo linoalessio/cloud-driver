@@ -11,6 +11,8 @@ import de.lino.cloud.api.intelligence.SemanticSearchResult;
 import de.lino.cloud.api.intelligence.TagSuggestion;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
+import de.lino.cloud.api.terminal.service.CommandFlag;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
@@ -67,6 +69,25 @@ public class IntelligenceCommand implements Command {
         return "Semantic search: status, backfill the vector index, query, find duplicates, suggest tags";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("intelligence status", "Whether semantic search is reachable"),
+                CommandUsage.of("intelligence backfill <all|email> [--content]", "Index accounts; --content also reads file content (slow)"),
+                CommandUsage.of("intelligence search <email> <query...>", "Run a semantic search as that account"),
+                CommandUsage.of("intelligence duplicates <email> [threshold]", "Find near-identical files in that account"),
+                CommandUsage.of("intelligence tags <fileId>", "Suggest tags for one file")
+        );
+    }
+
+    /** @return {@code --content}, the opt-in into the expensive backfill form */
+    @Override
+    public @NotNull List<CommandFlag> flags() {
+        return List.of(CommandFlag.of("--content", "Backfill file content too, not just names - slow, and fetches every file")
+                .withAliases("-c"));
+    }
+
     /**
      * Dispatches to one of {@code status}/{@code backfill}/{@code search}/{@code duplicates}/
      * {@code tags}, printing usage if the sub-command is missing or unrecognized.
@@ -109,7 +130,7 @@ public class IntelligenceCommand implements Command {
             return;
         }
 
-        this.sendHelp(terminal);
+        this.sendUsage();
 
     }
 
@@ -136,9 +157,8 @@ public class IntelligenceCommand implements Command {
     private void backfill(final Terminal terminal, final IntelligenceService intelligenceService,
                           final CommandArguments arguments) {
 
-        final boolean includeContent = this.hasFlag(arguments, "--content");
-        final String target = arguments.hasLength(1) && !arguments.command(1).startsWith("--")
-                ? arguments.command(1) : "all";
+        final boolean includeContent = arguments.hasFlag("--content");
+        final String target = arguments.hasLength(1) ? arguments.command(1) : "all";
 
         final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
         if (cloudUserService == null) {
@@ -229,7 +249,7 @@ public class IntelligenceCommand implements Command {
             terminal.displayApproved("Cloud user '&b%s&7' does not exist", email);
             return;
         }
-        final String query = this.joinFrom(arguments, 2);
+        final String query = arguments.join(2);
         final List<SemanticSearchResult> results = cloudUserService.semanticSearch(cloudUser.get().getAuthUserId(), query, 10);
 
         terminal.emptyLine();
@@ -301,33 +321,6 @@ public class IntelligenceCommand implements Command {
             terminal.displayApproved("&8  (none - the file may never have been indexed)");
         }
         terminal.emptyLine();
-    }
-
-    /** Whether {@code flag} appears anywhere in {@code arguments}. */
-    private boolean hasFlag(final CommandArguments arguments, final String flag) {
-        for (int index = 0; index < arguments.length(); index++) {
-            if (flag.equalsIgnoreCase(arguments.command(index))) return true;
-        }
-        return false;
-    }
-
-    /** Joins every argument from {@code start} onward with spaces - a query is not one token. */
-    private String joinFrom(final CommandArguments arguments, final int start) {
-        final StringBuilder joined = new StringBuilder();
-        for (int index = start; index < arguments.length(); index++) {
-            if (!joined.isEmpty()) joined.append(' ');
-            joined.append(arguments.command(index));
-        }
-        return joined.toString();
-    }
-
-    /** Prints this command's usage syntax. */
-    private void sendHelp(final Terminal terminal) {
-        terminal.displayApproved("&fintelligence status");
-        terminal.displayApproved("&fintelligence backfill <all|email> [--content]");
-        terminal.displayApproved("&fintelligence search <email> <query...>");
-        terminal.displayApproved("&fintelligence duplicates <email> [threshold]");
-        terminal.displayApproved("&fintelligence tags <fileId>");
     }
 
 }

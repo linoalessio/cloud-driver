@@ -5,6 +5,7 @@ import de.lino.cloud.api.mail.EmailDeliveryException;
 import de.lino.cloud.api.mail.EmailSender;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -50,6 +51,15 @@ public class MailCommand implements Command {
         return "Show which e-mail sender was resolved, and send a real test message";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("mail status", "Which e-mail sender was selected at startup"),
+                CommandUsage.of("mail test <address>", "Send a real test message to that address")
+        );
+    }
+
     /**
      * Dispatches to {@code status} (the default) or {@code test <address>}.
      *
@@ -76,8 +86,7 @@ public class MailCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fmail status");
-        terminal.displayApproved("&fmail test <address>");
+        this.sendUsage();
 
     }
 

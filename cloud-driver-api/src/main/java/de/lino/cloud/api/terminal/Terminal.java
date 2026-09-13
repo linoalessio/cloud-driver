@@ -18,6 +18,10 @@ import org.jline.utils.InfoCmp;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -51,6 +55,15 @@ public final class Terminal {
 
     /** The currently displayed prompt, already ANSI-translated. */
     private volatile String prompt;
+
+    /**
+     * Lines {@link #displayPaged(String, List)} has queued but not printed yet, oldest first.
+     * Guarded by itself - a command thread fills it while the reading thread drains it.
+     */
+    private final Deque<String> pendingOutput = new ArrayDeque<>();
+
+    /** What {@link #pendingOutput} is the remainder of, e.g. {@code "help --description"}. */
+    private volatile String pendingLabel = "";
 
     /**
      * Constructs a terminal using {@link DefaultPromptProvider}.
@@ -214,6 +227,149 @@ public final class Terminal {
      */
     public void displayApproved(@NonNull final String format, @NonNull final Object... args) {
         this.displayApproved(String.format(format, args));
+    }
+
+    /**
+     * Prints {@code lines} one screen at a time instead of flushing all of them past the top of
+     * the window, keeping the rest for {@link #displayNextPage()}.
+     *
+     * <h2>Why paging and not scrolling</h2>
+     *
+     * The operator terminal runs inside {@code jline}, which owns the screen while it is reading
+     * a line, and typically inside a detached {@code screen} session with little or no scrollback
+     * - so output longer than the window is not scrolled back to, it is simply gone. Anything
+     * that can print more lines than fit (a full command catalog, an audit trail, a bucket
+     * reconciliation) therefore has to stop by itself and wait to be asked for more.
+     *
+     * <p>The continuation is a normal command ({@code more}), not a keypress: while a command is
+     * running, the reading thread is already blocked inside {@code jline}'s {@code readLine},
+     * and a second reader on the same terminal would fight it for every keystroke.
+     *
+     * <p>Queuing is per terminal, so a second paged command replaces whatever the first one had
+     * left over - {@code label} is what the footer names, so it is always clear which command's
+     * remainder is about to be printed.
+     *
+     * @param label the command this output belongs to, e.g. {@code "help --description"}
+     * @param lines the lines to print, each using {@code &x} legacy ansi codes
+     * @throws NullPointerException if {@code label} or {@code lines} is {@code null}
+     */
+    public void displayPaged(@NotNull final String label, @NotNull final List<String> lines) {
+        Asserts.requireNonNull(label, "@Terminal.displayPaged: label must not be null");
+        Asserts.requireNonNull(lines, "@Terminal.displayPaged: lines must not be null");
+
+        synchronized (this.pendingOutput) {
+            this.pendingOutput.clear();
+            this.pendingOutput.addAll(lines);
+            this.pendingLabel = label;
+        }
+
+        this.displayNextPage();
+    }
+
+    /**
+     * Prints the next screenful of whatever {@link #displayPaged(String, List)} queued, followed
+     * by a footer naming how much is still waiting. Prints a short note instead if nothing is
+     * pending.
+     */
+    public void displayNextPage() {
+
+        final List<String> page;
+        final int remaining;
+
+        synchronized (this.pendingOutput) {
+
+            if (this.pendingOutput.isEmpty()) {
+                this.displayApproved("&8Nothing more to show.");
+                return;
+            }
+
+            page = this.take(this.pageSize());
+            remaining = this.pendingOutput.size();
+        }
+
+        page.forEach(this::displayApproved);
+        if (remaining == 0) return;
+
+        this.displayApproved("&8-- &b%s &8more line(s) of '&7%s&8' - type &7more&8 for the next page, &7more all&8 for the rest --",
+                remaining, this.pendingLabel);
+    }
+
+    /** Prints everything {@link #displayPaged(String, List)} still holds, in one go. */
+    public void displayAllPending() {
+
+        final List<String> rest;
+        synchronized (this.pendingOutput) {
+
+            if (this.pendingOutput.isEmpty()) {
+                this.displayApproved("&8Nothing more to show.");
+                return;
+            }
+
+            rest = this.take(this.pendingOutput.size());
+        }
+
+        rest.forEach(this::displayApproved);
+    }
+
+    /**
+     * @return {@code true} if {@link #displayPaged(String, List)} left lines unprinted
+     */
+    public boolean hasPendingOutput() {
+        synchronized (this.pendingOutput) {
+            return !this.pendingOutput.isEmpty();
+        }
+    }
+
+    /**
+     * @return how many lines are still waiting to be printed
+     */
+    public int pendingLines() {
+        synchronized (this.pendingOutput) {
+            return this.pendingOutput.size();
+        }
+    }
+
+    /**
+     * @return what the pending lines are the remainder of, or an empty string if nothing is
+     * pending
+     */
+    @NotNull
+    public String pendingLabel() {
+        return this.hasPendingOutput() ? this.pendingLabel : "";
+    }
+
+    /** Drops whatever {@link #displayPaged(String, List)} still holds, unprinted. */
+    public void clearPendingOutput() {
+        synchronized (this.pendingOutput) {
+            this.pendingOutput.clear();
+            this.pendingLabel = "";
+        }
+    }
+
+    /**
+     * Removes and returns the first {@code count} pending lines. Callers hold the
+     * {@link #pendingOutput} monitor.
+     *
+     * @param count how many lines to take
+     * @return the taken lines, in order
+     */
+    private List<String> take(final int count) {
+
+        final List<String> taken = new ArrayList<>(count);
+        for (int index = 0; index < count && !this.pendingOutput.isEmpty(); index++) {
+            taken.add(this.pendingOutput.pollFirst());
+        }
+
+        return taken;
+    }
+
+    /**
+     * @return how many lines fit on one page - the window height less the prompt and the footer,
+     * and never less than five, so a tiny or unreported window still makes progress
+     */
+    private int pageSize() {
+        final int height = this.terminal.getHeight();
+        return Math.max(5, height - 3);
     }
 
     /** Prints a single blank line above the current input line. No-op once {@link #isActive()} is {@code false}. */

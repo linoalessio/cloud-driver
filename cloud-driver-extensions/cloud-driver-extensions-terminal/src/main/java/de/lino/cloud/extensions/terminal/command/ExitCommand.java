@@ -2,6 +2,7 @@ package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -25,6 +26,14 @@ public class ExitCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Shutdown the entire cloud system";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("exit", "Shut the whole cloud-driver process down")
+        );
     }
 
     /**

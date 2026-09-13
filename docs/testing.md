@@ -39,6 +39,7 @@ flowchart LR
   | `RestFactorySample`, `RestFactoryCloudUserSample` | `plugin` | Generic route mounting and the `/cloudUsers` routes |
   | `ChunkPatchSample` | `versioning` | Chunk manifests, `PATCH` reassembly, version delta chains |
   | `PostgresSearchIndexSample` | `search` | The `tsvector`/GIN index and its in-memory fallback |
+  | `CommandFlagSample` | `api` | Terminal command flags: positional/flag split, values, aliases |
 - The closest thing to an end-to-end smoke test is assembling a throwaway run directory by hand
   and starting the process from inside it — the layout a real deployment expects (the bootstrap
   jar plus a sibling `extensions/` folder holding the feature-module jars, and a `cloud-driver/`

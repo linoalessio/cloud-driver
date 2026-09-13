@@ -3,6 +3,7 @@ package de.lino.cloud.extensions.terminal.command.system;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
@@ -53,6 +54,14 @@ public class HardResetCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Clear the entire data set of the cloud driver (&c@not-recommended&7)";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("hardReset", "Wipe every entity - run twice within 5s to confirm")
+        );
     }
 
     /**

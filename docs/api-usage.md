@@ -503,9 +503,10 @@ code:
 
 | Command | Aliases | Purpose |
 |---|---|---|
-| `help` | `?`, `h` | List every registered command |
+| `help` / `help --description` / `help <command>` | `?`, `h` | List every registered command. The default listing is identifying metadata only — name, aliases, declared flags; `--description` adds each command's description, and naming one command prints everything known about it: its sub-command syntax and its flags |
 | `exit` | `quit`, `q` | Shut down the whole process (`CloudDriver#shutdown()`) |
 | `clear` | `clc` | Clear the terminal window |
+| `more` / `more all` / `more drop` | `m`, `next` | Print the next page of a command whose output did not fit on one screen (see "Paged output" below) |
 | `screen-leave` | `l`, `sl` | Detach the terminal session without killing the process |
 | `extensions` | `extension`, `ext` | List every registered extension and its status |
 | `dispatch` | `exec`, `sudo`, `d` | Run a system-level command through the terminal |
@@ -538,6 +539,77 @@ useful answer:
 | `scan` | `contentScan` | Content-scan visibility and on-demand rescans — scanning fails open, so files marked clean unscanned need a way to be revisited |
 | `mail` | `email` | Send a test message through whichever `EmailSender` the startup fallback actually selected (SES → SMTP → log-only) |
 | `s3` | `objectStorage` | Reconcile the bucket against the `StoredFile` rows that reference it and, on explicit confirmation, delete orphaned objects |
+
+### Flags
+
+Any command's arguments can carry flags — `--skip-task`, `-s`, `--limit=25`. They are parsed out
+of the line once, before `execute` runs, so a flag may be typed anywhere without shifting the
+positions a command reads: `command(0)`, `hasCommand(…)`, `hasLength(…)`, `length()`, `isEmpty()`
+and `join(…)` all address positional arguments only. `args()` still returns the raw line, flags
+included. A token counts as a flag when it starts with a dash followed by a letter, so a negative
+number (`-1`) stays an argument.
+
+```java
+// intelligence backfill jane@example.com --content
+public void execute(CommandArguments arguments) {
+    boolean includeContent = arguments.hasFlag("--content");   // dashes and case are ignored
+    int limit = arguments.flagAsInt("--limit", 20);            // also AsLong/AsDouble/AsBoolean
+    String target = arguments.hasLength(1) ? arguments.command(1) : "all";
+}
+```
+
+`hasFlag`/`flag`/`flagAs*` answer for any flag, declared or not. Declaring them through
+`Command#flags()` additionally gets them printed by `help`, suggested by tab completion (type a
+`-` and press tab), and — for a `CommandFlag.valued(…)` flag — lets the value be written
+space-separated (`--limit 25`) instead of only attached (`--limit=25`); undeclared flags only
+support the attached form, since `--limit 25` is otherwise indistinguishable from a switch
+followed by an argument. `arguments.unknownFlags()` lists the flags an operator typed that the
+command never declared, so a mistyped `--skiptask` can be reported instead of silently ignored.
+
+```java
+@Override
+public List<CommandFlag> flags() {
+    return List.of(
+            CommandFlag.of("--skip-task", "Skip the follow-up task").withAliases("-s"),
+            CommandFlag.valued("--limit", "How many rows to print"));
+}
+```
+
+### Usage
+
+A command declares each way it can be invoked through `Command#usages()`. That one declaration is
+both what the command prints back when it was called with arguments it does not understand
+(`this.sendUsage()`, which every command in the catalog now uses instead of its own hand-written
+syntax block) and what `help <command>` prints under `Usage:`.
+
+```java
+@Override
+public List<CommandUsage> usages() {
+    return List.of(
+            CommandUsage.of("backup status", "How the most recent backup went"),
+            CommandUsage.of("backup now", "Take a database backup right now"));
+}
+```
+
+### Paged output
+
+The console is a `jline` terminal, usually inside a detached `screen` session with little or no
+scrollback: output longer than the window is not scrolled back to, it is gone. Commands whose
+output has no fixed length therefore hand it to `Terminal#displayPaged(label, lines)` instead of
+printing it line by line. One screenful is printed, the rest waits, and a footer says how much:
+
+```
+- searchIndex query <email> <text...>          Run a keyword search as that account
+&8-- 43 more line(s) of 'help --description' - type more for the next page, more all for the rest --
+```
+
+`more` prints the next page, `more all` the remainder, `more drop` throws it away. The
+continuation is a command rather than a keypress on purpose: while a command runs, the terminal's
+reading thread is already blocked inside `jline` waiting for the next line, and a second reader on
+the same terminal would fight it for every keystroke. Queuing is per terminal — a second paged
+command replaces whatever the first one had left over, which is why the footer names the command
+the remainder belongs to. `help`, `help --description`, `cloudUser list` and `auditLog` use it
+today; any command that can print more lines than fit should.
 
 Registering your own command from a new extension:
 

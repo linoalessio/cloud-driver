@@ -2,6 +2,7 @@ package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.utility.Constraints;
 import org.jetbrains.annotations.NotNull;
 
@@ -26,6 +27,14 @@ public class ClearCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Clearing the terminal window";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("clear", "Clear the terminal window and reprint the banner")
+        );
     }
 
     /**

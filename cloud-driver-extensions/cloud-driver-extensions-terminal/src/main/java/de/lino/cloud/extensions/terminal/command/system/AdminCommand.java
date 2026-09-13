@@ -5,6 +5,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.extensions.terminal.command.CloudUserCommand;
 import org.jetbrains.annotations.NotNull;
 
@@ -36,13 +37,22 @@ public class AdminCommand implements Command {
         return "Grant or revoke admin privileges for an account";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("admin grant <email>", "Give one account admin privileges"),
+                CommandUsage.of("admin revoke <email>", "Take one account's admin privileges away")
+        );
+    }
+
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
         final Terminal terminal = this.terminal();
 
         if (!arguments.hasLength(1) || (!arguments.hasCommand(0, "grant") && !arguments.hasCommand(0, "revoke"))) {
-            this.sendHelp();
+            this.sendUsage();
             return;
         }
 
@@ -70,12 +80,6 @@ public class AdminCommand implements Command {
         } else {
             terminal.displayApproved("Account '&b%s&7' is &cno longer &7an admin", emailAddress);
         }
-    }
-
-    private void sendHelp() {
-        final Terminal terminal = this.terminal();
-        terminal.displayApproved("&fadmin grant <email>");
-        terminal.displayApproved("&fadmin revoke <email>");
     }
 
 }

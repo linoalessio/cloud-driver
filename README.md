@@ -146,7 +146,9 @@ names and content-derived search terms in plaintext (see
 - Streaming, keyset-paginated database backups with retention rotation
 - Optional Redis-backed multi-instance coordination: once-per-window scheduler locks and
   cross-instance pending-upload visibility, degrading to single-instance behavior without it
-- An interactive operator terminal with a diagnostics/operations command catalog
+- An interactive operator terminal with a diagnostics/operations command catalog, tab completion,
+  per-command flags (`--skip-task`, `--limit=25`), and paged output for listings longer than the
+  window
 - A plugin/extension framework for adding backend features without touching the core
 
 ### Clients

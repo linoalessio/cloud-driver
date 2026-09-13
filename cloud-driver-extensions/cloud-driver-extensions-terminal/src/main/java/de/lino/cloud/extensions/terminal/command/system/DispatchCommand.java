@@ -1,6 +1,7 @@
 package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
@@ -33,6 +34,14 @@ public class DispatchCommand implements Command {
         return "Dispatch a linux service through the system-terminal";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("dispatch <service> [args...]", "Run a system command from this terminal")
+        );
+    }
+
     /**
      * Runs {@code arguments} as a service (its first element is the executable, the rest its
      * arguments - exactly as the reading thread already split the input line), streaming
@@ -44,7 +53,7 @@ public class DispatchCommand implements Command {
     public void execute(@NotNull final CommandArguments arguments) {
 
         if (arguments.isEmpty()) {
-            this.terminal().displayApproved("&fdispatch <service> [args...]");
+            this.sendUsage();
             return;
         }
 

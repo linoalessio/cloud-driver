@@ -7,6 +7,7 @@ import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.SharedFileGrant;
 import de.lino.cloud.auth.entity.SharedFolderGrant;
@@ -78,6 +79,14 @@ public class ReloadCommand implements Command {
         return "Re-read one entity type from the database, discarding this process's cached mirror";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("reload <entityType>", "Re-read one entity type from the database")
+        );
+    }
+
     /**
      * Reloads the named entity type.
      *
@@ -121,7 +130,7 @@ public class ReloadCommand implements Command {
 
     /** Prints the valid entity types. */
     private void sendHelp(final Terminal terminal) {
-        terminal.displayApproved("&freload <entityType>");
+        this.sendUsage();
         terminal.displayApproved("&7Available: &f%s", String.join(", ",
                 RELOADABLE.values().stream().map(Class::getSimpleName).toList()));
     }

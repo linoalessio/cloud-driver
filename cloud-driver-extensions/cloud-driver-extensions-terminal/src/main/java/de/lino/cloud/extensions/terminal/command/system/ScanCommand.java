@@ -5,6 +5,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.scan.ContentScanService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
 import org.jetbrains.annotations.NotNull;
 
@@ -46,6 +47,16 @@ public class ScanCommand implements Command {
         return "Content scanning: engine reachability, flagged/pending files, and on-demand rescans";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("scan status", "Whether the scan engine is reachable"),
+                CommandUsage.of("scan list [flagged|pending]", "Files that were flagged, or never scanned"),
+                CommandUsage.of("scan rescan <fileId|all>", "Scan one file again, or every file")
+        );
+    }
+
     /**
      * Dispatches to {@code status} (the default), {@code list}, or {@code rescan}.
      *
@@ -78,9 +89,7 @@ public class ScanCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fscan status");
-        terminal.displayApproved("&fscan list [flagged|pending]");
-        terminal.displayApproved("&fscan rescan <fileId|all>");
+        this.sendUsage();
     }
 
     /** Reachability plus a count of every non-clean file. */

@@ -6,6 +6,7 @@ import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.auth.entity.RefreshToken;
 import org.jetbrains.annotations.NotNull;
 
@@ -57,6 +58,15 @@ public class SessionCommand implements Command {
         return "List an account's refresh tokens, or revoke all of them (forced sign-out)";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("session list <email>", "That account's refresh tokens, never their values"),
+                CommandUsage.of("session revoke <email>", "Revoke them all - signs the account out everywhere")
+        );
+    }
+
     /**
      * Dispatches to {@code list <email>} or {@code revoke <email>}.
      *
@@ -74,8 +84,7 @@ public class SessionCommand implements Command {
         }
 
         if (!arguments.hasLength(1)) {
-            terminal.displayApproved("&fsession list <email>");
-            terminal.displayApproved("&fsession revoke <email>");
+            this.sendUsage();
             return;
         }
 
@@ -98,8 +107,7 @@ public class SessionCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fsession list <email>");
-        terminal.displayApproved("&fsession revoke <email>");
+        this.sendUsage();
     }
 
     /** Prints one account's refresh tokens, without ever printing a token value. */

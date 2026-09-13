@@ -5,6 +5,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.UnitParser;
 import de.lino.cloud.api.versioning.FileVersioningService;
@@ -58,6 +59,15 @@ public class FileCommand implements Command {
         return "Inspect one file: owner, placement, storage mode, scan status, versions and shares";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("file <fileId>", "Everything known about one file"),
+                CommandUsage.of("file info <fileId>", "The same, written out explicitly")
+        );
+    }
+
     /**
      * Prints one file's full state.
      *
@@ -74,7 +84,7 @@ public class FileCommand implements Command {
         } else if (!arguments.isEmpty()) {
             storedFileId = arguments.command(0);
         } else {
-            terminal.displayApproved("&ffile info <fileId>");
+            this.sendUsage();
             return;
         }
 

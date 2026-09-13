@@ -4,6 +4,7 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -41,6 +42,15 @@ public class RateLimitCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Inspect rate-limit windows, and clear them for one caller or for everyone";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("rateLimit status", "The current rate-limit windows"),
+                CommandUsage.of("rateLimit reset [identity]", "Clear one caller's window (account id or IP), or all")
+        );
     }
 
     /**
@@ -89,8 +99,7 @@ public class RateLimitCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&frateLimit status");
-        terminal.displayApproved("&frateLimit reset [identity]   &8(identity = account id or IP; omit to clear everything)");
+        this.sendUsage();
     }
 
 }

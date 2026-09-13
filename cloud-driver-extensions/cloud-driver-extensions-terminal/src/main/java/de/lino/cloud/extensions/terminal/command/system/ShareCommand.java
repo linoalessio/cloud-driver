@@ -4,6 +4,7 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.auth.entity.PublicShareLink;
@@ -54,6 +55,15 @@ public class ShareCommand implements Command {
         return "Show what an account has shared with other accounts, and its public (unauthenticated) links";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("share list <email>", "What that account shared with other accounts"),
+                CommandUsage.of("share links [email]", "Its public links, or every public link on this deployment")
+        );
+    }
+
     /**
      * Dispatches to {@code list <email>} (the default form) or {@code links [email]}.
      *
@@ -74,8 +84,7 @@ public class ShareCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fshare list <email>");
-        terminal.displayApproved("&fshare links [email]   &8(omit the address for every public link on this deployment)");
+        this.sendUsage();
     }
 
     /** Lists every account-to-account grant one account has made. */

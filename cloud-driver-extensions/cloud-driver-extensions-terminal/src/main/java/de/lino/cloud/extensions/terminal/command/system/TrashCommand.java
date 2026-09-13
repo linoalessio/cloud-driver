@@ -5,6 +5,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.TrashedFileSummary;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.UnitParser;
@@ -56,6 +57,15 @@ public class TrashCommand implements Command {
         return "Show how much storage is held by trashed files, deployment-wide or per account";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("trash status", "How much storage trashed files still hold, deployment-wide"),
+                CommandUsage.of("trash list <email>", "One account's trashed files")
+        );
+    }
+
     /**
      * Dispatches to {@code status} (the default) or {@code list <email>}.
      *
@@ -76,8 +86,7 @@ public class TrashCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&ftrash status");
-        terminal.displayApproved("&ftrash list <email>");
+        this.sendUsage();
     }
 
     /** Sums trashed bytes across every account, and names the worst offender. */

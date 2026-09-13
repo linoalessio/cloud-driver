@@ -6,6 +6,7 @@ import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.UnitParser;
@@ -36,6 +37,14 @@ public class StatisticsCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Basic statistic information about the cloud driver";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("statistics", "Counts: accounts, files, uploaded bytes, uptime")
+        );
     }
 
     /**

@@ -44,7 +44,7 @@ public class CloudTerminalExtension extends Extension {
     public void onRunning(String[] args) {
 
         this.commandService.register(
-                new ExitCommand(), new HelpCommand(), new ClearCommand()
+                new ExitCommand(), new HelpCommand(), new MoreCommand(), new ClearCommand()
                 , new ExtensionCommand(), new StatisticsCommand(), new LeaveCommand()
                 , new DispatchCommand(), new CloudUserCommand(), new HardResetCommand()
                 , new AdminCommand(), new RecomputeStorageCommand(), new AuditLogCommand()

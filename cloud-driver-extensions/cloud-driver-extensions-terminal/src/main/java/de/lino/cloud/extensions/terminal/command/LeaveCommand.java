@@ -1,6 +1,7 @@
 package de.lino.cloud.extensions.terminal.command;
 
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -29,6 +30,14 @@ public class LeaveCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Detach the current screen session without killing it";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("screen-leave", "Detach the screen session, leaving the process running")
+        );
     }
 
     /**

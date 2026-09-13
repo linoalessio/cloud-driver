@@ -3,6 +3,7 @@ package de.lino.cloud.extensions.terminal.command;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.UnitParser;
@@ -38,13 +39,22 @@ public class RecomputeStorageCommand implements Command {
         return "Recompute an account's (or every account's) currentUploadedBytes from its actual owned files";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("recomputeStorage <email>", "Recount one account's used bytes from its files"),
+                CommandUsage.of("recomputeStorage all", "Recount every account's used bytes")
+        );
+    }
+
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
         final Terminal terminal = this.terminal();
 
         if (arguments.isEmpty()) {
-            this.sendHelp();
+            this.sendUsage();
             return;
         }
 
@@ -77,12 +87,6 @@ public class RecomputeStorageCommand implements Command {
         final long total = cloudUserService.recomputeUploadedBytes(cloudUser.get().getAuthUserId());
         terminal.displayApproved("Cloud user '&b%s&7' s3storage usage recomputed: &b%s",
                 cloudUser.get().getAuthUser().getEmailAddress(), UnitParser.parseByteUnit(total));
-    }
-
-    private void sendHelp() {
-        final Terminal terminal = this.terminal();
-        terminal.displayApproved("&frecomputeStorage <email>");
-        terminal.displayApproved("&frecomputeStorage all");
     }
 
 }

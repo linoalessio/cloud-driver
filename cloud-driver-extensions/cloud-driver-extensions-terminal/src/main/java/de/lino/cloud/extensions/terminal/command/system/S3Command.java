@@ -7,6 +7,7 @@ import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.utility.UnitParser;
 import org.jetbrains.annotations.NotNull;
 
@@ -73,6 +74,15 @@ public class S3Command implements Command {
     @Override
     public @NotNull String description() {
         return "Reconcile the S3 bucket against StoredFile rows, and purge orphaned objects";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("s3", "Compare the bucket against the file rows"),
+                CommandUsage.of("s3 purge", "Delete objects no file references - run twice to confirm")
+        );
     }
 
     /**

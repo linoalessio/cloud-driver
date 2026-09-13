@@ -7,6 +7,7 @@ import de.lino.cloud.api.security.keys.KeyEncryptionService;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.UnitParser;
 import de.lino.cloud.extensions.terminal.command.RecomputeStorageCommand;
@@ -89,6 +90,14 @@ public class MigrateToS3Command implements Command {
     @Override
     public @NotNull String description() {
         return "Migrates every not-yet-S3-backed StoredFile's content onto the configured S3 bucket";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("migrateToS3", "Move every not-yet-S3-backed file's content onto the bucket")
+        );
     }
 
     @Override

@@ -7,6 +7,7 @@ import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.search.SearchResult;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
@@ -52,6 +53,16 @@ public class SearchIndexCommand implements Command {
         return "Keyword search index: depth, rebuild from ownership rows, and run a query server-side";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("searchIndex status", "How deep the keyword index is"),
+                CommandUsage.of("searchIndex rebuild", "Rebuild the index from the ownership rows"),
+                CommandUsage.of("searchIndex query <email> <text...>", "Run a keyword search as that account")
+        );
+    }
+
     /**
      * Dispatches to {@code status} (the default), {@code rebuild}, or {@code query}.
      *
@@ -83,9 +94,7 @@ public class SearchIndexCommand implements Command {
             return;
         }
 
-        terminal.displayApproved("&fsearchIndex status");
-        terminal.displayApproved("&fsearchIndex rebuild");
-        terminal.displayApproved("&fsearchIndex query <email> <text...>");
+        this.sendUsage();
     }
 
     /** Prints how many documents the index actually holds. */
@@ -144,13 +153,9 @@ public class SearchIndexCommand implements Command {
             return;
         }
 
-        final StringBuilder query = new StringBuilder();
-        for (int index = 2; index < arguments.length(); index++) {
-            if (!query.isEmpty()) query.append(' ');
-            query.append(arguments.command(index));
-        }
+        final String query = arguments.join(2);
 
-        final List<SearchResult> results = searchIndexService.search(cloudUser.get().getAuthUserId(), query.toString(), 20);
+        final List<SearchResult> results = searchIndexService.search(cloudUser.get().getAuthUserId(), query, 20);
         terminal.emptyLine();
         terminal.displayApproved("Results for '&b%s&7': &b%s", query, results.size());
         results.forEach(result -> terminal.displayApproved("&8- &f%s &8(%s)", result.fileName(), result.storedFileId()));

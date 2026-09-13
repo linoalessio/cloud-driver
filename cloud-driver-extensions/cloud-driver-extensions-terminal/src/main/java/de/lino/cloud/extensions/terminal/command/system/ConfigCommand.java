@@ -3,6 +3,7 @@ package de.lino.cloud.extensions.terminal.command.system;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.plugin.security.secrets.SecretRedactor;
 import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
@@ -70,6 +71,14 @@ public class ConfigCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Print the effective configuration this process is running with, secrets redacted";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("config", "The configuration this process runs with, secrets redacted")
+        );
     }
 
     /**

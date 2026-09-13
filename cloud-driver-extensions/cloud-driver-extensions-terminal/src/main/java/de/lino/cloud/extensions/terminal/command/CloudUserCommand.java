@@ -5,11 +5,13 @@ import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.UnitParser;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -45,6 +47,18 @@ public class CloudUserCommand implements Command {
         return "Get information about a specific cloud user";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("cloudUser list", "Every account with its storage use"),
+                CommandUsage.of("cloudUser info <email>", "Everything known about one account"),
+                CommandUsage.of("cloudUser reset <email>", "Clear one account's files and storage counter"),
+                CommandUsage.of("cloudUser delete <email>", "Delete one account and everything it owns"),
+                CommandUsage.of("cloudUser limit <email> <bytes> <unit>", "Set the storage quota (unit: B, KB, MB, GB)")
+        );
+    }
+
     /**
      * Dispatches to one of {@code list}/{@code info}/{@code reset}/{@code delete}/{@code
      * limit} based on {@code arguments}' first token, printing a usage message if it is empty
@@ -56,7 +70,7 @@ public class CloudUserCommand implements Command {
     public void execute(@NotNull CommandArguments arguments) {
 
         if (arguments.isEmpty()) {
-            this.sendHelp();
+            this.sendUsage();
             return;
         }
 
@@ -65,14 +79,18 @@ public class CloudUserCommand implements Command {
 
         if (arguments.hasCommand(0, "list")) {
 
-            terminal.emptyLine();
-            terminal.displayApproved("Registered cloud users (&b%s&7): ", cloudUserService.getCloudUsers().size());
+            // One line per account, so on a real deployment this outgrows the window - paged,
+            // not printed straight through, or the first accounts scroll away unread.
+            final List<String> lines = new ArrayList<>();
+            lines.add(String.format("Registered cloud users (&b%s&7): ", cloudUserService.getCloudUsers().size()));
 
             cloudUserService.getCloudUsers().forEach(cloudUser -> {
                 final String totalStorage = UnitParser.parseByteUnit(cloudUser.getCurrentUploadedBytes());
-                terminal.displayApproved("&8- &7Email: &b%s &8| &7Uploaded files (&b%s&7): &b%s", cloudUser.getAuthUser().getEmailAddress(), totalStorage, cloudUser.getStoredFiles().size());
+                lines.add(String.format("&8- &7Email: &b%s &8| &7Uploaded files (&b%s&7): &b%s", cloudUser.getAuthUser().getEmailAddress(), totalStorage, cloudUser.getStoredFiles().size()));
             });
+
             terminal.emptyLine();
+            terminal.displayPaged("cloudUser list", lines);
 
             return;
         }
@@ -176,17 +194,9 @@ public class CloudUserCommand implements Command {
             return;
         }
 
-        this.sendHelp();
+        this.sendUsage();
 
 
-    }
-
-    /** Prints this command's usage syntax to the terminal. */
-    private void sendHelp() {
-        final Terminal terminal = this.terminal();
-        terminal.displayApproved("&fcloudUser list");
-        terminal.displayApproved("&fcloudUser limit <email> <bytes> <unit> &8(&7unit: &bB&7, &bKB&7, &bMB&7, &bGB&8)");
-        terminal.displayApproved("&fcloudUser <info:delete:reset> <email>");
     }
 
 }

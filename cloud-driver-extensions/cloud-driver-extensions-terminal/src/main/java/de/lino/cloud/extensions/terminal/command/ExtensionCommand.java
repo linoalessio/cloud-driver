@@ -9,6 +9,7 @@ import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -41,6 +42,17 @@ public class ExtensionCommand implements Command {
         return "Get a list of information about the extensions";
     }
 
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("extensions list", "Every loaded extension and its state"),
+                CommandUsage.of("extensions info <name>", "Details about one extension"),
+                CommandUsage.of("extensions start <name>", "Start one extension at runtime"),
+                CommandUsage.of("extensions stop <name>", "Stop one extension at runtime")
+        );
+    }
+
     /**
      * Dispatches to one of {@code list}/{@code info}/{@code start}/{@code stop} based on {@code
      * arguments}' first token, printing a usage message if it is empty or unrecognized: {@code
@@ -57,7 +69,7 @@ public class ExtensionCommand implements Command {
     public void execute(@NotNull final CommandArguments arguments) {
 
         if (arguments.isEmpty()) {
-            this.sendHelp();
+            this.sendUsage();
             return;
         }
 
@@ -141,14 +153,14 @@ public class ExtensionCommand implements Command {
                     CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extensionName));
                 }
                 default -> {
-                    this.sendHelp();
+                    this.sendUsage();
                 }
             }
 
             return;
         }
 
-        this.sendHelp();
+        this.sendUsage();
 
     }
 
@@ -165,14 +177,6 @@ public class ExtensionCommand implements Command {
             case ERROR -> "&c&lError&7";
             case ENDING -> "&cENDING&7";
         };
-    }
-
-    /** Prints this command's usage syntax to the terminal. */
-    private void sendHelp() {
-        final Terminal terminal = this.terminal();
-        terminal.displayApproved("&fextension list");
-        terminal.displayApproved("&fextension <info> <name>");
-        terminal.displayApproved("&fextension <start:stop> <name>");
     }
 
 }

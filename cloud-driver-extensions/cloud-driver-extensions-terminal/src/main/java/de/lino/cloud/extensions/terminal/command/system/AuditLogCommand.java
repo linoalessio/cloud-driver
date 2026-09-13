@@ -10,12 +10,14 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandUsage;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -45,6 +47,16 @@ public class AuditLogCommand implements Command {
     @Override
     public @NotNull String description() {
         return "Browse the persisted security audit trail (logins, registration, password/e-mail changes, file/account deletes)";
+    }
+
+    /** @return how this command is invoked */
+    @Override
+    public @NotNull List<CommandUsage> usages() {
+        return List.of(
+                CommandUsage.of("auditLog", "The most recent audit entries"),
+                CommandUsage.of("auditLog all", "The complete audit trail"),
+                CommandUsage.of("auditLog <email>", "Only that account's entries")
+        );
     }
 
     @Override
@@ -85,17 +97,20 @@ public class AuditLogCommand implements Command {
         }
 
         terminal.emptyLine();
-        terminal.displayApproved("Audit trail (&b%s&7 of &b%s&7 total entries):", toDisplay.size(), allEvents.size());
-        if (toDisplay.isEmpty()) terminal.displayApproved("&8(no matching entries)");
+        // 'auditLog all' is bounded only by how long the deployment has been running, so the
+        // trail is paged rather than flushed past the top of the window.
+        final List<String> lines = new ArrayList<>();
+        lines.add(String.format("Audit trail (&b%s&7 of &b%s&7 total entries):", toDisplay.size(), allEvents.size()));
+        if (toDisplay.isEmpty()) lines.add("&8(no matching entries)");
 
         for (final AuditEvent event : toDisplay) {
             final String timestamp = Instant.ofEpochMilli(event.getTimestampEpochMillis()).atZone(ZoneId.systemDefault()).format(TIMESTAMP_FORMAT);
             final String actor = event.getActorAuthUserId() == null ? "-" : this.resolveEmail(event.getActorAuthUserId());
             final String target = event.getTargetId() == null ? "-" : event.getTargetId();
-            terminal.displayApproved("&8- &7%s &8| &b%s &8| actor: &7%s &8| target: &7%s", timestamp, event.getAction(), actor, target);
+            lines.add(String.format("&8- &7%s &8| &b%s &8| actor: &7%s &8| target: &7%s", timestamp, event.getAction(), actor, target));
         }
 
-        terminal.emptyLine();
+        terminal.displayPaged("auditLog", lines);
 
     }
 
