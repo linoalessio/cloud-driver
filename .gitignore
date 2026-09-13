@@ -14,6 +14,7 @@ architecture/*.md
 
 homepage/*
 shell/release-and-package.sh
+shell/deploy-homepage.sh
 
 ### IntelliJ IDEA ###
 cloud-driver-bootstrap/dependency-reduced-pom.xml
