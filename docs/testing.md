@@ -89,6 +89,14 @@ pip install -e ".[dev]"
 pytest
 ```
 
+A handful of tests in both suites — the intelligence service's encrypted-store tests and the
+SDK's `DatabaseTokenStore` tests — additionally need the `lino-database-driver-*` packages (the
+Python edition of the external `database-driver-v2` repository, not on any package index yet;
+install them into the venv from that clone with
+`pip install -e <clone>/python/database-driver-api -e <clone>/python/database-driver-plugin`).
+Without them those tests **skip** rather than fail, which is also what CI does — the workflows
+install only the `dev` extra from public indexes.
+
 ## CI
 
 Five automated checks run on pushes/pull requests (see [deployment.md](deployment.md) for the

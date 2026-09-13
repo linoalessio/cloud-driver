@@ -98,7 +98,11 @@ ssh "$REMOTE_HOST" "find '$REMOTE_DIR' -maxdepth 2 -name '._*' -delete 2>/dev/nu
 
 # --- 4. build the venv and install ----------------------------------------------------------------
 # "embeddings" and "store" are the two optional extras that make this service actually do something
-# (see the README) - without them it starts, answers /health, and returns no results.
+# (see the README) - without them it starts, answers /health, and returns no results. A deployment
+# opting into vector at-rest encryption (CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY) additionally
+# needs the "encryption" and "driver" extras - the latter's lino-database-driver-* packages are on
+# no package index yet and must be pip-installed from the database-driver-v2 clone, which is why
+# this installer does not include them.
 log "Installing into $REMOTE_DIR/.venv (this pulls in PyTorch - several minutes on a first run)"
 ssh "$REMOTE_HOST" "
     set -e

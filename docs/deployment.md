@@ -84,7 +84,11 @@ The optional external processes (`clamd`, Redis, the Python intelligence service
 system services beside the JVM — none is deployed by the scripts above. The intelligence service
 ships its own systemd unit and idempotent installer under `cloud-driver-intelligence/deploy/`
 (run from a local checkout against the target server); `clamd` and Redis are installed through
-the host OS's own package manager and bound to loopback.
+the host OS's own package manager and bound to loopback. The installer installs the service with
+the `embeddings` and `store` extras; a deployment opting into vector at-rest encryption
+(`CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY`) additionally needs the `encryption` and `driver`
+extras — the latter's `lino-database-driver-*` packages are not on a package index yet and
+install from the `database-driver-v2` clone.
 
 ## Homepage (cloud-driver.de)
 

@@ -40,7 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 app = FastAPI(
     title="cloud-driver-intelligence",
     description="Semantic search over cloud-driver file content. Internal service - never expose publicly.",
-    version="1.0.6",
+    version="1.1.0",
 )
 
 #: The one store this process owns, built at import time so ``/health`` can report on it immediately.

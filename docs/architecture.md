@@ -62,7 +62,8 @@ Python). None of the three is required for `cloud-driver` to boot, and each has 
 counterpart that degrades rather than fails when it is absent.
 
 `cloud-driver-intelligence` additionally never touches Postgres — its only data store is its own
-vector store — and it is never permitted to decide who may see what. Every semantic search is
+vector store (encrypted at rest through the database-driver Python edition's SQLite backend when
+the operator opts in, Chroma otherwise) — and it is never permitted to decide who may see what. Every semantic search is
 two-staged on the Java side: a **pre-filter** offers the service only the file ids the caller
 currently has access to (resolved from authoritative ownership/sharing data), and a **post-check**
 re-validates every returned id against that same access check, treating the service's answer as

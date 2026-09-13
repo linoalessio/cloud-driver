@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloud-driver-client"
-version = "1.0.7"
+version = "1.0.8"
 description = "Full-coverage Python SDK for the cloud-driver REST/WebSocket API, for writing microservices against it."
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
@@ -21,6 +21,13 @@ dependencies = [
 keyring = ["keyring>=24"]
 # GET /ws/updates live-push support (LiveUpdateClient).
 live = ["websockets>=12"]
+# Session persistence through a database-driver section (DatabaseTokenStore), for services that
+# already run their state through the database-driver Python edition. Needs Python 3.11+. The
+# package is not on any index yet - install it from the database-driver-v2 clone first
+# (pip install -e <clone>/python/database-driver-api), after which this extra resolves locally.
+# Deliberately NOT part of dev below: CI installs from public indexes only, and the
+# DatabaseTokenStore tests skip themselves when the package is absent.
+driver = ["lino-database-driver-api>=0.1.0"]
 dev = ["pytest>=8", "respx>=0.21", "keyring>=24", "websockets>=12"]
 
 [tool.hatch.build.targets.wheel]

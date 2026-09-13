@@ -2,7 +2,9 @@
 
 A microservice usually has no interactive OS keychain session at all, so `InMemoryTokenStore` (no
 persistence - a fresh login every process start) is the default. `FileTokenStore`/`KeyringTokenStore`
-exist for a long-running worker process that should survive a restart without re-authenticating.
+exist for a long-running worker process that should survive a restart without re-authenticating,
+and `DatabaseTokenStore` for a service that already keeps its state in a database-driver section
+and wants its session in the same store rather than a separate file.
 """
 
 from __future__ import annotations
@@ -57,6 +59,11 @@ class FileTokenStore:
             data = json.loads(self._path.read_text("utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return None
+        if not isinstance(data, dict):
+            # Well-formed JSON that is not an object (a list, a bare string ...) is the same
+            # "no usable session" case as unparseable JSON, not a crash in the constructor of
+            # whatever client eagerly load()s this store.
+            return None
         access_token = data.get("access_token")
         refresh_token = data.get("refresh_token")
         if not access_token or not refresh_token:
@@ -68,6 +75,11 @@ class FileTokenStore:
         payload = json.dumps({"access_token": access_token, "refresh_token": refresh_token}).encode("utf-8")
         fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
         try:
+            if hasattr(os, "fchmod"):
+                # os.open's mode only applies on *creation* - a token file that already exists
+                # with looser permissions (restored from a backup, say) must be tightened too,
+                # or the class docstring's promise silently stops holding.
+                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
             os.write(fd, payload)
         finally:
             os.close(fd)
@@ -101,6 +113,9 @@ class KeyringTokenStore:
             data = json.loads(raw)
         except json.JSONDecodeError:
             return None
+        if not isinstance(data, dict):
+            # Same reasoning as FileTokenStore.load: a non-object payload is "no session".
+            return None
         access_token = data.get("access_token")
         refresh_token = data.get("refresh_token")
         if not access_token or not refresh_token:
@@ -124,3 +139,70 @@ class KeyringTokenStore:
             keyring.delete_password(self._service_name, self._username)
         except PasswordDeleteError:
             pass
+
+
+class DatabaseTokenStore:
+    """Backed by a `DatabaseSection` of the database-driver Python edition (the
+    `lino-database-driver-*` packages) - for a service that already runs its state through that
+    driver and wants its cloud-driver session in the same store, whichever backend that is (the
+    JSON file store, SQLite, Redis, Postgres, ...), instead of a second, separate token file.
+
+    The section is *handed in*, never opened here: which database holds the session - its
+    credentials, cache mode and lifecycle - stays the owning application's decision, exactly like
+    every other section that application manages. Requires the `driver` extra
+    (`pip install cloud-driver-client[driver]`, Python 3.11+; while the driver packages are not
+    on an index yet, install them from the database-driver-v2 clone first).
+
+    The session is one entry - id `"session"` unless overridden, which several clients sharing
+    one section should do - shaped `{"data": {"accessToken": ..., "refreshToken": ...}}`, the
+    camelCase document convention the driver ecosystem uses throughout.
+
+    Choose the backing store deliberately: a refresh token is a credential, and unlike
+    `FileTokenStore`'s 0600-restricted file, the entry's protection here is exactly whatever the
+    chosen backend provides.
+    """
+
+    def __init__(self, section, entry_id: str = "session") -> None:  # noqa: ANN001 - driver types are an optional extra
+        try:
+            import database_driver.api  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
+            raise ImportError(
+                "DatabaseTokenStore requires the 'driver' extra: pip install cloud-driver-client[driver] "
+                "(the lino-database-driver packages are not on an index yet - install them from the "
+                "database-driver-v2 clone first)"
+            ) from exc
+        self._section = section
+        self._entry_id = entry_id
+
+    def load(self) -> tuple[str, str] | None:
+        entry = self._section.find_entry_by_id(self._entry_id)
+        if entry is None:
+            return None
+        data = entry.get_meta_data()
+        if data is None:
+            return None
+        access_token = data.get("accessToken")
+        refresh_token = data.get("refreshToken")
+        if not access_token or not refresh_token:
+            return None
+        return access_token, refresh_token
+
+    def save(self, access_token: str, refresh_token: str) -> None:
+        from database_driver.api import DatabaseEntry, JsonDocument
+
+        entry = DatabaseEntry(
+            self._entry_id,
+            JsonDocument("data", {"accessToken": access_token, "refreshToken": refresh_token}),
+        )
+        # The driver's sections split insert/update rather than exposing one upsert; the check
+        # is not atomic, but a single client owns its session entry, so no two writers race it.
+        if self._section.exists(self._entry_id):
+            self._section.update(entry)
+        else:
+            self._section.insert(entry)
+
+    def clear(self) -> None:
+        # delete() raises on a missing entry (the driver's NoSuchEntryFound contract); clearing
+        # an already-empty session must stay a no-op like every other TokenStore's clear.
+        if self._section.exists(self._entry_id):
+            self._section.delete(self._entry_id)

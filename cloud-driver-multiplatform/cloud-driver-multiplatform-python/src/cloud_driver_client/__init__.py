@@ -25,7 +25,7 @@ from .exceptions import (
     UnauthorizedError,
 )
 from .live_updates import LiveUpdateClient
-from .token_store import FileTokenStore, InMemoryTokenStore, KeyringTokenStore, TokenStore
+from .token_store import DatabaseTokenStore, FileTokenStore, InMemoryTokenStore, KeyringTokenStore, TokenStore
 
 __all__ = [
     "CloudDriverClient",
@@ -35,6 +35,7 @@ __all__ = [
     "InMemoryTokenStore",
     "FileTokenStore",
     "KeyringTokenStore",
+    "DatabaseTokenStore",
     "ApiException",
     "BadRequestError",
     "UnauthorizedError",
@@ -47,4 +48,4 @@ __all__ = [
     "ServiceUnavailableError",
 ]
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"

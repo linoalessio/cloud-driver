@@ -17,7 +17,12 @@ from fastapi.testclient import TestClient
 
 from cloud_driver_intelligence import app as app_module
 from cloud_driver_intelligence.config import settings
-from cloud_driver_intelligence.store import KIND_IMAGE, KIND_TEXT, InMemoryVectorStore, SqliteVectorStore
+from cloud_driver_intelligence.store import (
+    KIND_IMAGE,
+    KIND_TEXT,
+    DatabaseDriverVectorStore,
+    InMemoryVectorStore,
+)
 
 SECRET = "test-secret"
 AUTH = {"X-Internal-Secret": SECRET}
@@ -106,13 +111,15 @@ class _JsonCipher:
         return json.loads(blob.decode())
 
 
-def test_sqlite_migration_backfills_legacy_rows_with_the_current_model(tmp_path, monkeypatch):
-    """A store created before ``model_id`` existed migrates on open, Option-A-backfilled."""
+def test_legacy_sqlite_migration_backfills_rows_with_the_current_model(tmp_path, monkeypatch):
+    """A hand-rolled pre-``model_id`` ``vectors.sqlite3`` migrates into the driver store on open,
+    Option-A-backfilled, and is renamed so the migration never re-runs."""
+    pytest.importorskip("database_driver.plugin")
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     monkeypatch.setattr(settings, "embedding_model", "configured-text-model")
     monkeypatch.setattr(settings, "clip_model", "configured-clip-model")
 
-    # Hand-construct the pre-model_id schema with one legacy row per modality.
+    # Hand-construct the pre-model_id legacy schema with one legacy row per modality.
     database_path = tmp_path / "vectors.sqlite3"
     connection = sqlite3.connect(str(database_path))
     connection.execute(
@@ -138,29 +145,34 @@ def test_sqlite_migration_backfills_legacy_rows_with_the_current_model(tmp_path,
     connection.commit()
     connection.close()
 
-    store = SqliteVectorStore.try_create(cipher)
+    store = DatabaseDriverVectorStore.try_create(cipher)
     assert store is not None
 
-    # The column exists and each legacy row landed on its modality's configured model.
+    # Each legacy row landed in the driver store stamped with its modality's configured model.
     assert store.vectors_for(["legacy-file"], "configured-text-model", KIND_TEXT) == {"legacy-file": [1.0, 0.0]}
     assert store.vectors_for(["legacy-file"], "configured-clip-model", KIND_IMAGE) == {"legacy-file": [0.0, 1.0]}
     assert store.count_stale("configured-text-model", KIND_TEXT) == 0
 
-    # Under any *other* model id, the legacy row is invisible and counted stale.
+    # Under any *other* model id, the migrated row is invisible and counted stale.
     assert store.vectors_for(["legacy-file"], "some-new-model", KIND_TEXT) == {}
     assert store.count_stale("some-new-model", KIND_TEXT) == 1
 
+    # The legacy file was renamed, so the migration can never run twice.
+    assert not database_path.exists()
+    assert (tmp_path / "vectors.sqlite3.migrated").exists()
 
-def test_sqlite_migration_is_idempotent(tmp_path, monkeypatch):
+
+def test_reopening_the_store_preserves_rows_and_does_not_remigrate(tmp_path, monkeypatch):
+    pytest.importorskip("database_driver.plugin")
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     cipher = _JsonCipher()
 
-    first = SqliteVectorStore.try_create(cipher)
+    first = DatabaseDriverVectorStore.try_create(cipher)
     assert first is not None
     first.upsert("file-1", "user-1", [1.0], "model-x", KIND_TEXT)
 
-    # Re-opening (a process restart) must not disturb an already-stamped row.
-    second = SqliteVectorStore.try_create(cipher)
+    # Re-opening (a process restart) must not disturb an already-written row.
+    second = DatabaseDriverVectorStore.try_create(cipher)
     assert second is not None
     assert second.vectors_for(["file-1"], "model-x", KIND_TEXT) == {"file-1": [1.0]}
     assert second.count_stale("model-x", KIND_TEXT) == 0

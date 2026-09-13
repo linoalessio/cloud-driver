@@ -328,49 +328,55 @@ def test_a_non_base64_key_is_rejected():
         VectorCipher.from_base64("not base64 !!!")
 
 
-def test_encrypted_sqlite_store_round_trips_and_persists(tmp_path, monkeypatch):
+def test_encrypted_store_round_trips_and_persists(tmp_path, monkeypatch):
     pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.plugin")
     from cloud_driver_intelligence.crypto import VectorCipher
-    from cloud_driver_intelligence.store import SqliteVectorStore
+    from cloud_driver_intelligence.store import DatabaseDriverVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     cipher = VectorCipher(b"\x06" * 32)
 
-    store = SqliteVectorStore.try_create(cipher)
+    store = DatabaseDriverVectorStore.try_create(cipher)
     assert store is not None
     store.upsert("f1", "user-1", [0.5, 0.5, 0.0], "model-x")
     assert store.count() == 1
 
     # A *second* store over the same directory is the actual restart path this exists for.
-    reopened = SqliteVectorStore.try_create(cipher)
+    reopened = DatabaseDriverVectorStore.try_create(cipher)
     assert reopened is not None
     assert reopened.vectors_for(["f1"], "model-x")["f1"] == pytest.approx([0.5, 0.5, 0.0], abs=1e-6)
 
 
-def test_encrypted_sqlite_store_writes_no_plaintext_vector_to_disk(tmp_path, monkeypatch):
-    """The whole point: the bytes on disk must not be the vector."""
+def test_encrypted_store_writes_no_plaintext_vector_to_disk(tmp_path, monkeypatch):
+    """The whole point: the bytes on disk must not be the vector - in *any* file the store
+    writes, not just the database file itself."""
     pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.plugin")
     from cloud_driver_intelligence.crypto import VectorCipher
-    from cloud_driver_intelligence.store import SqliteVectorStore
+    from cloud_driver_intelligence.store import DatabaseDriverVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
     vector = [0.5, -0.25, 0.125]
-    store = SqliteVectorStore.try_create(VectorCipher(b"\x07" * 32))
+    store = DatabaseDriverVectorStore.try_create(VectorCipher(b"\x07" * 32))
     store.upsert("f1", "user-1", vector, "model-x")
 
-    on_disk = (tmp_path / "vectors.sqlite3").read_bytes()
-    assert struct.pack("<3f", *vector) not in on_disk
+    written = [path for path in tmp_path.rglob("*") if path.is_file()]
+    assert written, "the store wrote nothing to disk"
+    for path in written:
+        assert struct.pack("<3f", *vector) not in path.read_bytes()
 
 
 def test_a_vector_written_under_another_key_is_skipped_not_returned(tmp_path, monkeypatch):
     pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.plugin")
     from cloud_driver_intelligence.crypto import VectorCipher
-    from cloud_driver_intelligence.store import SqliteVectorStore
+    from cloud_driver_intelligence.store import DatabaseDriverVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
-    SqliteVectorStore.try_create(VectorCipher(b"\x08" * 32)).upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x")
+    DatabaseDriverVectorStore.try_create(VectorCipher(b"\x08" * 32)).upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x")
 
-    other = SqliteVectorStore.try_create(VectorCipher(b"\x09" * 32))
+    other = DatabaseDriverVectorStore.try_create(VectorCipher(b"\x09" * 32))
     assert other.vectors_for(["f1"], "model-x") == {}
 
 
@@ -385,13 +391,46 @@ def test_a_broken_encryption_key_falls_back_to_memory_never_to_plaintext_persist
     assert store.persistent is False
 
 
-def test_sqlite_store_deletes_every_modality(tmp_path, monkeypatch):
+def test_a_missing_storage_layer_falls_back_to_memory_never_to_plaintext_persistence(monkeypatch):
+    """Same fail-closed posture when the lino-database-driver packages (the 'driver' extra) are
+    not installed while a key is configured: no persistence rather than any unencrypted path."""
     pytest.importorskip("cryptography")
+    from cloud_driver_intelligence import store as store_module
+
+    monkeypatch.setattr(settings, "encryption_key", base64.b64encode(b"\x0c" * 32).decode("ascii"))
+    monkeypatch.setattr(store_module, "_DRIVER_IMPORT_ERROR", ImportError("simulated missing extra"))
+    store = store_module.create_store()
+    assert isinstance(store, store_module.InMemoryVectorStore)
+    assert store.persistent is False
+
+
+def test_a_missing_plugin_package_falls_back_to_memory_never_to_a_crash(monkeypatch):
+    """The api package alone can be importable while the plugin distribution is absent (other
+    consumers' 'driver' extras install just the api) - that state must fail closed too, never
+    crash create_store, which runs at service import time."""
+    pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.api")
+    import sys
+
+    from cloud_driver_intelligence import store as store_module
+
+    monkeypatch.setattr(settings, "encryption_key", base64.b64encode(b"\x0d" * 32).decode("ascii"))
+    monkeypatch.setitem(
+        sys.modules, "database_driver.plugin.database.sql.sqlite.sqlite_database_provider", None
+    )
+    store = store_module.create_store()
+    assert isinstance(store, store_module.InMemoryVectorStore)
+    assert store.persistent is False
+
+
+def test_driver_store_deletes_every_modality(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.plugin")
     from cloud_driver_intelligence.crypto import VectorCipher
-    from cloud_driver_intelligence.store import SqliteVectorStore
+    from cloud_driver_intelligence.store import DatabaseDriverVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
-    store = SqliteVectorStore.try_create(VectorCipher(b"\x0a" * 32))
+    store = DatabaseDriverVectorStore.try_create(VectorCipher(b"\x0a" * 32))
     store.upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x", KIND_TEXT)
     store.upsert("f1", "user-1", [0.0, 1.0, 0.0], "model-x", KIND_IMAGE)
 
@@ -400,16 +439,20 @@ def test_sqlite_store_deletes_every_modality(tmp_path, monkeypatch):
     assert store.vectors_for(["f1"], "model-x", KIND_IMAGE) == {}
 
 
-def test_sqlite_store_updates_owner_across_modalities(tmp_path, monkeypatch):
+def test_driver_store_updates_owner_across_modalities(tmp_path, monkeypatch):
     pytest.importorskip("cryptography")
+    pytest.importorskip("database_driver.plugin")
     from cloud_driver_intelligence.crypto import VectorCipher
-    from cloud_driver_intelligence.store import SqliteVectorStore
+    from cloud_driver_intelligence.store import DatabaseDriverVectorStore
 
     monkeypatch.setattr(settings, "store_path", str(tmp_path))
-    store = SqliteVectorStore.try_create(VectorCipher(b"\x0b" * 32))
+    store = DatabaseDriverVectorStore.try_create(VectorCipher(b"\x0b" * 32))
     store.upsert("f1", "user-1", [1.0, 0.0, 0.0], "model-x", KIND_TEXT)
     store.upsert("f1", "user-1", [0.0, 1.0, 0.0], "model-x", KIND_IMAGE)
 
     store.update_owner("f1", "user-2")
-    rows = store._connection.execute("SELECT DISTINCT owner_user_id FROM vectors WHERE file_id = 'f1'").fetchall()
-    assert rows == [("user-2",)]
+    owners = {
+        store._section.find_entry_by_id(f"{kind}:f1").get_meta_data().get_string("ownerUserId")
+        for kind in (KIND_TEXT, KIND_IMAGE)
+    }
+    assert owners == {"user-2"}
