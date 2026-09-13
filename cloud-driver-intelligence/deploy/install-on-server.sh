@@ -31,6 +31,18 @@ ENV_FILE="/etc/cloud-driver-intelligence.env"
 UNIT_NAME="cloud-driver-intelligence.service"
 LOCAL_CONFIG="$REPO_ROOT/cloud-driver/configuration.json"
 
+# --enable-encryption is the one-time opt-in into vector at-rest encryption: it generates the
+# key on the server if (and only if) none exists yet. Everything else the encrypted store needs
+# (the vendored driver packages, the encryption extra, key preservation across redeploys) is
+# part of every run, flag or not.
+ENABLE_ENCRYPTION=0
+for argument in "$@"; do
+    case "$argument" in
+        --enable-encryption) ENABLE_ENCRYPTION=1 ;;
+        *) printf '\033[1;31mERROR:\033[0m unknown argument: %s (the only flag is --enable-encryption)\n' "$argument" >&2; exit 1 ;;
+    esac
+done
+
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -96,13 +108,34 @@ COPYFILE_DISABLE=1 tar --no-xattrs -czf - -C "$MODULE_DIR" \
     | ssh "$REMOTE_HOST" "tar xzf - -C '$REMOTE_DIR'"
 ssh "$REMOTE_HOST" "find '$REMOTE_DIR' -maxdepth 2 -name '._*' -delete 2>/dev/null || true"
 
+# --- 3b. vendor the database-driver Python packages ------------------------------------------------
+# The encrypted vector store is built on the lino-database-driver packages, which are on no
+# package index yet - they come from the database-driver-v2 clone expected to sit next to this
+# repository. Mirrored on every run (like src/) so the server tracks the clone; when the clone
+# is missing locally, an existing remote vendor/ is left as-is and step 4 keeps reinstalling it,
+# so a machine without the clone can still redeploy the service.
+DRIVER_REPO="${DRIVER_REPO:-$REPO_ROOT/../database-driver-v2}"
+if [ -d "$DRIVER_REPO/python/database-driver-api" ]; then
+    log "Uploading database-driver packages from $DRIVER_REPO to $REMOTE_DIR/vendor"
+    ssh "$REMOTE_HOST" "rm -rf '$REMOTE_DIR/vendor' && mkdir -p '$REMOTE_DIR/vendor'"
+    COPYFILE_DISABLE=1 tar --no-xattrs -czf - -C "$DRIVER_REPO/python" \
+        --exclude '__pycache__' --exclude '.pytest_cache' --exclude '*.egg-info' --exclude '._*' \
+        --exclude '.mypy_cache' --exclude '.ruff_cache' --exclude 'tests' \
+        database-driver-api database-driver-plugin \
+        | ssh "$REMOTE_HOST" "tar xzf - -C '$REMOTE_DIR/vendor'"
+    ssh "$REMOTE_HOST" "find '$REMOTE_DIR/vendor' -name '._*' -delete 2>/dev/null || true"
+else
+    log "database-driver-v2 clone not found at $DRIVER_REPO - leaving any existing vendor/ on the server as-is"
+fi
+
 # --- 4. build the venv and install ----------------------------------------------------------------
 # "embeddings" and "store" are the two optional extras that make this service actually do something
 # (see the README) - without them it starts, answers /health, and returns no results. A deployment
 # opting into vector at-rest encryption (CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY) additionally
-# needs the "encryption" and "driver" extras - the latter's lino-database-driver-* packages are on
-# no package index yet and must be pip-installed from the database-driver-v2 clone, which is why
-# this installer does not include them.
+# needs the "encryption" extra and the lino-database-driver-* packages, mirrored into
+# $REMOTE_DIR/vendor/ by step 3b above: whenever that directory exists the install below
+# (re)installs them plus the encryption extra - so neither a redeploy nor a venv rebuild can
+# silently drop the encrypted store back to unencrypted persistence.
 log "Installing into $REMOTE_DIR/.venv (this pulls in PyTorch - several minutes on a first run)"
 ssh "$REMOTE_HOST" "
     set -e
@@ -113,15 +146,45 @@ ssh "$REMOTE_HOST" "
     [ -x .venv/bin/pip ] || { rm -rf .venv; python3 -m venv .venv; }
     ./.venv/bin/pip install --quiet --upgrade pip
     ./.venv/bin/pip install --quiet -e '.[embeddings,store]'
+    if [ -d vendor ]; then
+        ./.venv/bin/pip install --quiet vendor/*/
+        ./.venv/bin/pip install --quiet -e '.[encryption]'
+    fi
     ./.venv/bin/python -c 'import cloud_driver_intelligence; print(\"  package import OK\")'
 "
 
 # --- 5. env file + unit ---------------------------------------------------------------------------
 log "Writing $ENV_FILE (root-owned, 0600)"
 # Passed over stdin rather than as an argument so the secret never appears in the remote process
-# list or in this shell's own history.
+# list or in this shell's own history. Every other line of an existing env file is preserved:
+# the file also carries settings this script does not manage - above all
+# CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY, whose loss would silently drop the service from the
+# encrypted store back to unencrypted persistence on the next restart. Assembled in a 0600
+# temp file rather than piped straight into install, which would truncate the file while it is
+# still being read back.
 printf 'CLOUD_DRIVER_INTELLIGENCE_SECRET=%s\n' "$SECRET" \
-    | ssh "$REMOTE_HOST" "install -m 600 /dev/stdin '$ENV_FILE'"
+    | ssh "$REMOTE_HOST" "
+        tmp=\$(mktemp)
+        cat > \"\$tmp\"
+        [ -f '$ENV_FILE' ] && grep -v '^CLOUD_DRIVER_INTELLIGENCE_SECRET=' '$ENV_FILE' >> \"\$tmp\" || true
+        install -m 600 \"\$tmp\" '$ENV_FILE'
+        rm -f \"\$tmp\"
+    "
+
+# --- 5b. encryption key (opt-in) -------------------------------------------------------------------
+if [ "$ENABLE_ENCRYPTION" = 1 ]; then
+    # Generated on the server so the key never travels, appended only when absent - re-running
+    # with the flag never rotates a key that live ciphertext already depends on.
+    log "Ensuring an at-rest encryption key in $ENV_FILE"
+    ssh "$REMOTE_HOST" "
+        if grep -q '^CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY=' '$ENV_FILE' 2>/dev/null; then
+            echo '  key already present - leaving it untouched'
+        else
+            printf 'CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY=%s\n' \"\$(openssl rand -base64 32)\" >> '$ENV_FILE'
+            echo '  key generated and appended'
+        fi
+    "
+fi
 
 log "Installing $UNIT_NAME"
 scp -q "$SCRIPT_DIR/$UNIT_NAME" "$REMOTE_HOST:/etc/systemd/system/$UNIT_NAME"
@@ -144,6 +207,21 @@ ssh "$REMOTE_HOST" '
     echo "service did not answer /health within 60s - check: journalctl -u cloud-driver-intelligence -n 50" >&2
     exit 1
 '
+
+if [ "$ENABLE_ENCRYPTION" = 1 ]; then
+    cat <<'ENC'
+
+At-rest encryption is active (/health above should report "encryptedStore":true). A freshly
+encrypted store starts EMPTY - re-index everything from the operator terminal (screen session
+`cloud` on this server):
+
+    intelligence backfill all --content
+
+Once /health reports the documents back, delete the old plaintext Chroma files under
+/var/lib/cloud-driver-intelligence/chroma (chroma.sqlite3 + the UUID directories) - they are the
+unencrypted store this switch replaces.
+ENC
+fi
 
 log "Done."
 cat <<'NEXT'

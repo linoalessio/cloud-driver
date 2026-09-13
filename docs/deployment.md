@@ -85,10 +85,15 @@ system services beside the JVM — none is deployed by the scripts above. The in
 ships its own systemd unit and idempotent installer under `cloud-driver-intelligence/deploy/`
 (run from a local checkout against the target server); `clamd` and Redis are installed through
 the host OS's own package manager and bound to loopback. The installer installs the service with
-the `embeddings` and `store` extras; a deployment opting into vector at-rest encryption
-(`CLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY`) additionally needs the `encryption` and `driver`
-extras — the latter's `lino-database-driver-*` packages are not on a package index yet and
-install from the `database-driver-v2` clone.
+the `embeddings` and `store` extras, mirrors the `lino-database-driver-*` packages from the
+sibling `database-driver-v2` clone into `/opt/cloud-driver-intelligence/vendor/` (they are on no
+package index yet), and — whenever that vendor directory exists — (re)installs them plus the
+`encryption` extra on every run, so redeploys can never silently drop the encrypted store.
+Vector at-rest encryption is enabled once with `install-on-server.sh --enable-encryption`: the
+key is generated server-side, appended to the root-owned env file (every later redeploy
+preserves it), and the freshly encrypted store starts empty — re-index with
+`intelligence backfill all --content` from the operator terminal, then delete the old plaintext
+Chroma files under the store directory.
 
 ## Homepage (cloud-driver.de)
 
