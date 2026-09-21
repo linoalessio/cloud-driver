@@ -58,4 +58,59 @@ final class DefaultThumbnailService implements ThumbnailService {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Walks every {@link ThumbnailSize}, dropping the thumbnail's own {@code StoredFile} before
+     * its {@link FileThumbnail} row, so a failure part-way through leaves a row pointing at
+     * nothing (regenerable) rather than content nothing points at (unreachable forever).
+     */
+    @Override
+    public int invalidateThumbnails(@NonNull final String storedFileId) {
+        int removed = 0;
+        for (final ThumbnailSize size : ThumbnailSize.values()) {
+            final String key = FileThumbnail.compositeKey(storedFileId, size.name());
+            final Optional<FileThumbnail> thumbnail;
+            try {
+                thumbnail = this.dataFactory.findById(key, FileThumbnail.class);
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException lookupFailed) {
+                this.logger.log(Level.WARNING,
+                        "@DefaultThumbnailService.invalidateThumbnails: failed to look up the " + size + " thumbnail of '" + storedFileId + "'",
+                        lookupFailed);
+                continue;
+            }
+            if (thumbnail.isEmpty()) {
+                continue;
+            }
+            try {
+                this.fileFactory.delete(thumbnail.get().getThumbnailFileId());
+            } catch (final DatabaseClientException | RuntimeException alreadyGoneOrOther) {
+                // Drop the row regardless: a thumbnail row pointing at missing content is simply
+                // regenerated, where a surviving row would suppress regeneration forever.
+            }
+            try {
+                this.dataFactory.delete(key, FileThumbnail.class);
+                removed++;
+            } catch (final DatabaseClientException | RuntimeException alreadyGone) {
+                // nothing left to do
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Drops the whole {@link FileThumbnail} section in one call, rather than walking it - a wipe
+     * is not a per-row operation, and this runs while everything else is being torn down too.
+     */
+    @Override
+    public void clearAllData() {
+        try {
+            this.dataFactory.deleteSection(FileThumbnail.class);
+        } catch (final RuntimeException wipeFailed) {
+            this.logger.log(Level.WARNING, "Failed to clear the stored thumbnails", wipeFailed);
+        }
+    }
+
 }

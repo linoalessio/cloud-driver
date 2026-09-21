@@ -2,6 +2,7 @@ package de.lino.cloud.auth.pending;
 
 import de.lino.cloud.api.file.PresignedUploadTicket;
 import de.lino.cloud.auth.CloudUserService;
+import de.lino.cloud.api.factory.SecondaryIndexed;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -36,7 +37,27 @@ import java.util.Objects;
  */
 @Getter @ToString
 @EqualsAndHashCode(callSuper = false)
-public final class PendingPresignedUpload extends Serialized {
+public final class PendingPresignedUpload extends Serialized implements SecondaryIndexed {
+
+    /**
+     * Secondary-index name for lookups by {@link #getAuthUserId()} - how the account's open
+     * sessions are counted (concurrency cap) and summed (quota reservation) without a full scan
+     * over every pending upload in the deployment.
+     */
+    public static final String INDEX_AUTH_USER_ID = "authUserId";
+
+    /**
+     * {@inheritDoc} Hand-declared, never reflective. Defensive against {@code null} fields, since
+     * Gson rehydration bypasses the constructor's own null checks.
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        final java.util.Map<String, String> keys = new java.util.HashMap<>(1);
+        if (this.authUserId != null) keys.put(INDEX_AUTH_USER_ID, this.authUserId);
+        return keys;
+    }
+
 
     /** The {@link PresignedUploadTicket#fileId()} this ticket was issued under; also this entity's primary key and the object's own S3 key. */
     private final String fileId;
@@ -80,6 +101,42 @@ public final class PendingPresignedUpload extends Serialized {
     private final String multipartUploadId;
 
     /**
+     * When this row was last touched by its client (epoch millis) - refreshed by every part
+     * presign and every status poll on a resumable session.
+     *
+     * <p>A session's retention is measured from this, not from {@link #createdAtEpochMillis}: a
+     * multi-hour upload over a slow link is still alive, and ageing it out from its start time
+     * discards every part already stored - defeating exactly the crash-resume the feature exists
+     * for. A single-{@code PUT} ticket has no activity to speak of and keeps ageing from creation.
+     *
+     * <p>{@code 0} for rows written before this field existed; readers must fall back to {@link
+     * #createdAtEpochMillis} (see {@link #lastActivityOrCreatedAtEpochMillis()}).
+     */
+    private final long lastActivityAtEpochMillis;
+
+    /**
+     * This row's effective activity stamp, tolerating rows written before that field existed.
+     *
+     * @return {@link #lastActivityAtEpochMillis}, or {@link #createdAtEpochMillis} when it is unset
+     */
+    public long lastActivityOrCreatedAtEpochMillis() {
+        return this.lastActivityAtEpochMillis > 0 ? this.lastActivityAtEpochMillis : this.createdAtEpochMillis;
+    }
+
+    /**
+     * A copy of this row with its activity stamp moved to {@code atEpochMillis} - how a live
+     * session defers the purge sweep.
+     *
+     * @param atEpochMillis the new activity stamp, in epoch millis
+     * @return a copy carrying the new stamp; every other field is unchanged
+     */
+    @NotNull
+    public PendingPresignedUpload withLastActivityAt(final long atEpochMillis) {
+        return new PendingPresignedUpload(this.fileId, this.authUserId, this.createdAtEpochMillis,
+                this.contentKeyHeaderBase64, this.declaredSizeBytes, this.multipartUploadId, atEpochMillis);
+    }
+
+    /**
      * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}, also this entity's {@link #primaryKey()}
      * @param authUserId the account this ticket was issued to
      * @param createdAtEpochMillis when this ticket was issued (epoch millis)
@@ -90,12 +147,31 @@ public final class PendingPresignedUpload extends Serialized {
     public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
                                    @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes,
                                    @Nullable final String multipartUploadId) {
+        this(fileId, authUserId, createdAtEpochMillis, contentKeyHeaderBase64, declaredSizeBytes, multipartUploadId, createdAtEpochMillis);
+    }
+
+    /**
+     * The full constructor, carrying an explicit activity stamp - used by {@link
+     * #withLastActivityAt} and by Gson rehydration.
+     *
+     * @param fileId the ticket's {@link PresignedUploadTicket#fileId()}, also this entity's {@link #primaryKey()}
+     * @param authUserId the account this ticket was issued to
+     * @param createdAtEpochMillis when this ticket was issued (epoch millis)
+     * @param contentKeyHeaderBase64 base64 of the issued content key's streaming header, or {@code null} for an unencrypted ticket
+     * @param declaredSizeBytes the plaintext size the client declared, or {@code null} if unknown
+     * @param multipartUploadId the store's multipart upload id for a resumable session, or {@code null} for a single-{@code PUT} ticket
+     * @param lastActivityAtEpochMillis when this row was last touched by its client (epoch millis)
+     */
+    public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
+                                   @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes,
+                                   @Nullable final String multipartUploadId, final long lastActivityAtEpochMillis) {
         this.fileId = Objects.requireNonNull(fileId, "@PendingPresignedUpload.init: fileId cannot be null");
         this.authUserId = Objects.requireNonNull(authUserId, "@PendingPresignedUpload.init: authUserId cannot be null");
         this.createdAtEpochMillis = createdAtEpochMillis;
         this.contentKeyHeaderBase64 = contentKeyHeaderBase64;
         this.declaredSizeBytes = declaredSizeBytes;
         this.multipartUploadId = multipartUploadId;
+        this.lastActivityAtEpochMillis = lastActivityAtEpochMillis;
     }
 
     /**

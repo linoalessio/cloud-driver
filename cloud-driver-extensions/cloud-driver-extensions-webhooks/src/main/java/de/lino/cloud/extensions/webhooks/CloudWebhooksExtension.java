@@ -49,6 +49,9 @@ public class CloudWebhooksExtension extends Extension {
     /** Shuts {@link #webhookService}'s dispatch workers down, if it was ever built. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.webhook.WebhookService.class);
         if (this.webhookService != null) {
             this.cloudDriver().getTerminal().displayApproved("&3Webhooks endpoint &7successfully &cclosed&7.");
             this.webhookService.shutdown();

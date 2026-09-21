@@ -68,6 +68,26 @@ public final class PendingPresignedUploadPurgeScheduler {
      */
     private static final long DEFAULT_RETENTION_HOURS = 6L;
 
+    /**
+     * {@code configuration.json} key an operator can override the <em>session</em> retention
+     * window under - see {@link #DEFAULT_SESSION_RETENTION_HOURS}.
+     */
+    private static final String SESSION_RETENTION_HOURS_CONFIG_KEY = "resumable-upload-session-retention-hours";
+
+    /**
+     * Default retention window for a resumable session row - 72 hours, measured from the session's
+     * last activity rather than its creation.
+     *
+     * <p>{@link #DEFAULT_RETENTION_HOURS} is reasoned about a single-{@code PUT} ticket, where the
+     * only gap being tolerated is between one upload and its follow-up completion call. A session
+     * is a different shape: it can legitimately span hours or days of a large file moving over a
+     * slow or intermittent link, and ageing it from its start time aborts the multipart upload and
+     * discards every part already stored - destroying exactly the crash-resume the feature exists
+     * to provide. Measured from last activity, an abandoned session still ages out promptly, while
+     * a live one never does.
+     */
+    private static final long DEFAULT_SESSION_RETENTION_HOURS = 72L;
+
     /** Removes/scans {@link PendingPresignedUpload} rows, and checks whether a real {@link StoredFile} now exists under a ticket's id. */
     private final DataFactory dataFactory;
     /** Deletes an abandoned ticket's orphaned S3 object. */
@@ -80,8 +100,10 @@ public final class PendingPresignedUploadPurgeScheduler {
      */
     @org.jetbrains.annotations.Nullable
     private final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService;
-    /** How long a {@link PendingPresignedUpload} row may sit unconfirmed before being treated as abandoned. */
+    /** How long a single-{@code PUT} {@link PendingPresignedUpload} row may sit unconfirmed, from its creation, before being treated as abandoned. */
     private final Duration retentionPeriod;
+    /** How long a resumable <b>session</b> row may sit idle, from its last activity, before being treated as abandoned - see {@link #DEFAULT_SESSION_RETENTION_HOURS}. */
+    private final Duration sessionRetentionPeriod;
     /** Single-thread, daemon-backed executor driving the tick schedule. */
     private final ScheduledExecutorService scheduledExecutorService;
 
@@ -115,9 +137,24 @@ public final class PendingPresignedUploadPurgeScheduler {
     public PendingPresignedUploadPurgeScheduler(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService,
                                                  @NotNull final Duration retentionPeriod,
                                                  @org.jetbrains.annotations.Nullable final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService) {
+        this(dataFactory, objectStorageService, retentionPeriod, Duration.ofHours(DEFAULT_SESSION_RETENTION_HOURS), resumableUploadService);
+    }
+
+    /**
+     * @param dataFactory scans/removes {@link PendingPresignedUpload} rows, and confirms whether a real {@link StoredFile} now exists under a given id
+     * @param objectStorageService deletes an abandoned ticket's orphaned S3 object
+     * @param retentionPeriod how long a single-{@code PUT} ticket may sit unconfirmed, from creation, before being treated as abandoned
+     * @param sessionRetentionPeriod how long a resumable session may sit idle, from its last activity, before being treated as abandoned
+     * @param resumableUploadService aborts an abandoned session row's multipart upload, or {@code null} if sessions aren't configured
+     * @throws NullPointerException if any argument except {@code resumableUploadService} is {@code null}
+     */
+    public PendingPresignedUploadPurgeScheduler(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService,
+                                                 @NotNull final Duration retentionPeriod, @NotNull final Duration sessionRetentionPeriod,
+                                                 @org.jetbrains.annotations.Nullable final de.lino.cloud.api.s3storage.ResumableUploadService resumableUploadService) {
         this.dataFactory = Asserts.requireNonNull(dataFactory, "@PendingPresignedUploadPurgeScheduler: dataFactory cannot be null");
         this.objectStorageService = Asserts.requireNonNull(objectStorageService, "@PendingPresignedUploadPurgeScheduler: objectStorageService cannot be null");
         this.retentionPeriod = Asserts.requireNonNull(retentionPeriod, "@PendingPresignedUploadPurgeScheduler: retentionPeriod cannot be null");
+        this.sessionRetentionPeriod = Asserts.requireNonNull(sessionRetentionPeriod, "@PendingPresignedUploadPurgeScheduler: sessionRetentionPeriod cannot be null");
         this.resumableUploadService = resumableUploadService;
         this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
     }
@@ -156,7 +193,11 @@ public final class PendingPresignedUploadPurgeScheduler {
         final long retentionHours = configuration.contains(RETENTION_HOURS_CONFIG_KEY)
                 ? configuration.getLong(RETENTION_HOURS_CONFIG_KEY)
                 : DEFAULT_RETENTION_HOURS;
-        return new PendingPresignedUploadPurgeScheduler(dataFactory, objectStorageService, Duration.ofHours(retentionHours), resumableUploadService);
+        final long sessionRetentionHours = configuration.contains(SESSION_RETENTION_HOURS_CONFIG_KEY)
+                ? configuration.getLong(SESSION_RETENTION_HOURS_CONFIG_KEY)
+                : DEFAULT_SESSION_RETENTION_HOURS;
+        return new PendingPresignedUploadPurgeScheduler(dataFactory, objectStorageService, Duration.ofHours(retentionHours),
+                Duration.ofHours(sessionRetentionHours), resumableUploadService);
     }
 
     /**
@@ -209,11 +250,17 @@ public final class PendingPresignedUploadPurgeScheduler {
             return;
         }
         try {
-            final long cutoff = System.currentTimeMillis() - this.retentionPeriod.toMillis();
+            final long now = System.currentTimeMillis();
+            final long ticketCutoff = now - this.retentionPeriod.toMillis();
+            final long sessionCutoff = now - this.sessionRetentionPeriod.toMillis();
             final List<PendingPresignedUpload> expired;
             try {
                 expired = this.dataFactory.getEntities(PendingPresignedUpload.class).stream()
-                        .filter(pending -> pending.getCreatedAtEpochMillis() < cutoff)
+                        // A session ages from its last activity against the longer session window;
+                        // a single-PUT ticket keeps ageing from creation against the short one.
+                        .filter(pending -> pending.getMultipartUploadId() != null
+                                ? pending.lastActivityOrCreatedAtEpochMillis() < sessionCutoff
+                                : pending.getCreatedAtEpochMillis() < ticketCutoff)
                         .toList();
             } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
                 return; // best-effort - try again next tick rather than letting one failed scan kill the whole sweep

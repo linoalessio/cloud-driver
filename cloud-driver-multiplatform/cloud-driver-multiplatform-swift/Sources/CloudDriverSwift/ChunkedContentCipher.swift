@@ -10,7 +10,7 @@ import Foundation
 /// Wire format (everything big-endian), after the server-supplied header written verbatim at
 /// offset 0:
 ///
-///     baseNonce               4 random bytes (12-byte GCM nonce minus the 8-byte counter)
+///     baseNonce               4 bytes derived from the issued key (12-byte GCM nonce minus the 8-byte counter)
 ///     repeated chunk frames:
 ///       flags                 1 byte - 0x01 marks the final chunk, 0x00 any other
 ///       ciphertextLength      4-byte int
@@ -37,7 +37,7 @@ public enum ChunkedContentCipher {
     private static let nonceLength = 12
     /// Bytes of each chunk's nonce taken by the big-endian chunk counter.
     private static let counterLength = 8
-    /// Length, in bytes, of each stream's random nonce base.
+    /// Length, in bytes, of each stream's nonce base.
     private static let baseNonceLength = nonceLength - counterLength
     /// GCM authentication tag length, in bytes.
     private static let tagLength = 16
@@ -58,6 +58,23 @@ public enum ChunkedContentCipher {
     ///   - keyMaterial: the raw content key from the server's `encryption.contentKeyBase64`
     ///   - header: the server-supplied header (`encryption.headerBase64`), written verbatim first
     ///   - associatedDataPrefix: the server-supplied `encryption.associatedDataPrefix`
+
+    /// Derives this object's base nonce deterministically from the issued content key.
+    ///
+    /// HKDF-SHA-256 with an empty salt and a fixed info string, truncated to `baseNonceLength`.
+    /// Byte-for-byte identical to the Java SDK's own derivation: a file uploaded by one client and
+    /// resumed by the other has to produce the same object. Safe because the content key is issued
+    /// fresh per file, so this nonce is never reused under a different key.
+    private static func deriveBaseNonce(keyMaterial: Data) -> Data {
+        let derived = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: keyMaterial),
+            salt: Data(),
+            info: Data("cloud-driver:chunked-content:base-nonce".utf8),
+            outputByteCount: baseNonceLength
+        )
+        return derived.withUnsafeBytes { Data($0) }
+    }
+
     ///   - chunkSizeBytes: the server-supplied `encryption.chunkSizeBytes`
     public static func encrypt(source: URL, destination: URL, keyMaterial: Data, header: Data,
                                associatedDataPrefix: String, chunkSizeBytes: Int) throws {
@@ -65,9 +82,11 @@ public enum ChunkedContentCipher {
         let key = SymmetricKey(data: keyMaterial)
         let prefix = Data(associatedDataPrefix.utf8)
 
-        var baseNonce = Data(count: baseNonceLength)
-        let status = baseNonce.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, baseNonceLength, $0.baseAddress!) }
-        guard status == errSecSuccess else { throw CipherError.malformed("SecRandomCopyBytes failed: \(status)") }
+        // Derived from the issued key, not drawn at random - see `deriveBaseNonce`. A resumable
+        // upload re-encrypts the file to work out which parts it still owes, so a random draw
+        // produced an object whose parts were encrypted under two different nonces: the same
+        // total length, which is all the server verifies, and permanently undecryptable content.
+        let baseNonce = deriveBaseNonce(keyMaterial: keyMaterial)
 
         FileManager.default.createFile(atPath: destination.path, contents: nil)
         let input = try FileHandle(forReadingFrom: source)

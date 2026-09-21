@@ -95,7 +95,7 @@ public class ExtensionCommand implements Command {
             return;
         }
 
-        if (arguments.hasCommand(0, "info")) {
+        if (arguments.hasCommand(0, "info") && arguments.hasLength(1)) {
 
             final String extensionName = arguments.command(1);
             final Optional<Extension> extension = extensionFactory.findByName(extensionName);
@@ -120,7 +120,7 @@ public class ExtensionCommand implements Command {
             return;
         }
 
-        if (arguments.hasCommand(0, "start") || arguments.hasCommand(0, "stop")) {
+        if ((arguments.hasCommand(0, "start") || arguments.hasCommand(0, "stop")) && arguments.hasLength(1)) {
 
             final String action = arguments.command(0);
             final String extensionName = arguments.command(1);

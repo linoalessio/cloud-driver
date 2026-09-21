@@ -29,18 +29,37 @@ import java.util.Objects;
  * non-primary-key {@code emailAddress} lookup, which would be a real cost paid on every single
  * token refresh here). This matches the precedent already set by {@code
  * de.lino.cloud.auth.pending.PendingRegistration}/{@code PendingPasswordReset}/{@code
- * PendingEmailChange}, which likewise store their own plaintext verification codes as a field
- * (one of them, {@code PendingRegistration}, even as part of its own primary key) - every one of
- * these rows relies on this codebase's envelope encryption at rest (AES-256-GCM under a wrapped
- * DEK, applied to every {@link Serialized} entity uniformly) as its actual security boundary,
- * rather than an additional application-level hash. A raw token is only ever "self-authenticating"
- * in the sense that presenting it back is itself the proof of possession {@link
- * AuthService#refresh} checks for - there is no verification step this design weakens, since
- * {@link AuthService#refresh} never accepts anything less specific than the exact token value.
+ * PendingEmailChange}.
+ *
+ * <p><b>The row is keyed on the token's digest, not the token.</b> Envelope encryption covers a
+ * row's payload, not its {@code id} column, which the persistence layer writes as plain text - so
+ * keying on the raw value would leave a live, self-renewing credential for every signed-in account
+ * readable in the database and in every backup, without any need for the KMS-held key that
+ * protects the rest. See {@link #keyOf(String)}. The lookup stays a single O(1) point read
+ * regardless, since the presenter supplies the token and the server hashes it before looking it
+ * up; the token field itself is still stored (inside the encrypted payload) so a revocation
+ * listing can show it.
  */
 @Getter @ToString(exclude = {"token"})
 @EqualsAndHashCode(callSuper = false)
-public final class RefreshToken extends Serialized {
+public final class RefreshToken extends Serialized implements de.lino.cloud.api.factory.SecondaryIndexed {
+
+    /**
+     * Secondary-index name for lookups by {@link #getAuthUserId()} - how every session belonging
+     * to one account is found, so a credential change can end all of them without a full scan.
+     */
+    public static final String INDEX_AUTH_USER_ID = "authUserId";
+
+    /**
+     * {@inheritDoc} Hand-declared, never reflective. Defensive against {@code null} fields, since
+     * Gson rehydration bypasses the constructor's own null checks.
+     */
+    @NotNull
+    @Override
+    public java.util.Map<String, String> secondaryIndexKeys() {
+        return this.authUserId == null ? java.util.Map.of() : java.util.Map.of(INDEX_AUTH_USER_ID, this.authUserId);
+    }
+
 
     /** Length, in bytes, of the random token material generated for a fresh {@link RefreshToken}. */
     public static final int RAW_TOKEN_LENGTH_BYTES = 48;
@@ -117,11 +136,49 @@ public final class RefreshToken extends Serialized {
         return new RefreshToken(this.token, this.authUserId, this.expiresAtEpochMillis, true);
     }
 
-    /** @return this entity's primary key, {@link #token} */
+    /**
+     * @return this entity's primary key: the SHA-256 digest of {@link #token}, never the token
+     * itself - see {@link #keyOf(String)}
+     */
     @NotNull
     @Override
     public List<String> keysOf() {
-        return List.of(this.token);
+        return List.of(keyOf(this.token));
+    }
+
+    /**
+     * The primary key a given raw refresh token is stored under - its lowercase hex SHA-256.
+     *
+     * <p>An entity's primary key lands in the row's {@code id} column verbatim, and that column
+     * is plain text: envelope encryption covers the payload, not the key. Storing the token there
+     * put a ready-to-use, self-renewing credential for every signed-in account in the clear in the
+     * database and in every backup archive, recoverable without touching the KMS-held key that
+     * protects everything else.
+     *
+     * <p>A digest keeps the lookup an O(1) point read - the presenter supplies the token and the
+     * server hashes it before looking it up - while the stored value is useless on its own.
+     * SHA-256 rather than a password hash deliberately: the input is {@link #TOKEN_LENGTH_BYTES}
+     * bytes of {@code SecureRandom} output, so there is nothing to brute-force and no reason to
+     * make every refresh pay a work factor. Unsalted deliberately too: the lookup needs to be
+     * deterministic.
+     *
+     * @param token the raw token value, as held by the client
+     * @return the primary key that token's row is stored under
+     */
+    @NotNull
+    public static String keyOf(@NotNull final String token) {
+        Objects.requireNonNull(token, "@RefreshToken.keyOf: token cannot be null");
+        try {
+            final byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            final StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (final byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (final java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("@RefreshToken.keyOf: SHA-256 is required by every JVM", impossible);
+        }
     }
 
 }

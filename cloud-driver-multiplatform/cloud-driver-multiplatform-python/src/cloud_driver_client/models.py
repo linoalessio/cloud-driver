@@ -147,16 +147,43 @@ class SharedByMeCount(_Model):
     count: int
 
 
+class UploadEncryption(_Model):
+    """The per-file key material a presigned upload must encrypt its object with.
+
+    Present whenever the deployment stores content client-side encrypted, which is every
+    S3-backed deployment. ``None`` means the object is a legacy plaintext one.
+    """
+
+    content_key_base64: str = Field(alias="contentKeyBase64")
+    header_base64: str = Field(alias="headerBase64")
+    associated_data_prefix: str = Field(alias="associatedDataPrefix")
+    chunk_size_bytes: int = Field(alias="chunkSizeBytes")
+    object_length_bytes: int = Field(alias="objectLengthBytes")
+
+
+class DownloadEncryption(_Model):
+    """The per-file key material a presigned download must decrypt its object with.
+
+    ``None`` means the stored object is legacy plaintext and should be used as fetched.
+    """
+
+    content_key_base64: str = Field(alias="contentKeyBase64")
+    associated_data_prefix: str = Field(alias="associatedDataPrefix")
+    header_length_bytes: int = Field(alias="headerLengthBytes")
+
+
 class BeginUploadUrl(_Model):
     file_id: str = Field(alias="fileId")
     upload_url: str = Field(alias="uploadUrl")
     required_headers: dict[str, str] = Field(alias="requiredHeaders")
     expires_at_epoch_millis: int = Field(alias="expiresAtEpochMillis")
+    encryption: UploadEncryption | None = None
 
 
 class BeginDownloadUrl(_Model):
     download_url: str = Field(alias="downloadUrl")
     expires_at_epoch_millis: int = Field(alias="expiresAtEpochMillis")
+    encryption: DownloadEncryption | None = None
 
 
 class LiveUpdateEvent(_Model):

@@ -68,8 +68,46 @@ public abstract class ExtensionFactory {
      * @throws IllegalStateException if the registered extensions' dependencies form a cycle
      */
     public void startAll(@NonNull final String[] args) {
-        dependencyOrder().forEach(extension -> start(extension, args));
+        for (final Extension extension : dependencyOrder()) {
+            start(extension, args);
+            // Wait for this extension to reach a settled state before starting the next. The
+            // ordering this method promises is only real if each extension has actually finished
+            // loading by the time its dependents' checks run - see start's own note.
+            awaitSettled(extension);
+        }
     }
+
+    /**
+     * Blocks briefly until {@code extension} has left {@link ExtensionStatus#LOADING}, so a
+     * dependent started next sees its real state.
+     *
+     * <p>Bounded deliberately: an extension that takes longer than this to load is not broken, it
+     * is merely slow, and holding up every other extension's start indefinitely would be worse
+     * than letting the next one's dependency check make its own decision.
+     *
+     * @param extension the extension just started
+     */
+    private void awaitSettled(final Extension extension) {
+        final long deadline = System.currentTimeMillis() + START_SETTLE_TIMEOUT_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            final ExtensionStatus status = extension.getExtensionProperties().getExtensionStatus();
+            if (status == ExtensionStatus.RUNNING || status == ExtensionStatus.ERROR) {
+                return;
+            }
+            try {
+                Thread.sleep(START_SETTLE_POLL_MILLIS);
+            } catch (final InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /** How long {@link #startAll} waits for one extension to settle before starting the next. */
+    private static final long START_SETTLE_TIMEOUT_MILLIS = 30_000L;
+
+    /** Poll interval used while waiting in {@link #awaitSettled}. */
+    private static final long START_SETTLE_POLL_MILLIS = 10L;
 
     /**
      * Async counterpart of {@link #startAll(String[])}. Per-extension
@@ -150,11 +188,17 @@ public abstract class ExtensionFactory {
 
         final ExtensionProperties properties = extension.getExtensionProperties();
         final String name = properties.getExtensionName();
+
+        // Checked on the calling thread, before the worker is spawned. Inside the worker it was a
+        // race: startAll walks a dependency-ordered list but start returns as soon as the thread
+        // is created, so nothing made one extension reach RUNNING before the next one's thread ran
+        // its check. On a slow or loaded boot a dependent could lose that race and end up
+        // permanently in ERROR - intermittently, and differently on each boot.
+        requireDependenciesRunning(properties);
+
         final Thread thread = new Thread(() -> {
 
             try {
-                requireDependenciesRunning(properties);
-
                 properties.updateExtensionStatus(ExtensionStatus.LOADING);
                 extension.onLoading();
 

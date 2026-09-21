@@ -17,6 +17,7 @@ import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.extractZip
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
+import de.lino.cloud.platform.desktop.utils.requireContainedIn
 import de.lino.cloud.platform.desktop.utils.sanitizedForLocalPath
 import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
@@ -635,7 +636,11 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      */
     fun logout() {
         this.client.stopLiveUpdates()
-        this.client.logout()
+        // No local token clearing here, deliberately. clearPersistedSession below is what revokes
+        // the refresh token server-side, and it can only do that while the token is still in
+        // memory - clearing first made that call read a null token and return without ever
+        // reaching the server, so a logged-out session stayed valid for its full lifetime. The
+        // session manager clears the in-memory tokens and the token store itself afterwards.
         this.scope.launch { this@AppViewModel.client.clearPersistedSession() }
         this.currentUserEmail = null
         this.currentUserId = null
@@ -831,7 +836,13 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      * which files exist.
      */
     fun downloadSharedFolder(folderId: String, folderName: String, destinationDirectory: Path) = run {
-        val items = this.planSharedFolderDownload(folderId, destinationDirectory.resolve(sanitizedForLocalPath(folderName)))
+        // A safe file name inside an unsafe folder name is still an escape, so every folder
+        // component built from a remote name is contained too - and on a shared folder these
+        // names were chosen by the person who shared it, not by the person downloading it.
+        val items = this.planSharedFolderDownload(
+            folderId,
+            requireContainedIn(destinationDirectory, destinationDirectory.resolve(sanitizedForLocalPath(folderName))),
+        )
         this.runTransfer(TransferKind.DOWNLOAD, items, DownloadItem::sizeBytes) { item, onBytesTransferred ->
             this.client.downloadFileStreaming(item.fileId, item.fileName, item.destinationDirectory, onBytesTransferred)
         }
@@ -842,7 +853,12 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         val contents = this.client.listSharedFolderContents(folderId)
         val items = mutableListOf<DownloadItem>()
         contents.files().forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
-        contents.subfolders().forEach { subfolder -> items += this.planSharedFolderDownload(subfolder.folderId(), destination.resolve(sanitizedForLocalPath(subfolder.name()))) }
+        contents.subfolders().forEach { subfolder ->
+            items += this.planSharedFolderDownload(
+                subfolder.folderId(),
+                requireContainedIn(destination, destination.resolve(sanitizedForLocalPath(subfolder.name()))),
+            )
+        }
         return items
     }
 
@@ -1398,7 +1414,10 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         for (entry in entries) {
             when (entry) {
                 is Entry.FileEntry -> items += DownloadItem(entry.id, entry.name, entry.sizeBytes, destinationDirectory)
-                is Entry.FolderEntry -> items += this.planFolderDownload(entry.id, destinationDirectory.resolve(sanitizedForLocalPath(entry.name)))
+                is Entry.FolderEntry -> items += this.planFolderDownload(
+                    entry.id,
+                    requireContainedIn(destinationDirectory, destinationDirectory.resolve(sanitizedForLocalPath(entry.name))),
+                )
             }
         }
         return items
@@ -1407,7 +1426,12 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     private suspend fun planFolderDownload(folderId: String, destination: Path): List<DownloadItem> {
         val items = mutableListOf<DownloadItem>()
         this.client.listFiles(folderId).forEach { file -> items += DownloadItem(file.fileId(), file.fileName(), file.sizeBytes(), destination) }
-        this.client.listFolders(folderId).forEach { subFolder -> items += this.planFolderDownload(subFolder.folderId(), destination.resolve(sanitizedForLocalPath(subFolder.name()))) }
+        this.client.listFolders(folderId).forEach { subFolder ->
+            items += this.planFolderDownload(
+                subFolder.folderId(),
+                requireContainedIn(destination, destination.resolve(sanitizedForLocalPath(subFolder.name()))),
+            )
+        }
         return items
     }
 

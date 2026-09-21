@@ -81,3 +81,14 @@ _STATUS_TO_EXCEPTION: dict[int, type[ApiException]] = {
 def exception_for_status(status_code: int, message: str, body: Any = None) -> ApiException:
     cls = _STATUS_TO_EXCEPTION.get(status_code, ApiException)
     return cls(status_code, message, body)
+
+
+class UnsupportedEncryptionError(ApiException):
+    """Raised when a presigned transfer requires client-side encryption this SDK cannot perform.
+
+    The Java and Swift SDKs implement the chunked content cipher the server's presigned paths use;
+    this one does not yet. Rather than hand back a ticket whose bytes the caller would write to
+    disk as though they were the file, or upload plaintext the server will reject at completion
+    with an unrelated-sounding error, the presigned methods refuse up front and say which
+    server-mediated call to use instead.
+    """

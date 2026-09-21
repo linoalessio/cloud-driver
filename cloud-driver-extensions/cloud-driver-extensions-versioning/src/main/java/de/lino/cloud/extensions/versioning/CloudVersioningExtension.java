@@ -54,6 +54,9 @@ public class CloudVersioningExtension extends Extension {
     /** Shuts {@link #purgeScheduler} down, if it was ever built. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.versioning.FileVersioningService.class);
         if (this.purgeScheduler != null) {
             this.purgeScheduler.shutdown();
             this.cloudDriver().getTerminal().displayApproved("&3File versioning endpoint &7successfully &cclosed&7.");

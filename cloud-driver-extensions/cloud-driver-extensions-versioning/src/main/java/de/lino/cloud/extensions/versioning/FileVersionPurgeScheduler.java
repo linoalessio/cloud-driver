@@ -204,6 +204,22 @@ final class FileVersionPurgeScheduler {
 
     /** Permanently removes {@code version}'s own {@code StoredFile} content, then the {@link FileVersion} row itself. */
     private void purgeVersion(final FileVersion version) {
+        // Refund the owner before the content goes, while its stored size is still readable -
+        // the mirror of the charge captureVersion applies. Without it an account would lose quota
+        // permanently every time its history was pruned.
+        try {
+            this.fileFactory.findById(version.getVersionedFileId()).ifPresent(snapshot -> {
+                final de.lino.cloud.api.user.ICloudUserService cloudUserService =
+                        de.lino.cloud.api.CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+                if (cloudUserService == null) return;
+                cloudUserService.resolveOwnerAuthUserId(version.getSourceFileId()).ifPresent(owner ->
+                        cloudUserService.updateCloudUserBytesUsage(owner, -snapshot.sizeBytes()));
+            });
+        } catch (final Exception refundFailed) {
+            this.logger.log(Level.WARNING,
+                    "Failed to refund the storage of purged version " + version.getVersionNumber()
+                            + " of file '" + version.getSourceFileId() + "'", refundFailed);
+        }
         try {
             this.fileFactory.delete(version.getVersionedFileId());
         } catch (final DatabaseClientException alreadyGoneOrOther) {

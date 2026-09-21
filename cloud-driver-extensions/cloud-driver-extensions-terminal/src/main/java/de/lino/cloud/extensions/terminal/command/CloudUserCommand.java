@@ -53,8 +53,10 @@ public class CloudUserCommand implements Command {
         return List.of(
                 CommandUsage.of("cloudUser list", "Every account with its storage use"),
                 CommandUsage.of("cloudUser info <email>", "Everything known about one account"),
-                CommandUsage.of("cloudUser reset <email>", "Clear one account's files and storage counter"),
-                CommandUsage.of("cloudUser delete <email>", "Delete one account and everything it owns"),
+                CommandUsage.of("cloudUser reset <email>", "Arm clearing one account's files and storage counter (does nothing on its own)"),
+                CommandUsage.of("cloudUser reset <email> confirm", "Confirm the armed clear, within 15s of arming it"),
+                CommandUsage.of("cloudUser delete <email>", "Arm deleting one account and everything it owns (does nothing on its own)"),
+                CommandUsage.of("cloudUser delete <email> confirm", "Confirm the armed delete, within 15s of arming it"),
                 CommandUsage.of("cloudUser limit <email> <bytes> <unit>", "Set the storage quota (unit: B, KB, MB, GB)")
         );
     }
@@ -76,6 +78,14 @@ public class CloudUserCommand implements Command {
 
         final Terminal terminal = this.terminal();
         final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+        // Optional facet: null until the REST extension publishes one, and it deliberately
+        // publishes nothing when no JWT signing key is configured, so a deployment can still boot
+        // every other subsystem. Every sibling command checks this; without it all five
+        // sub-commands below threw a null-pointer exception at the operator instead of saying so.
+        if (cloudUserService == null) {
+            terminal.displayApproved("&cThe REST/auth subsystem isn't running yet - no accounts to look up.");
+            return;
+        }
 
         if (arguments.hasCommand(0, "list")) {
 
@@ -126,8 +136,12 @@ public class CloudUserCommand implements Command {
             }
 
             final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
-            terminal.displayApproved("Cloud user '&b%s&7' successfully &ccleared &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
+            if (!confirmDestructiveAction(terminal, "reset", emailAddress, arguments,
+                    "destroys every file and folder '" + emailAddress + "' owns (&b" + clearedStorage + "&7), bypassing the trash")) {
+                return;
+            }
             cloudUserService.resetCloudUser(cloudUser.get().getAuthUserId());
+            terminal.displayApproved("Cloud user '&b%s&7' successfully &ccleared &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
 
             return;
         }
@@ -143,8 +157,12 @@ public class CloudUserCommand implements Command {
             }
 
             final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
-            terminal.displayApproved("Cloud user '&b%s&7' successfully &cdeleted &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
+            if (!confirmDestructiveAction(terminal, "delete", emailAddress, arguments,
+                    "deletes the account '" + emailAddress + "' and everything it owns (&b" + clearedStorage + "&7)")) {
+                return;
+            }
             cloudUserService.deleteCloudUser(cloudUser.get().getAuthUserId());
+            terminal.displayApproved("Cloud user '&b%s&7' successfully &cdeleted &7(&b%s&7)", cloudUser.get().getAuthUser().getEmailAddress(), clearedStorage);
 
             return;
         }
@@ -197,6 +215,59 @@ public class CloudUserCommand implements Command {
         this.sendUsage();
 
 
+    }
+
+    /** What destructive action is currently armed, as {@code "<action>:<target>"}, or {@code null}. */
+    private static final java.util.concurrent.atomic.AtomicReference<String> ARMED_ACTION =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** When the armed action stops being confirmable, in epoch millis, or {@code null}. */
+    private static final java.util.concurrent.atomic.AtomicReference<Long> ARMED_UNTIL =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** How long an armed destructive action stays confirmable. */
+    private static final java.time.Duration ARM_WINDOW = java.time.Duration.ofSeconds(15);
+
+    /**
+     * Arm-then-confirm guard for an irreversible sub-command, matching the shape {@code hardReset}
+     * and {@code s3 purge} already use.
+     *
+     * <p>The first invocation prints what will be destroyed and arms; a second invocation carrying
+     * {@code confirm}, within the window and naming the same target, performs it. Arming is keyed
+     * on the action and its target, so arming against one account can never confirm an action
+     * against another.
+     *
+     * @param terminal where to print the warning
+     * @param action the sub-command name, e.g. {@code "reset"}
+     * @param target the account this would act on
+     * @param arguments the invocation, checked for the confirming token
+     * @param whatItDoes a plain description of the destruction, shown while arming
+     * @return {@code true} if the caller should proceed
+     */
+    private static boolean confirmDestructiveAction(final Terminal terminal, final String action, final String target,
+                                                     final CommandArguments arguments, final String whatItDoes) {
+        final String armedKey = action + ":" + target;
+        final Long armedUntil = ARMED_UNTIL.get();
+        final boolean confirming = arguments.hasCommand(2, "confirm");
+
+        if (confirming && armedKey.equals(ARMED_ACTION.get()) && armedUntil != null && armedUntil > System.currentTimeMillis()) {
+            ARMED_ACTION.set(null);
+            ARMED_UNTIL.set(null);
+            return true;
+        }
+        if (confirming) {
+            terminal.displayApproved("&cNothing armed for that account, or the confirmation window has passed - run it again without 'confirm' first.");
+            ARMED_ACTION.set(null);
+            ARMED_UNTIL.set(null);
+            return false;
+        }
+
+        ARMED_ACTION.set(armedKey);
+        ARMED_UNTIL.set(System.currentTimeMillis() + ARM_WINDOW.toMillis());
+        terminal.displayApproved("&c&lThis %s", whatItDoes);
+        terminal.displayApproved("&7It cannot be undone. To confirm, run &ccloudUser %s %s confirm &7within &b%s seconds&7.",
+                action, target, ARM_WINDOW.toSeconds());
+        return false;
     }
 
 }

@@ -16,20 +16,25 @@ import org.jetbrains.annotations.NotNull;
  * needs its own virus-definition database kept current (via {@code freshclam}) for scanning to be
  * meaningful at all.
  *
- * <p><b>Triggered via {@code FileChangeListener}, unlike search indexing/webhook dispatch</b> -
- * deliberately: unlike search indexing or webhook dispatch, a scan only ever needs to react to a
- * brand-new {@code StoredFile} row appearing (an {@code INSERT}), which is exactly what that
- * mechanism already watches; it never needs to react to a soft-delete/share (different tables
- * entirely), so the gaps that rule that mechanism out for search/webhooks don't apply here.
+ * <p><b>Triggered two ways.</b> A brand-new {@code StoredFile} row (an {@code INSERT}) is picked
+ * up by a {@code FileChangeListener}, which is exactly what that mechanism already watches - this
+ * covers every upload, server-mediated and direct-transfer alike (a presigned completion inserts
+ * its row like any other, and a content-key-protected object is resolvable server-side, so those
+ * files are scanned too). A content <em>change</em> under an existing id - {@code PUT}/{@code
+ * PATCH} of content, or a version restore - rewrites that row instead, arriving as an {@code
+ * UPDATE} that is indistinguishable from a rename or a move, so those callers stamp {@link
+ * de.lino.cloud.api.file.ScanStatus#PENDING} themselves and call {@link #scanAsync} directly
+ * rather than relying on the listener.
  */
 public interface ContentScanService {
 
     /**
-     * Triggers an asynchronous scan of {@code storedFileId}'s content - called from a {@code
-     * FileChangeListener} reacting to a fresh upload, never synchronously from the upload request
-     * itself. Must return quickly and never throw; the actual scan (fetching content, talking to
-     * the scan engine, and persisting the result via {@link StoredFile#withScanStatus}) always
-     * happens on this service's own background worker.
+     * Triggers an asynchronous scan of {@code storedFileId}'s content - from a {@code
+     * FileChangeListener} reacting to a fresh upload, or directly from a caller that just replaced
+     * an existing file's bytes, but never synchronously from the request itself. Must return
+     * quickly and never throw; the actual scan (fetching content, talking to the scan engine, and
+     * persisting the result via {@link StoredFile#withScanStatus}) always happens on this
+     * service's own background worker.
      *
      * @param storedFileId the file to scan
      */

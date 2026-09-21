@@ -141,6 +141,9 @@ public class CloudIntelligenceExtension extends Extension {
     /** Shuts {@link #intelligenceService} down. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.intelligence.IntelligenceService.class);
         this.shutdown();
     }
 

@@ -48,7 +48,7 @@ import java.nio.charset.StandardCharsets;
 public final class EnvelopeEncryptionService {
 
     /** Version tag stamped into every {@link EnvelopeEncryptedPayload} produced by {@link #encrypt}. */
-    private static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 1;
 
     /**
      * Version tag opening every {@link #encryptStream} ciphertext - the first 4 bytes of a stored

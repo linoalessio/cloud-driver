@@ -116,11 +116,44 @@ final class DefaultContentScanService implements ContentScanService {
     }
 
     private void performScan(final String storedFileId, final int attemptNumber) {
+        // Metadata first, deliberately: this resolves no content, so an object far larger than the
+        // heap is refused by the size cap below without ever being pulled out of the object store.
+        // Resolving first and measuring afterwards is what made a single large upload able to kill
+        // the process.
+        final StoredFile metadata;
+        try {
+            metadata = this.dataFactory.findById(storedFileId, StoredFile.class).orElse(null);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException e) {
+            this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to fetch metadata for " + storedFileId + " for scanning", e);
+            scheduleRetryOrFailOpen(storedFileId, attemptNumber);
+            return;
+        }
+        if (metadata == null) {
+            return; // deleted/never existed by the time this ran - nothing to scan
+        }
+
+        final Long knownSizeBytes = metadata.sizeBytesIfKnown();
+        if (knownSizeBytes != null && knownSizeBytes > this.maxScannableBytes) {
+            this.logger.warning("@DefaultContentScanService: " + storedFileId + " (" + knownSizeBytes
+                    + " bytes) exceeds the configured scan size cap (" + this.maxScannableBytes + ") - marking clean without scanning");
+            persistStatus(storedFileId, metadata, ScanStatus.CLEAN);
+            return;
+        }
+
         final StoredFile file;
         try {
             file = this.fileFactory.findById(storedFileId).orElse(null);
-        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException
-                       | RuntimeException e) {
+        } catch (final FileIntegrityException integrityFailure) {
+            // Not transient and not a scanner problem: the stored bytes do not match the checksum
+            // the uploading client declared, so this content can never be fetched for scanning and
+            // must never be served. Retrying would just fail identically and then fail *open*,
+            // which is exactly how a deliberately-wrong declared checksum bought a permanent
+            // CLEAN verdict without a single byte reaching the scanner.
+            this.logger.log(Level.SEVERE, "@DefaultContentScanService: integrity check failed for " + storedFileId
+                    + " - refusing to fail open", integrityFailure);
+            persistStatus(storedFileId, metadata, ScanStatus.FLAGGED);
+            return;
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException e) {
             this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to fetch " + storedFileId + " for scanning", e);
             scheduleRetryOrFailOpen(storedFileId, attemptNumber);
             return;
@@ -138,16 +171,17 @@ final class DefaultContentScanService implements ContentScanService {
             return;
         }
 
+        // Backstop for a row whose size metadata was unknown above (a legacy inline file).
         if (content.length > this.maxScannableBytes) {
             this.logger.warning("@DefaultContentScanService: " + storedFileId + " (" + content.length
                     + " bytes) exceeds the configured scan size cap (" + this.maxScannableBytes + ") - marking clean without scanning");
-            persistStatus(storedFileId, ScanStatus.CLEAN);
+            persistStatus(storedFileId, file, ScanStatus.CLEAN);
             return;
         }
 
         try {
             final ClamAvScanResult result = this.clamAvClient.scan(content);
-            persistStatus(storedFileId, result.clean() ? ScanStatus.CLEAN : ScanStatus.FLAGGED);
+            persistStatus(storedFileId, file, result.clean() ? ScanStatus.CLEAN : ScanStatus.FLAGGED);
             if (!result.clean()) {
                 this.logger.warning("@DefaultContentScanService: " + storedFileId + " flagged as " + result.malwareName());
             }
@@ -176,15 +210,28 @@ final class DefaultContentScanService implements ContentScanService {
     private void persistStatus(final String storedFileId, final ScanStatus status) {
         final StoredFile file;
         try {
-            file = this.fileFactory.findById(storedFileId).orElse(null);
-        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException
-                       | RuntimeException e) {
+            // Metadata only: this needs the entity to stamp the status onto, never its content.
+            file = this.dataFactory.findById(storedFileId, StoredFile.class).orElse(null);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException e) {
             this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to re-fetch " + storedFileId + " to persist scan status", e);
             return;
         }
         if (file == null) {
             return;
         }
+        persistStatus(storedFileId, file, status);
+    }
+
+    /**
+     * Stamps {@code status} onto an entity the caller already holds - the form every in-scan
+     * verdict uses, so reaching a verdict never costs a second fetch (which, before the content
+     * channel was bypassed here, meant a second full download and decrypt of the file).
+     *
+     * @param storedFileId the file being judged, for logging
+     * @param file the entity to stamp - metadata-only or fully resolved, either works
+     * @param status the verdict to persist
+     */
+    private void persistStatus(final String storedFileId, final StoredFile file, final ScanStatus status) {
         try {
             this.dataFactory.update(file.withScanStatus(status));
         } catch (final DatabaseClientException | KeyWrapException | RuntimeException e) {

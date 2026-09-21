@@ -13,9 +13,15 @@ package de.lino.cloud.api.file;
  * {@link #EDIT} value). {@link #EDIT} is fully implemented for {@code SharedFileGrant} only: a
  * grantee holding an {@link #EDIT} grant on a file may call {@code
  * CloudUserService#replaceFileContent} on it, in addition to everything {@link #VIEW} already
- * allows. Every structural operation (rename, move, delete, restore, re-share) stays strictly
+ * allows. Every structural operation (rename, move, delete, re-share) stays strictly
  * owner-only regardless of permission level - a share, at any level, is never a path to changing a
  * file's identity or its place in the account's own folder tree, only (optionally) its content.
+ *
+ * <p>Restoring a prior version counts as content, not structure, and is therefore available to an
+ * {@link #EDIT} grantee. It is no more powerful than the overwrite they already hold: the same
+ * grantee could download an old version and write it back byte for byte. The restore route's own
+ * documentation used to call itself owner-only while the code allowed it; this is the rule that
+ * holds.
  */
 public enum SharePermission {
 

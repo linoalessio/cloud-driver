@@ -162,8 +162,12 @@ public final class CommandService {
         return command.map(value -> MultiTaskingFactory.getInstance().supplyAsync(() -> {
             try {
                 value.execute(new Command.CommandArguments(args, value.flags()));
-            } catch (final RuntimeException exception) {
-                LOGGER.log(Level.SEVERE, "@CommandService.dispatchAsync: '" + name + "' threw an exception", exception);
+            } catch (final Throwable throwable) {
+                // Throwable, not RuntimeException: an Error - a missing class, an exhausted heap -
+                // used to complete this future exceptionally, and the reading thread attaches only
+                // a success callback, so the command failed with nothing printed and nothing
+                // logged. Whatever went wrong, the operator who typed it has to be told.
+                LOGGER.log(Level.SEVERE, "@CommandService.dispatchAsync: '" + name + "' threw an exception", throwable);
             }
             return true;
         })).orElseGet(() -> CompletableFuture.completedFuture(false));

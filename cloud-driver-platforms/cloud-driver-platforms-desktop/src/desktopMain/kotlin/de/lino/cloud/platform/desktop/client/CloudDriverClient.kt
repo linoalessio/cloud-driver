@@ -199,6 +199,11 @@ class CloudDriverClient(
      * placement entirely; calling that one for a `null` [folderId] here previously made every
      * file appear at the root in addition to its real folder, since "root" and "everything"
      * are two different server-side scopes even though both start from a `null` Kotlin value.
+     *
+     * Complete: the SDK pages internally, so this returns every entry rather than the server's
+     * first page. The recursive planners below (download, duplicate, delete, size and dashboard
+     * totals) all depend on that - a truncated set silently loses files from a folder download,
+     * permanently omits them from a duplicate, and leaves a delete half-done.
      */
     suspend fun listFiles(folderId: String? = null): List<StoredFileSummaryResponse> =
         this.apiClient.listFilesAsync(folderId).await()
@@ -208,8 +213,8 @@ class CloudDriverClient(
      * `nextCursor` to request the next one, instead of every file in [folderId] at once. Used by
      * [de.lino.cloud.platform.desktop.viewmodel.AppViewModel]'s folder view (`refreshCurrentFolder`)
      * so opening a very large folder doesn't wait for/hold its entire contents at once; every
-     * other caller here (delete/duplicate/download planning) still needs the *complete* set and
-     * keeps calling [listFiles].
+     * other caller here (delete/duplicate/download planning) needs the *complete* set and keeps
+     * calling [listFiles], which pages internally to provide exactly that.
      */
     suspend fun listFilesPage(
         folderId: String?, cursor: String?, limit: Int

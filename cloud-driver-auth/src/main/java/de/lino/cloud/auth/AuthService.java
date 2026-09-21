@@ -1,5 +1,6 @@
 package de.lino.cloud.auth;
 
+import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.audit.AuditAction;
 import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.audit.AuditLogService;
@@ -348,7 +349,13 @@ public final class AuthService implements IAuthService {
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
-        if (!pending.getVerificationCode().equals(code)) {
+        if (!verificationCodeMatches(pending.getVerificationCode(), code)) {
+            // Count the miss, and burn the row once it has been guessed at enough times. Without
+            // this a wrong guess costs nothing and the code stays alive for its full lifetime,
+            // which a six-digit space cannot survive once the request rate limiter is out of the
+            // way. The same exception either way, so an attacker cannot tell a wrong code from an
+            // exhausted one.
+            registerFailedVerificationAttempt(pending.withFailedAttempt(), emailAddress, PendingRegistration.class);
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
@@ -445,6 +452,13 @@ public final class AuthService implements IAuthService {
             // caller actually controls this account, so this entry shouldn't read as "this account
             // acted", only "this account was targeted" (targetId).
             this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, null));
+            throw new InvalidCredentialsException("invalid credentials");
+        }
+
+        // Checked after the password, deliberately: answering differently before it would tell an
+        // anonymous caller which addresses have suspended accounts.
+        if (user.isSuspended()) {
+            this.auditLogService.record(new AuditEvent(null, AuditAction.LOGIN_FAILURE, emailAddress, "account suspended"));
             throw new InvalidCredentialsException("invalid credentials");
         }
 
@@ -598,7 +612,13 @@ public final class AuthService implements IAuthService {
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
-        if (!pending.getVerificationCode().equals(code)) {
+        if (!verificationCodeMatches(pending.getVerificationCode(), code)) {
+            // Count the miss, and burn the row once it has been guessed at enough times. Without
+            // this a wrong guess costs nothing and the code stays alive for its full lifetime,
+            // which a six-digit space cannot survive once the request rate limiter is out of the
+            // way. The same exception either way, so an attacker cannot tell a wrong code from an
+            // exhausted one.
+            registerFailedVerificationAttempt(pending.withFailedAttempt(), emailAddress, PendingPasswordReset.class);
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
@@ -616,8 +636,14 @@ public final class AuthService implements IAuthService {
         this.dataFactory.update(updated);
         this.dataFactory.delete(emailAddress, PendingPasswordReset.class);
 
+        // Every existing session ends here, before the new pair is issued - otherwise the reset
+        // changes the password without evicting whoever prompted it. Order matters: revoking
+        // after issuing would log the user out of the reset they just completed.
+        final int revokedSessions = this.revokeAllRefreshTokens(updated.getId());
+
         final AuthTokens tokens = this.issueTokens(updated.getId());
-        this.auditLogService.record(new AuditEvent(updated.getId(), AuditAction.PASSWORD_RESET, emailAddress, null));
+        this.auditLogService.record(new AuditEvent(updated.getId(), AuditAction.PASSWORD_RESET, emailAddress,
+                revokedSessions + " session(s) revoked"));
         return tokens;
     }
 
@@ -640,8 +666,27 @@ public final class AuthService implements IAuthService {
      * @throws KeyWrapException if the pending change's data-encryption key cannot be wrapped by the KMS/HSM
      */
     @Override
-    public void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress)
+    public void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress,
+                                    final char @NonNull [] currentPassword)
             throws DatabaseClientException, KeyWrapException {
+
+        // Re-authentication first, before anything is validated, persisted or e-mailed. An access
+        // token alone must not be enough to move an account to an address the holder controls:
+        // that turns a temporary credential - one read from a proxy log, or taken from an unlocked
+        // machine - into permanent ownership, since a password reset on the new address then hands
+        // over the account entirely while the real owner's own reset requests match nothing.
+        // Deliberately checked before the already-registered test below, so a token holder cannot
+        // use this route to enumerate which addresses have accounts.
+        final AuthUser account;
+        try {
+            account = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new InvalidCredentialsException("Invalid credentials"));
+        } catch (final AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.requestEmailChange: failed to look up account " + authUserId, e);
+        }
+        if (!this.hasher.verify(currentPassword, account.getPasswordHash())) {
+            throw new InvalidCredentialsException("Invalid credentials");
+        }
 
         if (!EMAIL_PATTERN.matcher(newEmailAddress).matches())
             throw new InvalidCredentialsException("Invalid email address: " + newEmailAddress);
@@ -677,6 +722,24 @@ public final class AuthService implements IAuthService {
             );
         } catch (final EmailDeliveryException e) {
             throw new RuntimeException("@AuthService.requestEmailChange: failed to send verification email to " + newEmailAddress, e);
+        }
+
+        // The outgoing address is the only channel the real owner still controls if this request
+        // was not theirs, so it is told what is happening while it can still act on it.
+        try {
+            this.sendVerificationEmail(
+                    account.getEmailAddress(),
+                    "Your e-mail address is being changed",
+                    "Your e-mail address is being changed.",
+                    "A request was made to move this account to " + newEmailAddress + ". If that was you, confirm it using the "
+                            + "code sent to the new address - there is nothing to do here.",
+                    "",
+                    "If this was not you, change your password immediately: whoever made this request can sign in right now."
+            );
+        } catch (final EmailDeliveryException | RuntimeException noticeFailed) {
+            // Best-effort: failing to warn the old address must not block a legitimate change.
+            CloudDriver.getInstance().getLogger().log(java.util.logging.Level.WARNING,
+                    "@AuthService.requestEmailChange: failed to notify " + account.getEmailAddress() + " of a pending change", noticeFailed);
         }
 
     }
@@ -719,7 +782,13 @@ public final class AuthService implements IAuthService {
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
-        if (!pending.getVerificationCode().equals(code)) {
+        if (!verificationCodeMatches(pending.getVerificationCode(), code)) {
+            // Count the miss, and burn the row once it has been guessed at enough times. Without
+            // this a wrong guess costs nothing and the code stays alive for its full lifetime,
+            // which a six-digit space cannot survive once the request rate limiter is out of the
+            // way. The same exception either way, so an attacker cannot tell a wrong code from an
+            // exhausted one.
+            registerFailedVerificationAttempt(pending.withFailedAttempt(), authUserId, PendingEmailChange.class);
             throw new InvalidVerificationCodeException("invalid or expired verification code");
         }
 
@@ -736,7 +805,12 @@ public final class AuthService implements IAuthService {
         this.dataFactory.update(updated);
         this.dataFactory.delete(authUserId, PendingEmailChange.class);
 
-        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.EMAIL_CHANGE, pending.getNewEmailAddress(), null));
+        // An address change moves where every future recovery mail goes, so it ends existing
+        // sessions for the same reason a password reset does.
+        final int revokedSessions = this.revokeAllRefreshTokens(authUserId);
+
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.EMAIL_CHANGE, pending.getNewEmailAddress(),
+                revokedSessions + " session(s) revoked"));
     }
 
     /**
@@ -749,6 +823,38 @@ public final class AuthService implements IAuthService {
      * @param isAdmin the new admin flag value
      * @throws IllegalArgumentException if no account exists under {@code authUserId}
      */
+    /**
+     * Suspends or unsuspends {@code authUserId} - locking the account out without destroying it.
+     *
+     * <p>Suspending also revokes every outstanding session, so the lock takes effect immediately
+     * rather than whenever the current access token happens to expire. The account keeps every
+     * file and folder it owns; unsuspending restores access with nothing lost.
+     *
+     * @param authUserId the account to suspend or unsuspend
+     * @param suspended {@code true} to suspend, {@code false} to lift it
+     * @throws IllegalArgumentException if no account exists under {@code authUserId}
+     */
+    public void setSuspended(@NonNull final String authUserId, final boolean suspended) {
+        final AuthUser existing;
+        try {
+            existing = this.dataFactory.findById(authUserId, AuthUser.class)
+                    .orElseThrow(() -> new IllegalArgumentException("no AuthUser with id " + authUserId));
+            this.dataFactory.update(existing.withSuspended(suspended));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.setSuspended: failed to update the suspension flag for " + authUserId, e);
+        }
+        if (suspended) {
+            // Suspending has to end what is already running, or the account stays usable until its
+            // current access token expires - which is exactly the gap this exists to close.
+            this.revokeAllRefreshTokens(authUserId);
+        }
+        this.auditLogService.record(new AuditEvent(authUserId,
+                suspended ? AuditAction.ACCOUNT_SUSPEND : AuditAction.ACCOUNT_UNSUSPEND, existing.getEmailAddress(), null));
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void setAdmin(@NonNull final String authUserId, final boolean isAdmin) {
         final AuthUser existing;
@@ -756,6 +862,10 @@ public final class AuthService implements IAuthService {
             existing = this.dataFactory.findById(authUserId, AuthUser.class)
                     .orElseThrow(() -> new IllegalArgumentException("no AuthUser with id " + authUserId));
             this.dataFactory.update(existing.withAdmin(isAdmin));
+            // Recorded here rather than in the calling command: this is the service-level fact,
+            // so it stays recorded however this method is reached.
+            this.auditLogService.record(new AuditEvent(authUserId,
+                    isAdmin ? AuditAction.ADMIN_GRANT : AuditAction.ADMIN_REVOKE, existing.getEmailAddress(), null));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.setAdmin: failed to update admin flag for " + authUserId, e);
         }
@@ -794,7 +904,7 @@ public final class AuthService implements IAuthService {
 
         final RefreshToken pending;
         try {
-            pending = this.dataFactory.findById(refreshToken, RefreshToken.class)
+            pending = this.dataFactory.findById(RefreshToken.keyOf(refreshToken), RefreshToken.class)
                     .orElseThrow(() -> new InvalidRefreshTokenException("invalid or expired refresh token"));
         } catch (final AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.refresh: failed to look up refresh token", e);
@@ -817,7 +927,7 @@ public final class AuthService implements IAuthService {
         }
 
         try {
-            this.dataFactory.delete(refreshToken, RefreshToken.class);
+            this.dataFactory.delete(RefreshToken.keyOf(refreshToken), RefreshToken.class);
         } catch (final DatabaseClientException alreadyRotatedAway) {
             throw new InvalidRefreshTokenException("invalid or expired refresh token");
         }
@@ -825,10 +935,132 @@ public final class AuthService implements IAuthService {
         return this.issueTokens(pending.getAuthUserId());
     }
 
+    /**
+     * Revokes every refresh token issued to {@code authUserId}, returning how many were ended.
+     *
+     * <p>The eviction step a credential change performs. Without it, resetting a password - the
+     * one recovery action a user has when they believe an account is compromised - leaves every
+     * stolen session working: {@link #refresh} checks only expiry, the revoked flag and the
+     * account's existence, never whether the password has changed since, and each refresh mints
+     * another long-lived token. The same applies to a token left behind on a lost device.
+     *
+     * <p>An indexed lookup, not a scan: see {@link RefreshToken#INDEX_AUTH_USER_ID}.
+     *
+     * @param authUserId the account whose sessions to end
+     * @return how many tokens were revoked
+     */
+    public int revokeAllRefreshTokens(@NonNull final String authUserId) {
+        final List<RefreshToken> tokens;
+        try {
+            tokens = this.dataFactory.getEntitiesByIndex(RefreshToken.class, RefreshToken.INDEX_AUTH_USER_ID, authUserId);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@AuthService.revokeAllRefreshTokens: failed to list sessions of " + authUserId, e);
+        }
+        // Live-update connections authenticate once, at open time, so ending the sessions has to
+        // end those too - otherwise a revoked session keeps receiving the account's changes for as
+        // long as its socket stays up.
+        closeLiveUpdateSessionsQuietly(authUserId);
+
+        int revoked = 0;
+        for (final RefreshToken token : tokens) {
+            if (token.isRevoked()) {
+                continue;
+            }
+            try {
+                this.dataFactory.update(token.revoked());
+                revoked++;
+            } catch (final DatabaseClientException | KeyWrapException failed) {
+                // Best-effort per token: one row that will not update must not leave the rest of
+                // the account's sessions alive.
+                CloudDriver.getInstance().getLogger().log(java.util.logging.Level.WARNING,
+                        "@AuthService.revokeAllRefreshTokens: failed to revoke one session of " + authUserId, failed);
+            }
+        }
+        return revoked;
+    }
+
+    /**
+     * Largest number of wrong verification codes one pending row tolerates before it is discarded
+     * and a fresh code must be requested.
+     */
+    private static final int MAX_VERIFICATION_ATTEMPTS = 5;
+
+    /**
+     * Compares a presented verification code against the stored one in constant time.
+     *
+     * @param expected the code this row was issued with
+     * @param presented the code the caller supplied
+     * @return {@code true} if they match
+     */
+    private static boolean verificationCodeMatches(final String expected, final String presented) {
+        if (expected == null || presented == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+                expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                presented.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Records one failed verification against {@code pending}, deleting the row outright once it
+     * has failed {@link #MAX_VERIFICATION_ATTEMPTS} times.
+     *
+     * <p>Best-effort: the caller is about to reject the attempt regardless, and a bookkeeping
+     * failure must not turn a wrong code into a server error.
+     *
+     * @param pending the row with its incremented attempt count already applied
+     * @param primaryKey the row's primary key, for the delete
+     * @param type the row's entity type, for the delete
+     */
+    private void registerFailedVerificationAttempt(final de.lino.database.database.entity.Serialized pending,
+                                                    final String primaryKey, final Class<? extends de.lino.database.database.entity.Serialized> type) {
+        try {
+            if (failedAttemptsOf(pending) >= MAX_VERIFICATION_ATTEMPTS) {
+                this.dataFactory.delete(primaryKey, type);
+                return;
+            }
+            this.dataFactory.update(pending);
+        } catch (final DatabaseClientException | KeyWrapException | RuntimeException bookkeepingFailed) {
+            CloudDriver.getInstance().getLogger().log(java.util.logging.Level.WARNING,
+                    "@AuthService: failed to record a wrong verification code against " + primaryKey, bookkeepingFailed);
+        }
+    }
+
+    /**
+     * @param pending one of the three pending-flow rows
+     * @return how many wrong codes have been presented against it
+     */
+    private static int failedAttemptsOf(final de.lino.database.database.entity.Serialized pending) {
+        if (pending instanceof PendingRegistration registration) return registration.getFailedAttempts();
+        if (pending instanceof PendingPasswordReset reset) return reset.getFailedAttempts();
+        if (pending instanceof PendingEmailChange change) return change.getFailedAttempts();
+        return 0;
+    }
+
+
+    /**
+     * Closes every live-update connection held by {@code authUserId}, if live push is running.
+     *
+     * <p>Best-effort and facet-optional: a deployment without the REST extension has no publisher,
+     * and a connection that will not close must not fail the revocation that asked for it.
+     *
+     * @param authUserId the account whose connections to close
+     */
+    private static void closeLiveUpdateSessionsQuietly(final String authUserId) {
+        try {
+            final de.lino.cloud.api.push.LiveUpdatePublisher publisher =
+                    CloudDriver.getInstance().getServiceContainer().getLiveUpdatePublisher();
+            if (publisher != null) publisher.closeSessionsOf(authUserId);
+        } catch (final RuntimeException closeFailed) {
+            CloudDriver.getInstance().getLogger().log(java.util.logging.Level.WARNING,
+                    "@AuthService: failed to close the live-update sessions of " + authUserId, closeFailed);
+        }
+    }
+
     /** Best-effort delete of an already-invalid {@link RefreshToken} row - {@link #refresh} throws regardless of whether this succeeds. */
     private void deleteRefreshTokenQuietly(final String refreshToken) {
         try {
-            this.dataFactory.delete(refreshToken, RefreshToken.class);
+            this.dataFactory.delete(RefreshToken.keyOf(refreshToken), RefreshToken.class);
         } catch (final DatabaseClientException ignored) {
             // Best-effort cleanup only - the caller is about to throw InvalidRefreshTokenException
             // regardless of whether this delete succeeds.
@@ -846,7 +1078,7 @@ public final class AuthService implements IAuthService {
     public void revokeRefreshToken(@NonNull final String refreshToken) {
         final Optional<RefreshToken> existing;
         try {
-            existing = this.dataFactory.findById(refreshToken, RefreshToken.class);
+            existing = this.dataFactory.findById(RefreshToken.keyOf(refreshToken), RefreshToken.class);
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.revokeRefreshToken: failed to look up refresh token", e);
         }
@@ -858,6 +1090,8 @@ public final class AuthService implements IAuthService {
         } catch (final DatabaseClientException | KeyWrapException e) {
             throw new RuntimeException("@AuthService.revokeRefreshToken: failed to revoke refresh token", e);
         }
+        // Same reasoning as revokeAllRefreshTokens: a logged-out client must stop receiving push.
+        closeLiveUpdateSessionsQuietly(existing.get().getAuthUserId());
     }
 
 }

@@ -37,5 +37,19 @@ async def require_shared_secret(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="CLOUD_DRIVER_INTELLIGENCE_SECRET is not configured - refusing every request",
         )
-    if x_internal_secret is None or not hmac.compare_digest(x_internal_secret, settings.shared_secret):
+    if x_internal_secret is None or not _secret_matches(x_internal_secret, settings.shared_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid shared secret")
+
+
+def _secret_matches(presented: str, expected: str) -> bool:
+    """Constant-time comparison of two secrets, tolerating any bytes in the presented one.
+
+    ``hmac.compare_digest`` raises ``TypeError`` when given ``str`` containing non-ASCII
+    characters, and the framework decodes header values as latin-1 - so a single high byte
+    anywhere in the header raised out of the authentication dependency and answered ``500``
+    instead of ``401``, turning a malformed credential into a server error.
+    """
+    return hmac.compare_digest(
+        presented.encode("utf-8", "surrogateescape"),
+        expected.encode("utf-8"),
+    )

@@ -42,6 +42,26 @@ public final class PendingPasswordReset extends Serialized {
     private final long expiresAtEpochMillis;
 
     /**
+     * How many wrong verification codes have been presented against this row.
+     *
+     * <p>A six-digit code is roughly twenty bits, and without a per-code counter a wrong guess
+     * costs an attacker nothing: the row stays valid for its whole lifetime however many times it
+     * is tried. The address-based rate limiter cannot substitute for this, because it is bound to
+     * the caller rather than to the code. {@code 0} for rows written before this field existed.
+     */
+    private final int failedAttempts;
+
+    /**
+     * A copy of this row with one more failed attempt recorded.
+     *
+     * @return a copy carrying the incremented count; every other field is unchanged
+     */
+    @NotNull
+    public PendingPasswordReset withFailedAttempt() {
+        return copyWithFailedAttempts(this.failedAttempts + 1);
+    }
+
+    /**
      * @param emailAddress the address this pending reset is for, also its {@link #primaryKey()}
      * @param verificationCode the code sent to {@code emailAddress}, expected back verbatim at
      *     {@link AuthService#confirmPasswordReset}
@@ -50,9 +70,31 @@ public final class PendingPasswordReset extends Serialized {
      */
     public PendingPasswordReset(@NotNull final String emailAddress, @NotNull final String verificationCode,
                                  final long expiresAtEpochMillis) {
+        this(emailAddress, verificationCode, expiresAtEpochMillis, 0);
+    }
+
+    /**
+     * The full constructor, carrying an explicit failed-attempt count - used by {@link
+     * #withFailedAttempt()} and by Gson rehydration.
+     *
+     * @param emailAddress the address the reset was requested for, also this entity's primary key
+     * @param verificationCode the code e-mailed to {@code emailAddress}
+     * @param expiresAtEpochMillis when this pending reset stops being usable
+     * @param failedAttempts how many wrong codes have been presented against this row
+     */
+    public PendingPasswordReset(@NotNull final String emailAddress, @NotNull final String verificationCode,
+                                 final long expiresAtEpochMillis, final int failedAttempts) {
         this.emailAddress = Objects.requireNonNull(emailAddress, "@PendingPasswordReset.init: emailAddress cannot be null");
         this.verificationCode = Objects.requireNonNull(verificationCode, "@PendingPasswordReset.init: verificationCode cannot be null");
         this.expiresAtEpochMillis = expiresAtEpochMillis;
+        this.failedAttempts = failedAttempts;
+    }
+
+    /** @param attempts the new failed-attempt count
+     *  @return a copy of this row carrying {@code attempts} */
+    @NotNull
+    private PendingPasswordReset copyWithFailedAttempts(final int attempts) {
+        return new PendingPasswordReset(this.emailAddress, this.verificationCode, this.expiresAtEpochMillis, attempts);
     }
 
     /** @return {@code true} if {@link #expiresAtEpochMillis} is in the past */

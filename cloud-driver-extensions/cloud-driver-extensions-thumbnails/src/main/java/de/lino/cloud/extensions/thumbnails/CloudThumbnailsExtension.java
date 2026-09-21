@@ -4,6 +4,7 @@ import de.lino.cloud.api.event.database.FileChangeListener;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.file.ScanStatus;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
@@ -69,7 +70,17 @@ import java.util.logging.Level;
 public class CloudThumbnailsExtension extends Extension {
 
     /** The only Postgres trigger operation this extension reacts to - a file's bytes never change on an {@code "UPDATE"}. */
-    private static final String INSERT_OPERATION = "INSERT";
+    /**
+     * The Postgres trigger operations that can mean a file now wants a preview it does not have.
+     *
+     * <p>An {@code INSERT} is a new file. An {@code UPDATE} covers the two cases an insert cannot:
+     * a content change, which deletes the stale preview so a fresh one is wanted, and the scan
+     * verdict landing, which is what first makes a file eligible to be decoded at all. Reacting to
+     * both is cheap because {@link #generateThumbnail} returns on metadata alone whenever a
+     * preview already exists, the file is not clean, or it is too large - so a rename or a move
+     * costs two indexed reads and nothing else.
+     */
+    private static final java.util.Set<String> THUMBNAIL_TRIGGERING_OPERATIONS = java.util.Set.of("INSERT", "UPDATE");
 
     /** Bounded pool size for {@link #executor} - small and fixed, deliberately not over-engineered for v1. */
     private static final int THUMBNAIL_EXECUTOR_THREADS = 2;
@@ -126,7 +137,7 @@ public class CloudThumbnailsExtension extends Extension {
         this.executor.submit(this::pruneThumbnailChains);
 
         this.listener = (storedFileId, operation) -> {
-            if (!INSERT_OPERATION.equalsIgnoreCase(operation)) return;
+            if (operation == null || !THUMBNAIL_TRIGGERING_OPERATIONS.contains(operation.toUpperCase(java.util.Locale.ROOT))) return;
             this.executor.submit(() -> this.generateThumbnail(storedFileId));
         };
         this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry().register(this.listener);
@@ -142,6 +153,9 @@ public class CloudThumbnailsExtension extends Extension {
     /** Unregisters {@link #listener} and shuts {@link #executor} down. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.thumbnail.ThumbnailService.class);
         this.shutdown();
     }
 
@@ -181,12 +195,36 @@ public class CloudThumbnailsExtension extends Extension {
      *
      * @param storedFileId the newly-inserted {@link StoredFile}'s id
      */
+    /**
+     * Largest source file this extension will decode, in bytes.
+     *
+     * <p>A thumbnail source has no reason to be large, and every byte above this is risk without
+     * benefit: the decoders below allocate a full raster before producing anything, so an
+     * unbounded source is an unbounded allocation on a worker with no request behind it.
+     */
+    private static final long MAX_THUMBNAIL_SOURCE_BYTES = 64L * 1024 * 1024;
+
     private void generateThumbnail(final String storedFileId) {
         try {
 
             final String key = FileThumbnail.compositeKey(storedFileId, ThumbnailSize.SMALL.name());
             if (this.dataFactory.findById(key, FileThumbnail.class).isPresent()) return;
             if (this.isThumbnailFile(storedFileId)) return;
+
+            // Metadata first, so an oversized or not-yet-scanned file is skipped before its
+            // content is ever pulled into this process.
+            final Optional<StoredFile> metadata = this.dataFactory.findById(storedFileId, StoredFile.class);
+            if (metadata.isEmpty()) return;
+
+            final Long knownSizeBytes = metadata.get().sizeBytesIfKnown();
+            if (knownSizeBytes != null && knownSizeBytes > MAX_THUMBNAIL_SOURCE_BYTES) {
+                return; // nothing worth previewing is this large, and decoding it is pure risk
+            }
+            // Never decode content that has not been judged clean. Image and PDF decoders are
+            // exactly what a malicious file targets, and this runs before any access check, on a
+            // shared worker, with no user having asked for anything. A file that becomes clean
+            // later is re-offered here by the scan verdict's own write.
+            if (metadata.get().scanStatus() != ScanStatus.CLEAN) return;
 
             final Optional<StoredFile> source = this.fileFactory.findById(storedFileId);
             if (source.isEmpty()) return;
@@ -215,7 +253,10 @@ public class CloudThumbnailsExtension extends Extension {
 
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException | IOException e) {
             this.getLogger().log(Level.WARNING, "@CloudThumbnailsExtension.generateThumbnail: failed for file '" + storedFileId + "'", e);
-        } catch (final RuntimeException e) {
+        } catch (final Throwable e) {
+            // Throwable, not RuntimeException: an OutOfMemoryError raised by a decoder used to
+            // vanish here entirely, which is why this class of failure went unnoticed. A preview
+            // is never worth failing anything else over, but it must at least be visible.
             this.getLogger().log(Level.WARNING, "@CloudThumbnailsExtension.generateThumbnail: unexpected failure for file '" + storedFileId + "'", e);
         }
     }

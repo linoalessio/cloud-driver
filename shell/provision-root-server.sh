@@ -42,6 +42,19 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# --rotate-credentials deliberately re-generates the Postgres and Redis passwords AND rewrites the
+# config files that hold them, together. Without it this script never rotates a credential it
+# cannot also write down, which is what keeps a re-run safe.
+ROTATE_CREDENTIALS=0
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --rotate-credentials) ROTATE_CREDENTIALS=1 ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+set -- "${ARGS[@]:-}"
+
 REMOTE_HOST="${1:-}"
 API_DOMAIN="${2:-}"
 REMOTE_DIR="/home/cloud"
@@ -50,7 +63,7 @@ REMOTE_EXTENSIONS_DIR="$REMOTE_DIR/extensions"
 SWAP_FILE="/swapfile"
 SWAP_SIZE_MB=4096
 
-[ -n "$REMOTE_HOST" ] || die "usage: $0 <ssh-host-or-alias> [api-domain]"
+[ -n "$REMOTE_HOST" ] || die "usage: $0 <ssh-host-or-alias> [api-domain] [--rotate-credentials]"
 
 log "Checking SSH connectivity and root access on $REMOTE_HOST"
 ssh -o BatchMode=yes -o ConnectTimeout=10 "$REMOTE_HOST" 'id -u' >/tmp/provision-uid.$$ 2>/dev/null
@@ -122,7 +135,19 @@ ssh "$REMOTE_HOST" "
 
 # --- 5. PostgreSQL -------------------------------------------------------------------------------------
 log "[5/9] Creating PostgreSQL role + database (idempotent)"
-PG_PASSWORD="$(ssh "$REMOTE_HOST" 'openssl rand -base64 24' | tr -d '\n')"
+# Generate a new password only when no config file already holds one. Rotating it on every run
+# while step 8 deliberately leaves an existing postgres-database.json untouched is what made a
+# second run leave the deployment unable to connect - the opposite of the idempotence promised at
+# the top of this script. Pass --rotate-credentials to deliberately rotate both together.
+if [ "$ROTATE_CREDENTIALS" = "1" ] || ! ssh "$REMOTE_HOST" "[ -f '$REMOTE_CONFIG_DIR/postgres-database.json' ]"; then
+    PG_PASSWORD="$(ssh "$REMOTE_HOST" 'openssl rand -hex 24' | tr -d '\n')"
+    PG_PASSWORD_IS_NEW=1
+else
+    log "postgres-database.json already exists - keeping the password it holds (re-run with --rotate-credentials to change it)"
+    PG_PASSWORD=""
+    PG_PASSWORD_IS_NEW=0
+fi
+if [ "$PG_PASSWORD_IS_NEW" = "1" ]; then
 ssh "$REMOTE_HOST" "
     set -e
     sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
@@ -139,6 +164,12 @@ SQL
     sudo -u postgres psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_database WHERE datname='cloud_driver'\" | grep -q 1 \
         || sudo -u postgres psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE cloud_driver OWNER cloud_driver;\"
     sudo -u postgres psql -v ON_ERROR_STOP=1 -c \"ALTER DATABASE cloud_driver OWNER TO cloud_driver;\"
+"
+fi
+ssh "$REMOTE_HOST" "
+    set -e
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_database WHERE datname='cloud_driver'\" | grep -q 1 \
+        || sudo -u postgres psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE cloud_driver OWNER cloud_driver;\"
 "
 log "PostgreSQL role 'cloud_driver' / database 'cloud_driver' ready (owner = role, per requirements.md #2.1)"
 
@@ -169,7 +200,17 @@ log "clamd bound to 127.0.0.1:3310 only - freshclams first virus-DB download may
 
 # --- 7. Redis ----------------------------------------------------------------------------------------
 log "[7/9] Configuring Redis (loopback-only, password-protected)"
-REDIS_PASSWORD="$(ssh "$REMOTE_HOST" 'openssl rand -base64 24' | tr -d '\n')"
+# Same rule as the Postgres password above - and hex rather than base64, so the value can never
+# contain the '/' that the sed substitution below uses as its delimiter.
+if [ "$ROTATE_CREDENTIALS" = "1" ] || ! ssh "$REMOTE_HOST" "[ -f '$REMOTE_CONFIG_DIR/redis-database.json' ]"; then
+    REDIS_PASSWORD="$(ssh "$REMOTE_HOST" 'openssl rand -hex 24' | tr -d '\n')"
+    REDIS_PASSWORD_IS_NEW=1
+else
+    log "redis-database.json already exists - keeping the password it holds (re-run with --rotate-credentials to change it)"
+    REDIS_PASSWORD=""
+    REDIS_PASSWORD_IS_NEW=0
+fi
+if [ "$REDIS_PASSWORD_IS_NEW" = "1" ]; then
 ssh "$REMOTE_HOST" "
     set -e
     sed -i 's/^bind .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf
@@ -181,13 +222,15 @@ ssh "$REMOTE_HOST" "
     systemctl enable --quiet redis-server
     systemctl restart redis-server
 "
+fi
 
 # --- 8. app directory + config file scaffolding -------------------------------------------------------
 log "[8/9] Scaffolding $REMOTE_DIR (matches shell/deploy-cloud.sh's expected layout)"
 JWT_KEY="$(ssh "$REMOTE_HOST" 'openssl rand -base64 32' | tr -d '\n')"
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_EXTENSIONS_DIR' '$REMOTE_CONFIG_DIR'"
 
-if ssh "$REMOTE_HOST" "[ -f '$REMOTE_CONFIG_DIR/postgres-database.json' ]"; then
+# Rewritten whenever the password was just rotated, so the file and the server can never disagree.
+if [ "$PG_PASSWORD_IS_NEW" != "1" ]; then
     log "postgres-database.json already exists on $REMOTE_HOST - leaving it untouched"
 else
     ssh "$REMOTE_HOST" "cat > '$REMOTE_CONFIG_DIR/postgres-database.json'" <<JSON
@@ -204,7 +247,7 @@ JSON
     log "wrote $REMOTE_CONFIG_DIR/postgres-database.json"
 fi
 
-if ssh "$REMOTE_HOST" "[ -f '$REMOTE_CONFIG_DIR/redis-database.json' ]"; then
+if [ "$REDIS_PASSWORD_IS_NEW" != "1" ]; then
     log "redis-database.json already exists on $REMOTE_HOST - leaving it untouched"
 else
     ssh "$REMOTE_HOST" "cat > '$REMOTE_CONFIG_DIR/redis-database.json'" <<JSON
@@ -264,7 +307,13 @@ if [ -n "$API_DOMAIN" ]; then
         ssh "$REMOTE_HOST" "cat >> /etc/caddy/Caddyfile" <<CADDY
 
 $API_DOMAIN {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8080 {
+        # Overwrite rather than append: reverse_proxy's default adds the peer address to
+        # whatever the client sent, which leaves a client-controlled value in the header the
+        # backend's rate limiter reads. Setting it to the real peer makes the header
+        # trustworthy no matter what the client sends.
+        header_up X-Forwarded-For {remote_host}
+    }
 }
 CADDY
         ssh "$REMOTE_HOST" "caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && systemctl reload caddy || systemctl restart caddy"

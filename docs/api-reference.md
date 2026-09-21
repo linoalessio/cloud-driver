@@ -57,8 +57,8 @@ sequenceDiagram
 | `/files` | GET | List the caller's files (optionally scoped to a folder). Without `?limit=`, the bare-array response is capped at 500 items — use cursor pagination (`?limit=`/`?cursor=`) for complete listings |
 | `/files/{id}` | GET | Fetch one file's metadata + content |
 | `/files/{id}/content` | GET | Stream a file's content directly (no JSON/base64 wrapping). Conditional requests supported: the response carries `ETag` (the content checksum, quoted) and `Cache-Control: private, must-revalidate`; sending it back as `If-None-Match` answers `304 Not Modified` with no body when the content is unchanged |
-| `/files/{id}/content` | PUT | Replace a file's content in place (raw body; optional `?expectedUpdatedAt=` optimistic-concurrency precondition — a mismatch returns `409` with a "conflicted copy" created instead of silently overwriting) |
-| `/files/{id}/content` | PATCH | Chunk-level content update: JSON body `{"totalSizeBytes", "changedChunks": [{"index", "contentBase64"}]}` sends only the 1 MiB chunks that changed (diffed against `GET /files/{id}/chunk-manifest`); same access rule, `?expectedUpdatedAt=` precondition/`409` conflicted-copy handling, versioning capture, and reindexing as `PUT`. `400` when the chunk set no longer lines up with the current content (stale manifest — re-fetch it or fall back to a full `PUT`) |
+| `/files/{id}/content` | PUT | Replace a file's content in place (raw body; optional `?expectedUpdatedAt=` optimistic-concurrency precondition — a mismatch returns `409` with a "conflicted copy" created instead of silently overwriting). With content scanning enabled the file returns to a pending verdict and is unreadable until the rescan completes |
+| `/files/{id}/content` | PATCH | Chunk-level content update: JSON body `{"totalSizeBytes", "changedChunks": [{"index", "contentBase64"}]}` sends only the 1 MiB chunks that changed (diffed against `GET /files/{id}/chunk-manifest`); same access rule, `?expectedUpdatedAt=` precondition/`409` conflicted-copy handling, versioning capture, reindexing and scan-verdict reset as `PUT`. `400` when the chunk set no longer lines up with the current content (stale manifest — re-fetch it or fall back to a full `PUT`) |
 | `/files/{id}/chunk-manifest` | GET | The file's current per-chunk plaintext SHA-256 manifest (`{"chunkSizeBytes", "totalSizeBytes", "chunkHashes": ["<hex>", ...]}`) — compare positionally against a local copy to find what a `PATCH` must send. `404` when no manifest exists (dedup alias, presigned-upload file, or content last written before manifests existed) — fall back to a full upload |
 | `/files/{id}/thumbnail` | GET | A small JPEG preview (images and PDF first pages), if the thumbnails extension is running |
 | `/files/{id}/folder` | PUT | Move a file |
@@ -76,7 +76,7 @@ Available when the versioning extension is running (`503` otherwise).
 |---|---|---|
 | `/files/{id}/versions` | GET | List a file's captured prior versions |
 | `/files/{id}/versions/{n}/content` | GET | Stream one version's content. Same `ETag`/`If-None-Match`/`304` conditional handling as `GET /files/{id}/content` (a version's content is immutable once captured) |
-| `/files/{id}/versions/{n}/restore` | POST | Restore a version (the current content is captured as a new version first) |
+| `/files/{id}/versions/{n}/restore` | POST | Restore a version (the current content is captured as a new version first). Counts as a content change: with scanning enabled the file returns to a pending verdict and is rescanned |
 
 ## Trash
 
@@ -103,10 +103,10 @@ Read-only, files-only, unauthenticated on the download side.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/files/{id}/public-link` | POST | Create a public link (owner-only; optional expiry) |
+| `/files/{id}/public-link` | POST | Create a public link (owner-only; optional expiry). Refused while the file's scan verdict is not clean |
 | `/files/{id}/public-link` | GET | List a file's active public links (owner-only) |
 | `/files/{id}/public-link/{token}` | DELETE | Revoke a public link (owner-only) |
-| `/public/files/{token}` | GET | **Unauthenticated** — stream the linked file's content |
+| `/public/files/{token}` | GET | **Unauthenticated** — stream the linked file's content. A link to a file that is not clean stops resolving, reporting the same invalid-link error as an expired or unknown token |
 
 ## Search and intelligence
 
@@ -182,10 +182,14 @@ client. Both begin responses carry an `encryption` object alongside the URL:
   v2 streaming AES-GCM layout the server writes) and `PUT`s ciphertext only.
 - `POST /files/{id}/complete-upload` verifies the stored object's real length equals
   `objectLengthBytes` exactly, rejecting and deleting the object otherwise. `checksumSha256`
-  in its body is always computed over the *plaintext*.
+  in its body is always computed over the *plaintext*. It also requires a pending ticket issued
+  to the calling account and refuses an `{id}` that already has a file, so a completion can only
+  ever create a file, never claim or overwrite someone else's. Both refusals return the same
+  not-found-shaped error.
 - `GET /files/{id}/download-url` returns `encryption` with `contentKeyBase64` (the recovered
   raw key), `associatedDataPrefix`, and `headerLengthBytes` (leading bytes to skip); the client
-  fetches ciphertext directly and decrypts locally.
+  fetches ciphertext directly and decrypts locally. Like every other content route, it refuses a
+  file whose scan verdict is not clean.
 
 `encryption` is `null` only for legacy objects uploaded before client-side encryption existed
 (on download) — clients must treat that as "use the fetched bytes as-is."

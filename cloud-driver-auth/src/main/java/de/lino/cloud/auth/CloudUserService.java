@@ -26,6 +26,8 @@ import de.lino.cloud.api.file.PublicFileLinkSummary;
 import de.lino.cloud.api.file.ScanStatus;
 import de.lino.cloud.api.file.SharePermission;
 import de.lino.cloud.api.scan.ContentScanService;
+import de.lino.cloud.api.thumbnail.ThumbnailService;
+import de.lino.cloud.api.versioning.FileVersioningService;
 import de.lino.cloud.api.intelligence.DuplicateFileGroup;
 import de.lino.cloud.api.intelligence.DuplicateGroup;
 import de.lino.cloud.api.intelligence.IntelligenceDocument;
@@ -61,6 +63,7 @@ import de.lino.cloud.api.s3storage.ResumableUploadService;
 import de.lino.cloud.api.user.GranteeAccountNotFoundException;
 import de.lino.cloud.api.user.ICloudUser;
 import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.user.ICloudUserService.PublicFileLinkTarget;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.CursorPage;
 import de.lino.cloud.api.versioning.FileVersioningService;
@@ -371,10 +374,16 @@ public final class CloudUserService implements ICloudUserService {
         // Bypasses the trash entirely (hardDeleteFile), regardless of each file's current
         // deleteFile/restoreFile trash state - this operation's whole point is to actually empty
         // the account, not move everything into (or leave it sitting in) the trash.
-        for (final StoredFileOwnership ownership : this.ownedFileOwnershipsIncludingDeleted(authUserId)) {
+        final List<StoredFileOwnership> owned = this.ownedFileOwnershipsIncludingDeleted(authUserId);
+        for (final StoredFileOwnership ownership : owned) {
             this.hardDeleteFile(authUserId, ownership);
         }
         this.deleteAllOwnedFolders(authUserId);
+        // Recorded at the service layer, so the fact survives however this is reached. Emptying
+        // an account is irreversible and bypasses the trash; nothing recorded that it happened,
+        // while a file rename did.
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.ACCOUNT_RESET, authUserId,
+                owned.size() + " file(s) destroyed"));
     }
 
     /**
@@ -422,6 +431,50 @@ public final class CloudUserService implements ICloudUserService {
         // file that reused the id - which never happens (ids are random UUIDs) - but tidy it
         // up anyway rather than accreting rows forever.
         this.deleteChunkManifestQuietly(storedFileId);
+        // Versions and thumbnails hold content of their own, in StoredFile rows with no ownership
+        // row of their own, so nothing else in the system ever collects them: the S3 audit counts
+        // them as referenced (a live row does point at them) and the retention sweeps only ever
+        // look at files that still exist. Without this, a deletion leaves the user's content in
+        // the object store indefinitely - billed, and still there after they asked for it to go.
+        deleteAllVersionsQuietly(storedFileId);
+        invalidateThumbnailsQuietly(storedFileId);
+    }
+
+    /**
+     * Removes every captured version of {@code storedFileId}, if this deployment runs versioning.
+     *
+     * <p>Best-effort and facet-optional, like every other cleanup {@link #hardDeleteFile} performs:
+     * an absent extension, or a failure inside one, must never abort the deletion itself.
+     *
+     * @param storedFileId the file being permanently removed
+     */
+    private static void deleteAllVersionsQuietly(final String storedFileId) {
+        try {
+            final FileVersioningService versioningService = CloudDriver.getInstance().getServiceContainer().getFileVersioningService();
+            if (versioningService != null) versioningService.deleteAllVersions(storedFileId);
+        } catch (final RuntimeException cleanupFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to remove the versions of deleted file '" + storedFileId + "'", cleanupFailed);
+        }
+    }
+
+    /**
+     * Drops every cached thumbnail of {@code storedFileId}, if this deployment runs thumbnails.
+     *
+     * <p>Serves both a permanent deletion (the thumbnail's own content would otherwise outlive its
+     * file) and a content change (a stale preview of bytes that are no longer there). Best-effort
+     * and facet-optional for the same reason as {@link #deleteAllVersionsQuietly}.
+     *
+     * @param storedFileId the file whose thumbnails are no longer valid
+     */
+    private static void invalidateThumbnailsQuietly(final String storedFileId) {
+        try {
+            final ThumbnailService thumbnailService = CloudDriver.getInstance().getServiceContainer().getThumbnailService();
+            if (thumbnailService != null) thumbnailService.invalidateThumbnails(storedFileId);
+        } catch (final RuntimeException cleanupFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to invalidate the thumbnails of '" + storedFileId + "'", cleanupFailed);
+        }
     }
 
     /**
@@ -1120,18 +1173,31 @@ public final class CloudUserService implements ICloudUserService {
                                                        @NonNull final String checksumSha256Hex, @Nullable final String folderId) {
         final PresignedTransferService presignedTransferService = requirePresignedTransferService();
 
+        // A completion creates a file, it never updates one: dataFactory.register is an upsert, so
+        // without this a caller who knows any other account's fileId could overwrite that row (and
+        // null out its wrapped content key, making the content permanently undecryptable).
+        if (this.findStoredFileMetadata(fileId).isPresent()) {
+            throw new IllegalArgumentException("@CloudUserService.completePresignedUpload: no pending upload under '" + fileId + "'");
+        }
+
+        // The ticket's pending row (see beginPresignedUpload) carries the wrapped content key and
+        // the declared plaintext size, and binds the upload to the account that started it. Same
+        // "don't confirm existence to a non-owner" idiom requireOwnSession uses: an unknown id and
+        // someone else's ticket are one indistinguishable failure.
+        final PendingPresignedUpload pendingTicket = this.findPendingPresignedUpload(fileId)
+                .filter(row -> row.getAuthUserId().equals(authUserId))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "@CloudUserService.completePresignedUpload: no pending upload under '" + fileId + "'"));
+        final String contentKeyHeaderBase64 = pendingTicket.getContentKeyHeaderBase64();
+
+        // Only now that the caller is known to own this upload is it safe to touch the store -
+        // otherwise this doubles as an object-existence oracle for any id.
         final long confirmedObjectBytes;
         try {
             confirmedObjectBytes = presignedTransferService.headObjectContentLength(fileId);
         } catch (final ObjectStorageException e) {
             throw new IllegalArgumentException("@CloudUserService.completePresignedUpload: no object uploaded yet under '" + fileId + "'", e);
         }
-
-        // An encrypted ticket's pending row (see beginPresignedUpload) carries the wrapped content
-        // key and the declared plaintext size; its absence means a legacy/unencrypted ticket whose
-        // object is plaintext and whose real size is simply what the store confirmed.
-        final PendingPresignedUpload pendingTicket = this.findPendingPresignedUpload(fileId).orElse(null);
-        final String contentKeyHeaderBase64 = pendingTicket == null ? null : pendingTicket.getContentKeyHeaderBase64();
 
         final long realSizeBytes;
         if (contentKeyHeaderBase64 != null) {
@@ -1171,10 +1237,16 @@ public final class CloudUserService implements ICloudUserService {
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final Instant now = Instant.now();
-        final StoredFile storedFile = new StoredFile(
+        StoredFile storedFile = new StoredFile(
                 fileId, fileName, realSizeBytes, new FileChecksum(HashAlgorithm.SHA_256, checksumSha256Hex), now, now, fileId,
                 contentKeyHeaderBase64
         );
+        // Direct-transfer content IS scanned: the register below is an INSERT, which is exactly
+        // what the scan listener reacts to, and a content-key-protected object is resolvable
+        // server-side. Without this stamp the row would read back as CLEAN and be downloadable,
+        // shareable and publishable for the whole duration of the scan - on the very path the
+        // desktop and mobile clients try first.
+        if (isContentScanServicePublished()) storedFile = storedFile.withScanStatus(ScanStatus.PENDING);
 
         try {
             this.dataFactory.register(storedFile);
@@ -1215,10 +1287,8 @@ public final class CloudUserService implements ICloudUserService {
         indexFileForIntelligence(authUserId, storedFile, null);
         dispatchWebhookEvent(authUserId, WebhookEventType.FILE_UPLOADED, fileId);
 
-        // Direct-transfer (presigned) content is never scanned - see ContentScanService's own
-        // Javadoc: content scanning only triggers off a server-mediated upload's own INSERT.
         return new StoredFileSummary(fileId, fileName, storedFile.contentType(), realSizeBytes,
-                now.toEpochMilli(), now.toEpochMilli(), folderId, ScanStatus.CLEAN.name());
+                now.toEpochMilli(), now.toEpochMilli(), folderId, storedFile.scanStatus().name());
     }
 
     /** {@inheritDoc} */
@@ -1227,11 +1297,10 @@ public final class CloudUserService implements ICloudUserService {
     public PresignedDownloadTicket beginPresignedDownload(@NonNull final String authUserId, @NonNull final String storedFileId) {
         final PresignedTransferService presignedTransferService = requirePresignedTransferService();
 
-        final StoredFileOwnership ownership = this.tryOwnedFile(authUserId, storedFileId)
-                .orElseGet(() -> this.requireSharedFileAccess(authUserId, storedFileId));
-        if (ownership.isDeleted()) {
-            throw new IllegalArgumentException("@CloudUserService.beginPresignedDownload: " + authUserId + " does not own or have shared access to " + storedFileId);
-        }
+        // The shared chokepoint, not a hand-copied owned-or-shared pair: it applies the same
+        // ownership and trash checks plus the scan gate, so this route cannot drift out of step
+        // with every other content read the way a duplicated check did.
+        final StoredFileOwnership ownership = this.requireFileAccess(authUserId, storedFileId, "beginPresignedDownload");
 
         final StoredFile file;
         try {
@@ -1390,10 +1459,15 @@ public final class CloudUserService implements ICloudUserService {
      * final object stream (ciphertext when client-side encryption applies). 8 MiB: comfortably
      * above S3's 5 MiB non-final-part minimum, small enough that a lost part costs little to
      * re-send. Deliberately <em>not</em> tied to {@link Constraints#CONTENT_CHUNK_SIZE_BYTES}
-     * arithmetic: the chunked encryption is deterministic per issued key (same key, same nonce
-     * base → identical ciphertext), so a resuming client regenerates any byte range exactly -
-     * part boundaries need no chunk alignment for correctness, and the object assembled from
-     * parts is byte-identical to a single-{@code PUT} upload of the same stream.
+     * arithmetic: the chunked encryption is deterministic per issued key - the client derives the
+     * nonce base from that key rather than drawing it at random, so the same key over the same
+     * plaintext yields identical ciphertext - and a resuming client therefore regenerates any byte
+     * range exactly. Part boundaries need no chunk alignment for correctness, and the object
+     * assembled from parts is byte-identical to a single-{@code PUT} upload of the same stream.
+     * That determinism is the property a resume depends on, and it holds only while the source
+     * file is unchanged: a client resuming against different content would splice two encryptions
+     * together, which is why the SDK checks the object's length against the session's before
+     * uploading anything.
      */
     public static final long RESUMABLE_PART_SIZE_BYTES = 8L * 1024 * 1024;
 
@@ -1432,13 +1506,28 @@ public final class CloudUserService implements ICloudUserService {
             return ResumableUploadBegin.deduplicated(deduplicated);
         }
 
+        // Open sessions are the account's outstanding claim on the bucket: their bytes are real
+        // and billed, but nothing charges them until completion, which an abusive client never
+        // calls. Counting and summing them here is what makes the quota mean anything on this
+        // path, and it needs no refund bookkeeping - a completed, aborted or purged session drops
+        // its row, and with it its reservation.
+        final List<PendingPresignedUpload> openSessions = this.openSessionsOf(authUserId);
+        if (openSessions.size() >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+            throw new IllegalStateException("@CloudUserService.beginResumableUpload: " + authUserId + " already has "
+                    + openSessions.size() + " open upload session(s) - finish or abort one before starting another");
+        }
+        final long reservedBytes = openSessions.stream()
+                .mapToLong(row -> row.getDeclaredSizeBytes() == null ? 0 : row.getDeclaredSizeBytes())
+                .sum();
+
         final ICloudUser cloudUser = this.getOrCreate(authUserId);
         // Soft check only, exactly like beginPresignedUpload's - completion re-verifies against
-        // the store's confirmed object length.
-        if (cloudUser.isUploadLimitReached(sizeBytes)) {
+        // the store's confirmed object length - but counting what this account has already
+        // reserved, so N concurrent sessions cannot each pass a check the others invalidate.
+        if (cloudUser.isUploadLimitReached(reservedBytes + sizeBytes)) {
             recordMetric(MetricsRecorder::recordUploadQuotaRejected);
             throw new UploadQuotaExceededException(
-                    authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
+                    authUserId, cloudUser.getCurrentUploadedBytes(), reservedBytes + sizeBytes, cloudUser.getMaxBytesToUpload());
         }
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
@@ -1465,6 +1554,15 @@ public final class CloudUserService implements ICloudUserService {
             totalObjectBytes = sizeBytes;
         }
 
+        // The part size is fixed, so the object length decides the part count - and the store
+        // refuses a part number above MAX_MULTIPART_PARTS. Refuse here rather than hand back a
+        // ticket whose part count the client could never fill, failing only at assembly.
+        if (partCountFor(totalObjectBytes) > MAX_MULTIPART_PARTS) {
+            throw new IllegalArgumentException("@CloudUserService.beginResumableUpload: " + sizeBytes
+                    + " bytes needs more than the " + MAX_MULTIPART_PARTS + " parts a multipart upload allows at "
+                    + RESUMABLE_PART_SIZE_BYTES + "-byte parts - this deployment cannot store an object that large");
+        }
+
         final String uploadId = resumable.createMultipartUpload(fileId);
         // Mandatory, like the encrypted single-PUT ticket's tracking: this row is the only
         // durable carrier of BOTH the wrapped content key and the store's uploadId - losing
@@ -1489,6 +1587,7 @@ public final class CloudUserService implements ICloudUserService {
     public ResumableUploadStatus getResumableUploadStatus(@NonNull final String authUserId, @NonNull final String fileId) {
         final ResumableUploadService resumable = requireResumableUploadService();
         final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
+        this.touchSessionQuietly(session);
 
         final List<Integer> uploadedParts;
         try {
@@ -1499,14 +1598,9 @@ public final class CloudUserService implements ICloudUserService {
 
         final long declaredSizeBytes = session.getDeclaredSizeBytes() == null ? 0 : session.getDeclaredSizeBytes();
         final PresignedUploadEncryption encryption;
-        final long totalObjectBytes;
+        final long totalObjectBytes = this.totalObjectBytesFor(session);
         if (session.getContentKeyHeaderBase64() != null) {
-            if (this.contentKeyService == null) {
-                throw new IllegalStateException("@CloudUserService.getResumableUploadStatus: session '" + fileId
-                        + "' carries a content key but no ContentKeyService is configured");
-            }
             final byte[] header = Base64.getDecoder().decode(session.getContentKeyHeaderBase64());
-            totalObjectBytes = this.contentKeyService.objectLength(header.length, declaredSizeBytes);
             final byte[] keyMaterial;
             try {
                 keyMaterial = this.contentKeyService.recoverContentKey(header);
@@ -1517,7 +1611,6 @@ public final class CloudUserService implements ICloudUserService {
                     this.contentKeyService.associatedDataPrefix(fileId), this.contentKeyService.chunkSizeBytes(), totalObjectBytes);
         } else {
             encryption = null;
-            totalObjectBytes = declaredSizeBytes;
         }
 
         return new ResumableUploadStatus(fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes),
@@ -1530,8 +1623,15 @@ public final class CloudUserService implements ICloudUserService {
     public PresignedUpload presignResumableUploadPart(@NonNull final String authUserId, @NonNull final String fileId, final int partNumber) {
         final ResumableUploadService resumable = requireResumableUploadService();
         final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
-        if (partNumber < 1) {
-            throw new IllegalArgumentException("@CloudUserService.presignResumableUploadPart: partNumber must be >= 1, got " + partNumber);
+        this.touchSessionQuietly(session);
+        // Bounded from above as well as below. Unbounded, one session could presign part numbers
+        // far past its own object's geometry, and since each presigned part URL carries no signed
+        // content length, every one of them accepts up to the store's per-part maximum - bytes
+        // that are never charged, because the attacker simply never calls complete.
+        final int partCount = partCountFor(this.totalObjectBytesFor(session));
+        if (partNumber < 1 || partNumber > partCount) {
+            throw new IllegalArgumentException("@CloudUserService.presignResumableUploadPart: partNumber must be between 1 and "
+                    + partCount + " for session '" + fileId + "', got " + partNumber);
         }
         return resumable.presignPart(fileId, session.getMultipartUploadId(), partNumber, PRESIGNED_URL_EXPIRY);
     }
@@ -1557,11 +1657,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final ObjectStorageException e) {
             throw new RuntimeException("@CloudUserService.completeResumableUpload: failed to list parts for '" + fileId + "'", e);
         }
-        final long declaredSizeBytes = session.getDeclaredSizeBytes() == null ? 0 : session.getDeclaredSizeBytes();
-        final long totalObjectBytes = session.getContentKeyHeaderBase64() == null ? declaredSizeBytes
-                : this.contentKeyService == null ? -1
-                : this.contentKeyService.objectLength(Base64.getDecoder().decode(session.getContentKeyHeaderBase64()).length, declaredSizeBytes);
-        final int expectedParts = partCountFor(totalObjectBytes);
+        final int expectedParts = partCountFor(this.totalObjectBytesFor(session));
         if (uploadedParts.size() < expectedParts) {
             throw new IllegalArgumentException("@CloudUserService.completeResumableUpload: session '" + fileId + "' holds "
                     + uploadedParts.size() + " of " + expectedParts + " parts - upload the missing parts first (see getResumableUploadStatus)");
@@ -1593,9 +1689,86 @@ public final class CloudUserService implements ICloudUserService {
         untrackPendingPresignedUploadQuietly(fileId);
     }
 
+    /**
+     * Moves {@code session}'s activity stamp to now, so the purge sweep ages a live session from
+     * its last use rather than from when it began.
+     *
+     * <p>Best-effort: this is a liveness hint, not part of the upload's correctness, and a failed
+     * write must never fail the part presign or status poll that triggered it. The worst outcome
+     * of a lost update is that the session ages from a slightly older stamp.
+     *
+     * @param session the session row to stamp
+     */
+    private void touchSessionQuietly(final PendingPresignedUpload session) {
+        try {
+            this.dataFactory.update(session.withLastActivityAt(System.currentTimeMillis()));
+        } catch (final DatabaseClientException | KeyWrapException | RuntimeException touchFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.FINE,
+                    "@CloudUserService: failed to refresh the activity stamp of upload session '" + session.getFileId() + "'", touchFailed);
+        }
+    }
+
     /** How many {@link #RESUMABLE_PART_SIZE_BYTES}-sized parts {@code totalObjectBytes} splits into - at least one, even for an empty object. */
     private static int partCountFor(final long totalObjectBytes) {
         return (int) Math.max(1, (totalObjectBytes + RESUMABLE_PART_SIZE_BYTES - 1) / RESUMABLE_PART_SIZE_BYTES);
+    }
+
+    /**
+     * S3's hard ceiling on parts in one multipart upload. At {@link #RESUMABLE_PART_SIZE_BYTES}
+     * this caps a session at 80 GiB - {@link #beginResumableUpload} refuses anything larger up
+     * front rather than handing back a part count the client could never fill.
+     */
+    private static final int MAX_MULTIPART_PARTS = 10_000;
+
+    /**
+     * How many resumable sessions one account may hold open at once. A real client has one, or a
+     * few when uploading in parallel; an unbounded number is how a single account can park an
+     * arbitrary volume of billed, un-quota-counted parts in the bucket.
+     */
+    private static final int MAX_OPEN_SESSIONS_PER_ACCOUNT = 8;
+
+    /**
+     * The stored object's total length for a session row - the ciphertext length under the issued
+     * key for an encrypted session, the declared plaintext size otherwise.
+     *
+     * <p>The one place this arithmetic lives: it decides the part count a client is told to fill,
+     * the part numbers {@link #presignResumableUploadPart} will sign, and the completeness check
+     * at assembly, so the three must never disagree.
+     *
+     * @param session the session row to measure
+     * @return the total object length in bytes
+     */
+    private long totalObjectBytesFor(final PendingPresignedUpload session) {
+        final long declaredSizeBytes = session.getDeclaredSizeBytes() == null ? 0 : session.getDeclaredSizeBytes();
+        if (session.getContentKeyHeaderBase64() == null) {
+            return declaredSizeBytes;
+        }
+        if (this.contentKeyService == null) {
+            throw new IllegalStateException("@CloudUserService: session '" + session.getFileId()
+                    + "' carries a content key but no ContentKeyService is configured");
+        }
+        final int headerLengthBytes = Base64.getDecoder().decode(session.getContentKeyHeaderBase64()).length;
+        return this.contentKeyService.objectLength(headerLengthBytes, declaredSizeBytes);
+    }
+
+    /**
+     * Every still-open resumable session belonging to {@code authUserId} - an indexed lookup, not
+     * a scan over every pending upload in the deployment.
+     *
+     * @param authUserId the account to look up
+     * @return that account's open sessions, never {@code null}
+     */
+    @NonNull
+    private List<PendingPresignedUpload> openSessionsOf(final String authUserId) {
+        try {
+            return this.dataFactory
+                    .getEntitiesByIndex(PendingPresignedUpload.class, PendingPresignedUpload.INDEX_AUTH_USER_ID, authUserId)
+                    .stream()
+                    .filter(row -> row.getMultipartUploadId() != null)
+                    .toList();
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            throw new RuntimeException("@CloudUserService: failed to list open upload sessions for " + authUserId, e);
+        }
     }
 
     /**
@@ -1999,6 +2172,23 @@ public final class CloudUserService implements ICloudUserService {
         final int chunkSize = Constraints.CONTENT_CHUNK_SIZE_BYTES;
         final int newChunkCount = FileChunkManifest.chunkCountFor(newTotalSizeBytes, chunkSize);
         final int oldChunkCount = FileChunkManifest.chunkCountFor(oldContent.length, chunkSize);
+
+        // The new content is assembled from the old bytes plus the chunks this request actually
+        // carries, so a declared size larger than both together cannot be satisfied by any chunk
+        // set - and must be rejected *before* it is used as an allocation size, not by the
+        // consistency loop below. Otherwise a ~1.4 MB request declaring Integer.MAX_VALUE
+        // allocates and zero-fills 2 GiB before failing. Computed in long arithmetic: in int it
+        // overflows and reintroduces the hole.
+        final long maxPlausibleSizeBytes = (long) oldContent.length + (long) changedChunks.size() * chunkSize;
+        if (newTotalSizeBytes > maxPlausibleSizeBytes) {
+            throw new IllegalArgumentException("@CloudUserService.patchFileContent: newTotalSizeBytes " + newTotalSizeBytes
+                    + " exceeds the " + maxPlausibleSizeBytes + " bytes the current content plus the supplied chunks can produce"
+                    + " - the client's manifest is stale");
+        }
+        // Quota is deliberately left to replaceFileContent below, which resolves the file's real
+        // owner (a patch may come from an EDIT grantee, and the bytes are charged to whoever
+        // stores them). Bounding the allocation above is what makes that ordering safe: the array
+        // can no longer exceed the current content plus the bytes this request carried.
         final byte[] newContent = new byte[(int) newTotalSizeBytes];
 
         for (int chunk = 0; chunk < newChunkCount; chunk++) {
@@ -2286,6 +2476,15 @@ public final class CloudUserService implements ICloudUserService {
         if (ownership.isDeleted()) {
             throw new IllegalArgumentException("@CloudUserService.createPublicFileLink: cannot create a public link for trashed file " + fileId);
         }
+        // Refuse at mint time as well as at resolve time: the caller here is the authenticated
+        // owner, so unlike the anonymous resolve this can say why, and it fails visibly instead of
+        // handing out a token that will never resolve.
+        final ScanStatus scanStatus = this.findStoredFileMetadata(fileId)
+                .map(StoredFile::scanStatus)
+                .orElse(ScanStatus.CLEAN);
+        if (scanStatus != ScanStatus.CLEAN) {
+            throw new FileScanBlockedException(scanStatus);
+        }
         final PublicShareLink link = new PublicShareLink(fileId, ownerAuthUserId, expiresAtEpochMillis);
         try {
             this.dataFactory.register(link);
@@ -2330,6 +2529,18 @@ public final class CloudUserService implements ICloudUserService {
     @NonNull
     @Override
     public StoredFile resolvePublicFileLink(@NonNull final String token) {
+        final PublicFileLinkTarget target = this.resolvePublicFileLinkTarget(token);
+        try {
+            return this.fileFactory.findById(target.storedFileId()).orElseThrow(PublicShareLinkInvalidException::new);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.resolvePublicFileLink: failed to fetch content for " + target.storedFileId(), e);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @NonNull
+    @Override
+    public PublicFileLinkTarget resolvePublicFileLinkTarget(@NonNull final String token) {
         final PublicShareLink link;
         try {
             link = this.dataFactory.findById(token, PublicShareLink.class).orElseThrow(PublicShareLinkInvalidException::new);
@@ -2353,11 +2564,17 @@ public final class CloudUserService implements ICloudUserService {
             throw new PublicShareLinkInvalidException();
         }
 
-        try {
-            return this.fileFactory.findById(link.getStoredFileId()).orElseThrow(PublicShareLinkInvalidException::new);
-        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
-            throw new RuntimeException("@CloudUserService.resolvePublicFileLink: failed to fetch content for " + link.getStoredFileId(), e);
+        // This is the one content path with no authenticated caller to report a scan verdict to,
+        // and the only one reachable without an account at all, so a file that isn't CLEAN is
+        // simply indistinguishable from an invalid token. A missing metadata row counts as clean,
+        // matching requireFileAccess, so legacy rows keep resolving.
+        final ScanStatus scanStatus = this.findStoredFileMetadata(link.getStoredFileId())
+                .map(StoredFile::scanStatus)
+                .orElse(ScanStatus.CLEAN);
+        if (scanStatus != ScanStatus.CLEAN) {
+            throw new PublicShareLinkInvalidException();
         }
+        return new PublicFileLinkTarget(link.getOwnerAuthUserId(), link.getStoredFileId());
     }
 
     /**
@@ -2854,10 +3071,15 @@ public final class CloudUserService implements ICloudUserService {
         // synchronously, before the write below, rather than via any after-the-fact notification.
         captureFileVersion(storedFileId, existing);
 
-        final StoredFile replaced = new StoredFile(
+        StoredFile replaced = new StoredFile(
                 storedFileId, existing.fileName(), newContent,
                 FileChecksum.of(HashAlgorithm.SHA_256, newContent), existing.createdAt(), Instant.now()
         );
+        // These are new, unscanned bytes under an existing id. The constructor leaves the scan
+        // status unset, which reads back as CLEAN, so without this a replacement would both skip
+        // the scan and clear whatever verdict the previous content had earned. Stamped before the
+        // write, so no window exists in which the new content reads as clean.
+        if (isContentScanServicePublished()) replaced = replaced.withScanStatus(ScanStatus.PENDING);
         try {
             this.fileFactory.upload(replaced);
         } catch (final DatabaseClientException | KeyWrapException e) {
@@ -2877,6 +3099,107 @@ public final class CloudUserService implements ICloudUserService {
         this.registerChunkManifest(storedFileId, newContent);
         indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), newContent);
         indexFileForIntelligence(ownerAuthUserId, replaced, newContent);
+        // A content write lands as an UPDATE, not an INSERT, so the scan listener cannot be relied
+        // on to notice it. The caller knows the bytes changed; say so directly.
+        rescanReplacedContentQuietly(storedFileId);
+        // The old preview is of bytes that no longer exist. Dropping the row is also what lets a
+        // new one be generated at all, since generation returns early when one already exists.
+        invalidateThumbnailsQuietly(storedFileId);
+
+        return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
+                replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId(),
+                replaced.scanStatus().name());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Mirrors the {@code byte[]} overload step for step - access, optimistic concurrency,
+     * deduplication guard, quota, version capture, write, accounting, audit, reindex - differing
+     * only in never materializing the new content: its size and checksum are computed by
+     * streaming the file, and the replacement entity is {@link StoredFile#createFromContentFile
+     * content-file-backed} so the persistence layer chunk-encrypts straight off disk.
+     */
+    @NonNull
+    @Override
+    public StoredFileSummary replaceFileContent(@NonNull final String authUserId, @NonNull final String storedFileId,
+                                                 @NonNull final Path contentFile, @Nullable final Long expectedUpdatedAtEpochMillis) {
+        final StoredFileOwnership ownership = this.requireEditableFileAccess(authUserId, storedFileId);
+        final String ownerAuthUserId = ownership.getAuthUserId();
+
+        final long newSizeBytes;
+        final FileChecksum checksum;
+        try {
+            newSizeBytes = Files.size(contentFile);
+            try (InputStream content = Files.newInputStream(contentFile)) {
+                checksum = FileChecksum.of(HashAlgorithm.SHA_256, content);
+            }
+        } catch (final IOException e) {
+            throw new UncheckedIOException(
+                    "@CloudUserService.replaceFileContent: failed reading content file '" + contentFile + "' for '" + storedFileId + "'", e);
+        }
+
+        final StoredFile existing;
+        try {
+            existing = this.fileFactory.findById(storedFileId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "@CloudUserService.replaceFileContent: owned file not found: " + storedFileId));
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | FileIntegrityException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to look up " + storedFileId, e);
+        }
+
+        // Optimistic concurrency, before any side effect - same rule and same conflicted-copy
+        // outcome as the byte[] overload, just uploading the conflicted copy off the same file.
+        if (expectedUpdatedAtEpochMillis != null && existing.updatedAt().toEpochMilli() != expectedUpdatedAtEpochMillis) {
+            final String conflictName = conflictedCopyFileName(existing.fileName());
+            final StoredFile conflictFile = this.uploadFile(ownerAuthUserId, conflictName, contentFile, ownership.getFolderId());
+            throw new SyncConflictException(new StoredFileSummary(conflictFile.fileId(), conflictFile.fileName(),
+                    conflictFile.contentType(), conflictFile.sizeBytes(), conflictFile.createdAt().toEpochMilli(),
+                    conflictFile.updatedAt().toEpochMilli(), ownership.getFolderId(), conflictFile.scanStatus().name()));
+        }
+
+        if (existing.isDedupAlias() || existing.dedupRefCount() > 0) {
+            throw new IllegalStateException(
+                    "@CloudUserService.replaceFileContent: " + storedFileId + " shares content with another file "
+                            + "via per-account deduplication - duplicate it first before replacing its content");
+        }
+
+        final long delta = newSizeBytes - existing.sizeBytes();
+        if (delta > 0) {
+            final ICloudUser cloudUser = this.getOrCreate(ownerAuthUserId);
+            if (cloudUser.isUploadLimitReached(delta)) {
+                recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+                throw new UploadQuotaExceededException(ownerAuthUserId, cloudUser.getCurrentUploadedBytes(), delta, cloudUser.getMaxBytesToUpload());
+            }
+        }
+
+        captureFileVersion(storedFileId, existing);
+
+        StoredFile replaced = StoredFile.createFromContentFile(
+                storedFileId, existing.fileName(), newSizeBytes, checksum, contentFile);
+        // New, unscanned bytes under an existing id - see the byte[] overload.
+        if (isContentScanServicePublished()) replaced = replaced.withScanStatus(ScanStatus.PENDING);
+        try {
+            this.fileFactory.upload(replaced);
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to persist new content for " + storedFileId, e);
+        }
+
+        try {
+            this.dataFactory.update(ownership.withMetadata(replaced));
+        } catch (final DatabaseClientException | KeyWrapException e) {
+            throw new RuntimeException("@CloudUserService.replaceFileContent: failed to update cached metadata for " + storedFileId, e);
+        }
+
+        this.updateCloudUserBytesUsage(ownerAuthUserId, delta);
+        this.auditLogService.record(new AuditEvent(authUserId, AuditAction.FILE_CONTENT_REPLACED, storedFileId, null));
+        this.registerChunkManifestFromFile(storedFileId, contentFile);
+        // Content deliberately not extracted here - see this method's own Javadoc - so both
+        // indexes are refreshed by name alone, exactly as a presigned upload's are.
+        indexFileForSearch(ownerAuthUserId, replaced, ownership.getFolderId(), null);
+        indexFileForIntelligence(ownerAuthUserId, replaced, null);
+        rescanReplacedContentQuietly(storedFileId);
+        invalidateThumbnailsQuietly(storedFileId);
 
         return new StoredFileSummary(replaced.fileId(), replaced.fileName(), replaced.contentType(), replaced.sizeBytes(),
                 replaced.createdAt().toEpochMilli(), replaced.updatedAt().toEpochMilli(), ownership.getFolderId(),
@@ -3371,6 +3694,33 @@ public final class CloudUserService implements ICloudUserService {
             return CloudDriver.getInstance().getServiceContainer().getContentScanService() != null;
         } catch (final RuntimeException e) {
             return false;
+        }
+    }
+
+    /**
+     * Schedules a rescan of content that replaced an existing file's bytes under the same id.
+     *
+     * <p>Needed because content scanning is otherwise driven by the {@code StoredFile} table's
+     * {@code INSERT} notification, and a replacement writes the row that already exists - an
+     * {@code UPDATE}, which that listener cannot distinguish from a rename or a move. Best-effort:
+     * a failure here never fails the write, since the row is already stamped {@link
+     * ScanStatus#PENDING} and therefore stays unreadable until some scan resolves it.
+     *
+     * @param storedFileId the file whose content was just replaced
+     */
+    private static void rescanReplacedContentQuietly(final String storedFileId) {
+        final ContentScanService contentScanService;
+        try {
+            contentScanService = CloudDriver.getInstance().getServiceContainer().getContentScanService();
+        } catch (final RuntimeException serviceUnavailable) {
+            return;
+        }
+        if (contentScanService == null) return;
+        try {
+            contentScanService.scanAsync(storedFileId);
+        } catch (final RuntimeException scanSchedulingFailed) {
+            CloudDriver.getInstance().getLogger().log(Level.WARNING,
+                    "@CloudUserService: failed to schedule a rescan of replaced content for " + storedFileId, scanSchedulingFailed);
         }
     }
 

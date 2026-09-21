@@ -243,12 +243,14 @@ public interface IAuthService {
      * DefaultRestFactory} whenever it's constructed with an {@code AuthService}.
      *
      * @param authUserId the already-authenticated account requesting the change (from its own bearer token, not user input)
+     * @param currentPassword the caller's current password, re-verified before anything is persisted or e-mailed - an access token alone must not be able to move the account
      * @param newEmailAddress the address this account would move to on confirmation
      * @throws EmailAlreadyRegisteredException if another account already exists under {@code newEmailAddress}
      * @throws DatabaseClientException if persisting the pending change fails
      * @throws KeyWrapException if the pending change's data-encryption key cannot be wrapped by the KMS/HSM
      */
-    void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress)
+    void requestEmailChange(@NonNull final String authUserId, @NonNull final String newEmailAddress,
+                             final char @NonNull [] currentPassword)
             throws DatabaseClientException, KeyWrapException;
 
     /**

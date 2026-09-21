@@ -59,6 +59,34 @@ public interface FileVersioningService {
     Optional<FileVersionContent> getVersionContent(@NotNull String sourceFileId, int versionNumber);
 
     /**
+     * Permanently removes every captured version of {@code sourceFileId}, content included.
+     *
+     * <p>Called when the source file itself is permanently deleted. A version's content is its own
+     * {@code StoredFile}, carrying no ownership row, so nothing else in the system will ever
+     * collect it: without this, deleting a file leaves its history in the object store forever -
+     * billed, and still holding the user's content after they asked for it to be destroyed.
+     *
+     * <p>Best-effort and idempotent: a file with no versions, or one whose versions are already
+     * gone, is not an error. Must never throw, so a cleanup failure cannot abort the deletion that
+     * triggered it.
+     *
+     * @param sourceFileId the file whose versions to remove
+     * @return how many version rows were removed
+     */
+    int deleteAllVersions(@NotNull String sourceFileId);
+
+    /**
+     * Removes every captured version of every file this extension stores, content included.
+     *
+     * <p>Exists so a full data wipe can reach this extension's own section: the entity type lives
+     * in the extension, so the core cannot name it, and a wipe that silently left it behind would
+     * contradict what it tells the operator it does.
+     *
+     * <p>Best-effort and idempotent. Must never throw.
+     */
+    void clearAllData();
+
+    /**
      * One specific version's plaintext-checksum hex digest, without resolving its content -
      * backs {@code DefaultRestFactory}'s {@code ETag}/{@code If-None-Match} conditional handling
      * on {@code GET /files/{id}/versions/{n}/content} (a version's content is immutable once

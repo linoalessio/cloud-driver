@@ -29,19 +29,53 @@
 # Usage: ./start-cloud.sh            (from the directory containing the jar)
 #        screen -r cloud             (to attach and watch/interact with it)
 #        screen -d cloud             (to detach again, Ctrl-A d also works)
+#
+# A sibling start-cloud.env (written by cloud-driver-installer, see docs/deployment.md) overrides
+# JVM_XMX, SCREEN_SESSION and SCREEN_LOG_FILE (and optionally JAR_NAME) without editing this script.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
-SESSION_NAME="cloud"
-JVM_XMX="${JVM_XMX:-20g}"
+
+# start-cloud.env, written by cloud-driver-installer next to this script, carries the per-box
+# choices (JVM_XMX, JAR_NAME, SCREEN_SESSION, SCREEN_LOG_FILE). It is sourced first so it survives
+# deploy-cloud.sh re-uploading this script; every value keeps the hardcoded fallback below when
+# the file is absent, so a box provisioned by hand behaves exactly as before.
+if [ -f "$SCRIPT_DIR/start-cloud.env" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/start-cloud.env"
+fi
+# The jar is resolved from what is actually in this directory: exactly one cloud-driver-bootstrap-*.jar
+# is expected (deploy-cloud.sh and the installer both prune older releases), so a version bump never
+# leaves this script pointing at a jar that is no longer here. JAR_NAME (env or start-cloud.env)
+# overrides the lookup; the hardcoded default below is only used when no jar is found at all.
+if [ -z "${JAR_NAME:-}" ]; then
+    jar_candidates=("$SCRIPT_DIR"/cloud-driver-bootstrap-*.jar)
+    if [ ${#jar_candidates[@]} -eq 1 ] && [ -f "${jar_candidates[0]}" ]; then
+        JAR_NAME="$(basename "${jar_candidates[0]}")"
+    elif [ ${#jar_candidates[@]} -gt 1 ]; then
+        echo "start-cloud.sh: more than one bootstrap jar in $SCRIPT_DIR - remove all but one:" >&2
+        printf '  %s\n' "${jar_candidates[@]}" >&2
+        exit 1
+    fi
+fi
+JAR_NAME="${JAR_NAME:-cloud-driver-bootstrap-1.0.7.jar}"
+SESSION_NAME="${SCREEN_SESSION:-cloud}"
+JVM_XMX="${JVM_XMX:-6g}"
+# When set, screen appends everything printed to the console to this file (screen -L): the JVM
+# writes no log of its own, and a detached session has no scrollback, so without it a crash's
+# stack trace is gone the moment the restart loop clears the screen.
+SCREEN_LOG_FILE="${SCREEN_LOG_FILE:-}"
 
 run_loop() {
     cd "$SCRIPT_DIR" || exit 1
     while true; do
         echo "[CloudDriver] starting $JAR_NAME (-Xmx$JVM_XMX)"
-        java "-Xmx$JVM_XMX" -jar "$JAR_NAME"
+        # ExitOnOutOfMemoryError: a heap-exhausted JVM keeps running with whatever
+        # threads the error happened to kill (the LISTEN/NOTIFY listener, a scheduler
+        # tick), so it serves requests while silently doing none of that work. Dying
+        # instead hands it to the restart loop below, which is recoverable and visible.
+        java "-Xmx$JVM_XMX" -XX:+ExitOnOutOfMemoryError -jar "$JAR_NAME"
         exit_code=$?
         echo "[CloudDriver] $JAR_NAME exited (code $exit_code) - restarting in:"
         for i in 3 2 1; do
@@ -74,6 +108,14 @@ if screen -list 2>/dev/null | grep -q "\.${SESSION_NAME}[[:space:]]"; then
     exit 0
 fi
 
-screen -dmS "$SESSION_NAME" "$SCRIPT_DIR/start-cloud.sh" __run__
+if [ -n "$SCREEN_LOG_FILE" ]; then
+    # The console log carries every crash trace and, without a mail transport, verification codes:
+    # keep it root-only.
+    mkdir -p "$(dirname "$SCREEN_LOG_FILE")" && chmod 700 "$(dirname "$SCREEN_LOG_FILE")"
+    touch "$SCREEN_LOG_FILE" && chmod 600 "$SCREEN_LOG_FILE"
+    screen -L -Logfile "$SCREEN_LOG_FILE" -dmS "$SESSION_NAME" "$SCRIPT_DIR/start-cloud.sh" __run__
+else
+    screen -dmS "$SESSION_NAME" "$SCRIPT_DIR/start-cloud.sh" __run__
+fi
 
 echo "start-cloud.sh: started in screen session '$SESSION_NAME' (attach with: screen -r $SESSION_NAME)"

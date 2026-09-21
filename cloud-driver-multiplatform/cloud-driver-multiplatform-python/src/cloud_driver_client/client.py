@@ -25,7 +25,13 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 import httpx
 
 from ._http import raise_for_status
-from .exceptions import ConflictError, NotFoundError, ServiceUnavailableError, SyncConflictError
+from .exceptions import (
+    ConflictError,
+    NotFoundError,
+    ServiceUnavailableError,
+    SyncConflictError,
+    UnsupportedEncryptionError,
+)
 from .models import (
     ActivityEntry,
     AuditLogEntry,
@@ -681,12 +687,25 @@ class _FilesResource(_Resource):
         return SharedByMeCount.model_validate(resp.json()).count
 
     def begin_upload_url(self, file_name: str, size_bytes: int, *, folder_id: str | None = None) -> BeginUploadUrl:
+        """Issue a presigned upload ticket.
+
+        Raises :class:`UnsupportedEncryptionError` when the server issues a ticket that requires
+        client-side encryption, which this SDK cannot yet perform. Uploading plaintext against
+        such a ticket is rejected by the server at completion anyway, with an error about
+        declared sizes that says nothing about the real cause.
+        """
         resp = self._c._request(
             "POST",
             "/files/upload-url",
             json={"fileName": file_name, "sizeBytes": size_bytes, "folderId": folder_id},
         )
-        return BeginUploadUrl.model_validate(resp.json())
+        ticket = BeginUploadUrl.model_validate(resp.json())
+        if ticket.encryption is not None:
+            raise UnsupportedEncryptionError(
+                "this deployment stores content client-side encrypted, which this SDK cannot yet "
+                "write - use the server-mediated upload (files.upload) instead"
+            )
+        return ticket
 
     def complete_upload(
         self, file_id: str, file_name: str, checksum_sha256: str, *, folder_id: str | None = None
@@ -699,7 +718,20 @@ class _FilesResource(_Resource):
         return StoredFileSummary.model_validate(resp.json())
 
     def begin_download_url(self, file_id: str) -> BeginDownloadUrl:
-        return BeginDownloadUrl.model_validate(self._c._request("GET", f"/files/{file_id}/download-url").json())
+        """Issue a presigned download ticket.
+
+        Raises :class:`UnsupportedEncryptionError` when the stored object is client-side
+        encrypted, which this SDK cannot yet decrypt. Returning the ticket regardless would hand
+        the caller a URL whose bytes are ciphertext - written to disk as though they were the
+        file, with nothing anywhere reporting a problem.
+        """
+        ticket = BeginDownloadUrl.model_validate(self._c._request("GET", f"/files/{file_id}/download-url").json())
+        if ticket.encryption is not None:
+            raise UnsupportedEncryptionError(
+                "this file is stored client-side encrypted, which this SDK cannot yet decrypt - "
+                "use the server-mediated download (files.download_to_path) instead"
+            )
+        return ticket
 
 
 class _FoldersResource(_Resource):

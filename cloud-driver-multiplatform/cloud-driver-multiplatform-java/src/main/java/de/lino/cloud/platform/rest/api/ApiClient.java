@@ -1320,13 +1320,45 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<StoredFileSummaryResponse> listFiles() throws ApiException {
-        final StoredFileSummaryResponse[] files = this.send(this.listFilesRequest(), StoredFileSummaryResponse[].class);
-        return List.of(files);
+        return this.listAllPages(null);
     }
 
-    /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. */
+    /**
+     * Walks {@code GET /files} page by page until the server reports no further cursor, returning
+     * every entry.
+     *
+     * <p>The bare, unpaginated form of that route is capped server-side and reports nothing about
+     * the truncation - no header, no flag, no error - so a caller that issued it once believed it
+     * had everything while silently holding only the first page. That is what this method exists
+     * to prevent: a listing that promises completeness has to page.
+     *
+     * @param folderId the folder to scope to, or {@code null} for every file the caller owns
+     * @return every matching entry, in the order the server returned them
+     * @throws ApiException on any failure, including {@code 401}
+     */
+    private List<StoredFileSummaryResponse> listAllPages(final String folderId) throws ApiException {
+        final List<StoredFileSummaryResponse> all = new java.util.ArrayList<>();
+        String cursor = null;
+        do {
+            final Page<StoredFileSummaryResponse> page = this.listFilesPage(folderId, cursor, LISTING_PAGE_SIZE);
+            all.addAll(page.items());
+            cursor = page.nextCursor();
+        } while (cursor != null);
+        return List.copyOf(all);
+    }
+
+    /** Page size used by the paging helpers behind {@link #listFiles()} - large enough to keep the round trips down, small enough to stay a bounded response. */
+    private static final int LISTING_PAGE_SIZE = 500;
+
+    /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. Pages internally, like its blocking form. */
     public CompletableFuture<List<StoredFileSummaryResponse>> listFilesAsync() {
-        return this.sendAsync(this.listFilesRequest(), StoredFileSummaryResponse[].class).thenApply(List::of);
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.listFiles();
+            } catch (final ApiException failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        });
     }
 
     /**
@@ -1339,13 +1371,18 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<StoredFileSummaryResponse> listFiles(final String folderId) throws ApiException {
-        final StoredFileSummaryResponse[] files = this.send(this.listFilesRequest(folderId), StoredFileSummaryResponse[].class);
-        return List.of(files);
+        return this.listAllPages(folderId);
     }
 
-    /** Async form of {@link #listFiles(String)} - see the class Javadoc for the threading/executor contract. */
+    /** Async form of {@link #listFiles(String)} - see the class Javadoc for the threading/executor contract. Pages internally, like its blocking form. */
     public CompletableFuture<List<StoredFileSummaryResponse>> listFilesAsync(final String folderId) {
-        return this.sendAsync(this.listFilesRequest(folderId), StoredFileSummaryResponse[].class).thenApply(List::of);
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.listFiles(folderId);
+            } catch (final ApiException failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        });
     }
 
     /** Builds the {@code GET /files?folderId=...} request against {@link #apiBaseUrl}, scoped to one folder (or the root). */
@@ -1412,27 +1449,45 @@ public final class ApiClient implements AutoCloseable {
      *                       since {@link Iterator#next()} cannot declare a checked exception
      */
     public Stream<StoredFileSummaryResponse> listFilesStream() throws ApiException {
-        final HttpRequest request = this.listFilesRequest();
-        final HttpResponse<InputStream> response;
-        try {
-            response = this.httpClient.send(request, BodyHandlers.ofInputStream());
-        } catch (final IOException e) {
-            throw new ApiException(0, "network error calling " + request.uri(), e);
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ApiException(0, "interrupted calling " + request.uri(), e);
-        }
+        // Page-driven, not one long response. The unpaginated route is capped server-side, so
+        // streaming it produced a stream that simply ended early - wrong for the one method whose
+        // whole reason to exist is a very large file count. Only one page is ever held at a time,
+        // so the memory property this method promises is unchanged.
+        final Iterator<StoredFileSummaryResponse> paging = new Iterator<>() {
+            private Iterator<StoredFileSummaryResponse> current = java.util.Collections.emptyIterator();
+            private String cursor;
+            private boolean exhausted;
 
-        final int status = response.statusCode();
-        if (status < 200 || status >= 300) {
-            try (InputStream errorBody = response.body()) {
-                throw new ApiException(status, extractErrorMessage(errorBody), null);
-            } catch (final IOException e) {
-                throw new ApiException(status, "request failed and the error body could not be read", e);
+            @Override
+            public boolean hasNext() {
+                while (!this.current.hasNext() && !this.exhausted) {
+                    try {
+                        final Page<StoredFileSummaryResponse> page =
+                                ApiClient.this.listFilesPage(null, this.cursor, LISTING_PAGE_SIZE);
+                        this.current = page.items().iterator();
+                        this.cursor = page.nextCursor();
+                        this.exhausted = this.cursor == null;
+                    } catch (final ApiException failure) {
+                        // Iterator#next cannot declare a checked exception - same contract this
+                        // method's Javadoc already documents for mid-stream failures.
+                        throw new UncheckedIOException(new IOException(failure.getMessage(), failure));
+                    }
+                }
+                return this.current.hasNext();
             }
-        }
 
-        return streamJsonArray(response.body());
+            @Override
+            public StoredFileSummaryResponse next() {
+                if (!hasNext()) {
+                    throw new java.util.NoSuchElementException();
+                }
+                return this.current.next();
+            }
+        };
+
+        final Spliterator<StoredFileSummaryResponse> spliterator = Spliterators.spliteratorUnknownSize(
+                paging, Spliterator.ORDERED | Spliterator.NONNULL);
+        return StreamSupport.stream(spliterator, false);
     }
 
     /**
@@ -3078,8 +3133,10 @@ public final class ApiClient implements AutoCloseable {
     /**
      * The shared upload loop behind {@link #uploadFileViaResumableSession}/{@link
      * #resumeUploadSession}: materializes the session's object stream (encrypting to a temp file
-     * when the session says to - the encryption is deterministic per issued key, so a resume
-     * regenerates byte-identical content), {@code PUT}s every part not already in {@code
+     * when the session says to - the object stream really is deterministic per issued key, since
+     * the base nonce is derived from that key rather than drawn at random, so a resume regenerates
+     * byte-identical content <em>for byte-identical input</em>; the size check below is what
+     * enforces that precondition), {@code PUT}s every part not already in {@code
      * session.uploadedPartNumbers()}, then completes.
      */
     private StoredFileSummaryResponse runUploadSession(final Dtos.UploadSessionResponse session, final Path filePath,

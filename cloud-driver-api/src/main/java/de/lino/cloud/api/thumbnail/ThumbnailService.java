@@ -34,4 +34,31 @@ public interface ThumbnailService {
     @NotNull
     Optional<byte[]> getThumbnail(@NotNull String storedFileId, @NotNull ThumbnailSize size);
 
+    /**
+     * Drops every cached thumbnail of {@code storedFileId}, content included.
+     *
+     * <p>Serves two callers. A content change must invalidate the preview, or every client keeps
+     * showing a thumbnail of bytes that are no longer there - on a shared file, a preview of
+     * content its recipient can no longer see. A permanent deletion must collect it, since a
+     * thumbnail's image is its own {@code StoredFile} with no ownership row and nothing else will.
+     *
+     * <p>Best-effort and idempotent: a file with no thumbnail is not an error. Must never throw,
+     * so a cleanup failure cannot abort the write or deletion that triggered it.
+     *
+     * @param storedFileId the file whose thumbnails to drop
+     * @return how many thumbnail rows were removed
+     */
+    int invalidateThumbnails(@NotNull String storedFileId);
+
+    /**
+     * Removes every cached thumbnail this extension stores, content included.
+     *
+     * <p>Exists so a full data wipe can reach this extension's own section: the entity type lives
+     * in the extension, so the core cannot name it, and a wipe that silently left it behind would
+     * contradict what it tells the operator it does.
+     *
+     * <p>Best-effort and idempotent. Must never throw.
+     */
+    void clearAllData();
+
 }

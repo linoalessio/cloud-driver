@@ -44,6 +44,26 @@ public final class PendingEmailChange extends Serialized {
     private final long expiresAtEpochMillis;
 
     /**
+     * How many wrong verification codes have been presented against this row.
+     *
+     * <p>A six-digit code is roughly twenty bits, and without a per-code counter a wrong guess
+     * costs an attacker nothing: the row stays valid for its whole lifetime however many times it
+     * is tried. The address-based rate limiter cannot substitute for this, because it is bound to
+     * the caller rather than to the code. {@code 0} for rows written before this field existed.
+     */
+    private final int failedAttempts;
+
+    /**
+     * A copy of this row with one more failed attempt recorded.
+     *
+     * @return a copy carrying the incremented count; every other field is unchanged
+     */
+    @NotNull
+    public PendingEmailChange withFailedAttempt() {
+        return copyWithFailedAttempts(this.failedAttempts + 1);
+    }
+
+    /**
      * @param authUserId the account this pending change is for, also its {@link #primaryKey()}
      * @param newEmailAddress the address this account would move to on confirmation
      * @param verificationCode the code sent to {@code newEmailAddress}, expected back verbatim at
@@ -53,10 +73,34 @@ public final class PendingEmailChange extends Serialized {
      */
     public PendingEmailChange(@NotNull final String authUserId, @NotNull final String newEmailAddress,
                                @NotNull final String verificationCode, final long expiresAtEpochMillis) {
+        this(authUserId, newEmailAddress, verificationCode, expiresAtEpochMillis, 0);
+    }
+
+    /**
+     * The full constructor, carrying an explicit failed-attempt count - used by {@link
+     * #withFailedAttempt()} and by Gson rehydration.
+     *
+     * @param authUserId the account changing its address, also this entity's primary key
+     * @param newEmailAddress the address the account would move to on confirmation
+     * @param verificationCode the code e-mailed to {@code newEmailAddress}
+     * @param expiresAtEpochMillis when this pending change stops being usable
+     * @param failedAttempts how many wrong codes have been presented against this row
+     */
+    public PendingEmailChange(@NotNull final String authUserId, @NotNull final String newEmailAddress,
+                               @NotNull final String verificationCode, final long expiresAtEpochMillis,
+                               final int failedAttempts) {
         this.authUserId = Objects.requireNonNull(authUserId, "@PendingEmailChange.init: authUserId cannot be null");
         this.newEmailAddress = Objects.requireNonNull(newEmailAddress, "@PendingEmailChange.init: newEmailAddress cannot be null");
         this.verificationCode = Objects.requireNonNull(verificationCode, "@PendingEmailChange.init: verificationCode cannot be null");
         this.expiresAtEpochMillis = expiresAtEpochMillis;
+        this.failedAttempts = failedAttempts;
+    }
+
+    /** @param attempts the new failed-attempt count
+     *  @return a copy of this row carrying {@code attempts} */
+    @NotNull
+    private PendingEmailChange copyWithFailedAttempts(final int attempts) {
+        return new PendingEmailChange(this.authUserId, this.newEmailAddress, this.verificationCode, this.expiresAtEpochMillis, attempts);
     }
 
     /** @return {@code true} if {@link #expiresAtEpochMillis} is in the past */

@@ -131,6 +131,32 @@ if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR' '$REMOTE_EXTENS
     exit 1
 fi
 
+# Prune first. The extensions folder is additive and every jar in it carries a version-suffixed
+# name, so a release bump leaves the previous release's jars beside the new ones - and the
+# bootstrap registers every jar it finds, refusing to start when two claim the same extension
+# name. The documented deploy sequence therefore produced a server that could not boot, with no
+# step anywhere telling the operator to delete anything. Nothing outside these two name patterns
+# is ever touched: config files and the runtime directory stay exactly as they are.
+keep_names=()
+for jar in "$LOCAL_BOOTSTRAP_JAR" "${extension_jars[@]}"; do
+    keep_names+=("$(basename "$jar")")
+done
+keep_list="$(printf '%s\n' "${keep_names[@]}")"
+echo "deploy-cloud.sh: pruning jars from previous releases"
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "
+    keep=\"\$(cat)\"
+    for existing in '$REMOTE_DIR'/cloud-driver-bootstrap-*.jar '$REMOTE_EXTENSIONS_DIR'/*.jar; do
+        [ -e \"\$existing\" ] || continue
+        if ! printf '%s\n' \"\$keep\" | grep -qxF \"\$(basename \"\$existing\")\"; then
+            echo \"deploy-cloud.sh: removing stale \$existing\"
+            rm -f \"\$existing\"
+        fi
+    done
+" <<< "$keep_list"; then
+    echo "deploy-cloud.sh: failed to prune stale jars on $REMOTE_HOST" >&2
+    exit 1
+fi
+
 targets_files=("$LOCAL_BOOTSTRAP_JAR" "${extension_jars[@]}" "$LOCAL_CONFIGURATION_JSON" "$LOCAL_START_SCRIPT")
 targets_dirs=("$REMOTE_DIR")
 for _ in "${extension_jars[@]}"; do

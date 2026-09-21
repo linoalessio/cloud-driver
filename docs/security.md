@@ -75,6 +75,29 @@ instance:
 - Public file links are the one unauthenticated access path: read-only, files-only, backed by a
   high-entropy random token, optionally expiring, and revoked automatically when the file is
   deleted.
+- A presigned upload can only be completed by the account that began it, and only onto a file id
+  that does not exist yet. Knowing another account's file id — which every share recipient
+  necessarily does — therefore grants no ability to claim or overwrite that file. A ticket that
+  belongs to someone else and an id that was never issued produce the same response, so neither
+  reveals anything.
+
+## Malware scanning
+
+When the content-scan extension is deployed, a file is unreadable until a verdict lands on it, and
+that rule holds on every path that returns content or a way to fetch it.
+
+- A newly uploaded file is recorded as pending and refused by every read until the scan finishes.
+- A file that is not clean is refused to its owner, to anyone it is shared with, through a
+  presigned download URL, and through a public link. A public link cannot be created for a file
+  that is not clean, and an existing link to one stops resolving — reporting the same "invalid
+  link" as an expired or unknown token, since there is no authenticated caller to tell more.
+- Replacing a file's content, patching it, or restoring an earlier version all count as new,
+  unscanned bytes: the file returns to pending and is rescanned before it can be read again. A
+  verdict is never inherited across a content change, in either direction — replacing flagged
+  content does not silently clear the flag.
+- A rename, a move or a trash does not change the bytes and does not trigger a rescan.
+- With the extension absent, nothing is stamped or blocked, so a deployment without scanning
+  behaves exactly as it did before.
 
 ## Network-facing hardening
 

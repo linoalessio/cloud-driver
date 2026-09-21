@@ -44,10 +44,17 @@ public class HardResetCommand implements Command {
         return "hardReset";
     }
 
-    /** @return {@code "reset"} */
+    /**
+     * @return no aliases
+     *
+     * <p>This command used to answer to {@code reset} as well - the name of the standard terminal
+     * repair command an operator types when a console is garbled. Typing it twice, which is
+     * exactly what one does when the first attempt appears to have done nothing, was the whole
+     * confirmation sequence for wiping the database.
+     */
     @Override
     public @NotNull List<String> aliases() {
-        return List.of("reset");
+        return List.of();
     }
 
     /** @return this command's description */
@@ -60,7 +67,8 @@ public class HardResetCommand implements Command {
     @Override
     public @NotNull List<CommandUsage> usages() {
         return List.of(
-                CommandUsage.of("hardReset", "Wipe every entity - run twice within 5s to confirm")
+                CommandUsage.of("hardReset", "Arm a full wipe of every entity section (destroys everything; does nothing on its own)"),
+                CommandUsage.of("hardReset confirm", "Confirm the armed wipe, within 5s of arming it")
         );
     }
 
@@ -79,7 +87,9 @@ public class HardResetCommand implements Command {
 
         final Terminal terminal = this.terminal();
 
-        if (RESET_STARTED.get() && RESET_TIMEOUT.get() != null) {
+        // The confirming invocation must say so explicitly. A bare repeat of the command name is
+        // too easy to produce by accident - and an accident here is unrecoverable.
+        if (RESET_STARTED.get() && RESET_TIMEOUT.get() != null && arguments.hasCommand(0, "confirm")) {
 
             if (RESET_TIMEOUT.get() <= System.currentTimeMillis()) {
                 terminal.displayApproved("The &ctimeout &7has been $breached&7. Re-try the reset.");
@@ -101,8 +111,9 @@ public class HardResetCommand implements Command {
 
         RESET_STARTED.set(true);
         RESET_TIMEOUT.set(System.currentTimeMillis() + TIMEOUT.toMillis());
-        terminal.displayApproved("To &cdelete the entire cloud data&7, re-run this command for confirmation.");
-        terminal.displayApproved("You got &b5 seconds &7to &aconfirm &7before you have to re-try it.");
+        terminal.displayApproved("&c&lThis wipes every entity section: accounts, files, folders, shares, public links,");
+        terminal.displayApproved("&c&lsessions, webhooks, versions, thumbnails and the audit log - then shuts the server down.");
+        terminal.displayApproved("To confirm, run &chardReset confirm &7within &b5 seconds&7.");
 
     }
 

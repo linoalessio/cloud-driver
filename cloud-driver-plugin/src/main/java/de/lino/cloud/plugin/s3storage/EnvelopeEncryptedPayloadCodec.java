@@ -122,8 +122,23 @@ final class EnvelopeEncryptedPayloadCodec {
         out.write(value);
     }
 
+    /**
+     * Largest a single length-prefixed field in this format may claim to be.
+     *
+     * <p>Every field here is a key id, an algorithm name, a nonce or a wrapped key - all far
+     * smaller than this. The bound exists because the length is read out of the object being
+     * parsed, and a presigned upload lets an ordinary account write arbitrary bytes at its own
+     * object key: without it, a crafted prefix turns one download into a multi-gigabyte
+     * allocation, and a negative one throws past this class's own IO-exception contract.
+     * Matches the equivalent guard the streaming header parser already applies.
+     */
+    private static final int MAX_FIELD_LENGTH_BYTES = 1 << 16;
+
     private static byte[] readBytes(final DataInputStream in) throws IOException {
         final int length = in.readInt();
+        if (length < 0 || length > MAX_FIELD_LENGTH_BYTES) {
+            throw new IOException("@EnvelopeEncryptedPayloadCodec: implausible payload field length " + length);
+        }
         final byte[] value = new byte[length];
         in.readFully(value);
         return value;

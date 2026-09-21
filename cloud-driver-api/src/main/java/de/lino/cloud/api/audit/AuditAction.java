@@ -56,6 +56,31 @@ public enum AuditAction {
     FOLDER_DELETE,
 
     /** A {@code CloudUserService#restoreFolder} call (out of the trash). */
-    FOLDER_RESTORE
+    FOLDER_RESTORE,
+
+    /**
+     * A {@code CloudUserService#resetCloudUser} call - every file and folder an account owns,
+     * destroyed outright, bypassing the trash. Reachable only from the operator console.
+     */
+    ACCOUNT_RESET,
+
+    /**
+     * An {@code AuthService#setAdmin} call granting the admin flag.
+     *
+     * <p>The single most security-relevant mutation this system has, and the only privilege
+     * escalation path it contains - deliberately unreachable from any REST route, so the operator
+     * console is the only place it can happen. It previously left no trace at all, while a folder
+     * rename left one.
+     */
+    ADMIN_GRANT,
+
+    /** An {@code AuthService#setAdmin} call revoking the admin flag - see {@link #ADMIN_GRANT}. */
+    ADMIN_REVOKE,
+
+    /** An {@code AuthService#setSuspended} call locking an account out without destroying it. */
+    ACCOUNT_SUSPEND,
+
+    /** An {@code AuthService#setSuspended} call lifting a suspension - see {@link #ACCOUNT_SUSPEND}. */
+    ACCOUNT_UNSUSPEND
 
 }

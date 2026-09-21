@@ -102,10 +102,59 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
      */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash, final boolean isAdmin) {
+        this(id, emailAddress, passwordHash, isAdmin, false);
+    }
+
+    /**
+     * Full constructor, carrying the suspension flag - used by {@link #withSuspended(boolean)} and
+     * by Gson rehydration.
+     *
+     * @param id this account's id
+     * @param emailAddress this account's e-mail address
+     * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password
+     * @param isAdmin this account's admin flag
+     * @param suspended whether this account is currently suspended - see {@link #isSuspended()}
+     * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
+     */
+    public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash,
+                     final boolean isAdmin, final boolean suspended) {
         this.id = Objects.requireNonNull(id, "@AuthUser.init: id cannot be null");
         this.emailAddress = Objects.requireNonNull(emailAddress, "@AuthUser.init: username cannot be null");
         this.passwordHash = Objects.requireNonNull(passwordHash, "@AuthUser.init: passwordHash cannot be null");
         this.isAdmin = isAdmin;
+        this.suspended = suspended;
+    }
+
+    /**
+     * Whether this account is currently suspended - locked out without being destroyed.
+     *
+     * <p>The containment step that was missing entirely: the only tools for a compromised account
+     * were revoking its sessions, which leaves whoever knows the password free to sign in again,
+     * and deleting it, which destroys the victim's data. A suspended account keeps everything it
+     * owns and simply cannot be used until an operator lifts it.
+     *
+     * <p>Enforced on every authenticated request, next to the account-still-exists check, and at
+     * login. {@code false} for rows written before this field existed.
+     */
+    private final boolean suspended;
+
+    /**
+     * @return {@code true} if this account is suspended and must be refused access
+     */
+    public boolean isSuspended() {
+        return this.suspended;
+    }
+
+    /**
+     * Returns a copy of this account with {@link #suspended} set to {@code suspended} - the same
+     * immutable convention {@link #withAdmin(boolean)} follows.
+     *
+     * @param suspended the new suspension state
+     * @return a copy of this account with its suspension state changed
+     */
+    @NotNull
+    public AuthUser withSuspended(final boolean suspended) {
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, this.isAdmin, suspended);
     }
 
     /**
@@ -119,7 +168,7 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      */
     @NotNull
     public AuthUser withAdmin(final boolean isAdmin) {
-        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin);
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin, this.suspended);
     }
 
     /** @return this entity's primary key, {@link #id} */

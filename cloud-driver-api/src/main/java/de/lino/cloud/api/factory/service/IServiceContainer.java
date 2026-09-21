@@ -309,4 +309,21 @@ public interface IServiceContainer {
      */
     void setBackupService(@NonNull BackupService backupService);
 
+    /**
+     * Withdraws a previously published service, so this container reports it as absent again.
+     *
+     * <p>The counterpart every {@code set*} method needs: an extension that stops must take its
+     * service back down with it. Without this, a stopped extension's service stayed published and
+     * consumers kept treating it as live - for content scanning that is not cosmetic, because its
+     * mere presence makes every new upload be recorded as pending while the extension that would
+     * resolve those verdicts is gone, leaving every file uploaded afterwards permanently
+     * unreadable until the process is restarted.
+     *
+     * <p>Consumers already have to degrade gracefully when a facet is absent at boot; this makes
+     * absence possible at runtime too, which is the same contract.
+     *
+     * @param serviceType the interface the service was published under, e.g. {@code ContentScanService.class}
+     */
+    void withdrawService(@NonNull Class<?> serviceType);
+
 }

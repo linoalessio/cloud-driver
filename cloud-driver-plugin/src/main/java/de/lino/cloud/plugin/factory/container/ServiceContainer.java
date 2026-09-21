@@ -240,4 +240,29 @@ public class ServiceContainer implements IServiceContainer {
         this.backupService = backupService;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Matched on the exact published interface, so an unknown type is simply ignored rather
+     * than silently clearing something else.
+     */
+    @Override
+    public void withdrawService(@NonNull final Class<?> serviceType) {
+        if (ICloudUserService.class.equals(serviceType)) { this.cloudUserService = null; return; }
+        if (IAuthService.class.equals(serviceType)) { this.authService = null; return; }
+        if (LiveUpdatePublisher.class.equals(serviceType)) { this.liveUpdatePublisher = null; return; }
+        if (AuditLogService.class.equals(serviceType)) { this.auditLogService = null; return; }
+        if (MetricsRecorder.class.equals(serviceType)) { this.metricsRecorder = null; return; }
+        if (MetricsSnapshotProvider.class.equals(serviceType)) { this.metricsSnapshotProvider = null; return; }
+        if (ThumbnailService.class.equals(serviceType)) { this.thumbnailService = null; return; }
+        if (FileVersioningService.class.equals(serviceType)) { this.fileVersioningService = null; return; }
+        if (SearchIndexService.class.equals(serviceType)) { this.searchIndexService = null; return; }
+        if (WebhookService.class.equals(serviceType)) { this.webhookService = null; return; }
+        if (ContentScanService.class.equals(serviceType)) { this.contentScanService = null; return; }
+        if (IntelligenceService.class.equals(serviceType)) { this.intelligenceService = null; return; }
+        if (EmailSender.class.equals(serviceType)) { this.emailSender = null; return; }
+        if (RateLimitAdmin.class.equals(serviceType)) { this.rateLimitAdmin = null; return; }
+        if (BackupService.class.equals(serviceType)) { this.backupService = null; return; }
+    }
+
 }

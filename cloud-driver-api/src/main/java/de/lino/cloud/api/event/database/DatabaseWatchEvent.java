@@ -2,13 +2,11 @@ package de.lino.cloud.api.event.database;
 
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.factory.DataFactory;
-import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.push.LiveUpdatePublisher;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
-import lombok.SneakyThrows;
 
 import java.util.Optional;
 import java.util.logging.Level;
@@ -48,13 +46,19 @@ public class DatabaseWatchEvent extends Event {
      * in this single-process deployment - so this method now tries the cheap, reload-free lookup
      * first and only pays for a reload on an actual miss, before retrying once.
      *
+     * <p>Resolves metadata only, never content. This method reads exactly one thing from the
+     * lookup - whether a row exists - and resolving content here meant every notification for an
+     * S3-backed file pulled that whole object back out of the store, decrypted it into one array
+     * and checksummed it, on the single thread that also drives live push, malware scanning and
+     * thumbnail generation. For a multi-gigabyte upload that is an out-of-memory error on the one
+     * thread the system can least afford to lose.
+     *
+     * <p>Handles its own failures rather than letting them escape: the dispatch boundary this is
+     * called from cannot catch a checked exception, so one corrupted row used to kill the
+     * notification thread permanently.
+     *
      * @param properties the notification payload ({@code "table"}/{@code "operation"}/{@code "id"})
-     * @throws de.lino.cloud.api.security.database.DatabaseClientException if the file exists but its record is corrupted - sneaky-thrown by {@code @SneakyThrows}, not declared on this method's signature
-     * @throws de.lino.cloud.api.security.keys.KeyWrapException if the file's data-encryption key cannot be unwrapped by the KMS/HSM - sneaky-thrown
-     * @throws de.lino.cloud.api.security.crypto.AuthenticationFailedException if the retrieved payload fails authentication - sneaky-thrown
-     * @throws de.lino.cloud.api.file.exception.FileIntegrityException if the decrypted content does not match its recorded checksum - sneaky-thrown
      */
-    @SneakyThrows
     @Override
     public void handle(@NonNull JsonDocument properties) {
 
@@ -62,12 +66,24 @@ public class DatabaseWatchEvent extends Event {
         if (id.isBlank()) return;
 
         final DataFactory dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
-        final FileFactory fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();
 
-        Optional<StoredFile> uploadedFile = fileFactory.findById(id);
-        if (uploadedFile.isEmpty()) {
-            dataFactory.reload(StoredFile.class);
-            uploadedFile = fileFactory.findById(id);
+        Optional<StoredFile> uploadedFile;
+        try {
+            uploadedFile = dataFactory.findById(id, StoredFile.class);
+            if (uploadedFile.isEmpty()) {
+                dataFactory.reload(StoredFile.class);
+                uploadedFile = dataFactory.findById(id, StoredFile.class);
+            }
+        } catch (final Exception lookupFailed) {
+            // Existence could not be established. The listeners below still need to run - a scan
+            // or a live push matters more than this method's warning line - so carry on as though
+            // the row were present and say why it could not be confirmed.
+            this.cloudDriver().getLogger().log(java.util.logging.Level.WARNING,
+                    String.format("Could not confirm whether file id '%s' exists while handling a change notification", id), lookupFailed);
+            uploadedFile = Optional.empty();
+            this.pushLiveUpdate(properties, id);
+            this.notifyFileChangeListeners(properties, id);
+            return;
         }
 
         this.pushLiveUpdate(properties, id);

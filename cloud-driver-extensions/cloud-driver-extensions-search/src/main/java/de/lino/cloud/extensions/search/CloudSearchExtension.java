@@ -115,6 +115,9 @@ public class CloudSearchExtension extends Extension {
     /** Nothing to shut down - the Postgres index runs over the database provider's own shared pool, which the provider owns. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.search.SearchIndexService.class);
         // No resources of this extension's own to release.
     }
 

@@ -310,19 +310,67 @@ public final class DefaultCloudDriver extends CloudDriver {
             this.purgeS3BackedContent(dataFactory, objectStorageService);
         }
 
+        // Every entity section this module can name. The eight originally listed here left eleven
+        // behind - among them the audit log (every registered address and the full login history),
+        // every live session credential, every share and public link - so a wipe run to
+        // decommission or hand on an instance left exactly the data it was run to destroy.
         final List<CompletableFuture<Void>> deletions = List.of(
                 dataFactory.deleteSectionAsync(AuthUser.class),
                 dataFactory.deleteSectionAsync(CloudUser.class),
                 dataFactory.deleteSectionAsync(Folder.class),
                 dataFactory.deleteSectionAsync(PendingRegistration.class),
                 dataFactory.deleteSectionAsync(PendingPasswordReset.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.pending.PendingEmailChange.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.pending.PendingPresignedUpload.class),
                 dataFactory.deleteSectionAsync(StoredFile.class),
                 dataFactory.deleteSectionAsync(StoredFileOwnership.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.SharedFileGrant.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.SharedFolderGrant.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.PublicShareLink.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.RefreshToken.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.api.file.FileChunkManifest.class),
+                dataFactory.deleteSectionAsync(de.lino.cloud.api.audit.AuditEvent.class),
                 dataFactory.deleteSectionAsync(ApiKey.class)
         );
 
         CompletableFuture.allOf(deletions.toArray(new CompletableFuture[0])).join();
 
+        // The remaining sections belong to extensions, whose entity types this module cannot name.
+        // Each optional facet clears its own; an absent extension has no section to clear.
+        clearExtensionOwnedData();
+
+    }
+
+
+    /**
+     * Clears the entity sections owned by optional extensions - versions, thumbnails and webhook
+     * subscriptions.
+     *
+     * <p>Their entity types live inside those extensions, so {@link #reset()} cannot name them
+     * directly without inverting this project's dependency direction. Each service clears its own
+     * section instead, and an extension that is not running simply has nothing to clear.
+     * Best-effort throughout: a wipe must not stop half-way because one optional subsystem failed.
+     */
+    private void clearExtensionOwnedData() {
+        final de.lino.cloud.api.factory.service.IServiceContainer services = this.getServiceContainer();
+        try {
+            final de.lino.cloud.api.versioning.FileVersioningService versioning = services.getFileVersioningService();
+            if (versioning != null) versioning.clearAllData();
+        } catch (final RuntimeException ignored) {
+            // best-effort - see this method's own Javadoc
+        }
+        try {
+            final de.lino.cloud.api.thumbnail.ThumbnailService thumbnails = services.getThumbnailService();
+            if (thumbnails != null) thumbnails.clearAllData();
+        } catch (final RuntimeException ignored) {
+            // best-effort
+        }
+        try {
+            final de.lino.cloud.api.webhook.WebhookService webhooks = services.getWebhookService();
+            if (webhooks != null) webhooks.clearAllData();
+        } catch (final RuntimeException ignored) {
+            // best-effort
+        }
     }
 
     /**

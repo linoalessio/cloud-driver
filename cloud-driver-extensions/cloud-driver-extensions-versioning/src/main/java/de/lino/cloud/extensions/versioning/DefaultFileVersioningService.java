@@ -11,6 +11,8 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.versioning.FileVersionContent;
 import de.lino.cloud.api.versioning.FileVersionSummary;
+import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.versioning.FileVersioningService;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
@@ -76,6 +78,7 @@ final class DefaultFileVersioningService implements FileVersioningService {
                 // Keyframe: full copy, exactly the pre-delta behavior - plus the hash list, so
                 // the NEXT capture can be a delta.
                 this.fileFactory.upload(new StoredFile(versionedFileId, previousContent.fileName(), content));
+                chargeSnapshotBytes(sourceFileId, content.length);
                 this.dataFactory.register(new FileVersion(
                         sourceFileId, nextVersionNumber, versionedFileId,
                         previousContent.fileName(), previousContent.contentType(),
@@ -87,6 +90,7 @@ final class DefaultFileVersioningService implements FileVersioningService {
 
             final byte[] deltaContent = concatenateChunks(content, changedChunks);
             this.fileFactory.upload(new StoredFile(versionedFileId, previousContent.fileName(), deltaContent));
+            chargeSnapshotBytes(sourceFileId, deltaContent.length);
             this.dataFactory.register(new FileVersion(
                     sourceFileId, nextVersionNumber, versionedFileId,
                     previousContent.fileName(), previousContent.contentType(),
@@ -338,6 +342,98 @@ final class DefaultFileVersioningService implements FileVersioningService {
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             this.logger.log(Level.WARNING, "@DefaultFileVersioningService.retainedVersions: failed to scan versions of file '" + sourceFileId + "'", e);
             return List.of();
+        }
+    }
+
+
+    /**
+     * Charges {@code snapshotBytes} of newly stored version content to the owner of {@code
+     * sourceFileId}, or refunds it when negative.
+     *
+     * <p>A snapshot is a real object in the store with no ownership row of its own, so nothing
+     * else ever charges it: without this, every content write stored another copy for free, and an
+     * account could hold many times its quota in billed storage between retention sweeps. Charged
+     * by physical stored size - a delta snapshot costs what the delta costs - matching the
+     * convention that the usage counter is the physical, deduplication-aware total.
+     *
+     * <p>Best-effort: a version capture must never fail the write it is capturing history for, and
+     * the recompute path counts live versions too, so a lost adjustment is self-correcting.
+     *
+     * @param sourceFileId the file whose history this snapshot belongs to
+     * @param snapshotBytes bytes stored, or a negative number to refund bytes released
+     */
+    private void chargeSnapshotBytes(final String sourceFileId, final long snapshotBytes) {
+        if (snapshotBytes == 0) return;
+        try {
+            final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+            if (cloudUserService == null) return;
+            cloudUserService.resolveOwnerAuthUserId(sourceFileId)
+                    .ifPresent(ownerAuthUserId -> cloudUserService.updateCloudUserBytesUsage(ownerAuthUserId, snapshotBytes));
+        } catch (final RuntimeException accountingFailed) {
+            this.logger.log(Level.WARNING,
+                    "@DefaultFileVersioningService: failed to charge " + snapshotBytes + " version byte(s) for file '" + sourceFileId + "'",
+                    accountingFailed);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Each snapshot's content is its own {@code StoredFile}, deleted before its {@link
+     * FileVersion} row for the same reason the purge sweep does it in that order: a row pointing
+     * at missing content is harmless, where content nothing points at can never be found again.
+     */
+    @Override
+    public int deleteAllVersions(@NonNull final String sourceFileId) {
+        final List<FileVersion> versions;
+        try {
+            versions = this.dataFactory.getEntitiesByIndex(FileVersion.class, FileVersion.INDEX_SOURCE_FILE_ID, sourceFileId);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
+            this.logger.log(Level.WARNING,
+                    "@DefaultFileVersioningService.deleteAllVersions: failed to list versions of file '" + sourceFileId + "'", e);
+            return 0;
+        }
+
+        int removed = 0;
+        for (final FileVersion version : versions) {
+            try {
+                // Refund before the delete, while the stored size is still readable.
+                this.fileFactory.findById(version.getVersionedFileId())
+                        .ifPresent(snapshot -> chargeSnapshotBytes(sourceFileId, -snapshot.sizeBytes()));
+            } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException
+                           | FileIntegrityException | RuntimeException refundFailed) {
+                // proceed with the delete regardless - see chargeSnapshotBytes's own Javadoc
+            }
+            try {
+                this.fileFactory.delete(version.getVersionedFileId());
+            } catch (final DatabaseClientException | RuntimeException alreadyGoneOrOther) {
+                // proceed to drop the row regardless - see this method's own Javadoc
+            }
+            try {
+                this.dataFactory.delete(FileVersion.compositeKey(sourceFileId, version.getVersionNumber()), FileVersion.class);
+                removed++;
+            } catch (final DatabaseClientException | RuntimeException alreadyGone) {
+                // nothing left to do
+            }
+        }
+        if (removed > 0) {
+            this.logger.log(Level.INFO, "Removed " + removed + " version(s) of deleted file '" + sourceFileId + "'");
+        }
+        return removed;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Drops the whole {@link FileVersion} section in one call, rather than walking it - a wipe
+     * is not a per-row operation, and this runs while everything else is being torn down too.
+     */
+    @Override
+    public void clearAllData() {
+        try {
+            this.dataFactory.deleteSection(FileVersion.class);
+        } catch (final RuntimeException wipeFailed) {
+            this.logger.log(Level.WARNING, "Failed to clear the stored versions", wipeFailed);
         }
     }
 

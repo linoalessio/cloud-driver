@@ -440,13 +440,21 @@ public interface ICloudUserService {
      * #uploadFile(String, String, byte[], String)} has, just without this server ever holding the
      * content itself.
      *
+     * <p>A completion only ever <em>creates</em> a file. It is refused unless a pending ticket
+     * exists under {@code fileId} <em>and</em> was issued to {@code authUserId}, and it is refused
+     * outright when a {@link StoredFile} already exists under that id - so a caller who learns
+     * another account's file id (every share recipient necessarily does) can neither claim
+     * ownership of it nor overwrite its row. Both refusals raise the same not-found-shaped
+     * exception, so a non-owner cannot tell which one applied, and neither reveals whether an
+     * object exists in the store.
+     *
      * @param authUserId the uploading user's {@link de.lino.cloud.api.jwt.user.AuthUser#getId()} - must match the ticket's own {@link #beginPresignedUpload} caller
      * @param fileId the {@link PresignedUploadTicket#fileId()} returned by {@link #beginPresignedUpload}
      * @param fileName the file's original name
      * @param checksumSha256Hex the SHA-256 checksum the uploading client computed over the file's own content, as a lowercase hex string
      * @param folderId the folder to place the new file in, or {@code null} for the root
      * @return a summary of the newly created file
-     * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}, or if no object exists yet under {@code fileId}
+     * @throws IllegalArgumentException if {@code folderId} is non-null and isn't owned by {@code authUserId}, if no pending ticket issued to {@code authUserId} exists under {@code fileId}, if a file already exists under {@code fileId}, or if no object exists yet under {@code fileId}
      * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the object's real size exceeds {@code authUserId}'s quota - the uploaded object is deleted before this is thrown
      * @throws PresignedTransferUnavailableException if this deployment has no {@code PresignedTransferService} configured
      */
@@ -648,6 +656,34 @@ public interface ICloudUserService {
      */
     @NotNull
     StoredFileSummary replaceFileContent(@NotNull String authUserId, @NotNull String storedFileId, byte[] newContent,
+                                          @org.jetbrains.annotations.Nullable Long expectedUpdatedAtEpochMillis);
+
+    /**
+     * Replaces {@code storedFileId}'s content with the bytes of {@code contentFile}, streaming
+     * them rather than holding them in heap.
+     *
+     * <p>The same operation as {@link #replaceFileContent(String, String, byte[], Long)} - same
+     * access rule, same optimistic-concurrency precondition, same version capture, same quota and
+     * usage accounting - for a body too large to materialize. The content file is read to compute
+     * its checksum and then handed to the persistence layer to chunk-encrypt straight off disk,
+     * so no copy of it ever exists in memory.
+     *
+     * <p>Two deliberate behavioural differences, identical to the streamed upload overload's:
+     * the content is not DEFLATE-compressed, and it is not text-extracted, so the file is indexed
+     * for search and intelligence by name alone. Both follow from this server never holding the
+     * bytes.
+     *
+     * @param authUserId the calling account - the file's owner, or an {@code EDIT} grantee on it
+     * @param storedFileId the file whose content to replace
+     * @param contentFile a readable file holding the new content; the caller owns and deletes it
+     * @param expectedUpdatedAtEpochMillis the caller's last-known update time, or {@code null} to overwrite unconditionally
+     * @return a summary of the file after the replacement
+     * @throws de.lino.cloud.api.file.exception.SyncConflictException if {@code expectedUpdatedAtEpochMillis} is stale
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the growth exceeds the owner's quota
+     */
+    @NotNull
+    StoredFileSummary replaceFileContent(@NotNull String authUserId, @NotNull String storedFileId,
+                                          @NotNull java.nio.file.Path contentFile,
                                           @org.jetbrains.annotations.Nullable Long expectedUpdatedAtEpochMillis);
 
     /**
@@ -1053,6 +1089,35 @@ public interface ICloudUserService {
      */
     @NotNull
     StoredFile resolvePublicFileLink(@NotNull String token);
+
+    /**
+     * Resolves a public link to the file it points at, without materializing that file's content.
+     *
+     * <p>Applies exactly the checks {@link #resolvePublicFileLink} does - token validity, expiry,
+     * the owner still holding the file untrashed, and the malware-scan verdict - and reports every
+     * failure as the same one indistinguishable exception, so an anonymous caller learns nothing
+     * about why a link did not resolve.
+     *
+     * <p>Exists so the download route can stream the file the way the authenticated content route
+     * does, rather than holding the whole plaintext in heap for the duration of every anonymous
+     * request. This is the one content path reachable with no account at all, so its per-request
+     * cost is the one least under this server's control.
+     *
+     * @param token the public link's token
+     * @return the owning account and file the link points at
+     * @throws de.lino.cloud.api.file.exception.PublicShareLinkInvalidException if the link is unknown, expired, trashed, or its file is not clean
+     */
+    @NotNull
+    PublicFileLinkTarget resolvePublicFileLinkTarget(@NotNull String token);
+
+    /**
+     * What a public link points at - see {@link #resolvePublicFileLinkTarget}.
+     *
+     * @param ownerAuthUserId the account that owns the linked file, whose access the download is resolved under
+     * @param storedFileId the linked file
+     */
+    record PublicFileLinkTarget(@NotNull String ownerAuthUserId, @NotNull String storedFileId) {
+    }
 
     /**
      * Lists the non-trashed files and subfolders directly inside {@code folderId}, for a caller who

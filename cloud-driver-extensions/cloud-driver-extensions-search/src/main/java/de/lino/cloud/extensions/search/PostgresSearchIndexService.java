@@ -104,7 +104,14 @@ public final class PostgresSearchIndexService implements SearchIndexService {
         this.sqlExecution.executeUpdate(
                 "INSERT INTO " + TABLE
                         + " (auth_user_id, stored_file_id, file_name, folder_id, name_vector, content_vector)"
-                        + " VALUES (?, ?, ?, ?, to_tsvector('simple', ?), to_tsvector('simple', ?))"
+                        // strip() on the content vector drops each lexeme's positions. Without it the
+                        // column is a positional word list, from which the document's full word
+                        // sequence - its text, lowercased with punctuation dropped - is recoverable.
+                        // This is the one table in the system that deliberately holds plaintext, so
+                        // what it holds should be the set of words present, not the document itself.
+                        // Prefix matching and ranking both still work; only proximity weighting is
+                        // coarser.
+                        + " VALUES (?, ?, ?, ?, to_tsvector('simple', ?), strip(to_tsvector('simple', ?)))"
                         + " ON CONFLICT (auth_user_id, stored_file_id) DO UPDATE SET"
                         + " file_name = EXCLUDED.file_name, folder_id = EXCLUDED.folder_id, name_vector = EXCLUDED.name_vector"
                         + (hasText ? ", content_vector = EXCLUDED.content_vector" : ""),

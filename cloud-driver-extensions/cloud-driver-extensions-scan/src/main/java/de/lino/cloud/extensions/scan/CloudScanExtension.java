@@ -23,7 +23,19 @@ import java.util.logging.Level;
  */
 public class CloudScanExtension extends Extension {
 
-    /** The only Postgres trigger operation this extension reacts to - a rename/move/trash never changes a file's actual bytes, so there's nothing new to scan. */
+    /**
+     * The only Postgres trigger operation this extension reacts to.
+     *
+     * <p>An {@code INSERT} is a file that did not exist before, so its bytes have never been
+     * scanned. Every other way a file's bytes can change - {@code PUT}/{@code PATCH} of its
+     * content, or a version restore - rewrites the row that already exists and therefore arrives
+     * as an {@code UPDATE}, indistinguishable here from a rename, a move or a trash. Those paths
+     * do not rely on this listener at all: they stamp the row {@link
+     * de.lino.cloud.api.file.ScanStatus#PENDING} and call {@link
+     * de.lino.cloud.api.scan.ContentScanService#scanAsync} themselves, which is both precise (no
+     * rescan of a rename) and resilient (it does not depend on the notification thread still being
+     * alive). Widening this filter to {@code UPDATE} would therefore scan every replacement twice.
+     */
     private static final String INSERT_OPERATION = "INSERT";
 
     /** {@code configuration.json} key for the {@code clamd} host - defaults to {@link #DEFAULT_CLAMD_HOST} if unset. */
@@ -99,6 +111,12 @@ public class CloudScanExtension extends Extension {
     }
 
     private void shutdown() {
+        // Withdraw first, before anything is torn down. Leaving the service published while its
+        // extension stops is not cosmetic here: CloudUserService treats a non-null content-scan
+        // service as "scanning is on" and records every new upload as PENDING, while the listener
+        // and worker that would ever resolve those verdicts are gone - so every file uploaded
+        // after an `extensions stop` became permanently unreadable until a process restart.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.scan.ContentScanService.class);
         if (this.listener != null) {
             this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry().unregister(this.listener);
         }

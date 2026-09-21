@@ -214,6 +214,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String PUBLIC_FILES_PATH = "/public/files";
     /** Path mounted by {@link #start} for {@link #handleRegisterWebhook}/{@link #handleListWebhooks}. */
     private static final String WEBHOOKS_PATH = "/webhooks";
+    /** Path suffix of the public-link creation route - metered by {@link #isLowVolumeWrite}. */
+    private static final String PUBLIC_LINK_PATH_SUFFIX = "/public-link";
+    /** Path suffix of the file/folder share-creation routes - metered by {@link #isLowVolumeWrite}. */
+    private static final String SHARE_PATH_SUFFIX = "/share";
     /**
      * Path mounted by {@link #start} for {@link #handleListWebhookDeliveries} - one call spans
      * every one of the caller's webhooks together, the same "no single natural owner" reasoning
@@ -348,8 +352,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final long DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS = 300L;
     /** {@code configuration.json} key gating {@link #resolveRateLimitKey}'s trust of {@link #FORWARDED_FOR_HEADER} - see that method's own Javadoc. */
     private static final String TRUST_PROXY_HEADERS_CONFIG_KEY = "trust-proxy-headers";
-    /** The header {@link #resolveRateLimitKey} reads the original client address from, once {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} is enabled. */
+    /** The header {@link #resolveRateLimitKey} reads the original client address from, once the peer is a trusted proxy. */
     private static final String FORWARDED_FOR_HEADER = "X-Forwarded-For";
+    /**
+     * {@code configuration.json} key listing the reverse-proxy addresses whose {@link
+     * #FORWARDED_FOR_HEADER} may be believed, comma-separated. Authoritative when present: an
+     * empty or absent value falls back to {@link #TRUST_PROXY_HEADERS_CONFIG_KEY}'s older boolean.
+     */
+    private static final String TRUSTED_PROXY_ADDRESSES_CONFIG_KEY = "trusted-proxy-addresses";
+    /** The addresses a loopback-connected reverse proxy presents as - what {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} implicitly means. */
+    private static final java.util.Set<String> LOOPBACK_ADDRESSES = java.util.Set.of("127.0.0.1", "::1", "0:0:0:0:0:0:0:1");
     /**
      * How often {@link #requireWithinAuthRateLimit} opportunistically sweeps {@link
      * #authRateLimitBuckets} for expired-window entries - throttled rather than run on every
@@ -1163,8 +1175,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         } catch (final InvalidJwtException e) {
             throw new UnauthorizedResponse("Invalid or expired token");
         }
-        if (this.authService.getAuthUser(userId).isEmpty()) {
+        final java.util.Optional<de.lino.cloud.api.jwt.user.AuthUser> account = this.authService.getAuthUser(userId);
+        if (account.isEmpty()) {
             throw new UnauthorizedResponse("Invalid or expired token");
+        }
+        // A suspended account is locked out immediately, on every request, rather than only when
+        // its current access token happens to expire - which is the difference between containing
+        // a compromised account and waiting out its token lifetime. Checked here, next to the
+        // account-still-exists check, so no route can miss it.
+        if (account.get().isSuspended()) {
+            throw new UnauthorizedResponse("This account is suspended");
         }
         ctx.attribute(USER_ID_ATTRIBUTE, userId);
     }
@@ -1339,10 +1359,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      *     configured cap within the current window
      */
     private void requireWithinApiRateLimit(@NotNull final Context ctx) {
-        if (ctx.path().startsWith(AUTH_PATH_PREFIX) || ctx.path().startsWith(PUBLIC_PATH_PREFIX)) {
-            return;
+        if (ctx.path().startsWith(AUTH_PATH_PREFIX)) {
+            return; // its own, stricter limiter
         }
-        if (ctx.method() != HandlerType.GET && ctx.method() != HandlerType.HEAD) {
+        final boolean publicDownload = ctx.path().startsWith(PUBLIC_PATH_PREFIX);
+        final boolean lowVolumeWrite = isLowVolumeWrite(ctx);
+        if (!publicDownload && !lowVolumeWrite
+                && ctx.method() != HandlerType.GET && ctx.method() != HandlerType.HEAD) {
             return;
         }
         if (ctx.path().startsWith(FILES_PATH + "/") && ctx.path().endsWith(THUMBNAIL_PATH_SUFFIX)) {
@@ -1351,7 +1374,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         final long windowSeconds = resolveApiRateLimitReadWindowSeconds();
         final long windowMillis = windowSeconds * 1000L;
         final int maxRequests = resolveApiRateLimitReadMaxRequests();
-        final String bucketKey = resolveApiRateLimitIdentity(ctx);
+        // The public prefix is the only surface with no account behind it, so it is keyed on the
+        // client address *and* the token: one shared link cannot then exhaust the allowance of
+        // every other link, and one client cannot exhaust a popular link's for everyone else.
+        final String bucketKey = publicDownload
+                ? "public:" + resolveRateLimitKey(ctx) + ":" + ctx.path()
+                : resolveApiRateLimitIdentity(ctx);
 
         final long redisCount = incrementRedisWindow(API_RATE_LIMIT_REDIS_KEY_PREFIX + bucketKey, windowSeconds);
         if (redisCount != REDIS_WINDOW_UNAVAILABLE) {
@@ -1386,6 +1414,28 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static String resolveApiRateLimitIdentity(final Context ctx) {
         final String userId = ctx.attribute(USER_ID_ATTRIBUTE);
         return userId != null ? "user:" + userId : "ip:" + resolveRateLimitKey(ctx);
+    }
+
+    /**
+     * Whether this request is one of the low-volume mutating routes that should be metered.
+     *
+     * <p>Writes as a class are deliberately unmetered - an upload is one request per file and
+     * capped by quota instead - but a handful of them are cheap to issue and expensive to serve:
+     * registering a webhook makes this server issue outbound requests to an address the caller
+     * chose, and minting a share or public link creates durable, externally-reachable state. A
+     * real client performs these occasionally; only abuse performs them in bulk.
+     *
+     * @param ctx the request to classify
+     * @return {@code true} if this write should count against the rate limit
+     */
+    private static boolean isLowVolumeWrite(final Context ctx) {
+        if (ctx.method() == HandlerType.GET || ctx.method() == HandlerType.HEAD) {
+            return false;
+        }
+        final String path = ctx.path();
+        return path.startsWith(WEBHOOKS_PATH)
+                || path.endsWith(PUBLIC_LINK_PATH_SUFFIX)
+                || path.endsWith(SHARE_PATH_SUFFIX);
     }
 
     /**
@@ -1461,34 +1511,69 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * Resolves the address {@link #requireWithinAuthRateLimit} keys its per-client bucket on:
-     * {@link Context#ip()} (the immediate TCP peer) by default, or - only if {@code
-     * configuration.json}'s {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} is explicitly set to {@code
-     * true} - the first entry of {@link #FORWARDED_FOR_HEADER} instead.
+     * Resolves the address the rate limiters key their per-client bucket on.
      *
-     * <p><b>Only enable {@link #TRUST_PROXY_HEADERS_CONFIG_KEY} if this deployment genuinely sits
-     * behind exactly one trusted reverse-proxy hop that always sets {@link #FORWARDED_FOR_HEADER}
-     * itself, with no way for a client to reach this server directly (bypassing that proxy).</b> If
-     * that assumption doesn't hold, enabling this lets any client trivially spoof their own
-     * rate-limit identity by setting {@link #FORWARDED_FOR_HEADER} on their own request - defeating
-     * the limiter entirely rather than merely working around it. Left disabled by default; whether
-     * this deployment's actual reverse-proxy topology makes it safe to enable is an operator
-     * decision this class deliberately does not make on its own.
+     * <p>{@link Context#ip()} - the immediate TCP peer - unless that peer is itself a configured
+     * trusted proxy, in which case the <b>last</b> entry of {@link #FORWARDED_FOR_HEADER} is used.
      *
+     * <p>Both halves of that rule matter, and getting either wrong breaks the limiter completely
+     * in one direction or the other. Keying on the peer when the peer is a reverse proxy collapses
+     * every client on the internet into one bucket, so a single host can lock every account out of
+     * {@code /auth/*} indefinitely. Trusting the header without checking the peer lets any client
+     * pick its own identity per request, which removes the limiter entirely. And the entry must be
+     * the last, not the first: a proxy that sets this header <em>appends</em> the address it saw to
+     * whatever the client sent, so behind one trusted hop the rightmost entry is the only one the
+     * client could not have written.
+     *
+     * <p>{@link #TRUST_PROXY_HEADERS_CONFIG_KEY} is honoured for compatibility with deployments
+     * configured before the allowlist existed, and means "trust a loopback peer" - which is the
+     * topology it was always intended for.
+     *
+     * @param ctx the request to identify
      * @return the client identity to key the rate-limit bucket on for this request
      */
     private static String resolveRateLimitKey(final Context ctx) {
-        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
-        final boolean trustProxyHeaders = configuration.contains(TRUST_PROXY_HEADERS_CONFIG_KEY)
-                && configuration.getBoolean(TRUST_PROXY_HEADERS_CONFIG_KEY);
-        if (!trustProxyHeaders) {
-            return ctx.ip();
+        final String peer = ctx.ip();
+        if (!isTrustedProxyPeer(peer)) {
+            // Either the real client, or an untrusted hop: its own address is the only identity
+            // here that cannot be forged.
+            return peer;
         }
         final String forwardedFor = ctx.header(FORWARDED_FOR_HEADER);
         if (forwardedFor == null || forwardedFor.isBlank()) {
-            return ctx.ip();
+            return peer;
         }
-        return forwardedFor.split(",")[0].trim();
+        final String[] hops = forwardedFor.split(",");
+        return hops[hops.length - 1].trim();
+    }
+
+    /**
+     * Whether {@code peer} is a reverse proxy this deployment has been told to trust - the gate on
+     * reading {@link #FORWARDED_FOR_HEADER} at all.
+     *
+     * @param peer the immediate TCP peer's address
+     * @return {@code true} if a forwarded-for header from this peer may be believed
+     */
+    private static boolean isTrustedProxyPeer(final String peer) {
+        if (peer == null || peer.isBlank()) {
+            return false;
+        }
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        if (configuration.contains(TRUSTED_PROXY_ADDRESSES_CONFIG_KEY)) {
+            final String configured = configuration.getString(TRUSTED_PROXY_ADDRESSES_CONFIG_KEY);
+            if (configured != null && !configured.isBlank()) {
+                for (final String candidate : configured.split(",")) {
+                    if (peer.equals(candidate.trim())) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        // Compatibility: the older boolean means "this sits behind a loopback-connected proxy".
+        final boolean trustProxyHeaders = configuration.contains(TRUST_PROXY_HEADERS_CONFIG_KEY)
+                && configuration.getBoolean(TRUST_PROXY_HEADERS_CONFIG_KEY);
+        return trustProxyHeaders && LOOPBACK_ADDRESSES.contains(peer);
     }
 
     /**
@@ -1630,6 +1715,31 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
             System.err.println("[DefaultRestFactory] failed to publish live update for account '" + authUserId + "':");
             e.printStackTrace();
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Closes and untracks every connection held under {@code authUserId}. A connection is
+     * authenticated once, at open time, so nothing else would ever end it: a logged-out or revoked
+     * session kept receiving that account's changes for as long as the socket stayed up.
+     */
+    @Override
+    public int closeSessionsOf(@NotNull final String authUserId) {
+        final Set<WsContext> sessions = this.liveUpdateSessions.remove(authUserId);
+        if (sessions == null || sessions.isEmpty()) {
+            return 0;
+        }
+        int closed = 0;
+        for (final WsContext session : sessions) {
+            try {
+                session.closeSession(1000, "session ended");
+                closed++;
+            } catch (final RuntimeException alreadyGone) {
+                // Already closing or closed - nothing further to do for this one.
+            }
+        }
+        return closed;
     }
 
     /**
@@ -1982,11 +2092,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
-     * The {@code {"newEmail"}} JSON body shape read by {@code POST /auth/change-email}.
+     * The {@code {"newEmail", "currentPassword"}} JSON body shape read by {@code POST /auth/change-email}.
      *
      * @param newEmail the address the authenticated caller's account would move to on confirmation
+     * @param currentPassword the caller's current password, re-verified server-side before anything is persisted or e-mailed
      */
-    private record ChangeEmailRequest(String newEmail) {
+    private record ChangeEmailRequest(String newEmail, String currentPassword) {
     }
 
     /**
@@ -2006,7 +2117,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .runAsync(() -> {
                     try {
-                        this.authService.requestEmailChange(userId, request.newEmail());
+                        if (request.currentPassword() == null || request.currentPassword().isBlank()) {
+                            throw new BadRequestResponse("currentPassword is required");
+                        }
+                        this.authService.requestEmailChange(userId, request.newEmail(), request.currentPassword().toCharArray());
                     } catch (final DatabaseClientException | KeyWrapException e) {
                         throw new RuntimeException(
                                 "@DefaultRestFactory.handleRequestEmailChange: failed to start email change for " + userId, e);
@@ -2863,7 +2977,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     final DownloadableContent download = result.download();
                     final String encodedFileName = URLEncoder.encode(download.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
                     ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
-                    ctx.writeSeekableStream(download.content(), download.contentType(), download.sizeBytes());
+                    writeContentHonouringRange(ctx, download);
                     return null;
                 }));
     }
@@ -2878,6 +2992,174 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /** One file's downloadable content, as resolved by {@link #resolveDownloadableContent} - either a direct S3 stream or fully materialized bytes. */
     private record DownloadableContent(String fileName, String contentType, long sizeBytes, InputStream content) {
+    }
+
+    /** A validated byte range: {@code first} and {@code last} are both inclusive and both within the entity. */
+    private record ByteRange(long first, long last) {
+        /** @return how many bytes this range covers */
+        long length() {
+            return this.last - this.first + 1;
+        }
+    }
+
+    /**
+     * Writes {@code download} to the response, honouring a {@code Range} header if the client sent
+     * a valid one and answering {@code 416} if it sent an unsatisfiable one.
+     *
+     * <p>This exists because the container's own seekable writer parses {@code Range} itself,
+     * unconditionally and without bounds: an offset past the end of the entity leaves it in a
+     * {@code skip()} loop that can never make progress, spinning a request thread at full CPU
+     * until the process is restarted. Parsing here means the raw header never reaches it.
+     *
+     * @param ctx the request to answer
+     * @param download the content to write
+     */
+    private static void writeContentHonouringRange(final Context ctx, final DownloadableContent download) {
+        final String rangeHeader = ctx.header("Range");
+        if (rangeHeader == null || rangeHeader.isBlank()) {
+            ctx.header("Accept-Ranges", "bytes");
+            ctx.contentType(download.contentType());
+            ctx.header("Content-Length", Long.toString(download.sizeBytes()));
+            ctx.result(download.content());
+            return;
+        }
+
+        final ByteRange range = parseByteRange(rangeHeader, download.sizeBytes());
+        if (range == null) {
+            closeQuietly(download.content());
+            // The specification's own answer for an unsatisfiable range, and the only one a client
+            // can act on: Content-Range tells it the real length so it can ask again sensibly.
+            ctx.header("Content-Range", "bytes */" + download.sizeBytes());
+            ctx.status(416);
+            return;
+        }
+
+        ctx.header("Accept-Ranges", "bytes");
+        ctx.header("Content-Range", "bytes " + range.first() + "-" + range.last() + "/" + download.sizeBytes());
+        ctx.header("Content-Length", Long.toString(range.length()));
+        ctx.contentType(download.contentType());
+        ctx.status(206);
+        ctx.result(sliceOf(download.content(), range));
+    }
+
+    /**
+     * Parses a single-range {@code Range} header against an entity of {@code sizeBytes}.
+     *
+     * <p>Accepts exactly {@code bytes=<first>-<last>}, {@code bytes=<first>-} and the suffix form
+     * {@code bytes=-<length>}; a suffix longer than the entity is clamped to the whole entity, as
+     * the specification requires. Everything else - multiple ranges, a non-numeric or negative
+     * component, a first byte at or past the end, an inverted range - is rejected.
+     *
+     * @param rangeHeader the raw header value
+     * @param sizeBytes the entity's full length
+     * @return the validated range, or {@code null} if the header is malformed or unsatisfiable
+     */
+    private static ByteRange parseByteRange(final String rangeHeader, final long sizeBytes) {
+        final String value = rangeHeader.trim();
+        if (!value.startsWith("bytes=") || value.indexOf(',') >= 0) {
+            return null; // multi-range is legal HTTP but never worth the multipart response here
+        }
+        final String spec = value.substring("bytes=".length()).trim();
+        final int dash = spec.indexOf('-');
+        if (dash < 0 || spec.isEmpty()) {
+            return null;
+        }
+        final String firstPart = spec.substring(0, dash).trim();
+        final String lastPart = spec.substring(dash + 1).trim();
+        try {
+            if (firstPart.isEmpty()) {
+                // Suffix form: the final N bytes. An empty entity has no final byte to give.
+                final long suffixLength = Long.parseLong(lastPart);
+                if (suffixLength <= 0 || sizeBytes == 0) {
+                    return null;
+                }
+                final long first = Math.max(0, sizeBytes - suffixLength);
+                return new ByteRange(first, sizeBytes - 1);
+            }
+            final long first = Long.parseLong(firstPart);
+            if (first < 0 || first >= sizeBytes) {
+                return null;
+            }
+            final long last = lastPart.isEmpty() ? sizeBytes - 1 : Math.min(Long.parseLong(lastPart), sizeBytes - 1);
+            if (last < first) {
+                return null;
+            }
+            return new ByteRange(first, last);
+        } catch (final NumberFormatException malformed) {
+            return null;
+        }
+    }
+
+    /**
+     * Wraps {@code content} so that reading it yields only {@code range} - skipping to its first
+     * byte and stopping after its last.
+     *
+     * @param content the full entity stream, consumed and closed by the returned stream
+     * @param range the validated range to expose
+     * @return a stream over just that range
+     */
+    private static InputStream sliceOf(final InputStream content, final ByteRange range) {
+        return new InputStream() {
+            private long skipped;
+            private long remaining = range.length();
+
+            private void skipToFirst() throws java.io.IOException {
+                while (this.skipped < range.first()) {
+                    final long actuallySkipped = content.skip(range.first() - this.skipped);
+                    if (actuallySkipped <= 0) {
+                        // Never spin: a stream that cannot skip is read through instead, and one
+                        // that is simply exhausted ends the range here.
+                        if (content.read() < 0) {
+                            this.remaining = 0;
+                            return;
+                        }
+                        this.skipped++;
+                        continue;
+                    }
+                    this.skipped += actuallySkipped;
+                }
+            }
+
+            @Override
+            public int read() throws java.io.IOException {
+                skipToFirst();
+                if (this.remaining <= 0) {
+                    return -1;
+                }
+                final int read = content.read();
+                if (read >= 0) {
+                    this.remaining--;
+                }
+                return read;
+            }
+
+            @Override
+            public int read(final byte[] buffer, final int offset, final int length) throws java.io.IOException {
+                skipToFirst();
+                if (this.remaining <= 0) {
+                    return -1;
+                }
+                final int read = content.read(buffer, offset, (int) Math.min(length, this.remaining));
+                if (read > 0) {
+                    this.remaining -= read;
+                }
+                return read;
+            }
+
+            @Override
+            public void close() throws java.io.IOException {
+                content.close();
+            }
+        };
+    }
+
+    /** Closes {@code stream}, ignoring any failure - used on a path that is already answering an error. */
+    private static void closeQuietly(final InputStream stream) {
+        try {
+            stream.close();
+        } catch (final java.io.IOException ignored) {
+            // nothing useful to do while answering a 416
+        }
     }
 
     /**
@@ -2992,6 +3274,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .supplyAsync(() -> {
                     try {
+                        // The same threshold split handleUploadFile applies, and for the same
+                        // reason: reading the scratch file back into a byte[] puts the whole body
+                        // in heap, and the StoredFile constructor then holds a clone, its DEFLATE
+                        // output and its base64 encoding alongside it - roughly four times the
+                        // body, for one request, before anything reaches the object store.
+                        if (Files.size(scratchFile) > STREAMED_UPLOAD_THRESHOLD_BYTES) {
+                            return this.cloudUserService.replaceFileContent(userId, id, scratchFile, expectedUpdatedAt);
+                        }
                         final byte[] content = Files.readAllBytes(scratchFile);
                         return this.cloudUserService.replaceFileContent(userId, id, content, expectedUpdatedAt);
                     } catch (final IOException e) {
@@ -3255,8 +3545,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * CloudUserService#replaceFileContent} always captures whatever is currently live as a new
      * version before overwriting, restoring version {@code N} automatically captures the
      * (about-to-be-superseded) current content as its own new version too - nothing is ever lost.
-     * Owner-only, enforced entirely by {@link CloudUserService#replaceFileContent} itself (no
-     * separate access check needed here first - see this method's own implementation note below).
+     * Access-checked entirely by {@link CloudUserService#replaceFileContent} itself (no separate
+     * check needed here first - see this method's own implementation note below), which means the
+     * file's owner or a direct {@code EDIT} grantee on it. Restoring is content, not structure,
+     * and is no more powerful than the overwrite an {@code EDIT} grantee already holds - see
+     * {@link de.lino.cloud.api.file.SharePermission}'s own Javadoc.
      */
     private void handleRestoreFileVersion(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -4139,13 +4432,20 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private void handleResolvePublicFileLink(@NotNull final Context ctx) {
         final String token = ctx.pathParam("token");
         ctx.future(() -> MultiTaskingFactory.getInstance()
-                .supplyAsync(() -> this.cloudUserService.resolvePublicFileLink(token))
-                .handle((file, failure) -> {
+                .supplyAsync(() -> {
+                    // Resolve the link to its target and then stream it exactly as the
+                    // authenticated content route does. Materializing the plaintext here instead
+                    // meant every anonymous request held a whole file in heap - on the one route
+                    // with no account behind it to bound how many of those there can be.
+                    final de.lino.cloud.api.user.ICloudUserService.PublicFileLinkTarget target =
+                            this.cloudUserService.resolvePublicFileLinkTarget(token);
+                    return resolveDownloadableContent(target.ownerAuthUserId(), target.storedFileId());
+                })
+                .handle((download, failure) -> {
                     if (failure == null) {
-                        final String encodedFileName = URLEncoder.encode(file.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+                        final String encodedFileName = URLEncoder.encode(download.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
                         ctx.header("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFileName);
-                        final byte[] content = file.content();
-                        ctx.writeSeekableStream(new ByteArrayInputStream(content), file.contentType(), content.length);
+                        writeContentHonouringRange(ctx, download);
                         return null;
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, token);

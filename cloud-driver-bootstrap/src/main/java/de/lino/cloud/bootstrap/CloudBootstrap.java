@@ -348,8 +348,26 @@ public final class CloudBootstrap {
 
         final ExtensionFactory extensionFactory = CLOUD_DRIVER.getFactoryContainer().getExtensionFactory();
 
-        ExtensionFolderScanner.scan(Constraints.WORKING_DIRECTORY).forEach(extensionFactory::register);
-        ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extensionFactory::register);
+        // Registered directly, not discovered by scanning the working directory. That directory is
+        // where the shaded host jar itself sits, and the scanner opens every jar it finds and
+        // Class.forName's every entry to locate an Extension - so scanning it class-loaded all
+        // ~44,000 classes of every shaded dependency (the AWS SDK, Netty, Jetty, BouncyCastle,
+        // the JDBC driver) into metaspace on every boot, permanently, to find this one class that
+        // was already on the classpath.
+        extensionFactory.register(new CloudBootstrapExtension());
+        ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extension -> {
+            try {
+                extensionFactory.register(extension);
+            } catch (final IllegalStateException duplicateName) {
+                // Almost always a previous release's jar left beside the current one: the
+                // extensions folder is additive, so a deploy that does not prune leaves two jars
+                // claiming the same extension name. Say which name collided - the bare state
+                // exception gives an operator nothing to act on, and this happens before any
+                // extension starts, so the whole process comes up dead.
+                throw new IllegalStateException("@CloudBootstrap: two extension jars in " + Constraints.EXTENSIONS_PATH
+                        + " claim the same extension name - remove the stale release's jar. " + duplicateName.getMessage(), duplicateName);
+            }
+        });
 
         CloudDriver.getInstance().getTerminal().emptyLine();
         extensionFactory.startAllAsync(args);

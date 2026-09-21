@@ -160,6 +160,10 @@ public class CloudMetricsExtension extends Extension {
     /** Stops {@link MetricsHttpServer}, if it was ever started. */
     @Override
     public void onEnding() {
+        // Withdraw before tearing anything down: a consumer that reads this facet while
+        // the extension is stopping must see it absent, not stopped-but-present.
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.metrics.MetricsRecorder.class);
+        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.metrics.MetricsSnapshotProvider.class);
         if (this.httpServer != null) {
             this.httpServer.stop();
             this.cloudDriver().getTerminal().displayApproved("&3Metrics endpoint &7successfully &cclosed&7.");

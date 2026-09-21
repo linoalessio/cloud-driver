@@ -20,6 +20,7 @@ from .exceptions import (
     NotFoundError,
     PayloadTooLargeError,
     ServiceUnavailableError,
+    UnsupportedEncryptionError,
     SyncConflictError,
     TooManyRequestsError,
     UnauthorizedError,
@@ -46,6 +47,7 @@ __all__ = [
     "PayloadTooLargeError",
     "TooManyRequestsError",
     "ServiceUnavailableError",
+    "UnsupportedEncryptionError",
 ]
 
 __version__ = "1.0.8"

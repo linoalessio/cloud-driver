@@ -77,6 +77,19 @@ public final class DefaultWebhookService implements WebhookService {
      */
     private final LinkedBlockingQueue<Runnable> dispatchQueue;
 
+    /**
+     * How many webhook subscriptions one account may hold at once. A genuine integration uses one
+     * per system it feeds; anything approaching this is either misuse or a client that forgot to
+     * revoke.
+     */
+    private static final int MAX_SUBSCRIPTIONS_PER_ACCOUNT = 20;
+
+    /**
+     * How many deliveries may sit queued before further ones are rejected outright - see {@link
+     * #dispatchQueue}.
+     */
+    private static final int MAX_QUEUED_DISPATCHES = 10_000;
+
     /** Same as {@link #DefaultWebhookService(DataFactory, Logger, int)} with {@link #DEFAULT_DISPATCH_POOL_SIZE}. */
     public DefaultWebhookService(@NotNull final DataFactory dataFactory, @NotNull final Logger logger) {
         this(dataFactory, logger, DEFAULT_DISPATCH_POOL_SIZE);
@@ -99,7 +112,11 @@ public final class DefaultWebhookService implements WebhookService {
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .build();
         final int poolSize = Math.max(1, dispatchPoolSize);
-        this.dispatchQueue = new LinkedBlockingQueue<>();
+        // Bounded, deliberately: an unbounded queue turns a burst of events - or one slow
+        // endpoint - into unbounded heap, which is the failure this deployment has already hit
+        // twice by other routes. Past the bound a delivery is recorded as failed rather than
+        // queued, which is both visible and survivable.
+        this.dispatchQueue = new LinkedBlockingQueue<>(MAX_QUEUED_DISPATCHES);
         // Explicit ThreadPoolExecutor rather than Executors.newFixedThreadPool: identical pool
         // semantics, but this class keeps a reference to the work queue for
         // pendingDispatchQueueDepth() - the factory method hides it.
@@ -138,6 +155,15 @@ public final class DefaultWebhookService implements WebhookService {
             throw new IllegalArgumentException("@DefaultWebhookService.registerWebhook: eventTypes cannot be empty");
         }
         validateUrl(url);
+
+        // Every subscription multiplies one event into another outbound request to an address the
+        // caller chose, so an uncapped count turns one account into a request amplifier aimed
+        // wherever it likes. A real integration needs a handful.
+        final int existing = ownedSubscriptions(authUserId).size();
+        if (existing >= MAX_SUBSCRIPTIONS_PER_ACCOUNT) {
+            throw new IllegalStateException("@DefaultWebhookService.registerWebhook: " + authUserId + " already has "
+                    + existing + " webhook subscription(s), the maximum this deployment allows - revoke one first");
+        }
 
         final WebhookSubscription subscription = new WebhookSubscription(authUserId, url, eventTypes);
         try {
@@ -202,7 +228,14 @@ public final class DefaultWebhookService implements WebhookService {
                     .filter(subscription -> subscription.getEventTypes().contains(eventType))
                     .toList();
             for (final WebhookSubscription subscription : matching) {
-                this.dispatchExecutor.execute(() -> attemptDelivery(subscription, eventType, targetId, 1));
+                try {
+                    this.dispatchExecutor.execute(() -> attemptDelivery(subscription, eventType, targetId, 1));
+                } catch (final java.util.concurrent.RejectedExecutionException queueFull) {
+                    // The bounded queue is full: record the drop so it shows up in the delivery
+                    // history the owner can read, rather than growing the queue until the process
+                    // runs out of memory.
+                    recordAttempt(subscription.getId(), eventType, targetId, 1, false, null);
+                }
             }
         } catch (final RuntimeException ignored) {
             // Best-effort only - see this method's own Javadoc.
@@ -352,6 +385,21 @@ public final class DefaultWebhookService implements WebhookService {
         }
         final byte[] bytes = address.getAddress();
         return bytes.length == 16 && (bytes[0] & 0xFE) == 0xFC;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Drops the whole {@link WebhookSubscription} section in one call, rather than walking it - a wipe
+     * is not a per-row operation, and this runs while everything else is being torn down too.
+     */
+    @Override
+    public void clearAllData() {
+        try {
+            this.dataFactory.deleteSection(WebhookSubscription.class);
+        } catch (final RuntimeException wipeFailed) {
+            this.logger.log(Level.WARNING, "Failed to clear the stored webhook subscriptions", wipeFailed);
+        }
     }
 
 }

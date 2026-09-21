@@ -220,11 +220,23 @@ public actor APIClient {
     // MARK: - Files
 
     public func listFiles(folderId: String?) async throws -> [StoredFileSummaryResponse] {
-        let scope = (folderId ?? "root").queryEncoded()
-        let request = plainRequest("/files?folderId=\(scope)", method: "GET", authenticated: true)
-        let (data, _) = try await execute(request)
-        return try decode(data)
+        // Paged internally. The unpaginated form of this route is capped server-side and says
+        // nothing about the truncation, so callers that need the complete set - the recursive
+        // delete planner and the folder-size walk - silently operated on the first page only,
+        // leaving a folder delete half-done and a size under-reported.
+        var all: [StoredFileSummaryResponse] = []
+        var cursor: String? = nil
+        repeat {
+            let page = try await listFilesPage(folderId: folderId, cursor: cursor, limit: listingPageSize)
+            all.append(contentsOf: page.items)
+            cursor = page.nextCursor
+        } while cursor != nil
+        return all
     }
+
+    /// Page size used when walking a listing to completion - large enough to keep the round trips
+    /// down, small enough that each response stays bounded.
+    private var listingPageSize: Int { 500 }
 
     /// Cursor-paginated counterpart to `listFiles(folderId:)` - opts the server into the
     /// `{"items", "nextCursor"}` envelope by sending `?limit=`, instead of every file in

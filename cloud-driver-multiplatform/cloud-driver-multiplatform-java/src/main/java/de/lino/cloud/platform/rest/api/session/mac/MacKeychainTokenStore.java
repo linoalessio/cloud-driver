@@ -34,9 +34,13 @@ public final class MacKeychainTokenStore implements TokenStore {
     @Override
     public void save(final String token) throws TokenStoreException {
         // -U: update the item in place if one already exists, instead of failing with "already exists".
-        final ProcessResult result = run(
+        // -w with no value makes `security` read the password from standard input, so the token
+        // never appears in this process's argument vector - which anything able to list processes
+        // can read for the duration of the call. Both sibling stores already do it this way.
+        final ProcessResult result = runWithStdin(
+                token + "\n",
                 "security", "add-generic-password",
-                "-U", "-a", ACCOUNT, "-s", SERVICE, "-w", token
+                "-U", "-a", ACCOUNT, "-s", SERVICE, "-w"
         );
         if (result.exitCode() != 0) {
             throw new TokenStoreException("@MacKeychainTokenStore.save: 'security add-generic-password' failed: " + result.stderr());
@@ -95,8 +99,29 @@ public final class MacKeychainTokenStore implements TokenStore {
      *                              this thread is interrupted while waiting for it
      */
     private static ProcessResult run(final String... command) throws TokenStoreException {
+        return runWithStdin(null, command);
+    }
+
+    /**
+     * Runs {@code command}, optionally writing {@code stdinInput} to its standard input first, and
+     * captures its exit code plus stdout/stderr.
+     *
+     * @param stdinInput text to write to the process's standard input, or {@code null} to write nothing
+     * @param command the command and its arguments, as passed to {@link ProcessBuilder}
+     * @return the process's outcome
+     * @throws TokenStoreException if the process can't be started, doesn't finish within 10s, or
+     *                              this thread is interrupted while waiting for it
+     */
+    private static ProcessResult runWithStdin(final String stdinInput, final String... command) throws TokenStoreException {
         try {
             final Process process = new ProcessBuilder(command).start();
+            if (stdinInput != null) {
+                try (java.io.OutputStream stdin = process.getOutputStream()) {
+                    stdin.write(stdinInput.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+            } else {
+                process.getOutputStream().close();
+            }
             final String stdout = new String(process.getInputStream().readAllBytes());
             final String stderr = new String(process.getErrorStream().readAllBytes());
             final boolean finished = process.waitFor(10, TimeUnit.SECONDS);

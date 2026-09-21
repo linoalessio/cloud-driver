@@ -60,7 +60,11 @@ public class ShareCommand implements Command {
     public @NotNull List<CommandUsage> usages() {
         return List.of(
                 CommandUsage.of("share list <email>", "What that account shared with other accounts"),
-                CommandUsage.of("share links [email]", "Its public links, or every public link on this deployment")
+                CommandUsage.of("share links [email]", "Its public links, or every public link on this deployment"),
+                CommandUsage.of("share revoke-link <email> <fileId> <token>", "Arm killing one leaked public link (does nothing on its own)"),
+                CommandUsage.of("share revoke-link <email> <fileId> <token> confirm", "Confirm it, within 15s of arming"),
+                CommandUsage.of("share revoke-links <email>", "Arm killing every public link that account holds"),
+                CommandUsage.of("share revoke-links <email> confirm", "Confirm it, within 15s of arming")
         );
     }
 
@@ -84,7 +88,128 @@ public class ShareCommand implements Command {
             return;
         }
 
+        if (arguments.hasCommand(0, "revoke-link") && arguments.hasLength(3)) {
+            this.revokeLink(terminal, arguments, arguments.command(1), arguments.command(2), arguments.command(3));
+            return;
+        }
+
+        if (arguments.hasCommand(0, "revoke-links") && arguments.hasLength(1)) {
+            this.revokeAllLinks(terminal, arguments, arguments.command(1));
+            return;
+        }
+
         this.sendUsage();
+    }
+
+    /**
+     * Revokes one public link.
+     *
+     * <p>This command is otherwise read-only by design, on the reasoning that revoking a share is
+     * the owner's decision and they have a interface for it. That reasoning covers the ordinary
+     * case and not the one an operator is actually called about: a link that has leaked. A public
+     * link is the only way to read content here without an account at all, and until now the
+     * console could show that such links were active while being unable to do anything about one.
+     *
+     * <p>Delegates to the same service method the owner's own interface calls, so the ownership
+     * check and the audit entry stay on the normal path.
+     */
+    private void revokeLink(final Terminal terminal, final CommandArguments arguments,
+                             final String email, final String fileId, final String token) {
+        final String ownerAuthUserId = this.resolveAuthUserId(terminal, email);
+        if (ownerAuthUserId == null) return;
+        if (!confirmRevocation(terminal, arguments, 4, "share revoke-link " + email + " " + fileId + " " + token,
+                "revokes one public link on file " + fileId + " held by " + email)) {
+            return;
+        }
+        final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+        if (cloudUserService == null) {
+            terminal.displayApproved("&cThe REST/auth subsystem isn't running yet.");
+            return;
+        }
+        try {
+            cloudUserService.revokePublicFileLink(ownerAuthUserId, fileId, token);
+            terminal.displayApproved("Public link on file &b%s &7(&b%s&7) &crevoked&7.", fileId, email);
+        } catch (final RuntimeException failure) {
+            terminal.displayApproved("&cCould not revoke that link: %s", failure.getMessage());
+        }
+    }
+
+    /** Revokes every public link one account holds - see {@link #revokeLink}. */
+    private void revokeAllLinks(final Terminal terminal, final CommandArguments arguments, final String email) {
+        final String ownerAuthUserId = this.resolveAuthUserId(terminal, email);
+        if (ownerAuthUserId == null) return;
+
+        final List<PublicShareLink> links = this.entities(PublicShareLink.class).stream()
+                .filter(link -> ownerAuthUserId.equals(link.getOwnerAuthUserId()))
+                .toList();
+        if (links.isEmpty()) {
+            terminal.displayApproved("&b%s &7holds no public links.", email);
+            return;
+        }
+        if (!confirmRevocation(terminal, arguments, 2, "share revoke-links " + email,
+                "revokes all " + links.size() + " public link(s) held by " + email)) {
+            return;
+        }
+        final ICloudUserService cloudUserService = CloudDriver.getInstance().getServiceContainer().getCloudUserService();
+        if (cloudUserService == null) {
+            terminal.displayApproved("&cThe REST/auth subsystem isn't running yet.");
+            return;
+        }
+        int revoked = 0;
+        for (final PublicShareLink link : links) {
+            try {
+                cloudUserService.revokePublicFileLink(ownerAuthUserId, link.getStoredFileId(), link.getToken());
+                revoked++;
+            } catch (final RuntimeException failure) {
+                terminal.displayApproved("&cCould not revoke the link on file %s: %s", link.getStoredFileId(), failure.getMessage());
+            }
+        }
+        terminal.displayApproved("&b%s &7public link(s) &crevoked &7for &b%s&7.", revoked, email);
+    }
+
+    /** What revocation is currently armed, as its full command line, or {@code null}. */
+    private static final java.util.concurrent.atomic.AtomicReference<String> ARMED =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** When the armed revocation stops being confirmable, in epoch millis, or {@code null}. */
+    private static final java.util.concurrent.atomic.AtomicReference<Long> ARMED_UNTIL =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /**
+     * Arm-then-confirm guard, matching the shape every other destructive command here uses.
+     *
+     * <p>Revoking is an operator acting on a user's own data, so it is never a single keystroke -
+     * and arming is keyed on the exact command line, so arming one revocation can never confirm a
+     * different one.
+     *
+     * @param terminal where to print the warning
+     * @param arguments the invocation, checked for the confirming token
+     * @param confirmIndex the positional index the confirming token would occupy
+     * @param commandLine the exact form to re-run to confirm
+     * @param whatItDoes a plain description, shown while arming
+     * @return {@code true} if the caller should proceed
+     */
+    private static boolean confirmRevocation(final Terminal terminal, final CommandArguments arguments,
+                                              final int confirmIndex, final String commandLine, final String whatItDoes) {
+        final boolean confirming = arguments.hasLength(confirmIndex) && arguments.hasCommand(confirmIndex, "confirm");
+        final Long armedUntil = ARMED_UNTIL.get();
+        if (confirming && commandLine.equals(ARMED.get()) && armedUntil != null && armedUntil > System.currentTimeMillis()) {
+            ARMED.set(null);
+            ARMED_UNTIL.set(null);
+            return true;
+        }
+        if (confirming) {
+            terminal.displayApproved("&cNothing armed for that, or the confirmation window has passed - run it again without 'confirm' first.");
+            ARMED.set(null);
+            ARMED_UNTIL.set(null);
+            return false;
+        }
+        ARMED.set(commandLine);
+        ARMED_UNTIL.set(System.currentTimeMillis() + 15_000L);
+        terminal.displayApproved("&c&lThis %s.", whatItDoes);
+        terminal.displayApproved("Anyone currently holding such a URL loses access immediately. To confirm, run");
+        terminal.displayApproved("&c%s confirm &7within &b15 seconds&7.", commandLine);
+        return false;
     }
 
     /** Lists every account-to-account grant one account has made. */

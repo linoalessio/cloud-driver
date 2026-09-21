@@ -46,4 +46,21 @@ public interface LiveUpdatePublisher {
      */
     void publish(@NonNull String authUserId, @NonNull String table, @NonNull String operation, @NonNull String id);
 
+    /**
+     * Closes every live-update connection currently held by {@code authUserId}.
+     *
+     * <p>A connection authenticates once, when it is opened, and then stays subscribed for as long
+     * as it is held open - so without this, logging out or revoking a session left its push feed
+     * running, delivering that account's changes to a client that is no longer entitled to them.
+     * Called from the paths that end a session: logout, a revoked refresh token, and a credential
+     * change.
+     *
+     * <p>Best-effort and idempotent: an account with no open connections is not an error, and a
+     * connection that cannot be closed must not fail the revocation that asked for it.
+     *
+     * @param authUserId the account whose connections to close
+     * @return how many connections were closed
+     */
+    int closeSessionsOf(@NonNull String authUserId);
+
 }

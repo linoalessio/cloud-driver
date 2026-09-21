@@ -50,7 +50,12 @@ public class CloudWatcherExtension extends Extension {
         this.notification.start(payload -> {
             try {
                 this.cloudDriver().getFactoryContainer().getEventFactory().dispatch(DatabaseWatchEvent.class, payload);
-            } catch (final RuntimeException notificationHandlingFailed) {
+            } catch (final Throwable notificationHandlingFailed) {
+                // Throwable, not RuntimeException: this callback runs on the Postgres notification
+                // thread, and anything that escapes it kills that thread for the rest of the
+                // process's life - silently ending live push, malware scanning and thumbnail
+                // generation together. Keeping the thread alive is worth more here than letting
+                // any single failure propagate, which is the entire reason this catch exists.
                 this.cloudDriver().getLogger().log(Level.WARNING, "Failed to handle a database change notification: " + payload, notificationHandlingFailed);
             }
         });

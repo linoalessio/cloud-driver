@@ -99,8 +99,15 @@ public final class ChunkedContentCipher {
 
         final SecretKey key = new SecretKeySpec(keyMaterial, "AES");
         final byte[] prefix = prefixBytes(associatedDataPrefix);
-        final byte[] baseNonce = new byte[BASE_NONCE_LENGTH_BYTES];
-        SECURE_RANDOM.nextBytes(baseNonce);
+        // Derived from the issued key, not drawn at random. A resumable upload re-encrypts the
+        // file to work out which parts it still owes, and the parts already stored carry the
+        // nonce of the pass that wrote them - so a random draw produced an object whose parts
+        // were encrypted under two different nonces. Its total length is unchanged, which is all
+        // the server verifies, so the upload completed, reported success, charged quota, and left
+        // content that can never be decrypted again. Safe because the content key is issued fresh
+        // per file, so this nonce is never reused under a different key; the caller guarantees the
+        // other half by refusing to resume a session whose source file has changed.
+        final byte[] baseNonce = deriveBaseNonce(keyMaterial);
 
         final DataOutputStream out = new DataOutputStream(sink);
         out.write(header);
@@ -123,6 +130,43 @@ public final class ChunkedContentCipher {
             }
         }
     }
+
+
+    /**
+     * Derives this object's base nonce deterministically from the issued content key.
+     *
+     * <p>HKDF-SHA-256 (extract-then-expand, RFC 5869) with an empty salt and a fixed info string,
+     * truncated to {@link #BASE_NONCE_LENGTH_BYTES}. Implemented directly over {@code HmacSHA256}
+     * rather than pulling in a dependency, and kept byte-for-byte identical to the Swift SDK's
+     * own implementation - a file uploaded by one client and resumed by the other must produce
+     * the same object.
+     *
+     * @param keyMaterial the raw content key issued for this file
+     * @return the base nonce to write into the object
+     * @throws GeneralSecurityException if the platform lacks HMAC-SHA-256
+     */
+    private static byte[] deriveBaseNonce(final byte[] keyMaterial) throws GeneralSecurityException {
+        final javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+
+        // Extract: PRK = HMAC(salt = 32 zero bytes, keyMaterial)
+        mac.init(new SecretKeySpec(new byte[32], "HmacSHA256"));
+        final byte[] pseudoRandomKey = mac.doFinal(keyMaterial);
+
+        // Expand: T(1) = HMAC(PRK, info || 0x01), truncated. One block is always enough here,
+        // since the base nonce is far shorter than SHA-256's output.
+        mac.init(new SecretKeySpec(pseudoRandomKey, "HmacSHA256"));
+        mac.update(BASE_NONCE_INFO);
+        mac.update((byte) 0x01);
+        final byte[] block = mac.doFinal();
+
+        final byte[] baseNonce = new byte[BASE_NONCE_LENGTH_BYTES];
+        System.arraycopy(block, 0, baseNonce, 0, BASE_NONCE_LENGTH_BYTES);
+        return baseNonce;
+    }
+
+    /** The HKDF info string binding {@link #deriveBaseNonce} to this purpose - must match the Swift SDK's byte for byte. */
+    private static final byte[] BASE_NONCE_INFO =
+            "cloud-driver:chunked-content:base-nonce".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     /**
      * Decrypts a stored object fetched from a presigned download URL into {@code sink}, verifying

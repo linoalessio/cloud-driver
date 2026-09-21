@@ -202,8 +202,19 @@ public final class StoredFileContentChannel {
         }
         pushback.unread(versionTag);
 
-        if (ByteBuffer.wrap(versionTag).getInt() == EnvelopeEncryptionService.STREAMING_SCHEMA_VERSION) {
+        final int schemaVersion = ByteBuffer.wrap(versionTag).getInt();
+        if (schemaVersion == EnvelopeEncryptionService.STREAMING_SCHEMA_VERSION) {
             return this.envelopeEncryptionService.decryptStream(pushback, streamingAssociatedDataPrefix(fileId));
+        }
+        // Anything that is not one of the two known layouts is rejected outright rather than
+        // treated as the older one. The tag is not authenticated, and a presigned upload lets an
+        // account write arbitrary bytes at its own object key, so falling through here let a
+        // caller choose which parser ran over bytes they controlled.
+        if (schemaVersion != EnvelopeEncryptionService.SCHEMA_VERSION) {
+            throw new ObjectStorageException(
+                    "@StoredFileContentChannel.receiveStream: stored object for file '" + fileId
+                            + "' declares unknown schema version " + schemaVersion + " - object rejected", null
+            );
         }
         // One-shot layout: no incremental decryption exists for it, so fall back to the buffered
         // path - exactly what every object written before the streaming layout requires anyway.

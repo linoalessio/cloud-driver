@@ -9,15 +9,52 @@ import java.nio.file.Path
 import java.util.UUID
 
 /**
- * Replaces any `/` in [name] with `_` so it's safe to pass to [Path.resolve] as a single path
- * component without being misread as introducing a subdirectory. A file/folder's display name is
- * arbitrary user input and may legally contain `/` (e.g. `"Gardasil 9 Impfung, Rezept/Rechnung.pdf"`)
- * - `Path#resolve` otherwise splits on it as a real separator, so a write to the resulting path
- * fails with `NoSuchFileException` since the implied subdirectory was never created. Every local
- * path built from a [de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse]/
- * [de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse]'s own name must call this first.
+ * Reduces [name] to something safe to pass to [Path.resolve] as a single path component.
+ *
+ * A file or folder's display name is arbitrary text chosen by whoever uploaded it - and on a
+ * shared folder, that is not necessarily the person downloading it. The server accepts almost
+ * anything as a name, so a name may legally contain `/` (e.g.
+ * `"Gardasil 9 Impfung, Rezept/Rechnung.pdf"`), which `Path#resolve` would otherwise read as a
+ * real separator.
+ *
+ * Every separator and relative segment is neutralised here, not just `/`: on Windows `\` is a
+ * real separator too, and `..` as a whole name walks up a directory on every platform - so a
+ * shared file named `..\..\Startup\x.exe` would otherwise be written outside the directory the
+ * user picked. Windows reserved device names are replaced as well, since a file called `CON` or
+ * `NUL` cannot be created there at all.
+ *
+ * This is one half of the defence; [requireContainedIn] is the other. Every local path built from
+ * a remote name must pass through both.
  */
-fun sanitizedForLocalPath(name: String): String = name.replace("/", "_")
+fun sanitizedForLocalPath(name: String): String {
+    val withoutSeparators = name.replace('/', '_').replace('\\', '_')
+    val trimmed = withoutSeparators.trim().trim('.').trim()
+    if (trimmed.isEmpty() || trimmed == "." || trimmed == "..") return "file"
+    val reserved = setOf(
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    )
+    val stem = trimmed.substringBefore('.').uppercase()
+    return if (stem in reserved) "_$trimmed" else trimmed
+}
+
+/**
+ * Returns [candidate] if it really sits inside [root], and throws otherwise.
+ *
+ * The structural backstop behind [sanitizedForLocalPath]: a sanitiser can always be incomplete,
+ * and this app writes to whatever directory the user chose, so the last check before creating or
+ * writing anything is simply whether the resolved path is still under that directory. The same
+ * shape the archive-extraction path already uses.
+ */
+fun requireContainedIn(root: Path, candidate: Path): Path {
+    val normalisedRoot = root.toAbsolutePath().normalize()
+    val normalisedCandidate = candidate.toAbsolutePath().normalize()
+    require(normalisedCandidate.startsWith(normalisedRoot)) {
+        "refusing to write outside the chosen download directory: $normalisedCandidate"
+    }
+    return normalisedCandidate
+}
 
 /**
  * Downloads [fileId] (whose current name is [fileName]) straight to disk under
@@ -58,8 +95,12 @@ suspend fun CloudDriverClient.downloadFileStreaming(
     val target = withContext(Dispatchers.IO) {
         Files.createDirectories(destinationDirectory)
         val safeFileName = sanitizedForLocalPath(fileName)
-        val candidate = destinationDirectory.resolve(safeFileName)
-        if (Files.exists(candidate)) destinationDirectory.resolve("${UUID.randomUUID()}_$safeFileName") else candidate
+        val candidate = requireContainedIn(destinationDirectory, destinationDirectory.resolve(safeFileName))
+        if (Files.exists(candidate)) {
+            requireContainedIn(destinationDirectory, destinationDirectory.resolve("${UUID.randomUUID()}_$safeFileName"))
+        } else {
+            candidate
+        }
     }
     return try {
         this.downloadFileViaPresignedUrl(fileId, target, onBytesTransferred)

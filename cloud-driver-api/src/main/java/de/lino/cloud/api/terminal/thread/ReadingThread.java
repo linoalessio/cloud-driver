@@ -63,14 +63,25 @@ public final class ReadingThread extends Thread {
                 final String commandName = tokens[0];
                 final String[] args = Arrays.copyOfRange(tokens, 1, tokens.length);
 
-                this.commandService.dispatchAsync(commandName, args).thenAccept(found -> {
-                    if (!found) this.terminal.displayApproved("Unknown service provided. Use 'help' for more information.");
-                });
+                this.commandService.dispatchAsync(commandName, args)
+                        .thenAccept(found -> {
+                            if (!found) this.terminal.displayApproved("Unknown service provided. Use 'help' for more information.");
+                        })
+                        .exceptionally(dispatchFailed -> {
+                            // A command that failed in a way its own handler could not catch must
+                            // still say so at the prompt, rather than appearing to have done
+                            // nothing at all.
+                            this.terminal.displayApproved("&cThe command failed unexpectedly: " + dispatchFailed.getMessage());
+                            return null;
+                        });
 
             } catch (final UserInterruptException exception) {
-                // Ctrl+C - end the loop; the embedding application decides what happens next
-                // (e.g. calling Terminal#shutdown()), this thread only stops reading.
-                break;
+                // Ctrl+C discards the half-typed line and returns to the prompt, as it does in
+                // every shell. Ending the loop instead left the process running with a console
+                // that still printed logs but never read another command - no prompt to notice
+                // was gone, and no way back short of restarting the server. The exit command is
+                // how this process is stopped.
+                continue;
             } catch (final EndOfFileException exception) {
                 // Ctrl+D / stdin closed - nothing further to read.
                 break;

@@ -69,6 +69,17 @@ public interface WebhookService {
     List<WebhookSubscriptionSummary> listWebhooks(@NotNull String authUserId);
 
     /**
+     * Removes every webhook subscription this extension stores.
+     *
+     * <p>Exists so a full data wipe can reach this extension's own section: the entity type lives
+     * in the extension, so the core cannot name it, and a wipe that silently left subscriptions
+     * behind would leave the new deployment sending events to the old one's endpoints.
+     *
+     * <p>Best-effort and idempotent. Must never throw.
+     */
+    void clearAllData();
+
+    /**
      * Lists the most recent delivery attempts across all of {@code authUserId}'s webhooks.
      * Implementations may bound how many are retained, and this is informational rather than a
      * durable audit trail - {@code AuditLogService}/{@code AuditEvent} remain the persisted,

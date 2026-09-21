@@ -30,11 +30,44 @@ final class ImageThumbnailGenerator implements ThumbnailGenerator {
     /** {@inheritDoc} */
     @Override
     public byte[] generate(final byte[] sourceContent, final int maxDimensionPixels) throws IOException {
-        final BufferedImage source = ImageIO.read(new ByteArrayInputStream(sourceContent));
-        if (source == null) {
-            throw new IOException("@ImageThumbnailGenerator.generate: unable to decode image content");
+        try (javax.imageio.stream.ImageInputStream input =
+                     ImageIO.createImageInputStream(new ByteArrayInputStream(sourceContent))) {
+            if (input == null) {
+                throw new IOException("@ImageThumbnailGenerator.generate: unable to read image content");
+            }
+            final java.util.Iterator<javax.imageio.ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) {
+                throw new IOException("@ImageThumbnailGenerator.generate: unable to decode image content");
+            }
+            final javax.imageio.ImageReader reader = readers.next();
+            try {
+                reader.setInput(input);
+                // Dimensions come from the header, before any raster is allocated. This is the
+                // whole defence against a decompression bomb: a few kilobytes declaring a
+                // 23000x23000 image makes the decoder reserve gigabytes up front, and the
+                // allocation lands wherever in the process happens to ask for memory next.
+                final long pixels = (long) reader.getWidth(0) * (long) reader.getHeight(0);
+                if (pixels > MAX_SOURCE_PIXELS) {
+                    throw new IOException("@ImageThumbnailGenerator.generate: image declares " + pixels
+                            + " pixels, above the " + MAX_SOURCE_PIXELS + " budget - refusing to decode it");
+                }
+                final BufferedImage source = reader.read(0);
+                if (source == null) {
+                    throw new IOException("@ImageThumbnailGenerator.generate: unable to decode image content");
+                }
+                return ImageScaling.scaleAndEncodeJpeg(source, maxDimensionPixels);
+            } finally {
+                reader.dispose();
+            }
         }
-        return ImageScaling.scaleAndEncodeJpeg(source, maxDimensionPixels);
     }
+
+    /**
+     * Largest source image this generator will decode, in pixels.
+     *
+     * <p>Fifty megapixels is far beyond any real photograph a preview is wanted for, and far below
+     * what a deliberately crafted header can claim.
+     */
+    private static final long MAX_SOURCE_PIXELS = 50_000_000L;
 
 }
