@@ -79,6 +79,31 @@ def test_a_tall_body_scrolls_and_a_short_one_hides_the_scrollbar(root) -> None:
     assert scroller.canvas.yview()[0] == 0.0, "shrinking content must not leave the body scrolled away"
 
 
+def test_the_scrollbar_survives_a_parent_that_cannot_grow(root) -> None:
+    """The sidebar's case: a fixed-width parent, so the scrollbar must be packed before the canvas.
+
+    Packed after it, the canvas (fill + expand) takes the whole cavity and the scrollbar ends up
+    one pixel wide and unmapped - present to winfo_manager(), invisible to the operator, and the
+    steps below the fold look simply gone.
+    """
+    from tkinter import ttk
+
+    root.deiconify()
+    holder = ttk.Frame(root, width=260)
+    holder.pack(side="left", fill="y")
+    holder.pack_propagate(False)
+    scroller = ScrollFrame(holder)
+    scroller.pack(fill="both", expand=True)
+    for index in range(60):
+        ttk.Label(scroller.body, text=f"step {index}").pack(anchor="w")
+    pump(root)
+
+    assert scroller.scrollbar.winfo_ismapped(), "the scrollbar must be visible, not merely packed"
+    assert scroller.scrollbar.winfo_width() > 5, f"one pixel of scrollbar is none: {scroller.scrollbar.winfo_width()}"
+    assert scroller.canvas.winfo_width() < holder.winfo_width(), "the canvas must leave room for it"
+    holder.destroy()
+
+
 def test_the_router_moves_only_the_pane_under_the_pointer(root) -> None:
     """Two scrollers, one wheel event: the other one must not move."""
     from tkinter import ttk

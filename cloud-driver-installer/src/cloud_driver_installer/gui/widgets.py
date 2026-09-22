@@ -307,7 +307,10 @@ class ScrollFrame(ttk.Frame):
             return  # an unmapped canvas reports a height of 1: every content would look too tall
         overflows = self._overflows()
         if overflows and not self._scrollbar_shown:
-            self.scrollbar.pack(side="right", fill="y")
+            # Before the canvas, always: pack fills the cavity in packing order, and the canvas
+            # takes all of it (fill + expand). A scrollbar packed after it gets whatever is left -
+            # which inside a fixed-width parent, like the sidebar, is one pixel of nothing.
+            self.scrollbar.pack(side="right", fill="y", before=self.canvas)
         elif not overflows and self._scrollbar_shown:
             self.canvas.yview_moveto(0)  # nothing to scroll: never leave the content parked off-screen
             self.scrollbar.pack_forget()

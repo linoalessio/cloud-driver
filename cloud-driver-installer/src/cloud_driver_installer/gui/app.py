@@ -59,6 +59,7 @@ class MainWindow(ttk.Frame):
         self.content.pack(side="left", fill="both", expand=True)
 
         self.rows: dict[str, dict] = {}
+        self.sidebar_scroller: ScrollFrame | None = None
         self._build_sidebar()
         self.pages = {}
         actions = PageActions(
@@ -133,6 +134,7 @@ class MainWindow(ttk.Frame):
         scroller = ScrollFrame(self.sidebar)
         scroller.canvas.configure(background=COLORS["paper"])
         scroller.pack(fill="both", expand=True)
+        self.sidebar_scroller = scroller
         holder = scroller.body
         for step_id in STEP_IDS:
             # One clickable block per step: accent bar, dot, title, detail line, include box.
@@ -154,15 +156,17 @@ class MainWindow(ttk.Frame):
             box.pack(side="right")
             label = tk.Label(top, text=self.state.title_of(step_id), cursor="hand2", background=COLORS["paper"], foreground=COLORS["ink"], font=FONTS["body"], anchor="w")
             label.pack(side="left", anchor="w")
-            detail = tk.Label(inner, text="", background=COLORS["paper"], foreground=COLORS["muted"], font=FONTS["hint"], wraplength=190, justify="left", anchor="w")
-            detail.pack(fill="x")
+            # The detail stays on one line and only appears when there is something to say: with a
+            # wrapped line under all sixteen rows the list is 900 pixels tall and most of it is out
+            # of sight on any normal window.
+            detail = tk.Label(inner, text="", background=COLORS["paper"], foreground=COLORS["muted"], font=FONTS["hint"], justify="left", anchor="w")
             target = step_id if step_id in PAGES else "summary"
             tinted = (block, inner, top, label, detail)
             for widget in (label, top, inner, block, detail):
                 widget.bind("<Button-1>", lambda _event, page=target: self.show(page))
             block.bind("<Enter>", lambda _event, sid=step_id: self._hover_row(sid, True), add="+")
             block.bind("<Leave>", lambda _event, sid=step_id: self._hover_row(sid, False), add="+")
-            self.rows[step_id] = {"dot": dot, "label": label, "detail": detail, "included": included, "marker": marker, "tinted": tinted, "box": box, "page": target}
+            self.rows[step_id] = {"dot": dot, "label": label, "detail": detail, "included": included, "marker": marker, "tinted": tinted, "box": box, "block": block, "page": target}
 
     def _place_sash(self) -> None:
         """Give the work area roughly two thirds of the window and the log the rest."""
@@ -185,6 +189,8 @@ class MainWindow(ttk.Frame):
         for step_id in (*self.rows, ):  # repaint the old and the new selection
             if self.rows[step_id]["page"] in (previous, page_id):
                 self._tint_row(step_id)
+        if page_id in self.rows:
+            self._ensure_visible(page_id)
 
     def toggle(self, step_id: str) -> None:
         """Include or exclude a step and re-render the dependent ones."""
@@ -333,10 +339,43 @@ class MainWindow(ttk.Frame):
             return
         status = self.state.statuses.get(step_id, StepStatus.PENDING)
         row["dot"].set_status(status.value)
-        row["detail"].configure(text=self.state.details.get(step_id, "")[:160])
+        self._set_detail(row, self.state.details.get(step_id, ""))
         self._tint_row(step_id)
+        if status is StepStatus.RUNNING:
+            self._ensure_visible(step_id)
         if self.current in (step_id, "summary"):
             self.pages[self.current].refresh_header(self.state)
+
+    @staticmethod
+    def _set_detail(row: dict, text: str) -> None:
+        """One short line under a row, or no line at all when the step has nothing to report."""
+        first = " ".join(text.split())
+        # About what fits the 245-pixel column at the hint size; the page header carries the full
+        # text, so a row that clips mid-word only costs the reader a second.
+        shortened = (first[:31].rstrip() + "…") if len(first) > 32 else first
+        row["detail"].configure(text=shortened)
+        if shortened and not row["detail"].winfo_manager():
+            row["detail"].pack(fill="x")
+        elif not shortened and row["detail"].winfo_manager():
+            row["detail"].pack_forget()
+
+    def _ensure_visible(self, step_id: str) -> None:
+        """Scroll the step list so this row is inside the viewport (selection, or a step starting)."""
+        row = self.rows.get(step_id)
+        if not row or self.sidebar_scroller is None:
+            return
+        canvas = self.sidebar_scroller.canvas
+        body_height = self.sidebar_scroller.body.winfo_reqheight()
+        if body_height <= canvas.winfo_height() or not canvas.winfo_ismapped():
+            return
+        top = row["block"].winfo_y()
+        bottom = top + row["block"].winfo_height()
+        view_top = canvas.canvasy(0)
+        view_bottom = view_top + canvas.winfo_height()
+        if top < view_top:
+            canvas.yview_moveto(max(0.0, top / body_height))
+        elif bottom > view_bottom:
+            canvas.yview_moveto(max(0.0, (bottom - canvas.winfo_height()) / body_height))
 
     def _tint_row(self, step_id: str, *, hovered: bool = False) -> None:
         """Paint one sidebar row: selected (accent bar, tinted), hovered, or plain."""
