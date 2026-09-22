@@ -87,6 +87,7 @@ class IntelligenceStep(Step):
     id = "intelligence"
     title = "Intelligence service"
     depends_on = ("python", "config")
+    removable = True
 
     def enabled(self, plan: InstallPlan) -> bool:
         return plan.intelligence.enabled
@@ -173,6 +174,22 @@ class IntelligenceStep(Step):
         if plan.intelligence.clip:
             extras.append("clip")
         return f"install {REMOTE_DIR} with [{', '.join(extras)}], write {ENV_FILE}, run the systemd unit on 127.0.0.1:{plan.intelligence.port}"
+
+    def remove(self, ctx: Context) -> None:
+        """Stop the service and delete its unit, its env file and the whole install tree."""
+        ctx.remote.systemctl("stop", UNIT_NAME, check=False)
+        ctx.remote.systemctl("disable", UNIT_NAME, check=False)
+        ctx.remote.delete(DROPIN_DIR, UNIT_PATH, ENV_FILE, REMOTE_DIR)
+        ctx.remote.systemctl("daemon-reload", check=False)
+        ctx.discovered.intelligence_env = {}
+        ctx.secrets.intelligence_secret, ctx.secrets.intelligence_secret_kept = "", False
+        ctx.warn("[Intelligence service] semantic search is gone; keyword search in the backend is unaffected. The intelligence-* keys stay in configuration.json until that step is removed or re-applied with the feature switched off")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return (
+            f"stop and disable {UNIT_NAME}, delete {UNIT_PATH}, {ENV_FILE} and {REMOTE_DIR} (the virtual environment, the embedding model cache and the "
+            "encrypted vector store in it) · the embeddings are rebuildable from the files themselves, so nothing is permanently lost - only re-indexing time"
+        )
 
     # --- internals -------------------------------------------------------------------------------
 

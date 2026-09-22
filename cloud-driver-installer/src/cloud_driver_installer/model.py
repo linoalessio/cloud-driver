@@ -1,7 +1,7 @@
 """The install plan: every setting the operator can make, with the reference deployment's defaults.
 
 The plan is plain dataclasses so it can be rendered into the GUI, saved as a profile (secrets
-stripped - see :mod:`cloud_driver_installer.profile`), validated before a run, and handed to the
+stripped - see :mod:`cloud_driver_installer.profiles`), validated before a run, and handed to the
 steps. Nothing here talks to the network.
 
 Defaults follow the reference deployment (``shell/provision-root-server.sh``,
@@ -24,6 +24,9 @@ from cloud_driver_installer.ssh import SshTarget
 #: The API hostname both shipped client apps hardcode (desktop ``Main.kt`` ``DEFAULT_SERVER_URL``,
 #: Swift ``APIClient.shared``); a different API domain means those apps must be rebuilt.
 CLIENT_HARDCODED_API_HOST = "api.cloud-driver.de"
+
+#: Bind addresses that are only reachable from the server itself.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 #: Field names whose values are secrets: never written to a profile, always redacted in the log.
 SECRET_FIELD_NAMES = frozenset(
@@ -175,7 +178,14 @@ class EmailSettings:
 
 @dataclass
 class ProxySettings:
-    """Caddy in front of the loopback REST port."""
+    """Caddy in front of the loopback REST port.
+
+    ``api_domain`` is optional. With a domain Caddy obtains a Let's Encrypt certificate for it and
+    the API is reachable over HTTPS; left empty, Caddy serves the reverse proxy as plain HTTP on
+    port 80 for whatever address the request arrived on (the server's IP), which is the only thing
+    it can do without a name to put on a certificate. Adding the domain later and re-running the
+    step upgrades that site block in place.
+    """
 
     enabled: bool = True
     api_domain: str = ""
@@ -405,8 +415,10 @@ class InstallPlan:
 
         px = self.proxy
         if px.enabled:
-            if not valid_domain(px.api_domain):
-                problems.append("Reverse proxy: API domain must be a hostname such as api.example.com")
+            # An empty domain is a deliberate deployment shape, not a mistake: Caddy then serves
+            # plain HTTP on :80 for whatever address the request arrived on (see ProxySettings).
+            if px.api_domain and not valid_domain(px.api_domain):
+                problems.append("Reverse proxy: API domain must be a hostname such as api.example.com, or empty to serve this server's address over plain HTTP")
             if px.acme_email and not _EMAIL_RE.match(px.acme_email):
                 problems.append("Reverse proxy: ACME e-mail must be a valid e-mail address")
 
@@ -430,7 +442,7 @@ class InstallPlan:
             problems.append("Application: ports 80 and 443 belong to Caddy when the reverse proxy is enabled")
         if app.user_max_bytes > app.server_max_bytes:
             problems.append("Application: the per-user quota cannot exceed the server storage capacity")
-        if px.enabled and app.rest_bind_host not in ("127.0.0.1", "localhost", "::1"):
+        if px.enabled and app.rest_bind_host not in LOOPBACK_HOSTS:
             problems.append("Application: behind Caddy the REST port must bind to 127.0.0.1 (the JVM speaks plain HTTP)")
         if app.server_max_bytes <= 0:
             problems.append("Application: server storage capacity must be positive")
@@ -480,6 +492,24 @@ class InstallPlan:
                 problems.append("Intelligence: max bytes must be positive")
         return problems
 
+    def public_api_url(self, public_ip: str = "") -> str:
+        """The base URL a client outside this server would use, or ``""`` when there is none.
+
+        Three shapes: the reverse proxy with a domain (HTTPS on that name), the reverse proxy
+        without one (plain HTTP on the server's address, port 80), and no proxy at all (the JVM's
+        own REST port, only when it is not bound to loopback). Without a known public address the
+        last two cannot be named, so the answer is empty.
+        """
+        if self.proxy.enabled and self.proxy.api_domain:
+            return f"https://{self.proxy.api_domain}"
+        if not public_ip:
+            return ""
+        if self.proxy.enabled:
+            return f"http://{public_ip}"
+        if self.app.rest_bind_host in LOOPBACK_HOSTS:
+            return ""
+        return f"http://{public_ip}:{self.app.rest_port}"
+
     def warnings(self, discovered: "Discovered | None" = None) -> list[str]:
         """Non-blocking things the summary page should say out loud."""
         notes: list[str] = []
@@ -491,7 +521,11 @@ class InstallPlan:
                 notes.append("SES: publish the three DKIM CNAME records shown after the run, or mail from this domain lands in spam.")
         if not self.proxy.enabled:
             notes.append("No reverse proxy: the API is served as plain HTTP on the bind address; the shipped clients only speak https://.")
-        elif self.proxy.api_domain and self.proxy.api_domain.lower() != CLIENT_HARDCODED_API_HOST:
+            if self.app.rest_bind_host in LOOPBACK_HOSTS:
+                notes.append(f"Nothing can reach the API from outside: without the reverse proxy the REST port is bound to {self.app.rest_bind_host}. Bind 0.0.0.0 or turn the reverse proxy back on.")
+        elif not self.proxy.api_domain:
+            notes.append("Reverse proxy without a domain: Caddy answers on port 80 for this server's address and cannot obtain a certificate, so passwords and tokens travel unencrypted and the shipped clients (https:// only) cannot connect. Enter a domain and re-run this step to get TLS.")
+        elif self.proxy.api_domain.lower() != CLIENT_HARDCODED_API_HOST:
             notes.append(f"The desktop and iOS apps are built for https://{CLIENT_HARDCODED_API_HOST}; serving {self.proxy.api_domain} means rebuilding them (or repointing that DNS name here).")
         if self.clamav.enabled:
             notes.append("ClamAV: freshclam downloads its signatures after install - uploads in the first minutes are scanned against an empty database.")

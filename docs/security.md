@@ -125,6 +125,11 @@ process itself only ever speaks plain HTTP/WebSocket on its bind address:
   non-loopback address (including the out-of-the-box `0.0.0.0` default): plain HTTP on a reachable
   interface exposes every request, JWTs included. The warning never refuses startup — a
   deliberately plain-HTTP deployment (e.g. LAN-only testing) can ignore it.
+- `cloud-driver-installer` treats the API domain as optional: without one, Caddy still fronts the
+  loopback REST port, but as plain HTTP on port 80 for the server's address, because there is no
+  name to put on a certificate. The forwarded-header reasoning above still holds (exactly one
+  trusted proxy on loopback), the transport protection does not — that shape is for a deployment
+  that is not yet named, not for one carrying real accounts.
 - An operator who widens the bind host without putting a TLS-terminating proxy in front has a
   plaintext-HTTP deployment: credentials, JWTs, and file content would cross the network
   unencrypted. Don't — nothing in the application layer compensates for a missing TLS hop.

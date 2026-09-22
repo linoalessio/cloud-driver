@@ -38,6 +38,7 @@ class AwsStep(Step):
     title = "AWS"
     mandatory = True
     depends_on = ("server",)
+    removable = True
 
     def check(self, ctx: Context) -> CheckResult:
         plan = ctx.plan.aws
@@ -185,6 +186,41 @@ class AwsStep(Step):
             parts.append(f"your own credentials -> {CREDENTIALS_FILE}")
         return " · ".join(parts)
 
+    def remove(self, ctx: Context) -> None:
+        """Delete the server's AWS credentials. The cloud resources themselves are never touched.
+
+        Deleting them from here would be irreversible in a way nothing else in this installer is:
+        the KMS key is what every stored row is encrypted under (scheduling it for deletion makes
+        the whole database unreadable, backups included), and the content bucket *is* the files.
+        Both are deleted in the AWS console, deliberately, by someone who knows the data is gone.
+        """
+        plan = ctx.plan.aws
+        ctx.remote.delete(CREDENTIALS_FILE, CONFIG_FILE)
+        ctx.discovered.aws_credentials_present = False
+        ctx.secrets.server_access_key_id, ctx.secrets.server_secret_access_key, ctx.secrets.server_key_kept = "", "", False
+        ctx.warn("[AWS] removed the server's credentials only")
+        for line in (
+            f"KMS key {ctx.secrets.kms_key_id or plan.kms_alias}: still exists - every row in the database is encrypted under it",
+            f"bucket {plan.s3_bucket}: still exists - it holds the file content itself" if plan.s3_enabled else "",
+            f"IAM user {plan.iam_user_name}: still exists" if plan.server_identity == "iam_user" else "",
+        ):
+            if line:
+                ctx.warn(f"[AWS] {line}")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        aws = plan.aws
+        kept = [f"the KMS key ({aws.kms_key_id or aws.kms_alias})"]
+        if aws.s3_enabled:
+            kept.append(f"the bucket {aws.s3_bucket}")
+        if aws.server_identity == "iam_user":
+            kept.append(f"the IAM user {aws.iam_user_name}")
+        return (
+            f"delete {CREDENTIALS_FILE} and {CONFIG_FILE} from the server · "
+            + ", ".join(kept)
+            + " are NOT deleted: the key is what the whole database is encrypted under and the bucket is the file content itself, "
+            "so they are only ever deleted by hand in the AWS console"
+        )
+
     # --- internals -------------------------------------------------------------------------------
 
     def _ensure_access_key(self, ctx: Context, *, kms_key_id: str, bucket: str | None) -> None:
@@ -250,6 +286,7 @@ class EmailStep(Step):
     id = "email"
     title = "E-mail"
     depends_on = ("aws",)
+    removable = True
 
     def enabled(self, plan: InstallPlan) -> bool:
         return plan.email.mode != "none"
@@ -317,3 +354,34 @@ class EmailStep(Step):
         if plan.email.mode == "smtp":
             return f"write the smtp-* keys for {plan.email.smtp_host}:{plan.email.smtp_port}"
         return f"verify the SES identity {self.identity(plan)} in {plan.ses_region} and write the aws-ses-* keys"
+
+    def remove(self, ctx: Context) -> None:
+        """Strip the mail keys from the server's configuration.json; leave the SES identity alone.
+
+        The backend then has no transport: verification, password-reset and e-mail-change codes
+        only appear in the server log.
+        """
+        from cloud_driver_installer.config_files import FEATURE_KEY_GROUPS, parse_json, to_json
+
+        path = f"{ctx.plan.config_dir}/configuration.json"
+        document = parse_json(ctx.remote.read_text(path))
+        if not document:
+            ctx.info("[E-mail] the server has no configuration.json")
+        else:
+            removed = [key for group in ("ses", "smtp") for key in FEATURE_KEY_GROUPS[group] if key in document]
+            for key in removed:
+                document.pop(key, None)
+            if removed:
+                ctx.remote.put_text(path, to_json(document), mode=0o600)
+                ctx.info(f"[E-mail] removed {len(removed)} mail keys from configuration.json")
+        ctx.secrets.ses_dkim_records = []
+        if ctx.plan.email.mode == "ses":
+            ctx.warn(f"[E-mail] the SES identity {self.identity(ctx.plan)} stays verified in AWS - delete it in the SES console if you want it gone")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        what = "smtp-*" if plan.email.mode == "smtp" else "aws-ses-*"
+        extra = "" if plan.email.mode == "smtp" else f" · the verified SES identity {self.identity(plan)} is left in AWS"
+        return (
+            f"remove the {what} keys from {plan.config_dir}/configuration.json{extra} · "
+            "the backend then has no mail transport: every verification code only appears in the server log"
+        )

@@ -13,7 +13,7 @@ import shlex
 from cloud_driver_installer.config_files import render_postgres_credentials, render_redis_credentials, to_json
 from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
 from cloud_driver_installer.model import InstallPlan
-from cloud_driver_installer.secrets import generate_hex
+from cloud_driver_installer.credentials import generate_hex
 
 #: Dollar-quoting tag for passwords inside SQL: hex passwords can never contain it.
 SQL_TAG = "cdipw"
@@ -55,6 +55,7 @@ class PostgresStep(Step):
     title = "PostgreSQL"
     mandatory = True
     depends_on = ("packages",)
+    removable = True
 
     def check(self, ctx: Context) -> CheckResult:
         plan = ctx.plan.postgres
@@ -114,8 +115,9 @@ class PostgresStep(Step):
     def verify(self, ctx: Context) -> VerifyResult:
         plan = ctx.plan.postgres
         password = ctx.secrets.pg_password
-        if not self._login_works(ctx, password):
-            return VerifyResult(False, f"{plan.username} cannot log in to {plan.database} on {plan.host}:{plan.port}")
+        problem = self._login_problem(ctx, password)
+        if problem:
+            return VerifyResult(False, f"{plan.username} cannot log in to {plan.database} on {plan.host}:{plan.port} - {problem}")
         owner = self._login_query(ctx, password, "SELECT pg_get_userbyid(datdba) = current_user FROM pg_database WHERE datname = current_database()")
         create = self._login_query(ctx, password, "SELECT has_schema_privilege(current_user, 'public', 'CREATE')")
         if owner != "t" and create != "t":
@@ -132,6 +134,48 @@ class PostgresStep(Step):
         if pg.mode == "external":
             return f"write postgres-database.json for {pg.username}@{pg.host}:{pg.port}/{pg.database} (external server)"
         return f"install postgresql, create role {pg.username} and database {pg.database} (owner), write postgres-database.json"
+
+    def remove(self, ctx: Context) -> None:
+        """Delete the deployment's database. Every file ever uploaded is in it, and it is gone.
+
+        Locally installed: the server, its clusters under ``/var/lib/postgresql`` and its
+        configuration are purged. External: only the database this deployment owns is dropped -
+        the server belongs to someone else, and dropping its login role needs a superuser this
+        installer does not have.
+        """
+        plan = ctx.plan.postgres
+        if plan.mode == "install":
+            ctx.remote.systemctl("stop", "postgresql", check=False)
+            ctx.remote.systemctl("disable", "postgresql", check=False)
+            ctx.remote.apt_purge(["postgresql", "postgresql-contrib", "postgresql-common", "postgresql-client-common"])
+            ctx.remote.delete("/var/lib/postgresql", "/etc/postgresql", "/etc/postgresql-common", "/var/log/postgresql")
+        else:
+            dropped = ctx.remote.run_with_env(
+                f"dropdb -h {shlex.quote(plan.host)} -p {plan.port} -U {shlex.quote(plan.username)} --if-exists {shlex.quote(plan.database)}",
+                {"PGPASSWORD": ctx.secrets.pg_password},
+                timeout=600,
+            )
+            if dropped.ok:
+                ctx.info(f"[PostgreSQL] dropped database {plan.database} on {plan.host}")
+            else:
+                ctx.warn(f"[PostgreSQL] could not drop {plan.database} on {plan.host}: {ctx.redactor.redact((dropped.err or dropped.out).strip())}")
+            ctx.warn(f"[PostgreSQL] the login role {plan.username} is left on the external server - dropping it needs a superuser login this installer does not have")
+        ctx.remote.delete(f"{ctx.plan.config_dir}/postgres-database.json")
+        ctx.secrets.pg_password, ctx.secrets.pg_password_kept = "", False
+        ctx.discovered.existing_postgres = {}
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        pg = plan.postgres
+        if pg.mode == "install":
+            return (
+                f"stop and purge postgresql, then delete /var/lib/postgresql, /etc/postgresql and /var/log/postgresql, "
+                f"and {plan.config_dir}/postgres-database.json · THE DATABASE {pg.database} AND EVERY FILE, USER AND SHARE IN IT IS DELETED PERMANENTLY, "
+                "and an off-site backup is the only way back"
+            )
+        return (
+            f"drop the database {pg.database} on the external server {pg.host}:{pg.port} and delete {plan.config_dir}/postgres-database.json · "
+            f"EVERY FILE, USER AND SHARE IN IT IS DELETED PERMANENTLY · the role {pg.username} and the server itself are left alone"
+        )
 
     # --- internals -------------------------------------------------------------------------------
 
@@ -167,12 +211,47 @@ class PostgresStep(Step):
     def _login_works(self, ctx: Context, password: str) -> bool:
         return self._login_query(ctx, password, "SELECT 1") == "1"
 
+    def _login_problem(self, ctx: Context, password: str) -> str:
+        """``""`` when the login works, else why it did not, in the operator's terms.
+
+        psql's own wording ("FATAL: password authentication failed") says what happened but not
+        what to do about it, and the answer differs per mode: a local server is one this step
+        owns and can rewrite, an external one holds a role nobody here can change.
+        """
+        plan = ctx.plan.postgres
+        result = ctx.remote.run_with_env(
+            f"psql -h {shlex.quote(plan.host)} -p {plan.port} -U {shlex.quote(plan.username)} -d {shlex.quote(plan.database)} -tAc {shlex.quote('SELECT 1')}",
+            {"PGPASSWORD": password},
+            timeout=60,
+        )
+        if result.ok and result.out.strip() == "1":
+            return ""
+        message = (result.err or result.out or "").strip()
+        lowered = message.lower()
+        if "password authentication failed" in lowered or "no password supplied" in lowered:
+            if plan.mode == "external":
+                return (
+                    f"the password is not {plan.username}'s password on that server. This step never creates or changes a role on an "
+                    "external server - type the existing password on this page, or set it there yourself"
+                )
+            return "the password does not match the role - tick 'rotate' to set the role's password to the one in the plan"
+        if "does not exist" in lowered and "database" in lowered:
+            return f"the database {plan.database} does not exist on that server"
+        if "does not exist" in lowered and "role" in lowered:
+            return f"the role {plan.username} does not exist on that server"
+        if any(text in lowered for text in ("could not connect", "connection refused", "no route to host", "timeout expired", "could not translate")):
+            return f"nothing answers on {plan.host}:{plan.port} - check the address, the server's listen_addresses and pg_hba.conf, and any firewall between here and it"
+        if "no pg_hba.conf entry" in lowered:
+            return f"the server refuses connections from this host for {plan.username} - it needs a pg_hba.conf entry for it"
+        return ctx.redactor.redact(message.splitlines()[-1]) if message else "no answer from psql"
+
 
 class RedisStep(Step):
     """Redis: loopback-bound, password-protected, and never a source of truth."""
 
     id = "redis"
     title = "Redis"
+    removable = True
     depends_on = ("packages",)
 
     def enabled(self, plan: InstallPlan) -> bool:
@@ -220,6 +299,28 @@ class RedisStep(Step):
         if redis.mode == "external":
             return f"write redis-database.json for {redis.host}:{redis.port} (external server)"
         return "install redis-server, bind to loopback, set requirepass, write redis-database.json"
+
+    def remove(self, ctx: Context) -> None:
+        """Purge Redis and its data. Nothing authoritative lives here - only cache and rate limits."""
+        plan = ctx.plan.redis
+        if plan.mode == "install":
+            ctx.remote.systemctl("stop", "redis-server", check=False)
+            ctx.remote.systemctl("disable", "redis-server", check=False)
+            ctx.remote.apt_purge(["redis-server", "redis-tools"])
+            ctx.remote.delete("/var/lib/redis", "/etc/redis", "/var/log/redis")
+        else:
+            ctx.warn(f"[Redis] the external server {plan.host}:{plan.port} is left untouched - only this deployment's credentials file is removed")
+        ctx.remote.delete(f"{ctx.plan.config_dir}/redis-database.json")
+        ctx.secrets.redis_password, ctx.secrets.redis_password_kept = "", False
+        ctx.discovered.existing_redis = {}
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        if plan.redis.mode == "install":
+            return (
+                f"stop and purge redis-server, delete /var/lib/redis, /etc/redis and {plan.config_dir}/redis-database.json · "
+                "rate-limit counters and webhook history are lost, nothing authoritative is (the database holds that)"
+            )
+        return f"delete {plan.config_dir}/redis-database.json · the external Redis at {plan.redis.host}:{plan.redis.port} is left as it is"
 
     # --- internals -------------------------------------------------------------------------------
 

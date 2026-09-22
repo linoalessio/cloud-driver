@@ -17,9 +17,9 @@ from cloud_driver_installer.aws import COMMON_REGIONS, list_local_profiles
 from cloud_driver_installer.config_files import SCREEN_LOG_FILE, masked, render_configuration, to_json
 from cloud_driver_installer.engine import StepStatus
 from cloud_driver_installer.gui.state import AppState
-from cloud_driver_installer.gui.widgets import COLORS, FactGrid, Form, ScrollFrame, note, section
+from cloud_driver_installer.gui.widgets import COLORS, SPACE, STATUS_BADGES, Check, FactGrid, Form, ScrollFrame, note, section
 from cloud_driver_installer.model import CLIENT_HARDCODED_API_HOST, InstallPlan
-from cloud_driver_installer.secrets import generate_base64, generate_hex
+from cloud_driver_installer.credentials import generate_base64, generate_hex
 from cloud_driver_installer.sizing import GIB, format_bytes, suggest_jvm_xmx
 from cloud_driver_installer.steps import STEP_ORDER
 
@@ -30,10 +30,12 @@ class PageActions:
 
     check: Callable[[str], None]
     apply: Callable[[str], None]
+    remove: Callable[[str], None]
     probe_aws: Callable[[], None]
     probe_dns: Callable[[str], None]
     install: Callable[[], None]
     stop: Callable[[], None]
+    export_setup: Callable[[], None]
 
 
 def _int(variable: tk.Variable, field: str, minimum: int = 1, maximum: int = 65535) -> int:
@@ -67,22 +69,30 @@ class Page(ttk.Frame):
         self.state = state
         self.actions = actions
 
-        header = ttk.Frame(self, padding=(14, 12, 14, 6))
+        header = ttk.Frame(self, padding=(SPACE["lg"], SPACE["lg"], SPACE["lg"], SPACE["sm"]))
         header.pack(fill="x")
-        ttk.Label(header, text=self.title, style="Head.TLabel").pack(side="left")
-        self.status_label = ttk.Label(header, text="not checked", style="Muted.TLabel")
-        self.status_label.pack(side="left", padx=12)
+        titles = ttk.Frame(header)
+        titles.pack(side="left", fill="x", expand=True)
+        ttk.Label(titles, text=self.title, style="Head.TLabel").pack(side="left")
+        self.status_label = ttk.Label(titles, text="not checked", style="BadgeMuted.TLabel")
+        if self.step_id:  # a page without a step has no status of its own
+            self.status_label.pack(side="left", padx=SPACE["md"], pady=SPACE["xs"])
         if self.step_id:
-            ttk.Button(header, text="Apply this step", command=lambda: actions.apply(self.step_id)).pack(side="right")
-            ttk.Button(header, text="Check", width=8, command=lambda: actions.check(self.step_id)).pack(side="right", padx=4)
-        self.detail_label = ttk.Label(self, text="", style="Hint.TLabel", wraplength=720, justify="left")
-        self.detail_label.pack(anchor="w", padx=14)
-        self.error_label = ttk.Label(self, text="", foreground=COLORS["fail"], wraplength=720, justify="left")
-        self.error_label.pack(anchor="w", padx=14)
+            # Reading order right to left: the safe action first, the destructive one furthest away.
+            ttk.Button(header, text="Apply this step", style="Primary.TButton", command=lambda: actions.apply(self.step_id)).pack(side="right")
+            ttk.Button(header, text="Check", command=lambda: actions.check(self.step_id)).pack(side="right", padx=SPACE["sm"])
+            self.remove_button = ttk.Button(header, text="Remove…", style="Danger.TButton", command=lambda: actions.remove(self.step_id))
+            self.remove_button.pack(side="right", padx=(0, SPACE["lg"]))
+            if not self._step().removable:
+                self.remove_button.state(["disabled"])
+        self.detail_label = ttk.Label(self, text="", style="Hint.TLabel", wraplength=760, justify="left")
+        self.error_label = ttk.Label(self, text="", foreground=COLORS["fail"], wraplength=760, justify="left")
+        # Both stay out of the layout until they have text: an empty label still takes a line, and
+        # two of them leave a hole between the title and the first card.
 
-        scroller = ScrollFrame(self)
-        scroller.pack(fill="both", expand=True, padx=8, pady=6)
-        self.body = scroller.body
+        self._scroller = ScrollFrame(self)
+        self._scroller.pack(fill="both", expand=True, padx=SPACE["md"], pady=SPACE["sm"])
+        self.body = self._scroller.body
         self.build(self.body)
 
     # --- to implement ----------------------------------------------------------------------------
@@ -101,23 +111,34 @@ class Page(ttk.Frame):
 
     # --- shared ----------------------------------------------------------------------------------
 
+    def _step(self):
+        """This page's step, for the things only the step knows (whether it can be removed)."""
+        from cloud_driver_installer.steps import all_steps
+
+        return next(step for step in all_steps() if step.id == self.step_id)
+
     def refresh_header(self, state: AppState) -> None:
         """Update the status pill and the detail line from the last check/run."""
         if not self.step_id:
             return
         status = state.statuses.get(self.step_id, StepStatus.PENDING)
-        style = {
-            StepStatus.OK: "Ok.TLabel",
-            StepStatus.DONE: "Ok.TLabel",
-            StepStatus.NEEDS_APPLY: "Warn.TLabel",
-            StepStatus.FAILED: "Fail.TLabel",
-        }.get(status, "Muted.TLabel")
-        self.status_label.configure(text=status.value.replace("_", " "), style=style)
-        self.detail_label.configure(text=state.details.get(self.step_id, ""))
+        self.status_label.configure(
+            text=status.value.replace("_", " "),
+            style=STATUS_BADGES.get(status.value, "BadgeMuted.TLabel"),
+        )
+        self._show_message(self.detail_label, state.details.get(self.step_id, ""))
 
     def show_error(self, message: str) -> None:
         """Show a validation problem above the form."""
-        self.error_label.configure(text=message)
+        self._show_message(self.error_label, message)
+
+    def _show_message(self, label: ttk.Label, text: str) -> None:
+        """Give ``label`` its text, and its place in the layout only while it has some."""
+        label.configure(text=text)
+        if text and not label.winfo_manager():
+            label.pack(anchor="w", padx=SPACE["lg"], pady=(0, SPACE["xs"]), before=self._scroller)
+        elif not text and label.winfo_manager():
+            label.pack_forget()
 
 
 # --- individual pages ------------------------------------------------------------------------
@@ -385,6 +406,9 @@ class ClamavPage(Page):
 
     def store(self, plan: InstallPlan) -> None:
         plan.clamav.enabled = self.enabled.get()
+        # Pinned, not a field: this step installs clamd on this server and binds its socket to
+        # this address, and an exposed scanner port is not something to offer by accident. A host
+        # that a loaded profile or the server's own configuration carried is replaced on purpose.
         plan.clamav.host = "127.0.0.1"
         plan.clamav.port = _int(self.port, "ClamAV port")
         plan.clamav.timeout_seconds = _int(self.timeout, "ClamAV timeout", 1, 3600)
@@ -633,10 +657,10 @@ class CaddyPage(Page):
         self.domain = tk.StringVar()
         self.acme_email = tk.StringVar()
         form.check("Terminate TLS with Caddy and proxy to the REST port on loopback", self.enabled)
-        form.entry("API domain", self.domain, "Must already resolve to this server before Caddy can obtain a certificate.", width=30)
+        form.entry("API domain", self.domain, "Optional. With a name (it must already resolve here) Caddy gets a certificate for it; empty means plain HTTP on port 80 for this server's address.", width=30)
         form.entry("ACME e-mail", self.acme_email, "Optional: expiry notices and a fallback certificate authority.", width=30)
         holder = ttk.Frame(form)
-        ttk.Button(holder, text="Check DNS", command=lambda: self.actions.probe_dns(self.domain.get().strip())).pack(side="left")
+        ttk.Button(holder, text="Check DNS", command=self._check_dns).pack(side="left")
         self.dns_label = ttk.Label(holder, text="", style="Hint.TLabel")
         self.dns_label.pack(side="left", padx=8)
         form.row("", holder)
@@ -651,14 +675,23 @@ class CaddyPage(Page):
 
     def store(self, plan: InstallPlan) -> None:
         plan.proxy.enabled = self.enabled.get()
-        plan.proxy.api_domain = self.domain.get().strip().rstrip(".")
+        # DNS names are case-insensitive; storing one case keeps the "is this the host the shipped
+        # apps are built for?" comparisons on this page and in warnings() answering the same.
+        plan.proxy.api_domain = self.domain.get().strip().rstrip(".").lower()
         plan.proxy.acme_email = self.acme_email.get().strip()
 
     def refresh(self, state: AppState) -> None:
         from cloud_driver_installer.steps.daemons import render_site_block
 
-        if state.plan.proxy.api_domain:
-            self.preview.configure(text=render_site_block(state.plan.proxy.api_domain, state.plan.app.rest_port))
+        self.preview.configure(text=render_site_block(state.plan.proxy.api_domain, state.plan.app.rest_port))
+
+    def _check_dns(self) -> None:
+        """Resolve the entered domain - or explain that a domain-less site needs no DNS at all."""
+        domain = self.domain.get().strip().rstrip(".")
+        if not domain:
+            self.show_dns(True, "No domain: Caddy answers on :80 for this server's address - no DNS record needed, and no certificate either.")
+            return
+        self.actions.probe_dns(domain)
 
     def show_dns(self, ok: bool, text: str) -> None:
         """Render the answer of the Check DNS button."""
@@ -872,6 +905,12 @@ class IntelligencePage(Page):
         form.entry("Timeout (s)", self.timeout, width=8)
         form.entry("intelligence-max-bytes", self.max_bytes, "Content travels base64-encoded, so a low tens-of-MiB value is more proportionate than the 100 MiB default.", width=14)
 
+    @staticmethod
+    def _unless_derived(typed: str, derived: str) -> str:
+        """``""`` when the operator left the derived value alone, else what they typed."""
+        value = typed.strip()
+        return "" if value == derived.strip() else value
+
     def load(self, plan: InstallPlan) -> None:
         it = plan.intelligence
         self.enabled.set(it.enabled)
@@ -889,8 +928,12 @@ class IntelligencePage(Page):
     def store(self, plan: InstallPlan) -> None:
         it = plan.intelligence
         it.enabled = self.enabled.get()
-        it.source_dir = self.source_dir.get().strip()
-        it.driver_clone_dir = self.clone_dir.get().strip()
+        # The two directory fields are shown resolved (the plan derives them from the repository
+        # root when they are empty), so storing the text back verbatim would pin this machine's
+        # absolute paths into the plan - and a profile is meant to travel to another checkout.
+        # A value that still equals what the plan would derive is stored as "derive it".
+        it.source_dir = self._unless_derived(self.source_dir.get(), plan.intelligence_source_dir)
+        it.driver_clone_dir = self._unless_derived(self.clone_dir.get(), plan.intelligence_driver_clone_dir)
         it.enable_encryption = self.encryption.get()
         it.cpu_only_torch = self.cpu_only.get()
         it.ocr = self.ocr.get()
@@ -914,7 +957,7 @@ class SummaryPage(Page):
         self.destructive = ttk.Label(destructive, text="", wraplength=700, justify="left")
         self.destructive.pack(anchor="w", padx=8)
         self.acknowledge = tk.BooleanVar()
-        self.acknowledge_box = ttk.Checkbutton(destructive, text="I have read the list above", variable=self.acknowledge, command=self._sync_button)
+        self.acknowledge_box = Check(destructive, text="I have read the list above", variable=self.acknowledge, command=self._sync_button)
         self.acknowledge_box.pack(anchor="w", padx=8, pady=4)
 
         plan_box = section(body, "Plan")
@@ -936,7 +979,11 @@ class SummaryPage(Page):
         secrets_box = section(body, "Generated secrets - shown once")
         self.secrets = ttk.Label(secrets_box, text="", style="Mono.TLabel", justify="left")
         self.secrets.pack(anchor="w", padx=8)
-        ttk.Button(secrets_box, text="Copy", width=7, command=self._copy_secrets).pack(anchor="w", padx=8, pady=4)
+        secret_buttons = ttk.Frame(secrets_box)
+        secret_buttons.pack(anchor="w", padx=8, pady=4)
+        ttk.Button(secret_buttons, text="Copy", width=7, command=self._copy_secrets).pack(side="left")
+        ttk.Button(secret_buttons, text="Export setup (Setup.md)…", command=self.actions.export_setup).pack(side="left", padx=6)
+        note(secrets_box, "The export is the whole deployment in one file - every setting, every path and every credential in clear text. Keep it encrypted.")
 
         next_box = section(body, "Next steps")
         self.next_steps = ttk.Label(next_box, text="", wraplength=700, justify="left")
@@ -1005,8 +1052,13 @@ class SummaryPage(Page):
             steps.append("Wait for freshclam's first signature download (systemctl status clamav-freshclam) before trusting scan verdicts.")
         if not plan.proxy.enabled:
             steps.append("Without a reverse proxy there is no HTTPS endpoint - the shipped desktop and iOS apps cannot connect.")
-        elif plan.proxy.api_domain and plan.proxy.api_domain != CLIENT_HARDCODED_API_HOST:
+        elif not plan.proxy.api_domain:
+            steps.append("No API domain: Caddy serves plain HTTP on port 80, so traffic is unencrypted and the shipped apps (https:// only) cannot connect. Enter a domain here and re-run this step to switch the same site block to TLS.")
+        elif plan.proxy.api_domain != CLIENT_HARDCODED_API_HOST:
             steps.append(f"The shipped apps are built for https://{CLIENT_HARDCODED_API_HOST} - rebuild them for {plan.proxy.api_domain} or point that name here.")
+        public = plan.public_api_url(state.discovered.public_ip or "")
+        if public:
+            steps.append(f"Clients reach this deployment at {public} - point the desktop app's DEFAULT_SERVER_URL and the Swift APIClient there if it is not the hardcoded host.")
         if plan.intelligence.enabled and plan.intelligence.enable_encryption:
             steps.append("A freshly encrypted vector store starts empty: run 'intelligence backfill all --content' in the operator terminal.")
         steps.append("Later deploys: shell/deploy-cloud.sh ships the configuration.json this run wrote back into the checkout.")

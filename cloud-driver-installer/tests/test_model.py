@@ -129,7 +129,6 @@ PROBLEM_CASES: list[tuple[str, Mutator, str]] = [
     ("email-smtp-from", smtp(smtp_from_address="nope"), "SMTP from address must be a valid e-mail address"),
     ("email-mode", set_fields("email", mode="bogus"), "E-mail: mode must be none, ses or smtp"),
     ("proxy-domain-no-dot", set_fields("proxy", api_domain="nodots"), "API domain must be a hostname"),
-    ("proxy-domain-blank", set_fields("proxy", api_domain=""), "API domain must be a hostname"),
     ("proxy-acme-email", set_fields("proxy", acme_email="not-an-address"), "ACME e-mail must be a valid e-mail address"),
     ("app-rest-port", set_fields("app", rest_port=0), "REST port must be 1-65535"),
     ("app-metrics-port", set_fields("app", metrics_port=99999), "metrics port must be 1-65535"),
@@ -277,6 +276,32 @@ class TestValidate:
         assert plan.validate() == []
 
 
+class TestPublicApiUrl:
+    """``public_api_url()`` names the three deployment shapes - and stays quiet for the unreachable one."""
+
+    def test_proxy_with_a_domain_is_https(self, plan: InstallPlan) -> None:
+        """A domain means TLS on that name, whether or not the public address is known."""
+        plan.proxy.enabled = True
+        plan.proxy.api_domain = "api.example.com"
+        assert plan.public_api_url("203.0.113.10") == "https://api.example.com"
+        assert plan.public_api_url() == "https://api.example.com"
+
+    def test_proxy_without_a_domain_is_plain_http_on_the_address(self, plan: InstallPlan) -> None:
+        """Caddy answers on :80; without a known address there is nothing to name."""
+        plan.proxy.enabled = True
+        plan.proxy.api_domain = ""
+        assert plan.public_api_url("203.0.113.10") == "http://203.0.113.10"
+        assert plan.public_api_url() == ""
+
+    def test_without_the_proxy_the_rest_port_is_the_endpoint(self, plan: InstallPlan) -> None:
+        """A public bind is reachable on the REST port; a loopback bind is reachable from nowhere."""
+        plan.proxy.enabled = False
+        plan.app.rest_bind_host = "0.0.0.0"
+        assert plan.public_api_url("203.0.113.10") == f"http://203.0.113.10:{plan.app.rest_port}"
+        plan.app.rest_bind_host = "127.0.0.1"
+        assert plan.public_api_url("203.0.113.10") == ""
+
+
 class TestWarnings:
     """``warnings()`` says the non-blocking things out loud."""
 
@@ -306,7 +331,13 @@ class TestWarnings:
         """No proxy -> plain HTTP note; a foreign domain -> rebuild note; the hardcoded host -> nothing."""
         plan.proxy.enabled = False
         assert any("No reverse proxy" in n for n in plan.warnings())
+        assert any("Nothing can reach the API from outside" in n for n in plan.warnings())
+        plan.app.rest_bind_host = "0.0.0.0"
+        assert not any("Nothing can reach the API from outside" in n for n in plan.warnings())
+        plan.app.rest_bind_host = "127.0.0.1"
         plan.proxy.enabled = True
+        plan.proxy.api_domain = ""
+        assert any("without a domain" in n and "cannot obtain a certificate" in n for n in plan.warnings())
         plan.proxy.api_domain = "api.example.com"
         assert any("rebuilding them" in n and "api.example.com" in n for n in plan.warnings())
         plan.proxy.api_domain = CLIENT_HARDCODED_API_HOST.upper()

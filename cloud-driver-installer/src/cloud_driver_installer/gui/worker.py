@@ -108,6 +108,10 @@ class Worker:
         """check -> apply -> verify for a single step."""
         self._start("apply", lambda ctx: self.runner.run_one(ctx, self.runner.by_id[step_id]))
 
+    def remove_one(self, step_id: str) -> None:
+        """Delete a single step's footprint from the server, then re-check it."""
+        self._start("remove", lambda ctx: self.runner.remove_one(ctx, self.runner.by_id[step_id]))
+
     def run_all(self, *, start_at: str | None = None) -> None:
         """Run every selected step in order."""
         self._start("install", lambda ctx: self.runner.run(ctx, set(self.state.included), start_at=start_at))

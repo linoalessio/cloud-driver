@@ -6,17 +6,17 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from cloud_driver_installer.gui.widgets import COLORS
+from cloud_driver_installer.gui.widgets import COLORS, SPACE, Check
 
 #: Lines kept in memory (and on screen); older ones scroll out of the buffer.
 MAX_LINES = 20000
 
 LEVEL_COLORS = {
-    "DEBUG": "#8E8E93",
-    "INFO": "#409CFF",
-    "OK": "#5DD37A",
-    "WARN": "#FFB340",
-    "ERROR": "#FF6961",
+    "DEBUG": "#7C8493",
+    "INFO": "#6FA8FF",
+    "OK": "#5FD08B",
+    "WARN": "#F0B45E",
+    "ERROR": "#FF7B72",
 }
 
 
@@ -28,12 +28,12 @@ class LogPane(ttk.Frame):
         self._lines: list[tuple[str, str, str]] = []  # (timestamp, level, message)
         self._show_debug = tk.BooleanVar(value=False)
 
-        bar = ttk.Frame(self)
+        bar = ttk.Frame(self, padding=(SPACE["md"], SPACE["sm"], SPACE["md"], SPACE["sm"]))
         bar.pack(fill="x")
-        ttk.Label(bar, text="Log", style="Muted.TLabel").pack(side="left", padx=(6, 10))
-        ttk.Checkbutton(bar, text="show command output", variable=self._show_debug, command=self._rerender).pack(side="left")
-        ttk.Button(bar, text="Save…", width=7, command=self._save).pack(side="right", padx=4)
-        ttk.Button(bar, text="Copy", width=7, command=self._copy).pack(side="right")
+        ttk.Label(bar, text="LOG", style="Faint.TLabel").pack(side="left", padx=(0, SPACE["md"]))
+        Check(bar, text="show command output", variable=self._show_debug, background=COLORS["paper"], command=self._rerender).pack(side="left")
+        ttk.Button(bar, text="Save…", style="Ghost.TButton", command=self._save).pack(side="right")
+        ttk.Button(bar, text="Copy", style="Ghost.TButton", command=self._copy).pack(side="right", padx=SPACE["sm"])
 
         self.text = tk.Text(
             self,
@@ -42,9 +42,14 @@ class LogPane(ttk.Frame):
             background=COLORS["log_bg"],
             foreground=COLORS["log_ink"],
             insertbackground=COLORS["log_ink"],
+            selectbackground="#2C3038",
             font="TkFixedFont",
             state="disabled",
             borderwidth=0,
+            highlightthickness=0,
+            padx=SPACE["md"],
+            pady=SPACE["sm"],
+            spacing1=1,
         )
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=scrollbar.set)

@@ -1,5 +1,11 @@
 """Secret generation and log redaction.
 
+Deliberately not named ``secrets``: Python resolves a top-level import against ``sys.path`` before
+the standard library, so a module of that name inside this package shadows the real :mod:`secrets`
+for the whole process as soon as this directory ends up on the path - which is exactly what
+running ``__main__.py`` as a file (an IDE run configuration, say) does. The generators below would
+then be calling themselves.
+
 Every credential the installer invents is produced here, and every line that reaches the GUI log
 passes through :class:`Redactor`, which knows all of them. Generation mirrors what
 ``shell/provision-root-server.sh`` does on the server (``openssl rand -hex 24`` for database
@@ -11,7 +17,7 @@ look the same.
 from __future__ import annotations
 
 import base64
-import secrets as _secrets
+import secrets as _secrets  # the standard library's - see the module docstring
 
 #: Values shorter than this are never redacted: a 4-character token would also blank every
 #: unrelated occurrence of those characters in ordinary output.

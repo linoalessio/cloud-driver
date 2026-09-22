@@ -41,6 +41,8 @@ class FakeRemote:
     backups: list[str] = field(default_factory=list)
     uploads: list[tuple[str, str]] = field(default_factory=list)  # (local, remote)
     apt_installed: list[str] = field(default_factory=list)
+    apt_purged: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
     systemctl_calls: list[tuple[str, ...]] = field(default_factory=list)
     default_ok: bool = False
     use_sudo: bool = False
@@ -127,6 +129,25 @@ class FakeRemote:
     def apt_install(self, packages: list[str]) -> None:
         self.apt_installed.extend(packages)
         self.commands.append("apt-get install " + " ".join(packages))
+
+    def apt_purge(self, packages: list[str]) -> None:
+        present = [package for package in packages if self.dpkg_installed(package)]
+        if not present:
+            return
+        self.apt_purged.extend(present)
+        for package in present:
+            self.apt_installed[:] = [name for name in self.apt_installed if name != package]
+        self.commands.append("apt-get purge " + " ".join(present))
+
+    def delete(self, *paths: str) -> None:
+        for path in paths:
+            self.deleted.append(path)
+            self.files.pop(path, None)
+            self.modes.pop(path, None)
+            for known in [name for name in self.files if name.startswith(path.rstrip("/") + "/")]:
+                self.files.pop(known, None)
+                self.modes.pop(known, None)
+        self.commands.append("rm -rf " + " ".join(paths))
 
     def dpkg_installed(self, package: str) -> bool:
         return self.run(f"dpkg-query -W -f='${{Status}}' {package}", quiet=True).ok

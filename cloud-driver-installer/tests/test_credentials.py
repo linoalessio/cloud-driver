@@ -1,11 +1,11 @@
-"""Tests for :mod:`cloud_driver_installer.secrets`: credential generation and log redaction."""
+"""Tests for :mod:`cloud_driver_installer.credentials`: credential generation and log redaction."""
 
 from __future__ import annotations
 
 import base64
 import re
 
-from cloud_driver_installer.secrets import MASK, MIN_REDACT_LENGTH, Redactor, generate_base64, generate_hex
+from cloud_driver_installer.credentials import MASK, MIN_REDACT_LENGTH, Redactor, generate_base64, generate_hex
 
 
 class TestGenerate:

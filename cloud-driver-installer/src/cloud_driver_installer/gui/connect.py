@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Callable
 
-from cloud_driver_installer.gui.widgets import COLORS, Form
+from cloud_driver_installer.gui.widgets import COLORS, Form, ScrollFrame, install_wheel_router
 from cloud_driver_installer.remote import RemoteHost
 from cloud_driver_installer.ssh import SshError, SshSession, SshTarget, list_ssh_config_aliases, resolve_alias
 
@@ -54,8 +54,18 @@ class ConnectDialog(ttk.Frame):
         self.password = tk.StringVar()
         self.remember = tk.BooleanVar(value=True)
 
+        install_wheel_router(root)
+        root.minsize(520, 360)
         ttk.Label(self, text="Connect to the server", style="Head.TLabel").pack(anchor="w", pady=(0, 10))
-        form = Form(self)
+        # Status line and buttons are packed first, against the bottom, so they stay reachable on a
+        # short window; the fields above them scroll.
+        self.status = ttk.Label(self, text="", style="Hint.TLabel", wraplength=520, justify="left")
+        buttons = ttk.Frame(self)
+        buttons.pack(fill="x", side="bottom")
+        self.status.pack(anchor="w", side="bottom", pady=(8, 8))
+        scroller = ScrollFrame(self)
+        scroller.pack(fill="both", expand=True)
+        form = Form(scroller.body)
         form.pack(fill="x")
         form.combo("Server", self.host, [alias.label for alias in self.aliases], "An alias from ~/.ssh/config, or a host name / IP address.")
         form.entry("Port", self.port, width=8)
@@ -66,10 +76,6 @@ class ConnectDialog(ttk.Frame):
         form.secret("Password", self.password)
         form.check("Remember this connection (never the passphrase or password)", self.remember)
 
-        self.status = ttk.Label(self, text="", style="Hint.TLabel", wraplength=520, justify="left")
-        self.status.pack(anchor="w", pady=(8, 8))
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x")
         ttk.Button(buttons, text="Quit", command=root.destroy).pack(side="right", padx=4)
         self.connect_button = ttk.Button(buttons, text="Connect", style="Primary.TButton", command=self.connect)
         self.connect_button.pack(side="right")

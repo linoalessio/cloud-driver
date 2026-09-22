@@ -14,13 +14,30 @@ from cloud_driver_installer.steps.application import (
     CRON_END,
     ApplicationStep,
     ConfigStep,
+    SmokeStep,
     render_crontab,
     render_logrotate,
 )
-from cloud_driver_installer.steps.daemons import CaddyStep, ClamAvStep, ensure_global_block, render_clamd_dropin, render_site_block, replace_site_block, rewrite_clamd_conf
+from cloud_driver_installer.steps.daemons import (
+    CaddyStep,
+    ClamAvStep,
+    clamd_limit_values,
+    drop_in_is_current,
+    ensure_global_block,
+    listen_address,
+    parse_blocks,
+    remove_site_block,
+    render_clamd_dropin,
+    render_site_block,
+    replace_site_block,
+    rewrite_clamd_conf,
+    site_address,
+    site_addresses,
+    stale_limits,
+)
 from cloud_driver_installer.steps.datastores import PostgresStep, RedisStep, resolve_password, rewrite_redis_conf
 from cloud_driver_installer.steps.intelligence import build_source_tar, merge_env, render_port_dropin
-from cloud_driver_installer.steps.system import BASE_PACKAGES, FirewallStep, JavaStep, PackagesStep, ServerStep
+from cloud_driver_installer.steps.system import BASE_PACKAGES, FirewallStep, JavaStep, PackagesStep, ServerStep, missing_rules, parse_ufw_status
 
 from fake_remote import FakeRemote
 
@@ -128,6 +145,54 @@ def test_firewall_opens_the_session_port_before_enabling(ctx: Context, remote: F
     assert allow_index < enable_index
 
 
+UFW_STATUS = """Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+8080/tcp                   ALLOW       Anywhere
+22/tcp (v6)                ALLOW       Anywhere (v6)
+"""
+
+
+def test_ufw_status_is_parsed_not_searched() -> None:
+    """A host that allows 8080 does not thereby allow 80 - substring matching said it did."""
+    active, allowed = parse_ufw_status(UFW_STATUS)
+    assert active and allowed == {"22/tcp", "8080/tcp"}
+    assert missing_rules(["22/tcp", "80/tcp", "443/tcp"], allowed) == ["80/tcp", "443/tcp"]
+    assert missing_rules(["22/tcp"], {"22"}) == [], "ufw prints a bare port for the 'any protocol' rule"
+    assert parse_ufw_status("Status: inactive\n") == (False, set())
+
+
+def test_firewall_check_and_verify_read_the_rules_back(ctx: Context, remote: FakeRemote) -> None:
+    """Both phases must notice a firewall that is up but does not allow what the plan needs."""
+    remote.default_ok = True
+    remote.ok("sshd -T", "22")
+    remote.on("dpkg-query -W -f='${Status}' ufw", (0, "install ok installed"))
+    remote.on("ufw status", (0, UFW_STATUS))
+    check = FirewallStep().check(ctx)
+    assert check.status is StepStatus.NEEDS_APPLY and "80/tcp" in check.detail and "443/tcp" in check.detail
+    verified = FirewallStep().verify(ctx)
+    assert not verified.ok and "does not allow" in verified.detail
+    assert ctx.discovered.ufw_active is True
+
+
+def test_firewall_opens_the_rest_port_when_there_is_no_proxy(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.ok("sshd -T", "22")
+    ctx.plan.proxy.enabled = False
+    ctx.plan.app.rest_bind_host = "0.0.0.0"
+    assert FirewallStep().rules(ctx) == ["22/tcp", "80/tcp", "443/tcp", f"{ctx.plan.app.rest_port}/tcp"]
+    ctx.plan.server.firewall_extra_ports = f"{ctx.plan.app.rest_port}/tcp"  # naming it twice is one rule
+    assert FirewallStep().rules(ctx).count(f"{ctx.plan.app.rest_port}/tcp") == 1
+    ctx.plan.server.firewall_extra_ports = ""
+    ctx.plan.app.rest_bind_host = "127.0.0.1"  # loopback: only Caddy could reach it, and there is none
+    assert FirewallStep().rules(ctx) == ["22/tcp", "80/tcp", "443/tcp"]
+    ctx.plan.proxy.enabled = True
+    ctx.plan.app.rest_bind_host = "0.0.0.0"
+    assert FirewallStep().rules(ctx) == ["22/tcp", "80/tcp", "443/tcp"]
+
+
 def test_firewall_refuses_to_lock_the_operator_out(ctx: Context, remote: FakeRemote) -> None:
     ctx.plan.ssh.port = 2222
     ctx.plan.server.firewall_extra_ports = ""
@@ -202,11 +267,37 @@ def test_clamd_drop_in_has_exactly_one_ipv4_listener() -> None:
     assert dropin.count("ListenStream=") == 1 and "[::1]" not in dropin
 
 
-def test_clamd_limits_replace_existing_lines_once() -> None:
+def test_clamd_limits_rewrite_every_occurrence_and_append_the_missing_ones() -> None:
+    """Like the provisioning script's ``sed -i "s/^Key .*/…/"``: every line for a key is rewritten.
+
+    clamd reads the last occurrence, so leaving a stale earlier line would be the one risk here;
+    rewriting them all makes the value right whichever one it takes, and applying twice is a no-op.
+    """
     config = "StreamMaxLength 25M\nLogFile /var/log/clamav/clamav.log\nStreamMaxLength 30M\n"
-    rewritten = rewrite_clamd_conf(config, {"StreamMaxLength": "128M", "MaxFileSize": "128M"})
-    assert rewritten.count("StreamMaxLength") == 1 and "StreamMaxLength 128M" in rewritten
-    assert "MaxFileSize 128M" in rewritten and "LogFile" in rewritten
+    wanted = {"StreamMaxLength": "128M", "MaxFileSize": "128M"}
+    rewritten = rewrite_clamd_conf(config, wanted)
+    assert "25M" not in rewritten and "30M" not in rewritten
+    assert rewritten.count("StreamMaxLength 128M") == 2 and "MaxFileSize 128M" in rewritten
+    assert "LogFile /var/log/clamav/clamav.log" in rewritten
+    assert rewrite_clamd_conf(rewritten, wanted) == rewritten
+
+
+def test_clamd_limits_compare_by_value_not_by_spelling() -> None:
+    """A conf that already says ``256m`` is current: 256m and 256M are the same size to clamd."""
+    assert stale_limits("MaxFileSize 256m\n", {"MaxFileSize": "256M"}) == []
+    assert stale_limits("MaxFileSize 128M\n", {"MaxFileSize": "256M"}) == ["MaxFileSize"]
+    assert stale_limits("#MaxFileSize 256M\n", {"MaxFileSize": "256M"}) == ["MaxFileSize"], "a commented line sets nothing"
+    assert clamd_limit_values("MaxFileSize 1M\nMaxFileSize 2M\n")["MaxFileSize"] == "2M", "clamd takes the last one"
+
+
+def test_clamd_listener_is_one_ipv4_socket() -> None:
+    """A second (IPv6) ListenStream crash-loops clamd 1.4, so the address is normalised or refused."""
+    assert listen_address("localhost") == "127.0.0.1" and listen_address("") == "127.0.0.1"
+    assert listen_address("10.0.0.5") == "10.0.0.5"
+    with pytest.raises(StepError, match="IPv6"):
+        listen_address("::1")
+    assert drop_in_is_current(render_clamd_dropin("127.0.0.1", 3310), "127.0.0.1", 3310)
+    assert not drop_in_is_current("[Socket]\nListenStream=127.0.0.1:3310\nListenStream=[::1]:3310\n", "127.0.0.1", 3310)
 
 
 def test_clamav_verify_tolerates_a_signature_download(ctx: Context, remote: FakeRemote) -> None:
@@ -229,6 +320,70 @@ def test_caddy_block_replacement_leaves_other_sites_alone() -> None:
     assert "api.example.com {" in added and "cloud-driver.de {" in added
 
 
+def test_caddy_without_a_domain_serves_plain_http_on_port_80() -> None:
+    assert site_address("") == ":80" and site_address("api.example.com") == "api.example.com"
+    block = render_site_block("", 8080)
+    assert block.startswith(":80 {") and "127.0.0.1:8080" in block
+
+
+def test_caddy_without_a_domain_replaces_the_packaged_placeholder(ctx: Context, remote: FakeRemote) -> None:
+    ctx.plan.proxy.api_domain = ""
+    remote.default_ok = True
+    remote.files["/etc/caddy/Caddyfile"] = ":80 {\n\troot * /usr/share/caddy\n\tfile_server\n}\n"
+    CaddyStep().apply(ctx)
+    written = remote.files["/etc/caddy/Caddyfile.new"]  # validated, then moved into place by mv
+    assert "/usr/share/caddy" not in written and written.count(":80 {") == 1
+    assert "127.0.0.1:8080" in written
+    assert "replacing Caddy's packaged placeholder" not in " ".join(message for _level, message in ctx.captured_log)
+
+
+def test_caddy_check_is_idempotent_without_a_domain(ctx: Context, remote: FakeRemote) -> None:
+    ctx.plan.proxy.api_domain = ""
+    remote.default_ok = True
+    remote.files["/etc/caddy/Caddyfile"] = render_site_block("", ctx.plan.app.rest_port)
+    assert CaddyStep().check(ctx).status is StepStatus.OK
+
+
+TRICKY_CADDYFILE = """{
+\temail ops@example.com
+}
+
+cloud-driver.de {
+\t# a brace in a comment: {
+\theader /x "a quoted { brace"
+\troot * /var/www
+}
+
+api.example.com, www.api.example.com {
+\treverse_proxy 127.0.0.1:8080 {
+\t\theader_up X-Forwarded-For {remote_host}
+\t}
+}
+"""
+
+
+def test_caddyfile_blocks_are_parsed_not_brace_counted() -> None:
+    """Braces in comments, quoted strings and {placeholders} must not move a block's boundary."""
+    assert site_addresses(TRICKY_CADDYFILE) == ["cloud-driver.de", "api.example.com", "www.api.example.com"]
+    assert site_addresses("(snippet) {\n\tfile_server\n}\n") == [], "a snippet is not a site"
+    blocks = parse_blocks(TRICKY_CADDYFILE)
+    assert blocks[0].is_global and [block.header for block in blocks[1:]] == ["cloud-driver.de", "api.example.com, www.api.example.com"]
+
+
+def test_caddy_site_lookup_ignores_scheme_port_and_case() -> None:
+    """The operator's ``https://API.example.com:443`` is the site written as ``api.example.com``."""
+    removed = remove_site_block(TRICKY_CADDYFILE, "https://API.example.com:443")
+    assert site_addresses(removed) == ["cloud-driver.de", "www.api.example.com"], "a shared header keeps its other name"
+    assert "root * /var/www" in removed and "a quoted { brace" in removed, "the homepage block is untouched"
+
+
+def test_caddy_removal_of_a_sole_site_takes_the_whole_block() -> None:
+    caddyfile = "cloud-driver.de {\n\troot * /var/www\n}\n\n" + render_site_block("api.example.com", 8080)
+    assert site_addresses(remove_site_block(caddyfile, "api.example.com")) == ["cloud-driver.de"]
+    assert remove_site_block(render_site_block("", 8080), ":80") == "", "the last block leaves an empty file"
+    assert remove_site_block(caddyfile, "nothing.example.com") == caddyfile, "an unknown site changes nothing"
+
+
 def test_caddy_global_block_comes_first() -> None:
     result = ensure_global_block("api.example.com {\n}\n", "ops@example.com")
     assert result.splitlines()[0] == "{" and "email ops@example.com" in result
@@ -243,6 +398,65 @@ def test_caddy_apply_validates_before_swapping(ctx: Context, remote: FakeRemote)
     with pytest.raises(StepError, match="unknown directive"):
         CaddyStep().apply(ctx)
     assert remote.files["/etc/caddy/Caddyfile"] == "cloud-driver.de {\n}\n"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "mode", "expected"),
+    [
+        ('psql: error: FATAL:  password authentication failed for user "cloud_driver"', "install", "tick 'rotate'"),
+        ('psql: error: FATAL:  password authentication failed for user "cloud_driver"', "external", "never creates or changes a role"),
+        ('psql: error: connection to server at "db.example.com", port 5432 failed: Connection refused', "external", "nothing answers on"),
+        ('psql: error: FATAL:  database "cloud_driver" does not exist', "install", "does not exist on that server"),
+        ('psql: error: FATAL:  no pg_hba.conf entry for host "10.0.0.2"', "external", "pg_hba.conf entry"),
+    ],
+)
+def test_postgres_verify_says_why_the_login_failed(ctx: Context, remote: FakeRemote, stderr: str, mode: str, expected: str) -> None:
+    """"cannot log in" is not a diagnosis: each psql failure gets the answer that fits it."""
+    ctx.plan.postgres.mode = mode
+    ctx.secrets.pg_password = "pg-secret"
+    remote.on("psql -h", (2, "", stderr))
+    result = PostgresStep().verify(ctx)
+    assert not result.ok
+    assert expected in result.detail, result.detail
+    assert "pg-secret" not in result.detail, "a failure message must never carry the password"
+
+
+# --- smoke test --------------------------------------------------------------------------------
+
+
+def test_smoke_reports_every_component_it_probed(ctx: Context, remote: FakeRemote) -> None:
+    """The final verdict names the API, the metrics port, the daemons and the cron block."""
+    remote.default_ok = True
+    remote.on("curl -s -o /dev/null -w '%{http_code}'", (0, "401"))  # the API is up, JWT layer active
+    remote.on("crontab -l", (0, f"{CRON_BEGIN}\n@reboot true\n{CRON_END}\n"))
+    ctx.plan.intelligence.enabled = True
+    result = SmokeStep().verify(ctx)
+    assert result.ok
+    for expected in ("API 127.0.0.1", "HTTP 401", "metrics", "clamd", "intelligence", "reboot autostart installed"):
+        assert expected in result.detail, result.detail
+
+
+def test_smoke_fails_when_the_api_does_not_answer(ctx: Context, remote: FakeRemote) -> None:
+    """No HTTP code at all is the one result that makes the run a failure."""
+    remote.default_ok = True
+    remote.on("curl -s -o /dev/null -w '%{http_code}'", (7, ""))
+    result = SmokeStep().verify(ctx)
+    assert not result.ok and "no answer" in result.detail
+
+
+def test_smoke_probes_the_public_url_only_when_there_is_one(ctx: Context, remote: FakeRemote, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no domain and no known public address there is nothing outside to probe."""
+    remote.default_ok = True
+    remote.on("curl -s -o /dev/null -w '%{http_code}'", (0, "401"))
+    ctx.plan.proxy.enabled, ctx.plan.proxy.api_domain = True, ""
+    ctx.discovered.public_ip = ""
+    assert "://" not in SmokeStep().verify(ctx).detail
+
+    ctx.discovered.public_ip = "203.0.113.10"
+    probed: list[str] = []
+    monkeypatch.setattr(SmokeStep, "_public_probe", staticmethod(lambda url: probed.append(url) or f"{url} HTTP 401"))
+    SmokeStep().verify(ctx)
+    assert probed == ["http://203.0.113.10/auth/me"], "the domain-less deployment is plain HTTP on the address"
 
 
 # --- configuration, application, intelligence ------------------------------------------------------

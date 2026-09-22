@@ -95,6 +95,9 @@ python3 -m venv .venv && ./.venv/bin/pip install -e .
 `PYTHONPATH=src ./.venv/bin/python -m cloud_driver_installer` there, or install non-editable.
 The GUI needs `tkinter`: on Debian/Ubuntu operator machines, `apt-get install python3-tk`.)
 
+The window works down to 760×480: the step list, every page and the connect dialog scroll on their
+own, and the wheel moves whichever pane the pointer is over, so a small screen hides nothing.
+
 Sixteen steps run in the order the server needs them:
 
 | # | Step | Does |
@@ -106,19 +109,23 @@ Sixteen steps run in the order the server needs them:
 | 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects |
 | 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING` |
 | 7 | ClamAV | `clamav-daemon` + `freshclam`, the systemd socket drop-in on `127.0.0.1:3310`, raised size limits |
-| 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443, then deny-incoming and enable |
+| 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443 (plus the REST port itself when the reverse proxy is switched off and the JVM is the public listener), then deny-incoming and enable |
 | 9 | Swap | A swapfile (an existing one is kept, never switched off under a running JVM) |
 | 10 | AWS | KMS key + alias, the content bucket, a separate backup bucket, a least-privilege IAM user, and that user's access key in `/root/.aws/credentials` |
 | 11 | E-mail | The SES identity (domain with Easy DKIM, or a single address) or the SMTP settings |
-| 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded |
+| 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded. The API domain is optional: with one, Caddy obtains a Let's Encrypt certificate for it; left empty, the site block is the plain-HTTP `:80` form serving whatever address the request arrived on (which also replaces Caddy's packaged placeholder site) |
 | 13 | Configuration files | `configuration.json`, `postgres-database.json`, `redis-database.json`, `start-cloud.env` — and the same `configuration.json` back into the checkout |
 | 14 | Application | The bootstrap jar, the extension jars, `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
 | 15 | Intelligence service | `/opt/cloud-driver-intelligence`, its virtual environment, env file and systemd unit |
-| 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL |
+| 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL — `https://<domain>`, or `http://<server address>` without one, or `http://<server address>:<REST port>` with no proxy at all |
 
-Every step is **check → apply → verify**: the check only reads, the apply is idempotent, and the
-verify probes the real thing (a `psql` login, a Redis `PING`, clamd's socket, the API answering
-`401` on `/auth/me`). Re-running against a provisioned box is the normal case, so:
+Every step is **check → apply → verify** (plus **remove**, see below): the check only reads, the
+apply is idempotent, and the verify probes the real thing (a `psql` login, a Redis `PING`, clamd's
+socket, the API answering `401` on `/auth/me`) and says what a failure means rather than repeating
+the tool's wording — a refused `psql` login names the password, the missing database, the missing
+`pg_hba.conf` entry or the unreachable address, and says which of those this step can fix itself
+(on an external server it never creates or changes a role). Re-running against a provisioned box is the normal
+case, so:
 
 - a credential is only ever rotated together with the file that records it, and a password already
   on the server is read back and kept unless *rotate* is ticked;
@@ -147,6 +154,39 @@ backup bucket.
 **Config write-back matters**: `shell/deploy-cloud.sh` ships the *local* `cloud-driver/configuration.json`
 on every run, so the installer writes the file it generated back into the checkout. Leave that
 switched off and the next routine deploy reverts the server to whatever the checkout still holds.
+
+**Removing a step again.** Every step that installs something carries a *Remove…* button next to
+its *Check* and *Apply* buttons, and undoes exactly what that step did: PostgreSQL purges the
+server and deletes `/var/lib/postgresql` (an external server only loses this deployment's
+database), Caddy loses its site block — and the package too, but only when no other site, the apex
+homepage included, is left in the Caddyfile — ClamAV takes its signature database with it, the
+application step stops the JVM and clears the managed crontab region, and the configuration files
+are copied into `/var/backups/cloud-driver-installer/` before they go. Two deliberate exceptions:
+the **AWS** step deletes only the credentials file on the server, never the KMS key, the buckets or
+the IAM user (the key is what every stored row is encrypted under, and the bucket is the file
+content itself — those are console decisions, made once, knowing the data goes with them); and the
+**base packages** and **Python** steps keep what a Debian host needs to keep working (`cron`,
+`curl`, `ca-certificates`, `python3` itself). Each button first shows the step's own description of
+what it is about to delete; the run then re-checks the step, so the sidebar shows what is left.
+
+**Export setup (`Setup.md`).** *File → Export setup*, or the button beside the generated secrets on
+the summary page, writes one markdown document describing the whole deployment: the endpoint, every
+setting of every step, the paths on the server, the commands to run it — and every credential in
+clear text (database and Redis passwords, the JWT signing key, the intelligence shared secret, the
+server's AWS access key, the SMTP password). That is the point of the file: a copy that masks the
+passwords is worth nothing when the deployment has to be rebuilt. It is written `0600` and carries
+the warning in its own first lines; keep it in a password manager or an encrypted volume, never in
+the repository. A *profile* (`File → Save profile`) is the opposite document — the same plan with
+every secret stripped, meant to be checked in or shared.
+
+**A domain is optional, everywhere.** Nothing in the installer requires one: leave the API domain
+empty and the run still completes — Caddy proxies port 80 to the loopback REST port for the
+server's own address, and the summary says out loud that such a deployment has no certificate, so
+passwords and tokens cross the network unencrypted and the shipped apps (HTTPS-only) cannot
+connect. Switching the reverse proxy off entirely is the other domain-free shape: the JVM is then
+the public listener itself, which needs a non-loopback `rest-server-bind-host` (the firewall step
+opens that port, and `trust-proxy-headers` stays off — there is no proxy to trust). Filling the
+domain in later and re-running step 12 upgrades the very same site block to TLS.
 
 What it deliberately does not do: create DNS records, request SES production access, configure the
 provider-level firewall, deploy the homepage, or rebuild the client apps (both hardcode

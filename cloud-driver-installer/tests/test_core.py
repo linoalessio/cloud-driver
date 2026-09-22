@@ -20,8 +20,8 @@ from cloud_driver_installer.config_files import (
     render_start_env,
 )
 from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan, apply_existing_config, to_dict, valid_bucket_name, valid_domain
-from cloud_driver_installer.profile import load_profile, save_profile
-from cloud_driver_installer.secrets import MASK, Redactor, generate_base64, generate_hex
+from cloud_driver_installer.profiles import load_profile, save_profile
+from cloud_driver_installer.credentials import MASK, Redactor, generate_base64, generate_hex
 from cloud_driver_installer.sizing import format_bytes, heap_is_tight, parse_clamd_size, parse_size_to_bytes, parse_xmx_mib, suggest_jvm_xmx
 
 

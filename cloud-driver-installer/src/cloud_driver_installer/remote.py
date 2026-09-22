@@ -53,6 +53,8 @@ class Remote(Protocol):
     def put_file(self, local: str | Path, remote: str, *, mode: int | None = ..., progress: ProgressFn | None = ...) -> str: ...
     def backup(self, path: str) -> str | None: ...
     def apt_install(self, packages: list[str]) -> None: ...
+    def apt_purge(self, packages: list[str]) -> None: ...
+    def delete(self, *paths: str) -> None: ...
     def systemctl(self, *args: str, check: bool = ...) -> ExecResult: ...
     def sha256(self, path: str) -> str | None: ...
 
@@ -238,6 +240,29 @@ class RemoteHost:
             timeout=None,
             check=True,
         )
+
+    def apt_purge(self, packages: list[str]) -> None:
+        """Non-interactive ``apt-get purge`` of whichever of ``packages`` are installed.
+
+        Purge, not remove: a step's removal must take the package's configuration with it, or a
+        later re-install would silently inherit the old settings. Packages that are not installed
+        are skipped, so this is idempotent; ``autoremove`` then drops what only they needed.
+        """
+        present = [package for package in packages if self.dpkg_installed(package)]
+        if not present:
+            return
+        names = " ".join(shlex.quote(p) for p in present)
+        self.run("export DEBIAN_FRONTEND=noninteractive; apt-get purge -y -qq " + names, timeout=None, check=True)
+        self.run("export DEBIAN_FRONTEND=noninteractive; apt-get autoremove -y -qq", timeout=None, check=False)
+
+    def delete(self, *paths: str) -> None:
+        """``rm -rf`` every path. Absolute paths only - a relative one would depend on the cwd."""
+        targets = [path for path in paths if path]
+        for path in targets:
+            if not path.startswith("/") or path.strip("/") in ("", "etc", "var", "usr", "home", "root", "opt", "bin", "boot"):
+                raise RemoteError(f"refusing to delete {path!r}")
+        if targets:
+            self.run("rm -rf " + " ".join(shlex.quote(path) for path in targets), check=True, quiet=True)
 
     def dpkg_installed(self, package: str) -> bool:
         """True when ``package`` is installed according to dpkg."""

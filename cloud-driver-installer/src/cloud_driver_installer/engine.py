@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from cloud_driver_installer.aws import AwsProvisioner
     from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan
     from cloud_driver_installer.remote import Remote
-    from cloud_driver_installer.secrets import Redactor
+    from cloud_driver_installer.credentials import Redactor
 
 
 class StepStatus(Enum):
@@ -153,6 +153,8 @@ class Step(ABC):
     depends_on: tuple[str, ...] = ()
     #: Steps that cannot be excluded by the operator.
     mandatory: bool = False
+    #: Whether :meth:`remove` is implemented - the GUI offers the button only for these.
+    removable: bool = False
 
     def enabled(self, plan: "InstallPlan") -> bool:
         """Whether the plan wants this step at all (a disabled feature makes its step SKIPPED)."""
@@ -174,6 +176,26 @@ class Step(ABC):
     def describe(self, plan: "InstallPlan") -> str:
         """One line for the summary page: what ``apply`` will do with this plan."""
         return self.title
+
+    # --- removal ---------------------------------------------------------------------------------
+
+    def remove(self, ctx: Context) -> None:
+        """Undo :meth:`apply`: delete everything this step put on the server.
+
+        Only called for steps whose :attr:`removable` is true. Like ``apply`` it must be
+        idempotent - removing twice, or removing something that was never installed, is a no-op,
+        not an error - and it must never take anything with it that the step did not create.
+        """
+        raise StepError(f"{self.title} cannot be removed")
+
+    def describe_removal(self, plan: "InstallPlan") -> str:
+        """Exactly what :meth:`remove` will delete, shown in the confirmation dialog.
+
+        This is the operator's last warning before data is gone, so it names the packages, files
+        and directories, and says what removal cannot reach (AWS resources, an external database's
+        role) instead of implying it did.
+        """
+        return f"remove everything the {self.title} step installed"
 
 
 class Runner:
@@ -287,6 +309,37 @@ class Runner:
             ctx.debug(traceback.format_exc())
             self._set(step, StepStatus.FAILED, f"{type(exc).__name__}: {exc}", time.monotonic() - started)
             return False
+
+    def remove_one(self, ctx: Context, step: Step) -> bool:
+        """Delete one step's footprint, then re-check so the sidebar shows what is left.
+
+        The re-check is the point: after a removal the step is normally NEEDS_APPLY again ("not
+        installed"), which is exactly what the operator should see.
+        """
+        started = time.monotonic()
+        if not step.removable:
+            ctx.log("ERROR", f"[{step.title}] cannot be removed")
+            self._set(step, self.status[step.id], "removal is not supported for this step")
+            return False
+        self._set(step, StepStatus.RUNNING, "removing")
+        ctx.log("WARN", f"==> removing {step.title}")
+        try:
+            step.remove(ctx)
+        except Cancelled:
+            self._set(step, StepStatus.PENDING, "stopped by operator", time.monotonic() - started)
+            raise
+        except StepError as exc:
+            ctx.log("ERROR", f"[{step.title}] {exc}")
+            self._set(step, StepStatus.FAILED, str(exc), time.monotonic() - started)
+            return False
+        except Exception as exc:  # noqa: BLE001 - every failure must land in the GUI
+            ctx.log("ERROR", f"[{step.title}] {type(exc).__name__}: {exc}")
+            ctx.debug(traceback.format_exc())
+            self._set(step, StepStatus.FAILED, f"{type(exc).__name__}: {exc}", time.monotonic() - started)
+            return False
+        ctx.log("OK", f"[{step.title}] removed")
+        self.check_one(ctx, step)
+        return True
 
     def run(self, ctx: Context, included: set[str], *, start_at: str | None = None) -> bool:
         """Run every selected step in order; stops at the first failure. ``start_at`` resumes."""

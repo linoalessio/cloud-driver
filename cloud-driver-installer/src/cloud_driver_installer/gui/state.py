@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from cloud_driver_installer.engine import StepStatus
 from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan, default_plan
-from cloud_driver_installer.secrets import Redactor
+from cloud_driver_installer.credentials import Redactor
 from cloud_driver_installer.steps import STEP_IDS, STEP_ORDER
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

@@ -8,7 +8,7 @@ import pytest
 
 from cloud_driver_installer.engine import Context
 from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan
-from cloud_driver_installer.secrets import Redactor
+from cloud_driver_installer.credentials import Redactor
 
 from fake_remote import FakeRemote
 

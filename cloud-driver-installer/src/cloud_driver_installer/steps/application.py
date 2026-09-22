@@ -26,7 +26,7 @@ from cloud_driver_installer.config_files import (
 from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
 from cloud_driver_installer.model import InstallPlan
 from cloud_driver_installer.remote import timestamp
-from cloud_driver_installer.secrets import generate_base64
+from cloud_driver_installer.credentials import generate_base64
 
 #: Delimiters of the crontab region this installer owns; everything outside is never touched.
 CRON_BEGIN = "# cloud-driver-installer BEGIN"
@@ -93,6 +93,7 @@ class ConfigStep(Step):
     title = "Configuration files"
     mandatory = True
     depends_on = ("postgres", "aws")
+    removable = True
 
     def resolve_secrets(self, ctx: Context) -> None:
         """Fill the JWT key and the intelligence secret: kept from the server unless rotating."""
@@ -167,6 +168,31 @@ class ConfigStep(Step):
         local = " + write configuration.json back to the checkout" if plan.app.write_local_config else ""
         return f"write {', '.join(targets)} into {plan.config_dir}{local}"
 
+    def remove(self, ctx: Context) -> None:
+        """Delete every file this step writes on the server; the checkout's copies stay."""
+        plan = ctx.plan
+        paths = [
+            f"{plan.config_dir}/configuration.json",
+            f"{plan.config_dir}/postgres-database.json",
+            f"{plan.config_dir}/redis-database.json",
+            f"{plan.server.install_dir.rstrip('/')}/start-cloud.env",
+        ]
+        for path in paths:
+            if ctx.remote.exists(path):
+                ctx.remote.backup(path)  # into /var/backups/cloud-driver-installer/<run>/
+        ctx.remote.delete(*paths)
+        ctx.discovered.existing_config = {}
+        ctx.discovered.existing_postgres = {}
+        ctx.discovered.existing_redis = {}
+        ctx.warn("[Configuration] the backend cannot start without configuration.json - a copy of each file is under /var/backups/cloud-driver-installer/")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return (
+            f"delete configuration.json, postgres-database.json, redis-database.json (from {plan.config_dir}) and start-cloud.env · "
+            "each is copied into /var/backups/cloud-driver-installer/ first, and the checkout's own copies are untouched · "
+            "the JWT signing key in that file is what every issued token is signed with: writing a new one logs every client out"
+        )
+
     def _write_local(self, ctx: Context, documents: dict[str, tuple[str, int]]) -> None:
         plan = ctx.plan
         if not plan.app.repo_root or not plan.app.write_local_config:
@@ -201,6 +227,7 @@ class ApplicationStep(Step):
     title = "Application"
     mandatory = True
     depends_on = ("java", "config")
+    removable = True
 
     # --- local artefacts -------------------------------------------------------------------------
 
@@ -341,6 +368,33 @@ class ApplicationStep(Step):
         if plan.app.start_after_deploy:
             self._restart(ctx)
 
+    def remove(self, ctx: Context) -> None:
+        """Stop the JVM and delete the jars, the launcher, the scratch area and the scheduled jobs."""
+        plan = ctx.plan
+        install_dir = plan.server.install_dir.rstrip("/")
+        self._stop(ctx)
+        ctx.remote.delete(
+            plan.extensions_dir,
+            f"{install_dir}/upload-scratch",
+            f"{install_dir}/start-cloud.sh",
+            f"{install_dir}/start-cloud.env",
+        )
+        ctx.remote.run(f"rm -f {shlex.quote(install_dir)}/cloud-driver-bootstrap-*.jar", check=False, quiet=True)
+        existing = ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out
+        if CRON_BEGIN in existing:
+            ctx.remote.run("crontab -", input=render_crontab(existing, []), check=True)
+            ctx.info("[Application] removed the managed crontab region")
+        ctx.remote.delete(LOGROTATE_FILE)
+        ctx.warn(f"[Application] the console log {SCREEN_LOG_FILE} and {plan.config_dir} are left - remove the configuration files with their own step")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        install_dir = plan.server.install_dir.rstrip("/")
+        return (
+            f"stop the screen session '{plan.server.screen_session}' and the JVM in it, delete the bootstrap jar, {plan.extensions_dir}, "
+            f"{install_dir}/upload-scratch, start-cloud.sh and start-cloud.env, remove the managed crontab region (reboot autostart, scratch sweep, off-site backup) "
+            f"and {LOGROTATE_FILE} · the API goes down immediately · the database, the S3 content and the config files are NOT touched"
+        )
+
     def verify(self, ctx: Context) -> VerifyResult:
         port = ctx.plan.app.rest_port
         deadline = time.monotonic() + 120
@@ -435,8 +489,14 @@ class ApplicationStep(Step):
             ctx.info(f"[Application] installed {len(lines)} scheduled job(s) in root's crontab")
 
     def _restart(self, ctx: Context) -> None:
-        session = ctx.plan.server.screen_session
         install_dir = ctx.plan.server.install_dir.rstrip("/")
+        self._stop(ctx)
+        ctx.remote.run(f"cd {shlex.quote(install_dir)} && ./start-cloud.sh", check=True, timeout=120)
+        ctx.info(f"[Application] started the JVM in screen session '{ctx.plan.server.screen_session}'")
+
+    def _stop(self, ctx: Context) -> None:
+        """Quit the screen session and wait for the JVM to release the REST port."""
+        session = ctx.plan.server.screen_session
         running = ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '[.]{session}[[:space:]]'")
         if running:
             pid = ctx.remote.run("pgrep -f 'java .*cloud-driver-bootstrap' | head -1", quiet=True).out.strip()
@@ -455,8 +515,6 @@ class ApplicationStep(Step):
                         ctx.remote.run(f"kill -9 {pid}", check=False, quiet=True)
                     time.sleep(3)
             ctx.info("[Application] stopped the running instance")
-        ctx.remote.run(f"cd {shlex.quote(install_dir)} && ./start-cloud.sh", check=True, timeout=120)
-        ctx.info(f"[Application] started the JVM in screen session '{session}'")
 
 
 class SmokeStep(Step):
@@ -489,18 +547,18 @@ class SmokeStep(Step):
         if plan.app.autostart_on_reboot:
             has_block = CRON_BEGIN in ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out
             results.append("reboot autostart " + ("installed" if has_block else "MISSING"))
-        if plan.proxy.enabled and plan.proxy.api_domain:
-            results.append(self._public_probe(ctx))
+        public = plan.public_api_url(ctx.discovered.public_ip or "")
+        if public:
+            results.append(self._public_probe(f"{public}/auth/me"))
         return VerifyResult(api_ok, " · ".join(results))
 
     def describe(self, plan: InstallPlan) -> str:
         return "probe the API, the metrics port, the daemons, the cron block and the public URL"
 
     @staticmethod
-    def _public_probe(ctx: Context) -> str:
-        url = f"https://{ctx.plan.proxy.api_domain}/auth/me"
+    def _public_probe(url: str) -> str:
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - fixed https URL
+            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - http(s) URL built from the plan
                 return f"{url} HTTP {response.status}"
         except urllib.error.HTTPError as exc:
             return f"{url} HTTP {exc.code}"

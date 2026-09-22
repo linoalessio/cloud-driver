@@ -12,9 +12,10 @@ from cloud_driver_installer.engine import StepEvent, StepStatus
 from cloud_driver_installer.gui.log import LogPane
 from cloud_driver_installer.gui.pages import PAGES, PageActions, page_ids
 from cloud_driver_installer.gui.state import AppState
-from cloud_driver_installer.gui.widgets import COLORS, StatusDot
+from cloud_driver_installer.gui.widgets import COLORS, FONTS, SPACE, Check, ScrollFrame, StatusDot, install_wheel_router
 from cloud_driver_installer.gui.worker import JobDone, LogEvent, ProbeResult, ProgressEvent, Worker
-from cloud_driver_installer.profile import PROFILE_DIR, load_profile, save_profile
+from cloud_driver_installer.profiles import PROFILE_DIR, load_profile, save_profile
+from cloud_driver_installer.setup_export import write_setup_markdown
 from cloud_driver_installer.steps import STEP_IDS
 
 #: How many queued events one drain may render, so a burst of apt output cannot freeze the window.
@@ -31,8 +32,11 @@ class MainWindow(ttk.Frame):
         self.worker = Worker(state)
         self.started_at = 0.0
         self.pack(fill="both", expand=True)
-        root.minsize(980, 640)
+        # Small enough to fit a 1280x800 laptop screen with room for the dock and the menu bar:
+        # every pane inside scrolls, so a short window hides nothing, it only needs scrolling.
+        root.minsize(760, 480)
         root.geometry("1200x800")
+        install_wheel_router(root)
         self._build_menu()
 
         panes = ttk.PanedWindow(self, orient="vertical")
@@ -41,11 +45,17 @@ class MainWindow(ttk.Frame):
         panes.add(upper, weight=4)
         self.log = LogPane(panes)
         panes.add(self.log, weight=1)
+        # Weights only govern how *extra* space is shared; the first sash still has to be placed,
+        # or the log opens at its requested height and takes half the window with it.
+        self.panes = panes
+        root.after_idle(self._place_sash)
+        root.after(250, self._place_sash)  # again once the pages have their real size
 
-        self.sidebar = ttk.Frame(upper, width=250)
+        self.sidebar = ttk.Frame(upper, width=260)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
-        self.content = ttk.Frame(upper)
+        ttk.Frame(upper, style="Line.TFrame", width=1).pack(side="left", fill="y")  # hairline, not a bevel
+        self.content = ttk.Frame(upper, style="Surface.TFrame")
         self.content.pack(side="left", fill="both", expand=True)
 
         self.rows: dict[str, dict] = {}
@@ -54,10 +64,12 @@ class MainWindow(ttk.Frame):
         actions = PageActions(
             check=self.check_step,
             apply=self.apply_step,
+            remove=self.remove_step,
             probe_aws=self.probe_aws,
             probe_dns=self.worker.probe_dns,
             install=self.install,
             stop=self.worker.cancel,
+            export_setup=self.export_setup,
         )
         for page_id in page_ids():
             page = PAGES[page_id](self.content, state, actions)
@@ -65,12 +77,15 @@ class MainWindow(ttk.Frame):
             self.pages[page_id] = page
         self.current = "server"
 
-        status = ttk.Frame(self)
+        ttk.Frame(self, style="Line.TFrame", height=1).pack(fill="x")
+        status = ttk.Frame(self, padding=(SPACE["md"], SPACE["sm"]))
         status.pack(fill="x")
         self.status_left = ttk.Label(status, text="", style="Hint.TLabel")
-        self.status_left.pack(side="left", padx=8)
+        self.status_left.pack(side="left")
         self.status_right = ttk.Label(status, text="", style="Hint.TLabel")
-        self.status_right.pack(side="right", padx=8)
+        self.status_right.pack(side="right")
+        self.progress = ttk.Progressbar(status, mode="determinate", maximum=1.0, length=180)
+        self.progress.pack(side="right", padx=SPACE["md"])
 
         self.load_pages()
         self.show("server")
@@ -87,6 +102,7 @@ class MainWindow(ttk.Frame):
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Load profile…", command=self.load_profile)
         file_menu.add_command(label="Save profile as…", command=self.save_profile)
+        file_menu.add_command(label="Export setup (Setup.md)…", command=self.export_setup)
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self.close)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -104,32 +120,56 @@ class MainWindow(ttk.Frame):
         from cloud_driver_installer.steps import all_steps
 
         mandatory = {step.id for step in all_steps() if step.mandatory}
-        holder = ttk.Frame(self.sidebar)
-        holder.pack(fill="both", expand=True)
+        # The run buttons are packed first so they keep their place at the bottom; the sixteen step
+        # rows take what is left and scroll when the window is too short to show them all.
+        buttons = ttk.Frame(self.sidebar)
+        buttons.pack(fill="x", side="bottom", padx=SPACE["md"], pady=SPACE["md"])
+        ttk.Button(buttons, text="Install selected steps", style="Primary.TButton", command=self.install).pack(fill="x")
+        secondary = ttk.Frame(buttons)
+        secondary.pack(fill="x", pady=(SPACE["sm"], 0))
+        ttk.Button(secondary, text="Check all", command=self.check_all).pack(side="left", fill="x", expand=True)
+        ttk.Button(secondary, text="Stop", style="Ghost.TButton", command=self.worker.cancel).pack(side="left", padx=(SPACE["sm"], 0))
+        ttk.Label(self.sidebar, text="STEPS", style="Faint.TLabel").pack(anchor="w", padx=SPACE["md"], pady=(SPACE["md"], SPACE["xs"]))
+        scroller = ScrollFrame(self.sidebar)
+        scroller.canvas.configure(background=COLORS["paper"])
+        scroller.pack(fill="both", expand=True)
+        holder = scroller.body
         for step_id in STEP_IDS:
-            row = ttk.Frame(holder)
-            row.pack(fill="x", padx=4, pady=1)
-            dot = StatusDot(row)
-            dot.pack(side="left", padx=(4, 6))
+            # One clickable block per step: accent bar, dot, title, detail line, include box.
+            block = tk.Frame(holder, background=COLORS["paper"])
+            block.pack(fill="x", padx=(0, SPACE["sm"]), pady=1)
+            marker = tk.Frame(block, background=COLORS["paper"], width=3)
+            marker.pack(side="left", fill="y")
+            marker.pack_propagate(False)
+            inner = tk.Frame(block, background=COLORS["paper"])
+            inner.pack(side="left", fill="x", expand=True, padx=(SPACE["sm"], 0), pady=SPACE["xs"])
+            top = tk.Frame(inner, background=COLORS["paper"])
+            top.pack(fill="x")
+            dot = StatusDot(top, background=COLORS["paper"])
+            dot.pack(side="left", padx=(0, SPACE["sm"]))
             included = tk.BooleanVar(value=step_id in self.state.included)
-            box = ttk.Checkbutton(row, variable=included, command=lambda sid=step_id: self.toggle(sid))
+            box = Check(top, variable=included, background=COLORS["paper"], command=lambda sid=step_id: self.toggle(sid))
             if step_id in mandatory:
                 box.configure(state="disabled")  # the deployment does not work without it
             box.pack(side="right")
-            label = ttk.Label(row, text=self.state.title_of(step_id), cursor="hand2")
+            label = tk.Label(top, text=self.state.title_of(step_id), cursor="hand2", background=COLORS["paper"], foreground=COLORS["ink"], font=FONTS["body"], anchor="w")
             label.pack(side="left", anchor="w")
-            detail = ttk.Label(holder, text="", style="Hint.TLabel", wraplength=210, justify="left")
-            detail.pack(fill="x", padx=(28, 6))
+            detail = tk.Label(inner, text="", background=COLORS["paper"], foreground=COLORS["muted"], font=FONTS["hint"], wraplength=190, justify="left", anchor="w")
+            detail.pack(fill="x")
             target = step_id if step_id in PAGES else "summary"
-            for widget in (label, row, detail):
+            tinted = (block, inner, top, label, detail)
+            for widget in (label, top, inner, block, detail):
                 widget.bind("<Button-1>", lambda _event, page=target: self.show(page))
-            self.rows[step_id] = {"dot": dot, "label": label, "detail": detail, "included": included}
+            block.bind("<Enter>", lambda _event, sid=step_id: self._hover_row(sid, True), add="+")
+            block.bind("<Leave>", lambda _event, sid=step_id: self._hover_row(sid, False), add="+")
+            self.rows[step_id] = {"dot": dot, "label": label, "detail": detail, "included": included, "marker": marker, "tinted": tinted, "box": box, "page": target}
 
-        buttons = ttk.Frame(self.sidebar)
-        buttons.pack(fill="x", side="bottom", pady=6)
-        ttk.Button(buttons, text="Check all", command=self.check_all).pack(fill="x", padx=6, pady=2)
-        ttk.Button(buttons, text="Install selected steps", style="Primary.TButton", command=self.install).pack(fill="x", padx=6, pady=2)
-        ttk.Button(buttons, text="Stop", command=self.worker.cancel).pack(fill="x", padx=6, pady=2)
+    def _place_sash(self) -> None:
+        """Give the work area roughly two thirds of the window and the log the rest."""
+        self.update_idletasks()
+        height = self.panes.winfo_height()
+        if height > 200:
+            self.panes.sashpos(0, int(height * 0.72))
 
     # --- navigation ------------------------------------------------------------------------------
 
@@ -138,10 +178,13 @@ class MainWindow(ttk.Frame):
         page = self.pages.get(page_id)
         if page is None:
             return
-        self.current = page_id
+        previous, self.current = self.current, page_id
         page.tkraise()
         page.refresh(self.state)
         page.refresh_header(self.state)
+        for step_id in (*self.rows, ):  # repaint the old and the new selection
+            if self.rows[step_id]["page"] in (previous, page_id):
+                self._tint_row(step_id)
 
     def toggle(self, step_id: str) -> None:
         """Include or exclude a step and re-render the dependent ones."""
@@ -196,6 +239,32 @@ class MainWindow(ttk.Frame):
             self.started_at = time.monotonic()
             self.worker.run_one(step_id)
 
+    def remove_step(self, step_id: str) -> None:
+        """Delete one step's footprint from the server, after the operator confirms what goes.
+
+        The plan is stored first because a removal reads it (which database, which install
+        directory, which site block), and the dialog quotes the step's own ``describe_removal`` -
+        this is the operator's last look at exactly what is about to be deleted.
+        """
+        if not self.store_pages():
+            return
+        step = self.worker.runner.by_id[step_id]
+        if not step.removable:
+            messagebox.showinfo("Nothing to remove", f"{step.title} installs nothing on the server - there is nothing to remove.")
+            return
+        confirmed = messagebox.askyesno(
+            f"Remove {step.title}?",
+            f"This deletes what the {step.title} step installed on {self.state.plan.ssh.label()}:\n\n"
+            f"{step.describe_removal(self.state.plan)}\n\n"
+            "This cannot be undone. Continue?",
+            icon="warning",
+            default="no",
+        )
+        if not confirmed:
+            return
+        self.started_at = time.monotonic()
+        self.worker.remove_one(step_id)
+
     def install(self) -> None:
         """Run every selected step in order."""
         if not self.store_pages():
@@ -234,6 +303,7 @@ class MainWindow(ttk.Frame):
                 self.update_row(event.step_id)
             elif isinstance(event, ProgressEvent):
                 self.status_right.configure(text=event.text)
+                self.progress.configure(value=max(0.0, min(1.0, event.fraction)))
             elif isinstance(event, ProbeResult):
                 self.handle_probe(event)
             elif isinstance(event, JobDone):
@@ -245,6 +315,7 @@ class MainWindow(ttk.Frame):
         else:
             will_run, total = self.state.selected_count()
             self.status_left.configure(text=f"{self.state.plan.ssh.label()} · {will_run} of {total} steps selected")
+            self.progress.configure(value=0.0)
         self.root.after(100, self.drain)
 
     def handle_probe(self, event: ProbeResult) -> None:
@@ -263,15 +334,33 @@ class MainWindow(ttk.Frame):
         status = self.state.statuses.get(step_id, StepStatus.PENDING)
         row["dot"].set_status(status.value)
         row["detail"].configure(text=self.state.details.get(step_id, "")[:160])
+        self._tint_row(step_id)
         if self.current in (step_id, "summary"):
             self.pages[self.current].refresh_header(self.state)
+
+    def _tint_row(self, step_id: str, *, hovered: bool = False) -> None:
+        """Paint one sidebar row: selected (accent bar, tinted), hovered, or plain."""
+        row = self.rows.get(step_id)
+        if not row:
+            return
+        selected = self.current == row["page"] and row["page"] != "summary"
+        background = COLORS["blue_soft"] if selected else (COLORS["sunken"] if hovered else COLORS["paper"])
+        for widget in row["tinted"]:
+            widget.configure(background=background)
+        row["dot"].set_background(background)
+        row["box"].set_background(background)
+        row["marker"].configure(background=COLORS["blue"] if selected else background)
+        row["label"].configure(foreground=COLORS["blue"] if selected else row["label"].cget("foreground"))
+
+    def _hover_row(self, step_id: str, entering: bool) -> None:
+        self._tint_row(step_id, hovered=entering)
 
     def refresh_sidebar(self) -> None:
         """Grey out steps that cannot run and repaint every row."""
         reasons = self.state.dependency_reasons()
         for step_id, row in self.rows.items():
             reason = reasons.get(step_id)
-            row["label"].configure(foreground=COLORS["skip"] if reason else COLORS["ink"])
+            row["label"].configure(foreground=COLORS["faint"] if reason else COLORS["ink"])
             if reason and self.state.statuses.get(step_id) in (StepStatus.PENDING, StepStatus.SKIPPED):
                 row["detail"].configure(text=reason)
             self.update_row(step_id)
@@ -301,6 +390,36 @@ class MainWindow(ttk.Frame):
         save_profile(self.state.plan, Path(path))
         self.state.profile_path = Path(path)
         self.log.append("OK", f"saved profile {path} (no secrets)")
+
+    def export_setup(self) -> None:
+        """Write Setup.md: every setting and every credential of this deployment, in clear text.
+
+        The passwords are the point of the document, so the dialog says so before the file exists
+        and the file itself is written ``0600`` with the same warning in its first lines.
+        """
+        if not self.store_pages():
+            return
+        if not messagebox.askyesno(
+            "Export setup",
+            "Setup.md contains this deployment's passwords and keys in clear text: the database and "
+            "Redis passwords, the JWT signing key, the intelligence shared secret, the server's AWS "
+            "access key and the SMTP password.\n\n"
+            "It is written with owner-only permissions. Keep it somewhere encrypted - never in the "
+            "repository or a chat message.\n\nWrite the file?",
+            icon="warning",
+        ):
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export setup",
+            defaultextension=".md",
+            initialfile="Setup.md",
+            filetypes=[("Markdown", "*.md"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        written = write_setup_markdown(path, self.state.plan, self.state.secrets, self.state.discovered)
+        self.log.append("OK", f"wrote {written} (0600) - it contains every credential in clear text")
+        messagebox.showinfo("Export setup", f"Wrote {written}\n\nIt contains every credential in clear text.")
 
     def about(self) -> None:
         """Version and what the tool is."""

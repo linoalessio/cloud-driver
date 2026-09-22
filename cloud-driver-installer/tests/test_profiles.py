@@ -1,4 +1,4 @@
-"""Tests for :mod:`cloud_driver_installer.profile`: profiles never carry secrets and load leniently."""
+"""Tests for :mod:`cloud_driver_installer.profiles`: profiles never carry secrets and load leniently."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from cloud_driver_installer.model import InstallPlan
-from cloud_driver_installer.profile import FORMAT_VERSION, list_profiles, load_profile, save_profile
+from cloud_driver_installer.profiles import FORMAT_VERSION, list_profiles, load_profile, save_profile
 
 
 def filled_plan() -> InstallPlan:

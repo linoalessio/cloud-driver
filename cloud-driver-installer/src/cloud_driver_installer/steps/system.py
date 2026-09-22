@@ -27,8 +27,42 @@ BASE_PACKAGES: tuple[str, ...] = (
     "fonts-dejavu-core",
 )
 
+#: Base packages a removal may purge. The rest of :data:`BASE_PACKAGES` is what a Debian system
+#: (or apt itself) needs to keep working - purging ``cron``, ``curl``, ``gnupg``,
+#: ``ca-certificates`` or ``logrotate`` would break far more than this installer ever installed.
+PURGEABLE_BASE_PACKAGES: tuple[str, ...] = ("screen", "unzip", "fonts-dejavu-core", "awscli")
+
+#: One ``ufw status`` rule line: "<to>  ALLOW  <from>", columns separated by runs of whitespace.
+_UFW_RULE_RE = re.compile(r"^(?P<to>\S.*?)\s{2,}(?P<action>ALLOW|DENY|REJECT|LIMIT)(?:\s+(?:IN|OUT|FWD))?\s{2,}(?P<from>.+)$")
+
 #: NTP implementations that satisfy the clock requirement (AWS SigV4 rejects a drifted clock).
 NTP_PACKAGES: tuple[str, ...] = ("systemd-timesyncd", "chrony", "ntpsec", "ntp")
+
+
+def parse_ufw_status(text: str) -> tuple[bool, set[str]]:
+    """``(active, {allowed rule names})`` from ``ufw status``.
+
+    Parsed, not searched: asking whether ``"80"`` appears anywhere in that output answers yes for
+    a host that only allows 8080, so the check would report a port as open that is closed. The
+    ``(v6)`` twin of a rule folds into its IPv4 name, and a rule is only allowed if its action is.
+    """
+    active = False
+    allowed: set[str] = set()
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("status:"):
+            active = stripped.split(":", 1)[1].strip().lower() == "active"
+            continue
+        match = _UFW_RULE_RE.match(stripped)
+        if match and match.group("action") == "ALLOW":
+            allowed.add(match.group("to").replace(" (v6)", "").strip())
+    return active, allowed
+
+
+def missing_rules(wanted: list[str], allowed: set[str]) -> list[str]:
+    """The wanted rules ufw does not already allow (``22/tcp`` also counts as allowed as ``22``)."""
+    present = {rule.lower() for rule in allowed}
+    return [rule for rule in wanted if rule.lower() not in present and rule.split("/")[0].lower() not in present]
 
 
 def _text(ctx: Context, command: str) -> str:
@@ -50,6 +84,7 @@ class ServerStep(Step):
     id = "server"
     title = "Server"
     mandatory = True
+    removable = True
 
     def check(self, ctx: Context) -> CheckResult:
         remote, found = ctx.remote, ctx.discovered
@@ -170,7 +205,42 @@ class ServerStep(Step):
             parts.append(f"write the ~/.ssh/config alias {plan.server.ssh_alias_name}")
         return " · ".join(parts)
 
+    def remove(self, ctx: Context) -> None:
+        """Delete the directory layout and the operator-side alias; leave the host's own settings."""
+        plan = ctx.plan
+        ctx.remote.delete(plan.server.install_dir)
+        ctx.info(f"[Server] deleted {plan.server.install_dir} and everything in it")
+        self._remove_ssh_alias(ctx)
+        ctx.warn("[Server] the timezone, clock synchronisation, unattended upgrades and the installed public key are host settings and stay as they are")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        parts = [f"delete {plan.server.install_dir} recursively - the jars, the extensions, the config files and the upload scratch area all live in it"]
+        if plan.server.write_ssh_alias:
+            parts.append(f"remove the Host {plan.server.ssh_alias_name} entry from your own ~/.ssh/config")
+        parts.append("the timezone, NTP, unattended upgrades and the root public key are left untouched (they are the host's, not this deployment's)")
+        return " · ".join(parts)
+
     # --- internals -------------------------------------------------------------------------------
+
+    def _remove_ssh_alias(self, ctx: Context) -> None:
+        """Drop the ``Host <alias>`` block this step appended to the operator's own ssh config."""
+        if not ctx.plan.server.write_ssh_alias:
+            return
+        name = ctx.plan.server.ssh_alias_name
+        config = Path.home() / ".ssh" / "config"
+        if not config.is_file():
+            return
+        lines = config.read_text().splitlines()
+        kept: list[str] = []
+        dropping = False
+        for line in lines:
+            if re.match(r"^\s*Host\s+", line):
+                dropping = bool(re.match(rf"^\s*Host\s+{re.escape(name)}\s*$", line))
+            if not dropping:
+                kept.append(line)
+        if len(kept) != len(lines):
+            config.write_text("\n".join(kept).rstrip("\n") + "\n")
+            ctx.info(f"[Server] removed Host {name} from ~/.ssh/config")
 
     def _pending(self, ctx: Context) -> list[str]:
         pending: list[str] = []
@@ -251,6 +321,7 @@ class PackagesStep(Step):
     title = "Base packages"
     mandatory = True
     depends_on = ("server",)
+    removable = True
 
     def packages(self, ctx: Context) -> list[str]:
         """Base packages plus the ones this plan's options need."""
@@ -281,6 +352,19 @@ class PackagesStep(Step):
         extra = " + awscli" if plan.app.backup_offsite else ""
         return f"apt-get install {len(BASE_PACKAGES)} base packages{extra}, enable cron"
 
+    def remove(self, ctx: Context) -> None:
+        """Purge only the packages nothing else on a Debian host depends on."""
+        ctx.remote.apt_purge(list(PURGEABLE_BASE_PACKAGES))
+        kept = [name for name in BASE_PACKAGES if name not in PURGEABLE_BASE_PACKAGES]
+        ctx.warn("[Base packages] kept (the system needs them): " + ", ".join(kept))
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return (
+            "apt-get purge " + " ".join(PURGEABLE_BASE_PACKAGES)
+            + " · the remaining base packages (" + ", ".join(name for name in BASE_PACKAGES if name not in PURGEABLE_BASE_PACKAGES)
+            + ") are kept: purging them would break apt, the system's cron jobs or its log rotation"
+        )
+
 
 class JavaStep(Step):
     """JDK 21 - the only version the backend builds and runs against."""
@@ -289,6 +373,7 @@ class JavaStep(Step):
     title = "Java 21"
     mandatory = True
     depends_on = ("server",)
+    removable = True
 
     def check(self, ctx: Context) -> CheckResult:
         version = ctx.discovered.java_version or _text(ctx, "java -version 2>&1 | head -1")
@@ -312,6 +397,16 @@ class JavaStep(Step):
     def describe(self, plan: InstallPlan) -> str:
         return "apt-get install openjdk-21-jdk-headless"
 
+    def remove(self, ctx: Context) -> None:
+        """Purge the JDK. The backend cannot start afterwards - that is the point of removing it."""
+        if ctx.remote.service_active("screen") or ctx.remote.run_ok("pgrep -f cloud-driver-bootstrap >/dev/null 2>&1"):
+            ctx.warn("[Java 21] the backend is still running - it dies with the JVM this removes")
+        ctx.remote.apt_purge(["openjdk-21-jdk-headless", "openjdk-21-jre-headless"])
+        ctx.discovered.java_version = ""
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return "apt-get purge openjdk-21-jdk-headless (and the matching JRE) · the backend cannot run without it"
+
 
 class PythonStep(Step):
     """Python 3 with a working ``venv`` - the intelligence service is built from it."""
@@ -320,6 +415,7 @@ class PythonStep(Step):
     title = "Python 3"
     mandatory = True
     depends_on = ("server",)
+    removable = True
 
     def check(self, ctx: Context) -> CheckResult:
         version = ctx.discovered.python_version
@@ -354,6 +450,15 @@ class PythonStep(Step):
     def describe(self, plan: InstallPlan) -> str:
         return "apt-get install python3, python3-venv, python3-pip"
 
+    def remove(self, ctx: Context) -> None:
+        """Purge the venv/pip tooling. ``python3`` itself stays: apt is written in it."""
+        ctx.remote.apt_purge(["python3-venv", "python3-pip"])
+        ctx.discovered.venv_works = False
+        ctx.warn("[Python 3] python3 itself is kept - apt, unattended-upgrades and half of Debian are written in it")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return "apt-get purge python3-venv and python3-pip · python3 itself is kept, because purging it takes apt and most of Debian's tooling with it"
+
     @staticmethod
     def _venv_works(ctx: Context) -> bool:
         return ctx.remote.run_ok(
@@ -368,6 +473,7 @@ class FirewallStep(Step):
     id = "firewall"
     title = "Firewall (ufw)"
     depends_on = ("packages",)
+    removable = True
 
     def enabled(self, plan: InstallPlan) -> bool:
         return plan.server.firewall
@@ -382,17 +488,24 @@ class FirewallStep(Step):
         return ports
 
     def rules(self, ctx: Context) -> list[str]:
-        """Allow rules in the order they are added."""
+        """Allow rules in the order they are added.
+
+        80 and 443 are Caddy's. Without the reverse proxy the JVM is the public listener itself,
+        so its REST port is opened instead - otherwise a proxy-less deployment ends up firewalled
+        off from its own clients.
+        """
         rules = [f"{port}/tcp" for port in self.ssh_ports(ctx)] + ["80/tcp", "443/tcp"]
+        if not ctx.plan.proxy.enabled and ctx.plan.app.rest_bind_host not in ("127.0.0.1", "localhost", "::1"):
+            rules.append(f"{ctx.plan.app.rest_port}/tcp")
         extra = [item for item in re.split(r"[,\s]+", ctx.plan.server.firewall_extra_ports or "") if item]
-        return rules + [item if "/" in item else f"{item}/tcp" for item in extra]
+        rules += [item if "/" in item else f"{item}/tcp" for item in extra]
+        return list(dict.fromkeys(rules))
 
     def check(self, ctx: Context) -> CheckResult:
         if not ctx.remote.dpkg_installed("ufw"):
             return CheckResult.needs_apply("ufw not installed - this host has no firewall at all")
-        status = _text(ctx, "ufw status 2>/dev/null")
-        active = "status: active" in status.lower()
-        missing = [rule for rule in self.rules(ctx) if rule.split("/")[0] not in status]
+        active, allowed = parse_ufw_status(_text(ctx, "ufw status 2>/dev/null"))
+        missing = missing_rules(self.rules(ctx), allowed)
         if active and not missing:
             return CheckResult.ok("ufw active · " + ", ".join(self.rules(ctx)))
         return CheckResult.needs_apply(("inactive" if not active else "active") + (f" · missing {', '.join(missing)}" if missing else ""))
@@ -410,14 +523,30 @@ class FirewallStep(Step):
         ctx.remote.run("ufw --force enable", check=True)
 
     def verify(self, ctx: Context) -> VerifyResult:
-        status = _text(ctx, "ufw status verbose 2>/dev/null")
-        ctx.discovered.ufw_active = "status: active" in status.lower()
-        if not ctx.discovered.ufw_active:
+        active, allowed = parse_ufw_status(_text(ctx, "ufw status verbose 2>/dev/null"))
+        ctx.discovered.ufw_active = active
+        if not active:
             return VerifyResult(False, "ufw is not active")
+        missing = missing_rules(self.rules(ctx), allowed)
+        if missing:  # the rules are the point of the step, so verify has to read them back
+            return VerifyResult(False, "ufw is active but does not allow " + ", ".join(missing))
         return VerifyResult(True, "ufw active · " + ", ".join(self.rules(ctx)))
 
     def describe(self, plan: InstallPlan) -> str:
-        return "ufw: allow SSH, 80, 443 (plus extras), deny incoming, enable"
+        direct = "" if plan.proxy.enabled or plan.app.rest_bind_host in ("127.0.0.1", "localhost", "::1") else f", {plan.app.rest_port}"
+        return f"ufw: allow SSH, 80, 443{direct} (plus extras), deny incoming, enable"
+
+    def remove(self, ctx: Context) -> None:
+        """Disable the firewall, drop every rule, purge ufw. The host is then wide open."""
+        if ctx.remote.dpkg_installed("ufw"):
+            ctx.remote.run("ufw --force reset", check=False, timeout=300)  # also disables it
+            ctx.remote.run("ufw --force disable", check=False)
+            ctx.remote.apt_purge(["ufw"])
+        ctx.discovered.ufw_active = False
+        ctx.warn("[Firewall (ufw)] this host now has no firewall: every open port is reachable from the internet unless the provider filters it")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return "ufw --force reset, disable, then apt-get purge ufw · every rule is gone and the host has no firewall left (SSH stays reachable)"
 
 
 class SwapStep(Step):
@@ -426,6 +555,7 @@ class SwapStep(Step):
     id = "swap"
     title = "Swap"
     depends_on = ("server",)
+    removable = True
 
     def enabled(self, plan: InstallPlan) -> bool:
         return plan.server.swap_mb > 0
@@ -454,3 +584,17 @@ class SwapStep(Step):
 
     def describe(self, plan: InstallPlan) -> str:
         return f"create a {plan.server.swap_mb} MB /swapfile (kept as-is when swap already exists)"
+
+    def remove(self, ctx: Context) -> None:
+        """Switch /swapfile off, delete it and drop its fstab line - other swap areas stay."""
+        if not ctx.remote.exists("/swapfile"):
+            ctx.info("[Swap] no /swapfile on this host")
+        else:
+            ctx.remote.run("swapoff /swapfile", check=False, timeout=600)
+            ctx.remote.delete("/swapfile")
+        ctx.remote.run("sed -i '\\|^/swapfile[[:space:]]|d' /etc/fstab", check=False)
+        ctx.discovered.swap_mib = _int(_text(ctx, "free -m | awk '/^Swap:/{print $2}'"))
+        ctx.warn("[Swap] without swap the kernel kills the JVM outright when the heap and the page cache no longer fit in RAM")
+
+    def describe_removal(self, plan: InstallPlan) -> str:
+        return "swapoff /swapfile, delete the file and remove its /etc/fstab line · a swap area this installer did not create is left alone"
