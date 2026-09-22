@@ -262,6 +262,11 @@ public final class ConditionalDownloadSample {
         public void reset() {
             throw new UnsupportedOperationException("not used by this sample");
         }
+
+        @Override
+        public java.util.List<String> resetScope() {
+            throw new UnsupportedOperationException("not used by this sample");
+        }
     }
 
     /** Best-effort recursive delete of this sample's throwaway directory, so every run starts fresh. */

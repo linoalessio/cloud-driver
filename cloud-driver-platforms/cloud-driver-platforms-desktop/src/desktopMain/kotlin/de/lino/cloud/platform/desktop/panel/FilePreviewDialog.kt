@@ -42,13 +42,14 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import de.lino.cloud.platform.desktop.client.CloudDriverClient
 import de.lino.cloud.platform.desktop.model.Entry
+import de.lino.cloud.platform.desktop.utils.ContentCache
 import de.lino.cloud.platform.desktop.utils.MAX_PDF_DOCX_PREVIEW_SOURCE_BYTES
 import de.lino.cloud.platform.desktop.utils.MAX_TEXT_PREVIEW_DISPLAY_BYTES
 import de.lino.cloud.platform.desktop.utils.MAX_TEXT_PREVIEW_SOURCE_BYTES
 import de.lino.cloud.platform.desktop.utils.PreviewKind
 import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.previewKindFor
-import de.lino.cloud.platform.desktop.utils.sanitizedForLocalPath
+import de.lino.cloud.platform.desktop.utils.safeLocalChildOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -72,9 +73,16 @@ import java.nio.file.Path
  * [entry]'s own [Entry.FileEntry.sizeBytes] (already known from the folder listing) is checked
  * against [MAX_TEXT_PREVIEW_SOURCE_BYTES]/[MAX_PDF_DOCX_PREVIEW_SOURCE_BYTES] *before* any network
  * call, so an oversized file never gets downloaded just to be rejected.
+ *
+ * Reopening the same preview would otherwise re-download the whole file every time, so the fetched
+ * plaintext is kept in [ContentCache] under [accountId] and the next open only revalidates it: a
+ * conditional request carrying the cached copy's entity tag, which an unchanged file answers with
+ * one bodyless metadata round trip instead of the content. The request is only made conditional
+ * when a cache entry with a usable tag actually exists - with no local copy, "not modified" has
+ * nothing to reuse.
  */
 @Composable
-fun FilePreviewDialog(entry: Entry.FileEntry, client: CloudDriverClient, onDismiss: () -> Unit) {
+fun FilePreviewDialog(entry: Entry.FileEntry, client: CloudDriverClient, accountId: String?, onDismiss: () -> Unit) {
     val kind = remember(entry.id) { previewKindFor(entry.summary.contentType()) }
 
     var loading by remember(entry.id) { mutableStateOf(true) }
@@ -110,17 +118,28 @@ fun FilePreviewDialog(entry: Entry.FileEntry, client: CloudDriverClient, onDismi
         try {
             withContext(Dispatchers.IO) {
                 val tempDir = Files.createTempDirectory("cloud-driver-preview")
-                val tempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
+                // The preview's temp file is named after the remote file, so the name is contained the
+                // same way a download's is - a sanitised name can still resolve outside its directory
+                // on Windows.
+                val tempFile = safeLocalChildOf(tempDir, entry.name)
                 try {
-                    client.downloadFileToPath(entry.id, tempFile)
+                    val cached = ContentCache.lookup(accountId, entry.id)
+                    val result = client.downloadFileToPathIfChanged(entry.id, tempFile, cached?.entityTag)
+                    // A 304 means the cached copy is still exactly this file's content and nothing
+                    // was written to tempFile at all; anything else is a fresh download worth caching.
+                    val sourceFile = if (result.notModified() && cached != null) {
+                        cached.path
+                    } else {
+                        ContentCache.store(accountId, entry.id, tempFile, result.entityTag())
+                    }
                     when (kind) {
                         PreviewKind.TEXT -> {
-                            val (bytes, truncated) = readLimited(tempFile, MAX_TEXT_PREVIEW_DISPLAY_BYTES)
+                            val (bytes, truncated) = readLimited(sourceFile, MAX_TEXT_PREVIEW_DISPLAY_BYTES)
                             textContent = String(bytes, Charsets.UTF_8)
                             textTruncated = truncated
                         }
                         PreviewKind.DOCX -> {
-                            XWPFDocument(Files.newInputStream(tempFile)).use { document ->
+                            XWPFDocument(Files.newInputStream(sourceFile)).use { document ->
                                 textContent = XWPFWordExtractor(document).text
                             }
                         }
@@ -129,13 +148,16 @@ fun FilePreviewDialog(entry: Entry.FileEntry, client: CloudDriverClient, onDismi
                             // (unlike a lazily-streamed InputStream source), so it's safe to delete
                             // the temp file/directory in this same `finally` block right after -
                             // page rendering later (renderImageWithDPI) never re-reads from disk.
-                            val document = PDDocument.load(tempFile.toFile())
+                            val document = PDDocument.load(sourceFile.toFile())
                             pdfDocument = document
                             pdfPageCount = document.numberOfPages
                         }
                         PreviewKind.NONE -> Unit
                     }
                 } finally {
+                    // Only ever the throwaway copy - never the cache's own file, which the next
+                    // preview of this entry revalidates instead of re-downloading. On a 304
+                    // tempFile was never created, which deleteIfExists already handles.
                     Files.deleteIfExists(tempFile)
                     Files.deleteIfExists(tempDir)
                 }

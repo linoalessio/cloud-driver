@@ -42,6 +42,12 @@ import java.nio.charset.StandardCharsets;
  * whose memory use is O(chunk size) rather than O(file size)). Both start with a 4-byte
  * schema-version tag, and every receive method dispatches on it - so objects written before the
  * streaming layout existed stay readable forever, and either receive path accepts either layout.
+ * An object that is neither layout, that belongs to another file, or that fails verification is
+ * rejected as an authentication failure rather than a store failure, so a caller can tell
+ * permanently unreadable bytes apart from a store that is merely unreachable. A tag naming neither
+ * layout is rejected rather than parsed as the older one, and a caller that knows an object is the
+ * streaming layout by construction can demand it, so an uploader cannot choose which parser runs
+ * over bytes it wrote.
  */
 public final class StoredFileContentChannel {
 
@@ -95,9 +101,9 @@ public final class StoredFileContentChannel {
      * @return the recovered raw (compressed-if-applicable, not-yet-decompressed) content bytes -
      *     see {@link de.lino.cloud.api.file.StoredFile#decompressIfNeeded(byte[])} for the remaining step
      * @throws NullPointerException if {@code fileId} or {@code storedBytes} is {@code null}
-     * @throws ObjectStorageException if {@code storedBytes} is malformed or belongs to a different file
      * @throws KeyWrapException if unwrapping the envelope's data-encryption key fails
-     * @throws AuthenticationFailedException if authentication tag verification fails
+     * @throws AuthenticationFailedException if {@code storedBytes} are malformed, declare an
+     *     unknown layout version, belong to a different file, or fail authentication tag verification
      */
     @NotNull
     public byte[] receive(@NotNull final String fileId, @NotNull final byte[] storedBytes)
@@ -105,18 +111,43 @@ public final class StoredFileContentChannel {
         Asserts.requireNonNull(fileId, "@StoredFileContentChannel.receive: fileId cannot be null");
         Asserts.requireNonNull(storedBytes, "@StoredFileContentChannel.receive: storedBytes cannot be null");
 
-        if (isStreamingLayout(storedBytes)) {
+        final int schemaVersion = schemaVersionTag(storedBytes);
+        if (schemaVersion == EnvelopeEncryptionService.STREAMING_SCHEMA_VERSION) {
             return this.receiveFully(fileId, new ByteArrayInputStream(storedBytes));
         }
+        // Anything that is not one of the two known layouts is rejected outright rather than
+        // parsed as the older one. The tag is not authenticated, and a presigned upload lets an
+        // account write arbitrary bytes at its own object key, so falling through here would let
+        // a caller choose which parser ran over bytes they supplied. Reported as an authentication
+        // failure for the same reason the malformed case below is: the bytes are permanently
+        // unreadable, not a store that is momentarily unavailable.
+        if (schemaVersion != EnvelopeEncryptionService.SCHEMA_VERSION) {
+            throw new AuthenticationFailedException(
+                    "@StoredFileContentChannel.receive: stored object for file '" + fileId
+                            + "' declares unknown schema version " + schemaVersion + " - object rejected", null
+            );
+        }
 
-        final EnvelopeEncryptedPayload envelope = EnvelopeEncryptedPayloadCodec.deserialize(storedBytes);
+        final EnvelopeEncryptedPayload envelope;
+        try {
+            envelope = EnvelopeEncryptedPayloadCodec.deserialize(storedBytes);
+        } catch (final ObjectStorageException malformed) {
+            // Not the store failing: these bytes are simply not a payload this channel ever wrote.
+            // A presigned upload lets an account put arbitrary bytes at its own object key, so a
+            // malformed object is a rejection of the content, and a caller has to be able to tell
+            // that apart from the store being unreachable - one is permanent, the other is not.
+            throw new AuthenticationFailedException(
+                    "@StoredFileContentChannel.receive: stored object for file '" + fileId
+                            + "' is not a validly-formed payload - object rejected", malformed
+            );
+        }
 
         final String associatedData = new String(envelope.payload().associatedData(), StandardCharsets.UTF_8);
         final String expectedPrefix = PROTOCOL_VERSION + ":" + fileId;
         if (!associatedData.equals(expectedPrefix)) {
-            throw new ObjectStorageException(
+            throw new AuthenticationFailedException(
                     "@StoredFileContentChannel.receive: expected content for file '" + fileId
-                            + "' but the stored object's associated data was '" + associatedData + "'"
+                            + "' but the stored object's associated data was '" + associatedData + "'", null
             );
         }
 
@@ -180,13 +211,38 @@ public final class StoredFileContentChannel {
      *     de.lino.cloud.api.security.crypto.StreamingAeadEncryptionService}'s exception contract,
      *     or use {@link #receiveFully} to have that unwrapped)
      * @throws NullPointerException if {@code fileId} or {@code storedContent} is {@code null}
-     * @throws ObjectStorageException if {@code storedContent} is malformed or belongs to a different file
      * @throws KeyWrapException if unwrapping the object's data-encryption key fails
-     * @throws AuthenticationFailedException if the header or first chunk fails verification
+     * @throws AuthenticationFailedException if {@code storedContent} is not one of the two known
+     *     layouts, belongs to a different file, or its header or first chunk fails verification
      * @throws IOException if reading {@code storedContent} fails
      */
     @NotNull
     public InputStream receiveStream(@NotNull final String fileId, @NotNull final InputStream storedContent)
+            throws KeyWrapException, AuthenticationFailedException, IOException {
+        return this.receiveStream(fileId, storedContent, false);
+    }
+
+    /**
+     * {@link #receiveStream(String, InputStream)}, optionally demanding the chunked streaming
+     * layout - see that method for everything else.
+     *
+     * @param fileId the id of the file {@code storedContent} is expected to belong to
+     * @param storedContent the serialized, encrypted bytes read back from object s3storage
+     * @param requireStreamingLayout {@code true} to accept only the chunked streaming layout -
+     *     for a caller that knows the object is that layout by construction (a client-encrypted
+     *     direct transfer, whose streaming header the server itself issued), so a stored tag
+     *     claiming the one-shot layout can only mean the object is not what it must be
+     * @return the raw-content stream - closing it closes {@code storedContent}
+     * @throws NullPointerException if {@code fileId} or {@code storedContent} is {@code null}
+     * @throws KeyWrapException if unwrapping the object's data-encryption key fails
+     * @throws AuthenticationFailedException if {@code storedContent} is not one of the two known
+     *     layouts, is not the demanded layout, belongs to a different file, or its header or first
+     *     chunk fails verification
+     * @throws IOException if reading {@code storedContent} fails
+     */
+    @NotNull
+    public InputStream receiveStream(@NotNull final String fileId, @NotNull final InputStream storedContent,
+                                     final boolean requireStreamingLayout)
             throws KeyWrapException, AuthenticationFailedException, IOException {
         Asserts.requireNonNull(fileId, "@StoredFileContentChannel.receiveStream: fileId cannot be null");
         Asserts.requireNonNull(storedContent, "@StoredFileContentChannel.receiveStream: storedContent cannot be null");
@@ -195,7 +251,7 @@ public final class StoredFileContentChannel {
         final byte[] versionTag = new byte[Integer.BYTES];
         final int read = pushback.readNBytes(versionTag, 0, versionTag.length);
         if (read < versionTag.length) {
-            throw new ObjectStorageException(
+            throw new AuthenticationFailedException(
                     "@StoredFileContentChannel.receiveStream: stored object for file '" + fileId
                             + "' is shorter than its schema-version tag", new EOFException()
             );
@@ -206,12 +262,24 @@ public final class StoredFileContentChannel {
         if (schemaVersion == EnvelopeEncryptionService.STREAMING_SCHEMA_VERSION) {
             return this.envelopeEncryptionService.decryptStream(pushback, streamingAssociatedDataPrefix(fileId));
         }
+        // The caller knows this object is the streaming layout by construction, so a stored tag
+        // claiming the one-shot layout means the object is not what it must be - and the tag was
+        // written by whoever uploaded the object, which on this path is a client.
+        if (requireStreamingLayout) {
+            throw new AuthenticationFailedException(
+                    "@StoredFileContentChannel.receiveStream: stored object for file '" + fileId
+                            + "' must be in the chunked streaming layout but declares schema version "
+                            + schemaVersion + " - object rejected", null
+            );
+        }
         // Anything that is not one of the two known layouts is rejected outright rather than
         // treated as the older one. The tag is not authenticated, and a presigned upload lets an
         // account write arbitrary bytes at its own object key, so falling through here let a
-        // caller choose which parser ran over bytes they controlled.
+        // caller choose which parser ran over bytes they controlled. Reported as an authentication
+        // failure, not a store failure: the bytes are permanently unreadable, so a caller must not
+        // retry it as if the store had hiccuped.
         if (schemaVersion != EnvelopeEncryptionService.SCHEMA_VERSION) {
-            throw new ObjectStorageException(
+            throw new AuthenticationFailedException(
                     "@StoredFileContentChannel.receiveStream: stored object for file '" + fileId
                             + "' declares unknown schema version " + schemaVersion + " - object rejected", null
             );
@@ -231,15 +299,38 @@ public final class StoredFileContentChannel {
      * @param storedContent the serialized, encrypted bytes read back from object s3storage
      * @return the recovered raw (compressed-if-applicable, not-yet-decompressed) content bytes
      * @throws NullPointerException if {@code fileId} or {@code storedContent} is {@code null}
-     * @throws ObjectStorageException if {@code storedContent} is malformed, belongs to a different
-     *     file, or reading it fails with a plain I/O error
+     * @throws ObjectStorageException if reading {@code storedContent} fails with a plain I/O error
      * @throws KeyWrapException if unwrapping the object's data-encryption key fails
-     * @throws AuthenticationFailedException if authentication verification fails anywhere in the stream
+     * @throws AuthenticationFailedException if {@code storedContent} is malformed, belongs to a
+     *     different file, or fails authentication verification anywhere in the stream
      */
     @NotNull
     public byte[] receiveFully(@NotNull final String fileId, @NotNull final InputStream storedContent)
             throws KeyWrapException, AuthenticationFailedException {
-        try (InputStream rawContent = this.receiveStream(fileId, storedContent)) {
+        return this.receiveFully(fileId, storedContent, false);
+    }
+
+    /**
+     * {@link #receiveFully(String, InputStream)}, optionally demanding the chunked streaming
+     * layout - see that method for everything else, and {@link #receiveStream(String, InputStream,
+     * boolean)} for what demanding it means.
+     *
+     * @param fileId the id of the file {@code storedContent} is expected to belong to
+     * @param storedContent the serialized, encrypted bytes read back from object s3storage
+     * @param requireStreamingLayout {@code true} to accept only the chunked streaming layout
+     * @return the recovered raw (compressed-if-applicable, not-yet-decompressed) content bytes
+     * @throws NullPointerException if {@code fileId} or {@code storedContent} is {@code null}
+     * @throws ObjectStorageException if reading {@code storedContent} fails with a plain I/O error
+     * @throws KeyWrapException if unwrapping the object's data-encryption key fails
+     * @throws AuthenticationFailedException if {@code storedContent} is malformed, is not the
+     *     demanded layout, belongs to a different file, or fails authentication verification
+     *     anywhere in the stream
+     */
+    @NotNull
+    public byte[] receiveFully(@NotNull final String fileId, @NotNull final InputStream storedContent,
+                               final boolean requireStreamingLayout)
+            throws KeyWrapException, AuthenticationFailedException {
+        try (InputStream rawContent = this.receiveStream(fileId, storedContent, requireStreamingLayout)) {
             return rawContent.readAllBytes();
         } catch (final IOException e) {
             if (e.getCause() instanceof final AuthenticationFailedException authenticationFailure) {
@@ -252,12 +343,14 @@ public final class StoredFileContentChannel {
     }
 
     /**
-     * Whether {@code storedBytes} opens with the streaming layout's schema-version tag - see this
-     * class's Javadoc on the two coexisting layouts.
+     * The 4-byte schema-version tag {@code storedBytes} opens with - see this class's Javadoc on
+     * the two coexisting layouts. Returns {@link Integer#MIN_VALUE} for an object too short to
+     * carry a tag at all, a value neither known layout uses.
      */
-    private static boolean isStreamingLayout(final byte[] storedBytes) {
+    private static int schemaVersionTag(final byte[] storedBytes) {
         return storedBytes.length >= Integer.BYTES
-                && ByteBuffer.wrap(storedBytes, 0, Integer.BYTES).getInt() == EnvelopeEncryptionService.STREAMING_SCHEMA_VERSION;
+                ? ByteBuffer.wrap(storedBytes, 0, Integer.BYTES).getInt()
+                : Integer.MIN_VALUE;
     }
 
     /**

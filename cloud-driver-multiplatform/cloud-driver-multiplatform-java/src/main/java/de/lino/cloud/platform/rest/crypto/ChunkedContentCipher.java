@@ -2,6 +2,7 @@ package de.lino.cloud.platform.rest.crypto;
 
 import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -14,7 +15,6 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.SecureRandom;
 import java.util.Objects;
 
 /**
@@ -29,7 +29,7 @@ import java.util.Objects;
  * verbatim at offset 0:
  *
  * <pre>
- * baseNonce                      4 random bytes (12-byte GCM nonce minus the 8-byte counter)
+ * baseNonce                      4 bytes derived from the content key (12-byte GCM nonce minus the 8-byte counter)
  * repeated chunk frames:
  *   flags                        1 byte - 0x01 marks the final chunk, 0x00 any other
  *   ciphertextLength             4-byte int
@@ -47,10 +47,10 @@ public final class ChunkedContentCipher {
     /** GCM nonce length, in bytes. */
     private static final int NONCE_LENGTH_BYTES = 12;
 
-    /** Bytes of each chunk's nonce taken by the big-endian chunk counter; the rest is the per-stream random base. */
+    /** Bytes of each chunk's nonce taken by the big-endian chunk counter; the rest is the per-stream nonce base. */
     private static final int CHUNK_COUNTER_LENGTH_BYTES = Long.BYTES;
 
-    /** Length, in bytes, of each stream's random nonce base. */
+    /** Length, in bytes, of each stream's nonce base. */
     private static final int BASE_NONCE_LENGTH_BYTES = NONCE_LENGTH_BYTES - CHUNK_COUNTER_LENGTH_BYTES;
 
     /** GCM authentication tag length, in bits/bytes. */
@@ -65,9 +65,6 @@ public final class ChunkedContentCipher {
 
     /** Hard upper bound on a declared chunk ciphertext length during decryption (64 MiB) - read before authentication, so it must not be able to demand a huge allocation. */
     private static final int MAX_CHUNK_CIPHERTEXT_LENGTH_BYTES = 1 << 26;
-
-    /** Source of each stream's fresh random {@code baseNonce}. */
-    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /** Not instantiable - every method is static. */
     private ChunkedContentCipher() {
@@ -132,6 +129,10 @@ public final class ChunkedContentCipher {
     }
 
 
+    /** The HKDF info string binding {@link #deriveBaseNonce} to this purpose - must match the Swift SDK's byte for byte. */
+    private static final byte[] BASE_NONCE_INFO =
+            "cloud-driver:chunked-content:base-nonce".getBytes(StandardCharsets.UTF_8);
+
     /**
      * Derives this object's base nonce deterministically from the issued content key.
      *
@@ -146,7 +147,7 @@ public final class ChunkedContentCipher {
      * @throws GeneralSecurityException if the platform lacks HMAC-SHA-256
      */
     private static byte[] deriveBaseNonce(final byte[] keyMaterial) throws GeneralSecurityException {
-        final javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        final Mac mac = Mac.getInstance("HmacSHA256");
 
         // Extract: PRK = HMAC(salt = 32 zero bytes, keyMaterial)
         mac.init(new SecretKeySpec(new byte[32], "HmacSHA256"));
@@ -163,10 +164,6 @@ public final class ChunkedContentCipher {
         System.arraycopy(block, 0, baseNonce, 0, BASE_NONCE_LENGTH_BYTES);
         return baseNonce;
     }
-
-    /** The HKDF info string binding {@link #deriveBaseNonce} to this purpose - must match the Swift SDK's byte for byte. */
-    private static final byte[] BASE_NONCE_INFO =
-            "cloud-driver:chunked-content:base-nonce".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     /**
      * Decrypts a stored object fetched from a presigned download URL into {@code sink}, verifying

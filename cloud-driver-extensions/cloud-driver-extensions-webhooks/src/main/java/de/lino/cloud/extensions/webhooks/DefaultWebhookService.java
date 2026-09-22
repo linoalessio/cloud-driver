@@ -391,7 +391,13 @@ public final class DefaultWebhookService implements WebhookService {
      * {@inheritDoc}
      *
      * <p>Drops the whole {@link WebhookSubscription} section in one call, rather than walking it - a wipe
-     * is not a per-row operation, and this runs while everything else is being torn down too.
+     * is not a per-row operation, and this runs while everything else is being torn down too. The
+     * recorded delivery history goes with them: an attempt names the subscription it was delivering
+     * to and the status that endpoint answered with, so it describes exactly the subscriptions being
+     * removed.
+     *
+     * <p>Each half is attempted independently and a failure is logged rather than thrown, so one
+     * unreachable store never stops the other from being cleared.
      */
     @Override
     public void clearAllData() {
@@ -399,6 +405,11 @@ public final class DefaultWebhookService implements WebhookService {
             this.dataFactory.deleteSection(WebhookSubscription.class);
         } catch (final RuntimeException wipeFailed) {
             this.logger.log(Level.WARNING, "Failed to clear the stored webhook subscriptions", wipeFailed);
+        }
+        try {
+            this.deliveryLog.clearAll();
+        } catch (final RuntimeException wipeFailed) {
+            this.logger.log(Level.WARNING, "Failed to clear the persisted webhook delivery history", wipeFailed);
         }
     }
 

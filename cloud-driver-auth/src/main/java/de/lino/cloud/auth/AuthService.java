@@ -814,16 +814,6 @@ public final class AuthService implements IAuthService {
     }
 
     /**
-     * Grants or revokes the {@link AuthUser#isAdmin()} flag for {@code authUserId} - the only
-     * writer of that field anywhere in this codebase (see {@link AuthUser#isAdmin()}'s own
-     * Javadoc: never reachable via any REST route, only this method, called from a terminal
-     * {@code Command} by the operator console).
-     *
-     * @param authUserId the account to grant/revoke admin on
-     * @param isAdmin the new admin flag value
-     * @throws IllegalArgumentException if no account exists under {@code authUserId}
-     */
-    /**
      * Suspends or unsuspends {@code authUserId} - locking the account out without destroying it.
      *
      * <p>Suspending also revokes every outstanding session, so the lock takes effect immediately
@@ -865,7 +855,8 @@ public final class AuthService implements IAuthService {
             // Recorded here rather than in the calling command: this is the service-level fact,
             // so it stays recorded however this method is reached.
             this.auditLogService.record(new AuditEvent(authUserId,
-                    isAdmin ? AuditAction.ADMIN_GRANT : AuditAction.ADMIN_REVOKE, existing.getEmailAddress(), null));
+                    isAdmin ? AuditAction.ADMIN_GRANT : AuditAction.ADMIN_REVOKE, existing.getEmailAddress(),
+                    "set from the operator console"));
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
             throw new RuntimeException("@AuthService.setAdmin: failed to update admin flag for " + authUserId, e);
         }

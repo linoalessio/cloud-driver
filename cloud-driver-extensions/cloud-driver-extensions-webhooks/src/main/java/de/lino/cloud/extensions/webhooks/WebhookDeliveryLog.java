@@ -215,6 +215,32 @@ final class WebhookDeliveryLog {
     }
 
     /**
+     * Drops every retained delivery attempt, in memory and - when this deployment persists them -
+     * in Redis, leaving the log empty and still usable.
+     *
+     * <p>Exists for the hard reset: a delivery attempt records the target webhook and the HTTP
+     * status its endpoint answered with, so the recorded history belongs to the subscriptions it
+     * describes and goes when they go. A Redis failure here is logged and swallowed rather than
+     * propagated - a wipe must not stop half-way because an optional subsystem failed - and the
+     * in-memory half is cleared either way.
+     */
+    void clearAll() {
+
+        this.recentDeliveries.clear();
+
+        final DatabaseSection currentSection = this.section;
+        if (currentSection == null) return;
+
+        try {
+            currentSection.clear();
+        } catch (final Exception clearFailed) {
+            this.logger.log(Level.WARNING, "@WebhookDeliveryLog: failed to clear the persisted delivery history - "
+                    + "it may still hold attempts recorded before this run; the in-memory history is empty.", clearFailed);
+        }
+
+    }
+
+    /**
      * Reads the timestamp back out of an entry id ({@code "<epochMillis>-<uuid>"}), falling back to
      * {@link Long#MAX_VALUE} for an id that doesn't parse - so a malformed id sorts newest and is
      * never picked as "the oldest" to evict, keeping a real attempt from being deleted in its place.

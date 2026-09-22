@@ -73,6 +73,15 @@ public interface SearchIndexService {
     void removeFile(@NotNull String authUserId, @NotNull String storedFileId);
 
     /**
+     * Removes every indexed document, for every account, leaving the index itself in place and
+     * usable - called only by {@code CloudDriver#reset()}, which is clearing the files this index
+     * derives from. Everything here is rebuildable derived state ({@code searchIndex rebuild}),
+     * so there is nothing to preserve once the files are gone. Never throws: a wipe must not stop
+     * half-way because an optional subsystem failed.
+     */
+    void clearAllData();
+
+    /**
      * Re-adds a previously soft-deleted file back into the index - called by {@code
      * CloudUserService#restoreFile}, which has the file's full, resolved content in hand already
      * (needed to check ownership/access) and can afford the extra cost of a fresh {@link

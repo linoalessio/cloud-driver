@@ -62,6 +62,8 @@ public class ExtensionCommand implements Command {
      * and dispatch the matching {@link ExtensionRegisterEvent}/{@link ExtensionUnregisterEvent}
      * (the host bootstrap extension itself, {@code "cloud-driver-bootstrap"}, is excluded from
      * {@code start}/{@code stop} to avoid tearing down the process that hosts this very command).
+     * Sub-command tokens are matched case-insensitively, like every other command's, and {@code
+     * start}/{@code stop} report the state the extension is left in rather than returning silently.
      *
      * @param arguments the sub-command and its own arguments, split on whitespace
      */
@@ -122,7 +124,11 @@ public class ExtensionCommand implements Command {
 
         if ((arguments.hasCommand(0, "start") || arguments.hasCommand(0, "stop")) && arguments.hasLength(1)) {
 
-            final String action = arguments.command(0);
+            // Read as a boolean, never as the raw token: hasCommand matches case-insensitively and
+            // nothing lowercases an argument on the way in, so switching on the typed text made
+            // 'extensions START <name>' print the usage block - indistinguishable from a typo -
+            // while neither starting nor stopping anything.
+            final boolean starting = arguments.hasCommand(0, "start");
             final String extensionName = arguments.command(1);
             final Optional<Extension> extension = extensionFactory.findByName(extensionName);
 
@@ -136,26 +142,22 @@ public class ExtensionCommand implements Command {
                 return;
             }
 
-            switch (action) {
-                case "start" -> {
-                    extensionFactory.stop(extension.get());
-                    extensionFactory.start(extension.get(), new String[0]);
-                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
-                }
-                case "stop" -> {
-
-                    if (extension.get().getExtensionProperties().getExtensionStatus().equals(ExtensionStatus.ENDING)) {
-                        terminal.displayApproved("Extension '&b%s&7' already stopped", extensionName);
-                        return;
-                    }
-
-                    extensionFactory.stop(extension.get());
-                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extensionName));
-                }
-                default -> {
-                    this.sendUsage();
-                }
+            if (starting) {
+                extensionFactory.stop(extension.get());
+                extensionFactory.start(extension.get(), new String[0]);
+                CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
+                terminal.displayApproved("Extension '&b%s&7' is now &arunning", extensionName);
+                return;
             }
+
+            if (extension.get().getExtensionProperties().getExtensionStatus().equals(ExtensionStatus.ENDING)) {
+                terminal.displayApproved("Extension '&b%s&7' already stopped", extensionName);
+                return;
+            }
+
+            extensionFactory.stop(extension.get());
+            CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionUnregisterEvent.class, new JsonDocument().append("extensionName", extensionName));
+            terminal.displayApproved("Extension '&b%s&7' is now &cstopped", extensionName);
 
             return;
         }

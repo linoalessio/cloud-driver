@@ -101,6 +101,20 @@ public final class PendingPresignedUpload extends Serialized implements Secondar
     private final String multipartUploadId;
 
     /**
+     * The plaintext SHA-256 (lowercase hex) the client declared when this resumable session began.
+     * A session is bound to one plaintext: its content key is issued once and never changes, and
+     * the client derives the object's nonce base from that key, so encrypting different bytes under
+     * the session would both splice two encryptions into one object and reuse a key/nonce pair
+     * across two plaintexts. Recording it here is what lets a resuming client and the completion
+     * check both refuse content the session was not begun for.
+     *
+     * <p>{@code null} on every single-{@code PUT} presigned ticket and on every row written before
+     * this field existed - readers must treat {@code null} as "unknown, skip the check".
+     */
+    @Nullable
+    private final String declaredChecksumSha256Hex;
+
+    /**
      * When this row was last touched by its client (epoch millis) - refreshed by every part
      * presign and every status poll on a resumable session.
      *
@@ -133,7 +147,8 @@ public final class PendingPresignedUpload extends Serialized implements Secondar
     @NotNull
     public PendingPresignedUpload withLastActivityAt(final long atEpochMillis) {
         return new PendingPresignedUpload(this.fileId, this.authUserId, this.createdAtEpochMillis,
-                this.contentKeyHeaderBase64, this.declaredSizeBytes, this.multipartUploadId, atEpochMillis);
+                this.contentKeyHeaderBase64, this.declaredSizeBytes, this.multipartUploadId, atEpochMillis,
+                this.declaredChecksumSha256Hex);
     }
 
     /**
@@ -147,7 +162,8 @@ public final class PendingPresignedUpload extends Serialized implements Secondar
     public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
                                    @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes,
                                    @Nullable final String multipartUploadId) {
-        this(fileId, authUserId, createdAtEpochMillis, contentKeyHeaderBase64, declaredSizeBytes, multipartUploadId, createdAtEpochMillis);
+        this(fileId, authUserId, createdAtEpochMillis, contentKeyHeaderBase64, declaredSizeBytes, multipartUploadId,
+                createdAtEpochMillis, null);
     }
 
     /**
@@ -161,10 +177,13 @@ public final class PendingPresignedUpload extends Serialized implements Secondar
      * @param declaredSizeBytes the plaintext size the client declared, or {@code null} if unknown
      * @param multipartUploadId the store's multipart upload id for a resumable session, or {@code null} for a single-{@code PUT} ticket
      * @param lastActivityAtEpochMillis when this row was last touched by its client (epoch millis)
+     * @param declaredChecksumSha256Hex the plaintext SHA-256 (lowercase hex) this session is bound
+     *     to, or {@code null} for a single-{@code PUT} ticket and for a row written before it was recorded
      */
     public PendingPresignedUpload(@NotNull final String fileId, @NotNull final String authUserId, final long createdAtEpochMillis,
                                    @Nullable final String contentKeyHeaderBase64, @Nullable final Long declaredSizeBytes,
-                                   @Nullable final String multipartUploadId, final long lastActivityAtEpochMillis) {
+                                   @Nullable final String multipartUploadId, final long lastActivityAtEpochMillis,
+                                   @Nullable final String declaredChecksumSha256Hex) {
         this.fileId = Objects.requireNonNull(fileId, "@PendingPresignedUpload.init: fileId cannot be null");
         this.authUserId = Objects.requireNonNull(authUserId, "@PendingPresignedUpload.init: authUserId cannot be null");
         this.createdAtEpochMillis = createdAtEpochMillis;
@@ -172,6 +191,7 @@ public final class PendingPresignedUpload extends Serialized implements Secondar
         this.declaredSizeBytes = declaredSizeBytes;
         this.multipartUploadId = multipartUploadId;
         this.lastActivityAtEpochMillis = lastActivityAtEpochMillis;
+        this.declaredChecksumSha256Hex = declaredChecksumSha256Hex;
     }
 
     /**

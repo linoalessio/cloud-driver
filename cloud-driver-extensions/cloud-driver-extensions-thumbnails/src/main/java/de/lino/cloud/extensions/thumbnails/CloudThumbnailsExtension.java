@@ -11,17 +11,26 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.thumbnail.ThumbnailSize;
+import de.lino.database.json.JsonDocument;
+import lombok.NonNull;
 
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -69,7 +78,6 @@ import java.util.logging.Level;
  */
 public class CloudThumbnailsExtension extends Extension {
 
-    /** The only Postgres trigger operation this extension reacts to - a file's bytes never change on an {@code "UPDATE"}. */
     /**
      * The Postgres trigger operations that can mean a file now wants a preview it does not have.
      *
@@ -80,15 +88,47 @@ public class CloudThumbnailsExtension extends Extension {
      * preview already exists, the file is not clean, or it is too large - so a rename or a move
      * costs two indexed reads and nothing else.
      */
-    private static final java.util.Set<String> THUMBNAIL_TRIGGERING_OPERATIONS = java.util.Set.of("INSERT", "UPDATE");
+    private static final Set<String> THUMBNAIL_TRIGGERING_OPERATIONS = Set.of("INSERT", "UPDATE");
 
     /** Bounded pool size for {@link #executor} - small and fixed, deliberately not over-engineered for v1. */
     private static final int THUMBNAIL_EXECUTOR_THREADS = 2;
 
+    /** {@code configuration.json} key for the largest source file a preview is generated from - defaults to {@link #DEFAULT_MAX_SOURCE_BYTES} if unset. */
+    private static final String MAX_SOURCE_BYTES_CONFIG_KEY = "thumbnail-max-source-bytes";
+
+    /**
+     * Default largest source file this extension will decode, in bytes.
+     *
+     * <p>A thumbnail source has no reason to be large, and every byte above this is risk without
+     * benefit: the decoders allocate a full raster before producing anything, so an unbounded
+     * source is an unbounded allocation on a worker with no request behind it.
+     */
+    private static final long DEFAULT_MAX_SOURCE_BYTES = 64L * 1024 * 1024;
+
+    /** {@code configuration.json} key for the shared raster budget both generators refuse to exceed - defaults to {@link #DEFAULT_MAX_DECODED_PIXELS} if unset. */
+    private static final String MAX_DECODED_PIXELS_CONFIG_KEY = "thumbnail-max-decoded-pixels";
+
+    /**
+     * Default raster budget, in pixels, shared by the image decoder and the PDF renderer.
+     *
+     * <p>Checked against the image's own header and against the PDF's crop box <em>before</em> any
+     * raster is allocated, which is what defuses a small file declaring an enormous image. Far
+     * beyond any real photograph or page a preview is wanted for, and far below what a
+     * deliberately crafted header can claim.
+     */
+    private static final long DEFAULT_MAX_DECODED_PIXELS = 50_000_000L;
+
+    /** {@code configuration.json} key for how long a single decode/render may run - defaults to {@link #DEFAULT_RENDER_TIMEOUT_SECONDS} if unset. */
+    private static final String RENDER_TIMEOUT_SECONDS_CONFIG_KEY = "thumbnail-render-timeout-seconds";
+
+    /** Default ceiling on how long one decode/render may run before it is abandoned - a preview is best-effort, and a thread is not. */
+    private static final long DEFAULT_RENDER_TIMEOUT_SECONDS = 20L;
+
+    /** How long an idle {@link #renderExecutor} thread is kept before it is reclaimed. */
+    private static final long RENDER_THREAD_KEEPALIVE_SECONDS = 60L;
+
     /** How long {@link #onEnding()}/{@link #onException(RuntimeException)} wait for an in-flight generation to finish before forcing shutdown. */
     private static final long SHUTDOWN_AWAIT_SECONDS = 5L;
-
-    private static final List<ThumbnailGenerator> GENERATORS = List.of(new ImageThumbnailGenerator(), new PdfThumbnailGenerator());
 
     /**
      * The PDFBox/FontBox library loggers {@link #onLoading()} raises to {@link Level#SEVERE}.
@@ -113,14 +153,36 @@ public class CloudThumbnailsExtension extends Extension {
     private DataFactory dataFactory;
     private FileFactory fileFactory;
     private ExecutorService executor;
+
+    /**
+     * Runs the decode/render step only, separately from {@link #executor} on purpose: it is the
+     * one step that can run arbitrarily long, so it is bounded and abandonable on its own, and the
+     * notification-driven generation threads never block on it for longer than the configured
+     * timeout. Its queue is deliberately a {@link SynchronousQueue} - with no queue, a submission
+     * made while both render threads are busy is rejected immediately instead of piling up tasks
+     * that each retain a source byte array behind a thread that may never come back.
+     */
+    private ExecutorService renderExecutor;
+
+    /** The generators, in priority order, each carrying the configured raster budget. */
+    private List<ThumbnailGenerator> generators;
+
+    /** The configured largest source file a preview is generated from, in bytes. */
+    private long maxSourceBytes;
+
+    /** The configured ceiling on how long one decode/render may run, in seconds. */
+    private long renderTimeoutSeconds;
+
     private FileChangeListener listener;
 
     /**
      * Quiets {@link #QUIETED_PDF_LIBRARY_LOGGERS} (see that field's Javadoc for why that is
-     * safe), resolves {@link #dataFactory}/{@link #fileFactory}, builds {@link #executor},
-     * publishes a {@link DefaultThumbnailService} into {@code
+     * safe), resolves {@link #dataFactory}/{@link #fileFactory}, reads this deployment's source,
+     * raster and render-timeout budgets, builds {@link #executor}/{@link #renderExecutor} and the
+     * generators those budgets configure, publishes a {@link DefaultThumbnailService} into {@code
      * IServiceContainer#setThumbnailService}, and registers {@link #listener} against {@code
-     * FileChangeListenerRegistry}.
+     * FileChangeListenerRegistry}. The three budgets are read once, here - changing one needs a
+     * restart.
      */
     @Override
     public void onLoading() {
@@ -129,7 +191,21 @@ public class CloudThumbnailsExtension extends Extension {
 
         this.dataFactory = this.cloudDriver().getFactoryContainer().getDataFactory();
         this.fileFactory = this.cloudDriver().getFactoryContainer().getFileFactory();
-        this.executor = Executors.newFixedThreadPool(THUMBNAIL_EXECUTOR_THREADS, daemonThreadFactory());
+
+        final JsonDocument configuration = this.cloudDriver().getConfiguration();
+        this.maxSourceBytes = configuration.contains(MAX_SOURCE_BYTES_CONFIG_KEY)
+                ? configuration.getLong(MAX_SOURCE_BYTES_CONFIG_KEY) : DEFAULT_MAX_SOURCE_BYTES;
+        this.renderTimeoutSeconds = configuration.contains(RENDER_TIMEOUT_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(RENDER_TIMEOUT_SECONDS_CONFIG_KEY) : DEFAULT_RENDER_TIMEOUT_SECONDS;
+        final long maxDecodedPixels = configuration.contains(MAX_DECODED_PIXELS_CONFIG_KEY)
+                ? configuration.getLong(MAX_DECODED_PIXELS_CONFIG_KEY) : DEFAULT_MAX_DECODED_PIXELS;
+        this.generators = List.of(new ImageThumbnailGenerator(maxDecodedPixels), new PdfThumbnailGenerator(maxDecodedPixels));
+
+        this.executor = Executors.newFixedThreadPool(THUMBNAIL_EXECUTOR_THREADS, daemonThreadFactory("thumbnail-generator-"));
+        // No queue on purpose - see the field's own Javadoc: a render submitted while both threads
+        // are busy is rejected outright rather than queued behind a decode that may never return.
+        this.renderExecutor = new ThreadPoolExecutor(0, THUMBNAIL_EXECUTOR_THREADS, RENDER_THREAD_KEEPALIVE_SECONDS,
+                TimeUnit.SECONDS, new SynchronousQueue<>(), daemonThreadFactory("thumbnail-render-"));
 
         this.cloudDriver().getServiceContainer().setThumbnailService(
                 new DefaultThumbnailService(this.dataFactory, this.fileFactory, this.getLogger()));
@@ -137,7 +213,7 @@ public class CloudThumbnailsExtension extends Extension {
         this.executor.submit(this::pruneThumbnailChains);
 
         this.listener = (storedFileId, operation) -> {
-            if (operation == null || !THUMBNAIL_TRIGGERING_OPERATIONS.contains(operation.toUpperCase(java.util.Locale.ROOT))) return;
+            if (operation == null || !THUMBNAIL_TRIGGERING_OPERATIONS.contains(operation.toUpperCase(Locale.ROOT))) return;
             this.executor.submit(() -> this.generateThumbnail(storedFileId));
         };
         this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry().register(this.listener);
@@ -174,36 +250,40 @@ public class CloudThumbnailsExtension extends Extension {
         if (this.listener != null) {
             this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry().unregister(this.listener);
         }
-        if (this.executor == null) return;
-        this.executor.shutdown();
+        this.shutdownQuietly(this.executor);
+        this.shutdownQuietly(this.renderExecutor);
+    }
+
+    /**
+     * Shuts {@code target} down, waiting up to {@link #SHUTDOWN_AWAIT_SECONDS} for an in-flight
+     * task before forcing it. A {@code null} (this extension never finished loading) is a no-op.
+     *
+     * @param target the pool to shut down, or {@code null}
+     */
+    private void shutdownQuietly(final ExecutorService target) {
+        if (target == null) return;
+        target.shutdown();
         try {
-            if (!this.executor.awaitTermination(SHUTDOWN_AWAIT_SECONDS, TimeUnit.SECONDS)) {
-                this.executor.shutdownNow();
+            if (!target.awaitTermination(SHUTDOWN_AWAIT_SECONDS, TimeUnit.SECONDS)) {
+                target.shutdownNow();
             }
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            this.executor.shutdownNow();
+            target.shutdownNow();
         }
     }
 
     /**
      * Generates and persists a thumbnail for {@code storedFileId}, if a supporting {@link
-     * ThumbnailGenerator} exists for its content type and no thumbnail already exists. Every
-     * failure (a fetch/persist error, an undecodable/corrupt file, an unsupported content type) is
-     * logged and swallowed - a thumbnail is a best-effort convenience, never something a failure
-     * here should surface anywhere the original upload would see.
+     * ThumbnailGenerator} exists for its content type and no thumbnail already exists. Generation
+     * is skipped when the file is larger than the configured source cap, when its scan verdict is
+     * not clean, and when no render slot is free. Every failure (a fetch/persist error, an
+     * undecodable/corrupt file, an unsupported content type) is logged and swallowed - a thumbnail
+     * is a best-effort convenience, never something a failure here should surface anywhere the
+     * original upload would see.
      *
      * @param storedFileId the newly-inserted {@link StoredFile}'s id
      */
-    /**
-     * Largest source file this extension will decode, in bytes.
-     *
-     * <p>A thumbnail source has no reason to be large, and every byte above this is risk without
-     * benefit: the decoders below allocate a full raster before producing anything, so an
-     * unbounded source is an unbounded allocation on a worker with no request behind it.
-     */
-    private static final long MAX_THUMBNAIL_SOURCE_BYTES = 64L * 1024 * 1024;
-
     private void generateThumbnail(final String storedFileId) {
         try {
 
@@ -217,8 +297,12 @@ public class CloudThumbnailsExtension extends Extension {
             if (metadata.isEmpty()) return;
 
             final Long knownSizeBytes = metadata.get().sizeBytesIfKnown();
-            if (knownSizeBytes != null && knownSizeBytes > MAX_THUMBNAIL_SOURCE_BYTES) {
-                return; // nothing worth previewing is this large, and decoding it is pure risk
+            if (knownSizeBytes != null && knownSizeBytes > this.maxSourceBytes) {
+                // FINE, not WARNING: every later UPDATE of the same file (a rename, a move) offers
+                // it here again, so this line must never be able to flood the operator terminal.
+                this.getLogger().log(Level.FINE, "@CloudThumbnailsExtension.generateThumbnail: file '" + storedFileId
+                        + "' is larger than the " + this.maxSourceBytes + "-byte source cap - skipped");
+                return;
             }
             // Never decode content that has not been judged clean. Image and PDF decoders are
             // exactly what a malicious file targets, and this runs before any access check, on a
@@ -230,12 +314,24 @@ public class CloudThumbnailsExtension extends Extension {
             if (source.isEmpty()) return;
             final StoredFile file = source.get();
 
-            final Optional<ThumbnailGenerator> generator = GENERATORS.stream()
+            final Optional<ThumbnailGenerator> generator = this.generators.stream()
                     .filter(candidate -> candidate.supports(file.contentType()))
                     .findFirst();
             if (generator.isEmpty()) return;
 
-            final byte[] thumbnailBytes = generator.get().generate(file.content(), ThumbnailSize.SMALL.maxDimensionPixels());
+            final byte[] content = file.content();
+            // Backstop for a row whose size metadata was unknown above - a legacy row persisted
+            // before the size was recorded answers null there, and the decoder must not be the
+            // first thing to find out.
+            if (content.length > this.maxSourceBytes) {
+                this.getLogger().log(Level.FINE, "@CloudThumbnailsExtension.generateThumbnail: file '" + storedFileId
+                        + "' resolved to more than the " + this.maxSourceBytes + "-byte source cap - skipped");
+                return;
+            }
+            // Resolved on this thread, not inside the render task, so a timeout abandons only the
+            // decode and never a pending object-store fetch.
+            final byte[] thumbnailBytes = this.render(generator.get(), storedFileId, content);
+            if (thumbnailBytes == null) return;
 
             // The linking row goes in BEFORE the thumbnail's own bytes: the upload below fires
             // this extension's own listener for the thumbnail file, and isThumbnailFile only
@@ -258,6 +354,56 @@ public class CloudThumbnailsExtension extends Extension {
             // vanish here entirely, which is why this class of failure went unnoticed. A preview
             // is never worth failing anything else over, but it must at least be visible.
             this.getLogger().log(Level.WARNING, "@CloudThumbnailsExtension.generateThumbnail: unexpected failure for file '" + storedFileId + "'", e);
+        }
+    }
+
+    /**
+     * Runs {@code generator} over {@code content} on {@link #renderExecutor}, bounded by the
+     * configured render timeout.
+     *
+     * <p>Returns {@code null} when there was no free render slot or the render was abandoned: no
+     * thumbnail is written then, and a later change to the file offers it here again. Cancelling
+     * interrupts the render thread, but neither {@code ImageIO} nor PDFBox is reliably
+     * interruptible, so an abandoned decode may keep running - which is exactly why the pool is
+     * bounded at {@link #THUMBNAIL_EXECUTOR_THREADS} and a submission with no free thread is
+     * rejected rather than queued: at worst two stuck threads each retain one source array and one
+     * raster, both individually capped by the configured budgets.
+     *
+     * @param generator the generator that supports this file's content type
+     * @param storedFileId the file being previewed, for the log lines
+     * @param content the source file's plaintext bytes
+     * @return the thumbnail's JPEG bytes, or {@code null} if this file was skipped
+     * @throws IOException if the generator itself failed
+     */
+    private byte[] render(@NonNull final ThumbnailGenerator generator, @NonNull final String storedFileId,
+                          @NonNull final byte[] content) throws IOException {
+        final Future<byte[]> render;
+        try {
+            render = this.renderExecutor.submit(() -> generator.generate(content, ThumbnailSize.SMALL.maxDimensionPixels()));
+        } catch (final RejectedExecutionException noFreeSlot) {
+            this.getLogger().log(Level.INFO, "@CloudThumbnailsExtension.render: no free render slot for file '"
+                    + storedFileId + "' - skipped");
+            return null;
+        }
+        try {
+            return render.get(this.renderTimeoutSeconds, TimeUnit.SECONDS);
+        } catch (final TimeoutException timedOut) {
+            render.cancel(true);
+            this.getLogger().log(Level.WARNING, "@CloudThumbnailsExtension.render: rendering file '" + storedFileId
+                    + "' exceeded " + this.renderTimeoutSeconds + "s - abandoned");
+            return null;
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            render.cancel(true);
+            return null;
+        } catch (final ExecutionException failed) {
+            // Unwrapped so the caller's existing catch blocks see exactly the failure the
+            // generator raised, and log it exactly as they did when the render ran inline.
+            final Throwable cause = failed.getCause();
+            if (cause instanceof final IOException ioFailure) throw ioFailure;
+            if (cause instanceof final RuntimeException runtimeFailure) throw runtimeFailure;
+            if (cause instanceof final Error error) throw error;
+            throw new IOException("@CloudThumbnailsExtension.render: rendering file '" + storedFileId + "' failed", cause);
         }
     }
 
@@ -355,11 +501,15 @@ public class CloudThumbnailsExtension extends Extension {
         return "thumb_" + sourceFileName + ".jpg";
     }
 
-    /** @return a {@link ThreadFactory} producing named, daemon threads for {@link #executor} - never keeps the JVM alive on its own. */
-    private static ThreadFactory daemonThreadFactory() {
+    /**
+     * @param namePrefix the prefix every thread this factory produces is named with, so the two
+     *     pools are distinguishable in a thread dump
+     * @return a {@link ThreadFactory} producing named, daemon threads - never keeps the JVM alive on its own
+     */
+    private static ThreadFactory daemonThreadFactory(final String namePrefix) {
         final AtomicInteger counter = new AtomicInteger(1);
         return runnable -> {
-            final Thread thread = new Thread(runnable, "thumbnail-generator-" + counter.getAndIncrement());
+            final Thread thread = new Thread(runnable, namePrefix + counter.getAndIncrement());
             thread.setDaemon(true);
             return thread;
         };

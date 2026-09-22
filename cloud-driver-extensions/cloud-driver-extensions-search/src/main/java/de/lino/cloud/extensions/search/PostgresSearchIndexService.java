@@ -137,6 +137,19 @@ public final class PostgresSearchIndexService implements SearchIndexService {
                 authUserId, storedFileId);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One {@code DELETE} rather than a {@code TRUNCATE} or a row walk: the table and its two
+     * GIN indexes stay in place, so the next upload indexes normally without re-running schema
+     * setup. {@link SQLExecution} swallows a failure per its own contract, the same posture every
+     * other write here has.
+     */
+    @Override
+    public void clearAllData() {
+        this.sqlExecution.executeUpdate("DELETE FROM " + TABLE);
+    }
+
     /** {@inheritDoc} Ranked by the same 2:1 filename-over-content weighting the in-memory index used. */
     @NotNull
     @Override

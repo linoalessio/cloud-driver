@@ -3,40 +3,70 @@ package de.lino.cloud.extensions.terminal.command.system;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
+import de.lino.cloud.api.terminal.service.CommandFlag;
 import de.lino.cloud.api.terminal.service.CommandUsage;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
- * A destructive command that wipes every {@code Serialized} entity section the cloud driver
- * defines via {@link CloudDriver#reset()}, then shuts the whole process down via {@link
- * CloudDriver#shutdown()} - with no undo. Requires being run twice within a 5-second
- * confirmation window (the first invocation only arms the reset and prints a warning; a
- * second invocation before the window expires actually performs it) so a single accidental
- * keystroke can't destroy the entire data set.
+ * Clears this deployment's stored data through {@link CloudDriver#reset()} and then stops the
+ * process through {@link CloudDriver#shutdown()}, with no undo.
+ *
+ * <p><b>What goes:</b> every entity section (accounts, files, folders, ownership rows, shares,
+ * public links, sessions, API keys, the pending registration/password-reset/e-mail-change/presigned-
+ * upload flows, chunk manifests and the audit log), every object-storage object a file row
+ * references, and the data each published extension owns - file versions, thumbnails, webhook
+ * subscriptions with their delivery history, and the keyword search index.
+ *
+ * <p><b>What does not:</b> the semantic vector store owned by the external {@code
+ * cloud-driver-intelligence} service, Redis coordination state, the off-site database backup
+ * bucket, the {@code kek} section holding key-encryption-key material, and the configuration files
+ * on disk. Decommissioning a deployment means clearing those separately.
+ *
+ * <p><b>The sequence</b> is {@code hardReset} to arm, then {@code hardReset confirm} within the
+ * confirmation window to perform it; {@code hardReset cancel} disarms, and {@code hardReset
+ * --dry-run} prints the exact list of targets and changes nothing. The confirming invocation must
+ * carry the explicit word, and a {@code confirm} typed while nothing is armed is refused rather
+ * than treated as arming - so a line repeated because it appeared to do nothing can never be the
+ * thing that destroys the data set.
+ *
+ * <p><b>Where the trail goes:</b> armed, confirmed and completed-or-failed lines are written to
+ * the process log, which the console session appends to its log file - not to the audit trail,
+ * since the audit log is itself one of the things this clears.
  */
 public class HardResetCommand implements Command {
 
     /**
-     * Whether a reset has been armed by an earlier invocation of {@link #execute} and is
-     * still awaiting a confirming second invocation. {@code static}, so this state is shared
-     * across every instance of this command (there is normally only one, registered by
-     * {@link de.lino.cloud.extensions.terminal.CloudTerminalExtension}).
+     * How long an armed wipe stays confirmable. Long enough to read the warning and check it
+     * against whatever prompted it, which is safe here because confirming takes an explicit word
+     * rather than a repeat of the arming line.
      */
-    private static final AtomicBoolean RESET_STARTED = new AtomicBoolean(false);
-
-    /** How long the confirmation window stays open after a reset is first armed. */
-    private static final Duration TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration TIMEOUT = Duration.ofSeconds(30);
 
     /**
-     * The epoch-millisecond deadline by which a confirming second invocation must arrive, or
-     * {@code null} while no reset is currently armed.
+     * The epoch-millisecond deadline a confirming invocation must arrive before, or {@code 0}
+     * while nothing is armed. One value rather than a flag plus a deadline, so the two can never
+     * disagree. {@code static}, so the arm state is shared across every instance of this command
+     * (there is normally only one, registered by {@link
+     * de.lino.cloud.extensions.terminal.CloudTerminalExtension}) and therefore across everyone
+     * attached to the same console session.
      */
-    private static final AtomicReference<Long> RESET_TIMEOUT = new AtomicReference<>(null);
+    private static final AtomicLong CONFIRMATION_DEADLINE = new AtomicLong(0L);
+
+    /** What a wipe cannot reach, printed alongside the scope so the list is never read as complete. */
+    private static final List<String> OUT_OF_REACH = List.of(
+            "not reached: the semantic vector store owned by cloud-driver-intelligence",
+            "not reached: Redis coordination state (rate-limit windows, scheduler locks)",
+            "not reached: the off-site database backup bucket",
+            "not reached: the 'kek' section holding key-encryption-key material",
+            "not reached: the configuration files on disk");
 
     /** @return {@code "hardReset"} */
     @Override
@@ -63,57 +93,190 @@ public class HardResetCommand implements Command {
         return "Clear the entire data set of the cloud driver (&c@not-recommended&7)";
     }
 
+    /** @return the flags this command understands */
+    @Override
+    public @NotNull List<CommandFlag> flags() {
+        return List.of(
+                CommandFlag.of("--dry-run", "List everything the wipe would clear and clear nothing")
+        );
+    }
+
     /** @return how this command is invoked */
     @Override
     public @NotNull List<CommandUsage> usages() {
         return List.of(
-                CommandUsage.of("hardReset", "Arm a full wipe of every entity section (destroys everything; does nothing on its own)"),
-                CommandUsage.of("hardReset confirm", "Confirm the armed wipe, within 5s of arming it")
+                CommandUsage.of("hardReset --dry-run", "List every section, object store and index a wipe would clear - changes nothing"),
+                CommandUsage.of("hardReset", "Arm the wipe: prints what would be destroyed, destroys nothing"),
+                CommandUsage.of("hardReset confirm", String.format("Confirm an armed wipe, within %ss of arming it", TIMEOUT.toSeconds())),
+                CommandUsage.of("hardReset cancel", "Disarm without wiping anything")
         );
     }
 
     /**
-     * On a first invocation, arms the reset (sets a 5-second confirmation deadline) and prints
-     * a warning, without touching any data. On a second invocation while a reset is already
-     * armed: if the confirmation window has expired, prints a timeout message and disarms
-     * (requiring the sequence to be restarted); otherwise disarms, calls {@link
-     * CloudDriver#reset()} to wipe every entity section, then calls {@link
-     * CloudDriver#shutdown()} to terminate the process.
+     * Dispatches to the dry run, a cancel, a confirmation or the arming step, in that order.
      *
-     * @param arguments unused
+     * <p>Only two paths ever clear the armed state: an explicit {@code cancel}, and a {@code
+     * confirm} that either fires or finds the window already expired. A dry run, an unrecognised
+     * positional and a repeated arming all leave an armed wipe exactly as it was, so an operator
+     * never loses their window to a stray keystroke.
+     *
+     * @param arguments the invocation - read for the {@code --dry-run} flag and, positionally,
+     *     for {@code confirm}/{@code cancel}
      */
     @Override
-    public void execute(@NotNull CommandArguments arguments) {
+    public void execute(@NotNull final CommandArguments arguments) {
 
         final Terminal terminal = this.terminal();
 
-        // The confirming invocation must say so explicitly. A bare repeat of the command name is
-        // too easy to produce by accident - and an accident here is unrecoverable.
-        if (RESET_STARTED.get() && RESET_TIMEOUT.get() != null && arguments.hasCommand(0, "confirm")) {
-
-            if (RESET_TIMEOUT.get() <= System.currentTimeMillis()) {
-                terminal.displayApproved("The &ctimeout &7has been $breached&7. Re-try the reset.");
-                RESET_STARTED.set(false);
-                RESET_TIMEOUT.set(null);
-                return;
-            }
-
-            RESET_STARTED.set(false);
-            RESET_TIMEOUT.set(null);
-
-            CloudDriver.getInstance().reset();
-            terminal.displayApproved("&c&lThe entire cloud data has been reset.");
-            terminal.displayApproved("&c&lShutting down cloud driver...");
-            CloudDriver.getInstance().shutdown();
-
+        if (arguments.hasFlag("--dry-run")) {
+            this.printDryRun(terminal);
             return;
         }
 
-        RESET_STARTED.set(true);
-        RESET_TIMEOUT.set(System.currentTimeMillis() + TIMEOUT.toMillis());
-        terminal.displayApproved("&c&lThis wipes every entity section: accounts, files, folders, shares, public links,");
-        terminal.displayApproved("&c&lsessions, webhooks, versions, thumbnails and the audit log - then shuts the server down.");
-        terminal.displayApproved("To confirm, run &chardReset confirm &7within &b5 seconds&7.");
+        if (arguments.hasCommand(0, "cancel")) {
+            this.cancel(terminal);
+            return;
+        }
+
+        if (arguments.hasCommand(0, "confirm")) {
+
+            final long deadline = CONFIRMATION_DEADLINE.getAndSet(0L);
+
+            if (deadline == 0L) {
+                // Refusing rather than arming is the whole point: 'hardReset confirm' recalled from
+                // history must never become the first half of its own confirmation sequence.
+                terminal.displayApproved("&cNothing is armed&7. Run &fhardReset &7first.");
+                return;
+            }
+
+            if (deadline <= System.currentTimeMillis()) {
+                terminal.displayApproved("The confirmation window expired. Re-run &fhardReset&7.");
+                CloudDriver.getInstance().getLogger().log(Level.INFO,
+                        "@HardResetCommand: a hard reset was confirmed after its window had expired - nothing was cleared");
+                return;
+            }
+
+            this.performReset(terminal);
+            return;
+        }
+
+        if (!arguments.isEmpty()) {
+            // A typo such as 'hardReset confrim' must never arm.
+            this.sendUsage();
+            return;
+        }
+
+        this.arm(terminal);
+
+    }
+
+    /**
+     * Prints every target a wipe would clear right now, plus what it cannot reach, without arming
+     * or disarming anything. Paged, because the list grows with the number of entity types and
+     * published extensions and the console usually has no scrollback.
+     *
+     * @param terminal where to print
+     */
+    private void printDryRun(@NonNull final Terminal terminal) {
+
+        final List<String> scope = CloudDriver.getInstance().resetScope();
+        final List<String> lines = new ArrayList<>(scope);
+        lines.addAll(OUT_OF_REACH);
+
+        terminal.displayApproved("&7A wipe would clear &b%s &7target(s). Nothing has been armed.", scope.size());
+        terminal.displayPaged("hard reset scope", lines);
+
+    }
+
+    /**
+     * Disarms without clearing anything, and says whether there was anything to disarm.
+     *
+     * @param terminal where to print
+     */
+    private void cancel(@NonNull final Terminal terminal) {
+
+        final long deadline = CONFIRMATION_DEADLINE.getAndSet(0L);
+
+        if (deadline == 0L) {
+            terminal.displayApproved("Nothing was armed.");
+            return;
+        }
+
+        terminal.displayApproved("&aDisarmed&7. Nothing was cleared.");
+        CloudDriver.getInstance().getLogger().log(Level.INFO,
+                "@HardResetCommand: an armed hard reset was cancelled at the operator console - nothing was cleared");
+
+    }
+
+    /**
+     * Arms a wipe and prints what it would destroy.
+     *
+     * <p>Deliberately not paged: the line that says how to confirm, and the line that says how to
+     * stop, must both still be on screen afterwards. A console with no scrollback would otherwise
+     * push them away behind a long list - which is what {@code --dry-run} is for.
+     *
+     * @param terminal where to print
+     */
+    private void arm(@NonNull final Terminal terminal) {
+
+        final int targets = CloudDriver.getInstance().resetScope().size();
+
+        CONFIRMATION_DEADLINE.set(System.currentTimeMillis() + TIMEOUT.toMillis());
+        CloudDriver.getInstance().getLogger().log(Level.INFO, "@HardResetCommand: hard reset ARMED at the operator console - "
+                + "confirm within " + TIMEOUT.toSeconds() + "s; " + targets + " target(s)");
+
+        terminal.displayApproved("&c&lThis destroys &f&l%s &c&ltarget(s) and cannot be undone.", targets);
+        terminal.displayApproved("&7Goes: accounts, files, folders, ownership, shares, public links, sessions, API keys,");
+        terminal.displayApproved("&7pending flows, chunk manifests, the audit log, object-storage objects, extension data.");
+        terminal.displayApproved("&7Stays: the semantic index in cloud-driver-intelligence, Redis state, the off-site backup");
+        terminal.displayApproved("&7bucket, the 'kek' row, the config files on disk.");
+        terminal.displayApproved("&7Run &fhardReset --dry-run &7for the exact list.");
+        terminal.displayApproved("&7To go ahead: &chardReset confirm &7within &b%s seconds&7. To stop: &fhardReset cancel&7.", TIMEOUT.toSeconds());
+
+    }
+
+    /**
+     * Performs the wipe and, when it succeeds, shuts the process down.
+     *
+     * <p>The armed/confirmed/finished lines go to the process log rather than the audit trail:
+     * {@link CloudDriver#reset()} clears the audit-log section too, so no persisted entry could
+     * survive what it records. The confirming line is written <em>before</em> anything is touched,
+     * so a wipe that never returns still leaves the record that it was started.
+     *
+     * <p>A failure deliberately does not shut the process down - an operator can still inspect a
+     * partially cleared instance - which also means that instance is still serving traffic, so
+     * both the log line and the terminal say so plainly.
+     *
+     * @param terminal where to print
+     */
+    private void performReset(@NonNull final Terminal terminal) {
+
+        final List<String> scope = CloudDriver.getInstance().resetScope();
+        final Logger logger = CloudDriver.getInstance().getLogger();
+
+        logger.log(Level.WARNING, "@HardResetCommand: hard reset CONFIRMED at the operator console - clearing "
+                + scope.size() + " target(s): " + String.join(", ", scope));
+
+        final long startedAt = System.currentTimeMillis();
+
+        try {
+            CloudDriver.getInstance().reset();
+        } catch (final Throwable resetFailed) {
+            final long failedAfter = System.currentTimeMillis() - startedAt;
+            logger.log(Level.SEVERE, "@HardResetCommand: hard reset FAILED after " + failedAfter + "ms - the data set may be "
+                    + "partially cleared; the process is left running and is still serving traffic", resetFailed);
+            terminal.displayApproved("&c&lThe hard reset failed after &f&l%sms&c&l.", failedAfter);
+            terminal.displayApproved("&cThe data set may be partially cleared. This process is still running and still serving traffic.");
+            terminal.displayApproved("&7Inspect it, then stop it with &fexit &7once you know what state it is in.");
+            return;
+        }
+
+        logger.log(Level.WARNING, "@HardResetCommand: hard reset COMPLETED in "
+                + (System.currentTimeMillis() - startedAt) + "ms - shutting down");
+
+        terminal.displayApproved("&c&lThe entire cloud data has been reset.");
+        terminal.displayApproved("&c&lShutting down cloud driver...");
+        CloudDriver.getInstance().shutdown();
 
     }
 

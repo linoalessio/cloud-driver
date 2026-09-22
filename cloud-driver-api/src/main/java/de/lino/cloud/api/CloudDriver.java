@@ -8,7 +8,9 @@ import de.lino.cloud.api.terminal.logging.TerminalLogFormatter;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.database.json.JsonDocument;
+import org.jetbrains.annotations.NotNull;
 
+import java.util.List;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.Logger;
 
@@ -100,11 +102,41 @@ public abstract class CloudDriver {
     public abstract void shutdown();
 
     /**
-     * Wipes this instance's persisted entity data back to an empty state,
-     * without stopping any running facet or terminating the process. There
-     * is no undo.
+     * Wipes this deployment's stored data back to an empty state, without stopping any running
+     * facet or terminating the process. There is no undo.
+     *
+     * <p>Clears every entity section the implementation can name, every object-storage object a
+     * file row references, and the data owned by each <em>published</em> optional service - file
+     * versions, thumbnails, webhook subscriptions and their recorded delivery history, and the
+     * keyword search index. An optional service that is not published simply has nothing to clear,
+     * and a failure inside one of them is logged rather than propagated, so one dead subsystem
+     * cannot leave the rest of the wipe undone. A failure to clear an entity section, by contrast,
+     * is propagated once every section has been attempted - a half-finished wipe must never report
+     * success.
+     *
+     * <p>Deliberately out of reach: the raw {@code kek} section holding key-encryption-key
+     * material (it protects nothing once every entity above is gone), the semantic vector store
+     * owned by the external {@code cloud-driver-intelligence} service, Redis coordination state
+     * (rate-limit windows, scheduler locks), the off-site database backup bucket, and the
+     * configuration files on disk. Decommissioning a deployment means clearing those separately.
+     *
+     * @see #resetScope()
      */
     public abstract void reset();
+
+    /**
+     * The human-readable name of everything {@link #reset()} would clear if it ran right now -
+     * one entry per entity section, plus one per published optional service and one for object
+     * storage when this deployment has it, in the order {@link #reset()} clears them.
+     *
+     * <p>Names targets, never rows: it reads nothing from the database, so it is safe to call on
+     * a deployment of any size. Exists so an operator can be shown the real scope before
+     * confirming a wipe, from the same list the wipe itself walks.
+     *
+     * @return every target {@link #reset()} would clear, in the order it clears them
+     */
+    @NotNull
+    public abstract List<String> resetScope();
 
     /**
      * Loads this deployment's local configuration file (e.g. {@code "rest-server-port"},

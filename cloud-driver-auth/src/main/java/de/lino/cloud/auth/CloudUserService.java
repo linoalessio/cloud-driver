@@ -1466,8 +1466,11 @@ public final class CloudUserService implements ICloudUserService {
      * assembled from parts is byte-identical to a single-{@code PUT} upload of the same stream.
      * That determinism is the property a resume depends on, and it holds only while the source
      * file is unchanged: a client resuming against different content would splice two encryptions
-     * together, which is why the SDK checks the object's length against the session's before
-     * uploading anything.
+     * together and reuse one key/nonce pair across two plaintexts. That is why a session durably
+     * records the plaintext digest it was begun for, hands it back on every status poll so a
+     * resuming client refuses to re-encrypt content whose digest differs, and refuses a completion
+     * declaring a different digest; comparing the object's length against the session's stays in
+     * front of that as the cheap structural gate.
      */
     public static final long RESUMABLE_PART_SIZE_BYTES = 8L * 1024 * 1024;
 
@@ -1566,10 +1569,13 @@ public final class CloudUserService implements ICloudUserService {
         final String uploadId = resumable.createMultipartUpload(fileId);
         // Mandatory, like the encrypted single-PUT ticket's tracking: this row is the only
         // durable carrier of BOTH the wrapped content key and the store's uploadId - losing
-        // either strands the session (undecryptable ciphertext / unabortable billed parts).
+        // either strands the session (undecryptable ciphertext / unabortable billed parts) - and
+        // of the digest of the one plaintext this session may ever hold, since every pass over the
+        // session encrypts under the same issued key and the same derived nonce base.
+        final long now = System.currentTimeMillis();
         try {
             this.dataFactory.register(new PendingPresignedUpload(
-                    fileId, authUserId, System.currentTimeMillis(), contentKeyHeaderBase64, sizeBytes, uploadId));
+                    fileId, authUserId, now, contentKeyHeaderBase64, sizeBytes, uploadId, now, checksumSha256Hex));
         } catch (final DatabaseClientException | KeyWrapException trackingFailed) {
             abortResumableUploadQuietly(resumable, fileId, uploadId);
             throw new RuntimeException(
@@ -1578,7 +1584,8 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         return ResumableUploadBegin.session(new ResumableUploadTicket(
-                fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes), totalObjectBytes, encryption));
+                fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes), totalObjectBytes, encryption,
+                checksumSha256Hex));
     }
 
     /** {@inheritDoc} */
@@ -1614,7 +1621,7 @@ public final class CloudUserService implements ICloudUserService {
         }
 
         return new ResumableUploadStatus(fileId, RESUMABLE_PART_SIZE_BYTES, partCountFor(totalObjectBytes),
-                totalObjectBytes, uploadedParts, encryption);
+                totalObjectBytes, uploadedParts, encryption, session.getDeclaredChecksumSha256Hex());
     }
 
     /** {@inheritDoc} */
@@ -1642,6 +1649,11 @@ public final class CloudUserService implements ICloudUserService {
      * #completePresignedUpload} - the assembled object is byte-identical to what a
      * single-{@code PUT} of the same stream would have stored, so every check there (confirmed
      * length vs. declared size, registration, ownership, usage) applies unchanged.
+     *
+     * <p>Before anything is assembled, the declared checksum is compared against the one the
+     * session was begun for: a session's parts are byte ranges of one object stream under one
+     * issued key, so a different declaration means the stored parts cannot all come from one
+     * encryption of one plaintext.
      */
     @NonNull
     @Override
@@ -1650,6 +1662,17 @@ public final class CloudUserService implements ICloudUserService {
                                                       @Nullable final String folderId) {
         final ResumableUploadService resumable = requireResumableUploadService();
         final PendingPresignedUpload session = this.requireOwnSession(authUserId, fileId);
+
+        // A session's parts are byte ranges of one object stream encrypted under one issued key, so
+        // a completion declaring a different digest means the stored parts do not all come from one
+        // encryption of one plaintext, and the assembled object would not be the declared content.
+        // Rejecting here means it is never assembled, registered, charged or indexed. A row written
+        // before the digest was recorded carries null and must still complete.
+        final String declaredChecksum = session.getDeclaredChecksumSha256Hex();
+        if (declaredChecksum != null && !declaredChecksum.equalsIgnoreCase(checksumSha256Hex)) {
+            throw new IllegalStateException("@CloudUserService.completeResumableUpload: session '" + fileId
+                    + "' was begun for different content - abort it and start a new session");
+        }
 
         final Map<Integer, String> uploadedParts;
         try {
@@ -2152,6 +2175,10 @@ public final class CloudUserService implements ICloudUserService {
      * #replaceFileContent(String, String, byte[], Long)} - every rule that method enforces
      * (access, optimistic concurrency, dedup guard, quota, version capture, metadata/search/
      * intelligence refresh, manifest update) applies to a patch identically, by construction.
+     *
+     * <p>A declared {@code newTotalSizeBytes} larger than the current content plus the bytes
+     * {@code changedChunks} carries is refused before the new content array is allocated, so an
+     * inconsistent request can never size the allocation.
      */
     @NonNull
     @Override
@@ -2173,22 +2200,34 @@ public final class CloudUserService implements ICloudUserService {
         final int newChunkCount = FileChunkManifest.chunkCountFor(newTotalSizeBytes, chunkSize);
         final int oldChunkCount = FileChunkManifest.chunkCountFor(oldContent.length, chunkSize);
 
-        // The new content is assembled from the old bytes plus the chunks this request actually
-        // carries, so a declared size larger than both together cannot be satisfied by any chunk
-        // set - and must be rejected *before* it is used as an allocation size, not by the
-        // consistency loop below. Otherwise a ~1.4 MB request declaring Integer.MAX_VALUE
-        // allocates and zero-fills 2 GiB before failing. Computed in long arithmetic: in int it
-        // overflows and reintroduces the hole.
-        final long maxPlausibleSizeBytes = (long) oldContent.length + (long) changedChunks.size() * chunkSize;
-        if (newTotalSizeBytes > maxPlausibleSizeBytes) {
+        // The new content is assembled from the current content plus the chunk bytes this
+        // request actually carries - every byte past the current content's end must have been
+        // sent. A declared size above that sum cannot be produced by any chunk set, and must be
+        // rejected *before* it is used as an allocation size: the consistency loop below only
+        // runs once the array exists. The chunks' real lengths are summed, not their count times
+        // the chunk size - a handful of one-byte chunks at high indices costs nothing to send
+        // but would otherwise authorize a multi-gigabyte allocation. Long arithmetic throughout;
+        // in int this overflows and the bound disappears.
+        long suppliedChunkBytes = 0L;
+        for (final byte[] chunkContent : changedChunks.values()) {
+            suppliedChunkBytes += chunkContent == null ? 0L : chunkContent.length;
+        }
+        final long maxAssemblableSizeBytes = (long) oldContent.length + suppliedChunkBytes;
+        if (newTotalSizeBytes > maxAssemblableSizeBytes) {
             throw new IllegalArgumentException("@CloudUserService.patchFileContent: newTotalSizeBytes " + newTotalSizeBytes
-                    + " exceeds the " + maxPlausibleSizeBytes + " bytes the current content plus the supplied chunks can produce"
+                    + " exceeds the " + maxAssemblableSizeBytes + " bytes the current content plus the supplied chunks can produce"
                     + " - the client's manifest is stale");
+        }
+        for (final Integer index : changedChunks.keySet()) {
+            if (index == null || index < 0 || index >= newChunkCount) {
+                throw new IllegalArgumentException("@CloudUserService.patchFileContent: chunk index " + index
+                        + " is outside the new content's " + newChunkCount + " chunk(s)");
+            }
         }
         // Quota is deliberately left to replaceFileContent below, which resolves the file's real
         // owner (a patch may come from an EDIT grantee, and the bytes are charged to whoever
         // stores them). Bounding the allocation above is what makes that ordering safe: the array
-        // can no longer exceed the current content plus the bytes this request carried.
+        // can no longer exceed the current content plus the bytes this request actually carried.
         final byte[] newContent = new byte[(int) newTotalSizeBytes];
 
         for (int chunk = 0; chunk < newChunkCount; chunk++) {
@@ -2212,12 +2251,6 @@ public final class CloudUserService implements ICloudUserService {
                         + " is not present unchanged in the current content and was not sent - the client's manifest is stale");
             }
             System.arraycopy(oldContent, offset, newContent, offset, chunkLength);
-        }
-        for (final Integer index : changedChunks.keySet()) {
-            if (index == null || index < 0 || index >= newChunkCount) {
-                throw new IllegalArgumentException("@CloudUserService.patchFileContent: chunk index " + index
-                        + " is outside the new content's " + newChunkCount + " chunk(s)");
-            }
         }
 
         return this.replaceFileContent(authUserId, storedFileId, newContent, expectedUpdatedAtEpochMillis);

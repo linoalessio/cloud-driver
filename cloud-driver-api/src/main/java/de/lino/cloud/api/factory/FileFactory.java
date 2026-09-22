@@ -9,6 +9,8 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -27,8 +29,9 @@ import java.util.concurrent.CompletionException;
  * #download(String)}, {@link #download(String[])}, {@link #findById}, {@link
  * #getEntities()}, {@link #delete(String)}, {@link #delete(String[])},
  * {@link #clear()}, and {@link #deleteSection()} are abstract; every {@code
- * *Async} variant plus {@link #metadata}/{@link #getEntitiesMetadata()} is
- * implemented here generically in terms of those.
+ * *Async} variant plus {@link #metadata}/{@link #getEntitiesMetadata()}/{@link
+ * #openContentStream(String)} is implemented here generically in terms of
+ * those.
  */
 public abstract class FileFactory {
 
@@ -178,6 +181,37 @@ public abstract class FileFactory {
     public List<FileMetadata> getEntitiesMetadata()
             throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
         return getEntities().stream().map(StoredFile::metadata).toList();
+    }
+
+    /**
+     * Opens {@code fileId}'s plaintext content as a stream, for a consumer that reads content
+     * sequentially and has no use for it as one array - a malware scan, a checksum
+     * recomputation, a copy into another sink. The caller owns the returned stream and must
+     * close it; closing it releases the underlying object-store connection.
+     *
+     * <p>This generic implementation is built on {@link #findById(String)} and is therefore no
+     * cheaper than a full download - it simply hands back content that is already materialized.
+     * {@code DefaultFileFactory} overrides it with a genuinely streaming path whose memory use
+     * is O(buffer size) regardless of file size.
+     *
+     * <p><b>The plaintext checksum is verified either way, but not necessarily before this
+     * method returns.</b> Here it is checked eagerly, by {@link #findById(String)}. A streaming
+     * implementation can only finish the check once the stream has been drained, and then
+     * reports it from a {@code read} call as an {@link java.io.IOException} whose {@code cause}
+     * is a {@link FileIntegrityException}. A caller that must tell a corrupt file apart from a
+     * transient failure has to handle both positions.
+     *
+     * @param fileId the file's {@link StoredFile#fileId() file id}
+     * @return the file's plaintext content as a stream, or {@link Optional#empty()} if no file exists under {@code fileId}
+     * @throws DatabaseClientException if the persistence operation fails
+     * @throws KeyWrapException if the file's data-encryption key cannot be unwrapped by the KMS/HSM
+     * @throws AuthenticationFailedException if the retrieved payload fails authentication
+     * @throws FileIntegrityException if the decrypted content does not match its recorded checksum
+     */
+    @NotNull
+    public Optional<InputStream> openContentStream(@NotNull final String fileId)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
+        return findById(fileId).<InputStream>map(file -> new ByteArrayInputStream(file.content()));
     }
 
     /** Async counterpart of {@link #upload(StoredFile)}. */

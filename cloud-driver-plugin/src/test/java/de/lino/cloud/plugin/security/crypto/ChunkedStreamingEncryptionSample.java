@@ -11,6 +11,7 @@ import de.lino.cloud.plugin.security.keys.develop.InMemoryKeyEncryptionService;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.SecureRandom;
@@ -37,7 +38,10 @@ import java.util.Arrays;
  *     <li>a flipped ciphertext bit, a wrong file id, and chunk-frame reordering all fail
  *     authentication</li>
  *     <li>the one-shot (schema version 1) layout still round-trips through the same receive
- *     methods - the version dispatch keeps legacy objects readable</li>
+ *     methods at a size well past any metadata field bound - the version dispatch keeps legacy
+ *     objects readable, whatever their size</li>
+ *     <li>a crafted length prefix, a negative length, an unknown layout tag and a downgraded
+ *     content-key read all fail cleanly rather than allocating</li>
  * </ul>
  */
 public final class ChunkedStreamingEncryptionSample {
@@ -182,7 +186,10 @@ public final class ChunkedStreamingEncryptionSample {
 
         // --- legacy one-shot layout still round-trips through the same receive methods ---
         {
-            final byte[] plaintext = new byte[50_000];
+            // Well past any per-field metadata bound: in the one-shot layout the whole content
+            // travels in a single length-prefixed field, so a round trip below 64 KiB proves
+            // nothing about it.
+            final byte[] plaintext = new byte[3 * CHUNK_SIZE_BYTES + 4_321];
             random.nextBytes(plaintext);
             final String fileId = "sample-legacy-file";
             final byte[] storedV1 = channel.send(fileId, plaintext);
@@ -191,11 +198,75 @@ public final class ChunkedStreamingEncryptionSample {
                     Arrays.equals(plaintext, channel.receive(fileId, storedV1)));
             check("one-shot layout round trip via receiveFully(stream) dispatch",
                     Arrays.equals(plaintext, channel.receiveFully(fileId, new ByteArrayInputStream(storedV1))));
+
+            // A content-key-protected object is the streaming layout by construction, so a read
+            // that demands it must refuse a one-shot object rather than parse it.
+            boolean downgradeRejected;
+            try {
+                channel.receiveFully(fileId, new ByteArrayInputStream(storedV1), true);
+                downgradeRejected = false;
+            } catch (final AuthenticationFailedException | ObjectStorageException expected) {
+                downgradeRejected = true;
+            }
+            check("a read demanding the streaming layout refuses a one-shot object", downgradeRejected);
+        }
+
+        // --- a crafted length prefix, a negative length and an unknown tag all fail cleanly ---
+        {
+            final String fileId = "sample-crafted-file";
+
+            final byte[] hugeCiphertextLength = craftedOneShotObject(0x7F000000);
+            check("a crafted ciphertext length prefix is rejected without allocating",
+                    rejects(channel, fileId, hugeCiphertextLength) && receiveRejects(channel, fileId, hugeCiphertextLength));
+
+            final byte[] negativeCiphertextLength = craftedOneShotObject(-1);
+            check("a negative length prefix is rejected cleanly, never as NegativeArraySizeException",
+                    rejects(channel, fileId, negativeCiphertextLength) && receiveRejects(channel, fileId, negativeCiphertextLength));
+
+            final ByteArrayOutputStream unknownTag = new ByteArrayOutputStream();
+            try (DataOutputStream out = new DataOutputStream(unknownTag)) {
+                out.writeInt(99);
+                out.write(new byte[64]);
+            }
+            check("an unknown layout tag is rejected rather than parsed as the one-shot layout",
+                    rejects(channel, fileId, unknownTag.toByteArray()) && receiveRejects(channel, fileId, unknownTag.toByteArray()));
         }
 
         System.out.println(allPassed ? "ALL CHECKS PASSED" : "CHECKS FAILED");
         if (!allPassed) {
             System.exit(1);
+        }
+    }
+
+    /**
+     * A one-shot-layout (schema version 1) object whose six leading metadata fields are empty and
+     * whose ciphertext length prefix claims {@code declaredCiphertextLength} - the shape a caller
+     * would use to make a parser allocate before anything has been authenticated.
+     *
+     * @param declaredCiphertextLength the length the crafted ciphertext prefix claims
+     * @return the crafted object's bytes
+     * @throws Exception if writing the in-memory object fails
+     */
+    private static byte[] craftedOneShotObject(final int declaredCiphertextLength) throws Exception {
+        final ByteArrayOutputStream crafted = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(crafted)) {
+            out.writeInt(1);
+            for (int field = 0; field < 6; field++) {
+                out.writeInt(0);
+            }
+            out.writeInt(declaredCiphertextLength);
+            out.write(new byte[512]);
+        }
+        return crafted.toByteArray();
+    }
+
+    /** {@link #rejects} for the {@code byte[]} entry point, which dispatches on the tag itself. */
+    private static boolean receiveRejects(final StoredFileContentChannel channel, final String fileId, final byte[] stored) throws Exception {
+        try {
+            channel.receive(fileId, stored);
+            return false;
+        } catch (final AuthenticationFailedException | ObjectStorageException expected) {
+            return true;
         }
     }
 

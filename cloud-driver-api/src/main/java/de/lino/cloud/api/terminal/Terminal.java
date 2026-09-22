@@ -378,28 +378,6 @@ public final class Terminal {
         this.lineReader.printAbove(" ");
     }
 
-    /**
-     * Prompts with a yes/no {@code message} and blocks until answered. Only {@code y}/{@code
-     * yes} (case-insensitive) counts as confirmation; anything else, including blank input, is
-     * a rejection.
-     *
-     * <p>Returns {@code false} immediately, without attempting to read, once {@link
-     * #isActive()} is {@code false} - there is no input to read once the underlying terminal
-     * has been closed.
-     *
-     * @param message the confirmation question to display, e.g. {@code "&eProceed? (y/n)"}
-     * @return {@code true} if confirmed, {@code false} otherwise (including if the terminal is no longer active)
-     * @throws NullPointerException if {@code message} is {@code null}
-     */
-    public boolean confirm(@NotNull final String message) {
-        Asserts.requireNonNull(message, "@Terminal.confirm: message must not be null");
-        if (!this.active.get()) return false;
-
-        final String answer = this.lineReader.readLine(AnsiColors.translate(message + " "));
-        final String trimmed = answer.trim();
-        return trimmed.equalsIgnoreCase("y") || trimmed.equalsIgnoreCase("yes");
-    }
-
     /** Redraws the prompt if the reader is currently active. Called after every display. */
     void update() {
         if (!this.lineReader.isReading()) return;

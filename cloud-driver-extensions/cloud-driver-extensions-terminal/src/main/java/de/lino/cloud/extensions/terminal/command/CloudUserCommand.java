@@ -4,6 +4,7 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.terminal.Terminal;
+import de.lino.cloud.api.terminal.service.ArmedConfirmation;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.api.user.ICloudUser;
@@ -11,6 +12,7 @@ import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.UnitParser;
 import org.jetbrains.annotations.NotNull;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -28,6 +30,13 @@ import java.util.Optional;
  * already-stored bytes past the {@code "cloud-server-max-bytes-available"} configuration limit.
  */
 public class CloudUserCommand implements Command {
+
+    /**
+     * The arm-then-confirm guard {@code reset} and {@code delete} go through. One instance for
+     * this command, keyed on the exact command line, so arming a reset against one account can
+     * never confirm a delete, or an action against a different account.
+     */
+    private static final ArmedConfirmation CONFIRMATION = new ArmedConfirmation(Duration.ofSeconds(15));
 
     /** @return {@code "cloudUser"} */
     @Override
@@ -136,8 +145,11 @@ public class CloudUserCommand implements Command {
             }
 
             final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
-            if (!confirmDestructiveAction(terminal, "reset", emailAddress, arguments,
-                    "destroys every file and folder '" + emailAddress + "' owns (&b" + clearedStorage + "&7), bypassing the trash")) {
+            // Armed against the stored spelling of the address, so arming and confirming agree
+            // however it was typed.
+            final String canonicalEmail = cloudUser.get().getAuthUser().getEmailAddress();
+            if (!CONFIRMATION.armOrConfirm(terminal, arguments, 2, "cloudUser reset " + canonicalEmail,
+                    "destroys every file and folder '" + canonicalEmail + "' owns (&b" + clearedStorage + "&7), bypassing the trash - it cannot be undone")) {
                 return;
             }
             cloudUserService.resetCloudUser(cloudUser.get().getAuthUserId());
@@ -157,8 +169,9 @@ public class CloudUserCommand implements Command {
             }
 
             final String clearedStorage = UnitParser.parseByteUnit(cloudUser.get().getCurrentUploadedBytes());
-            if (!confirmDestructiveAction(terminal, "delete", emailAddress, arguments,
-                    "deletes the account '" + emailAddress + "' and everything it owns (&b" + clearedStorage + "&7)")) {
+            final String canonicalEmail = cloudUser.get().getAuthUser().getEmailAddress();
+            if (!CONFIRMATION.armOrConfirm(terminal, arguments, 2, "cloudUser delete " + canonicalEmail,
+                    "deletes the account '" + canonicalEmail + "' and everything it owns (&b" + clearedStorage + "&7) - it cannot be undone")) {
                 return;
             }
             cloudUserService.deleteCloudUser(cloudUser.get().getAuthUserId());
@@ -215,59 +228,6 @@ public class CloudUserCommand implements Command {
         this.sendUsage();
 
 
-    }
-
-    /** What destructive action is currently armed, as {@code "<action>:<target>"}, or {@code null}. */
-    private static final java.util.concurrent.atomic.AtomicReference<String> ARMED_ACTION =
-            new java.util.concurrent.atomic.AtomicReference<>();
-
-    /** When the armed action stops being confirmable, in epoch millis, or {@code null}. */
-    private static final java.util.concurrent.atomic.AtomicReference<Long> ARMED_UNTIL =
-            new java.util.concurrent.atomic.AtomicReference<>();
-
-    /** How long an armed destructive action stays confirmable. */
-    private static final java.time.Duration ARM_WINDOW = java.time.Duration.ofSeconds(15);
-
-    /**
-     * Arm-then-confirm guard for an irreversible sub-command, matching the shape {@code hardReset}
-     * and {@code s3 purge} already use.
-     *
-     * <p>The first invocation prints what will be destroyed and arms; a second invocation carrying
-     * {@code confirm}, within the window and naming the same target, performs it. Arming is keyed
-     * on the action and its target, so arming against one account can never confirm an action
-     * against another.
-     *
-     * @param terminal where to print the warning
-     * @param action the sub-command name, e.g. {@code "reset"}
-     * @param target the account this would act on
-     * @param arguments the invocation, checked for the confirming token
-     * @param whatItDoes a plain description of the destruction, shown while arming
-     * @return {@code true} if the caller should proceed
-     */
-    private static boolean confirmDestructiveAction(final Terminal terminal, final String action, final String target,
-                                                     final CommandArguments arguments, final String whatItDoes) {
-        final String armedKey = action + ":" + target;
-        final Long armedUntil = ARMED_UNTIL.get();
-        final boolean confirming = arguments.hasCommand(2, "confirm");
-
-        if (confirming && armedKey.equals(ARMED_ACTION.get()) && armedUntil != null && armedUntil > System.currentTimeMillis()) {
-            ARMED_ACTION.set(null);
-            ARMED_UNTIL.set(null);
-            return true;
-        }
-        if (confirming) {
-            terminal.displayApproved("&cNothing armed for that account, or the confirmation window has passed - run it again without 'confirm' first.");
-            ARMED_ACTION.set(null);
-            ARMED_UNTIL.set(null);
-            return false;
-        }
-
-        ARMED_ACTION.set(armedKey);
-        ARMED_UNTIL.set(System.currentTimeMillis() + ARM_WINDOW.toMillis());
-        terminal.displayApproved("&c&lThis %s", whatItDoes);
-        terminal.displayApproved("&7It cannot be undone. To confirm, run &ccloudUser %s %s confirm &7within &b%s seconds&7.",
-                action, target, ARM_WINDOW.toSeconds());
-        return false;
     }
 
 }

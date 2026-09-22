@@ -13,7 +13,9 @@ import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.user.ICloudUserService;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -39,6 +41,12 @@ import java.util.logging.Logger;
  * dedup and scanning both being enabled, on identical content uploaded more than once, is expected
  * to be a rare combination in practice.
  *
+ * <p><b>Content is never materialized.</b> The size cap is decided from the row's own recorded
+ * size before any content is fetched from storage, and content within the cap is streamed to
+ * {@code clamd} in chunks rather than held in memory - so a file's size bounds how long a scan
+ * takes, not how much heap it costs. A row that records no size of its own (a legacy row) has the
+ * same ceiling applied to the stream itself, which stops the moment it is crossed.
+ *
  * <p><b>On a scan failure (connection refused, timeout, an unexpected {@code clamd} response) -
  * retried up to {@link #MAX_ATTEMPTS} times, then <em>fails open</em>: the file is marked {@link
  * ScanStatus#CLEAN} with a loud {@code WARNING} log, not left stuck at {@link ScanStatus#PENDING}
@@ -46,8 +54,16 @@ import java.util.logging.Logger;
  * (fail-closed, leaving a file permanently inaccessible whenever {@code clamd} has any hiccup)
  * would turn a scanner outage into an upload-availability outage, which this codebase's own
  * "must keep working with every microservice turned off" constraint argues against; the cost is
- * that a scanner outage during upload silently disables real protection for that file. Revisit
- * with Lino if this deployment's threat model wants fail-closed instead.
+ * that a scanner outage during upload silently disables real protection for that file.
+ *
+ * <p><b>The one thing that never fails open is content that cannot be read back at all</b> - a
+ * checksum mismatch against what the uploading client declared, or an authentication failure
+ * (tampered, truncated, or not this file's stored content). That failure is deterministic, it
+ * repeats on every retry, and on the direct-transfer path the account itself chose the stored
+ * bytes, so it is marked {@link ScanStatus#FLAGGED} immediately and never retried: otherwise
+ * unreadable bytes would earn a permanent {@link ScanStatus#CLEAN} with nothing ever scanned. A
+ * file in that state is refused by every read, exactly as a scanner-flagged one is; the {@code
+ * SEVERE} log line names which of the two rejections it was.
  */
 final class DefaultContentScanService implements ContentScanService {
 
@@ -140,54 +156,132 @@ final class DefaultContentScanService implements ContentScanService {
             return;
         }
 
-        final StoredFile file;
+        final InputStream content;
         try {
-            file = this.fileFactory.findById(storedFileId).orElse(null);
-        } catch (final FileIntegrityException integrityFailure) {
-            // Not transient and not a scanner problem: the stored bytes do not match the checksum
-            // the uploading client declared, so this content can never be fetched for scanning and
-            // must never be served. Retrying would just fail identically and then fail *open*,
-            // which is exactly how a deliberately-wrong declared checksum bought a permanent
-            // CLEAN verdict without a single byte reaching the scanner.
-            this.logger.log(Level.SEVERE, "@DefaultContentScanService: integrity check failed for " + storedFileId
-                    + " - refusing to fail open", integrityFailure);
+            content = this.fileFactory.openContentStream(storedFileId).orElse(null);
+        } catch (final FileIntegrityException | AuthenticationFailedException contentRejected) {
+            // Neither transient nor a scanner problem: the stored bytes either fail the checksum the
+            // uploading client declared or fail authentication outright (tampered, truncated, or not
+            // this file's content at all), so they can never be read for scanning and must never be
+            // served. Retrying reproduces the identical failure and then fails *open* - which is how
+            // content the server cannot read at all would buy a permanent CLEAN verdict without a
+            // single byte reaching the scanner, on the one path where the account writes the stored
+            // object's bytes itself.
+            this.logger.log(Level.SEVERE, "@DefaultContentScanService: " + storedFileId
+                    + " could not be read back for scanning (" + contentRejected.getClass().getSimpleName()
+                    + ") - flagging rather than failing open", contentRejected);
             persistStatus(storedFileId, metadata, ScanStatus.FLAGGED);
             return;
-        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException e) {
+        } catch (final DatabaseClientException | KeyWrapException | RuntimeException e) {
             this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to fetch " + storedFileId + " for scanning", e);
             scheduleRetryOrFailOpen(storedFileId, attemptNumber);
             return;
         }
-        if (file == null) {
+        if (content == null) {
             return; // deleted/never existed by the time this ran - nothing to scan
         }
 
-        final byte[] content;
-        try {
-            content = file.content();
-        } catch (final RuntimeException contentUnresolvable) {
-            this.logger.log(Level.WARNING, "@DefaultContentScanService: failed to resolve content for " + storedFileId, contentUnresolvable);
-            scheduleRetryOrFailOpen(storedFileId, attemptNumber);
-            return;
-        }
-
-        // Backstop for a row whose size metadata was unknown above (a legacy inline file).
-        if (content.length > this.maxScannableBytes) {
-            this.logger.warning("@DefaultContentScanService: " + storedFileId + " (" + content.length
-                    + " bytes) exceeds the configured scan size cap (" + this.maxScannableBytes + ") - marking clean without scanning");
-            persistStatus(storedFileId, file, ScanStatus.CLEAN);
-            return;
-        }
-
-        try {
-            final ClamAvScanResult result = this.clamAvClient.scan(content);
-            persistStatus(storedFileId, file, result.clean() ? ScanStatus.CLEAN : ScanStatus.FLAGGED);
+        // The stream never escapes this block: closing it releases the object-store connection.
+        try (CappedInputStream scannable = new CappedInputStream(content, this.maxScannableBytes)) {
+            final ClamAvScanResult result = this.clamAvClient.scan(scannable);
+            persistStatus(storedFileId, metadata, result.clean() ? ScanStatus.CLEAN : ScanStatus.FLAGGED);
             if (!result.clean()) {
                 this.logger.warning("@DefaultContentScanService: " + storedFileId + " flagged as " + result.malwareName());
             }
+        } catch (final ContentTooLargeException tooLarge) {
+            // Backstop for a row whose size metadata was unknown above (a legacy row that predates
+            // recorded sizes). Nothing beyond the cap was ever held: the stream stops the moment it
+            // crosses it.
+            this.logger.warning("@DefaultContentScanService: " + storedFileId + " (over " + this.maxScannableBytes
+                    + " bytes) exceeds the configured scan size cap (" + this.maxScannableBytes + ") - marking clean without scanning");
+            persistStatus(storedFileId, metadata, ScanStatus.CLEAN);
         } catch (final IOException | ClamAvScanException scanFailed) {
+            // A streamed read can only report a checksum mismatch or a mid-stream authentication
+            // failure once it has reached that point, so both arrive here as an IOException cause -
+            // and both mean the content cannot be read back, which must fail closed exactly as the
+            // eager rejections above do rather than retry into a fail-open CLEAN.
+            final Throwable cause = scanFailed.getCause();
+            if (cause instanceof FileIntegrityException || cause instanceof AuthenticationFailedException) {
+                this.logger.log(Level.SEVERE, "@DefaultContentScanService: " + storedFileId
+                        + " could not be read back for scanning (" + cause.getClass().getSimpleName()
+                        + ") - flagging rather than failing open", scanFailed);
+                persistStatus(storedFileId, metadata, ScanStatus.FLAGGED);
+                return;
+            }
             this.logger.log(Level.WARNING, "@DefaultContentScanService: scan attempt " + attemptNumber + " failed for " + storedFileId, scanFailed);
             scheduleRetryOrFailOpen(storedFileId, attemptNumber);
+        }
+    }
+
+    /**
+     * Signals that a scanned stream crossed the configured size ceiling - the backstop for a row
+     * that records no size of its own, where the metadata gate before the fetch cannot apply.
+     * An {@link IOException} so it travels out of a read the same way any other stream failure
+     * does; the caller separates it from a real failure by type.
+     */
+    private static final class ContentTooLargeException extends IOException {
+
+        /**
+         * @param maxBytes the ceiling the stream crossed
+         */
+        private ContentTooLargeException(final long maxBytes) {
+            super("@DefaultContentScanService: content exceeds the " + maxBytes + "-byte scan size cap");
+        }
+    }
+
+    /**
+     * Stops a content stream the moment it has yielded more than {@code maxBytes}, so a file whose
+     * recorded size was unknown can never be read past the configured cap. Closing it closes the
+     * wrapped stream, releasing the object-store connection behind it.
+     */
+    private static final class CappedInputStream extends FilterInputStream {
+
+        /** The most this stream may yield before it refuses to continue. */
+        private final long maxBytes;
+
+        /** How many bytes have been read so far. */
+        private long bytesRead;
+
+        /**
+         * @param content the content stream to cap
+         * @param maxBytes the most {@code content} may yield
+         */
+        private CappedInputStream(final InputStream content, final long maxBytes) {
+            super(content);
+            this.maxBytes = maxBytes;
+        }
+
+        /** {@inheritDoc} Refuses to yield a byte past the cap. */
+        @Override
+        public int read() throws IOException {
+            final int value = super.read();
+            if (value < 0) {
+                return value;
+            }
+            this.bytesRead++;
+            this.requireWithinCap();
+            return value;
+        }
+
+        /** {@inheritDoc} Refuses to yield bytes past the cap. */
+        @Override
+        public int read(final byte[] buffer, final int offset, final int length) throws IOException {
+            final int read = super.read(buffer, offset, length);
+            if (read <= 0) {
+                return read;
+            }
+            this.bytesRead += read;
+            this.requireWithinCap();
+            return read;
+        }
+
+        /**
+         * @throws ContentTooLargeException once more than {@link #maxBytes} have been read
+         */
+        private void requireWithinCap() throws ContentTooLargeException {
+            if (this.bytesRead > this.maxBytes) {
+                throw new ContentTooLargeException(this.maxBytes);
+            }
         }
     }
 

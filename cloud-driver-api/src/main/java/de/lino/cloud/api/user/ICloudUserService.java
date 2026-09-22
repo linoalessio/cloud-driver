@@ -295,7 +295,9 @@ public interface ICloudUserService {
      * @param expectedUpdatedAtEpochMillis optimistic-concurrency precondition, or {@code null} to skip it
      * @return a summary of the file's new state
      * @throws IllegalArgumentException if the chunk set is inconsistent with {@code newTotalSizeBytes}
-     *     (bad index, wrong chunk length, missing new-tail chunk, or nothing changed at all)
+     *     (bad index, wrong chunk length, missing new-tail chunk, or nothing changed at all), or if
+     *     {@code newTotalSizeBytes} is larger than the current content plus the bytes {@code
+     *     changedChunks} carries - a size no chunk set could assemble
      */
     @NotNull
     StoredFileSummary patchFileContent(@NotNull String authUserId, @NotNull String storedFileId,
@@ -337,7 +339,8 @@ public interface ICloudUserService {
      * @param fileName the file's name
      * @param sizeBytes the plaintext size the client declares it will upload
      * @param checksumSha256Hex the content's SHA-256 (lowercase hex) - required, both for the
-     *     dedup precheck and for completion-time integrity metadata
+     *     dedup precheck and for completion-time integrity metadata; it is also recorded on the
+     *     session, binding it to that one content for its whole lifetime
      * @param folderId the folder to place the file in, or {@code null} for the root
      * @return either the registered dedup alias, or the session ticket - never both
      */
@@ -350,7 +353,9 @@ public interface ICloudUserService {
      * One session's durable progress - which parts the object store already holds (asked of the
      * store itself, never a local mirror) plus the session's geometry and recovered encryption
      * parameters, so a client that crashed with nothing but the session's {@code fileId} can
-     * resume. Only the session's own issuer may ask.
+     * resume. Only the session's own issuer may ask. The status also echoes the digest recorded
+     * when the session began, so a resuming client can verify its local file is still the content
+     * the session was begun for before it re-encrypts anything under the session's key.
      *
      * @param authUserId the caller - must be the account the session was issued to
      * @param fileId the session's id
@@ -383,11 +388,13 @@ public interface ICloudUserService {
      * @param authUserId the caller - must be the account the session was issued to
      * @param fileId the session's id
      * @param fileName the file's name
-     * @param checksumSha256Hex the content's SHA-256 (lowercase hex), as declared at begin
+     * @param checksumSha256Hex the content's SHA-256 (lowercase hex) - must be the digest the
+     *     session was begun for
      * @param folderId the folder to place the file in, or {@code null} for the root
      * @return the registered file's summary
      * @throws IllegalArgumentException if the session doesn't exist/isn't the caller's, parts
      *     are still missing, or the assembled object fails length verification
+     * @throws IllegalStateException if the declared checksum is not the one the session was begun for
      */
     @NotNull
     StoredFileSummary completeResumableUpload(@NotNull String authUserId, @NotNull String fileId, @NotNull String fileName,

@@ -6,6 +6,7 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.file.meta.FileMetadata;
 import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.metrics.MetricsRecorder;
@@ -24,10 +25,16 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.function.Consumer;
+import java.util.zip.Inflater;
+import java.util.zip.InflaterInputStream;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,8 +63,9 @@ import java.util.logging.Level;
  * #DefaultFileFactory(DataFactory, PendingUploadCache, ConnectivityChecker, ObjectStorageService,
  * EnvelopeEncryptionService)}), {@link #upload} moves a file's content out of {@link
  * DataFactory#register}'s own entity JSON and into {@code objectStorageService} first (see {@link
- * #prepareForPersistence}), and {@link #download}/{@link #findById}/{@link #getEntities}
- * transparently resolve an S3-backed file's content back before verifying its checksum. {@code
+ * #prepareForPersistence}), and {@link #download}/{@link #findById}/{@link #getEntities}/{@link
+ * #openContentStream} transparently resolve an S3-backed file's content back before verifying its
+ * checksum. {@code
  * null} (the default, via the three-argument constructor) behaves exactly as before this feature
  * existed - every file stays inline in {@link DataFactory}'s own s3storage.
  *
@@ -461,6 +469,182 @@ public final class DefaultFileFactory extends FileFactory {
         return result;
     }
 
+    /** Read-ahead buffer the inflating wrapper in {@link #openContentStream} uses - the 8 KiB every other streaming path here uses, not {@link InflaterInputStream}'s 512-byte default. */
+    private static final int CONTENT_STREAM_BUFFER_BYTES = 8192;
+
+    /**
+     * Streaming counterpart of {@link #findById(String)}: resolves {@code fileId}'s content the
+     * same way - deduplication alias first, then object storage - but hands back a stream whose
+     * memory use is O({@link #CONTENT_STREAM_BUFFER_BYTES}) rather than a fully materialized copy
+     * of the file. Every stored shape is covered, in the same branches {@link
+     * #resolveFromObjectStorage} already uses: a server-encrypted object decrypts chunk by chunk
+     * through {@link StoredFileContentChannel#receiveStream} (either stored layout, dispatched on
+     * the 4-byte schema-version tag) and inflates on the way out if the file was DEFLATE-stored, a
+     * client-encrypted direct transfer decrypts through the very same call - demanding the chunked
+     * streaming layout, since the server issued that object's header itself - and a legacy direct
+     * transfer - whose object is plaintext, never chunk-framed - is streamed straight from the
+     * object store untouched. An inline file, a file this deployment has no object store for, and
+     * a dedup alias of either are served from the resolved-and-verified entity, exactly as before:
+     * that content is already on the heap by the time the row is read, so streaming it buys
+     * nothing.
+     *
+     * <p>The plaintext checksum is verified while the stream is drained (see {@link
+     * ChecksumVerifyingInputStream}) rather than before it is returned - there is no way to check
+     * a file's plaintext without reading all of it, and reading all of it up front is exactly what
+     * this method exists to avoid. A mismatch surfaces from the final {@code read} as an {@link
+     * IOException} caused by a {@link FileIntegrityException}; a stream abandoned before its end
+     * is never verified.
+     *
+     * @param fileId the file's {@link StoredFile#fileId() file id}
+     * @return the file's plaintext content stream, or {@link Optional#empty()} if none exists under {@code fileId}
+     * @throws DatabaseClientException if the row (or a dedup alias's canonical row) cannot be fetched
+     * @throws KeyWrapException if unwrapping the content's data-encryption key fails
+     * @throws AuthenticationFailedException if the header or first chunk fails authentication
+     * @throws FileIntegrityException if content resolved on the materializing fall-back fails its checksum
+     */
+    @NotNull
+    @Override
+    public Optional<InputStream> openContentStream(@NotNull final String fileId)
+            throws DatabaseClientException, KeyWrapException, AuthenticationFailedException, FileIntegrityException {
+        Asserts.requireNonNull(fileId, "@DefaultFileFactory.openContentStream: fileId cannot be null");
+
+        final Optional<StoredFile> row = this.dataFactory.findById(fileId, StoredFile.class);
+        if (row.isEmpty()) {
+            return Optional.empty();
+        }
+        final StoredFile file = row.get();
+        // An alias owns no content of its own; its checksum and size are the canonical file's,
+        // copied at creation - so the canonical row decides every branch below, while the
+        // checksum to verify against can be read off either.
+        final StoredFile contentSource = file.isDedupAlias()
+                ? this.dataFactory.fetch(file.dedupOfFileId(), StoredFile.class)
+                : file;
+
+        if (this.objectStorageService == null || !contentSource.isS3Backed()) {
+            return Optional.of(new ByteArrayInputStream(verifyIntegrity(resolveContent(file)).content()));
+        }
+
+        InputStream storedContent = null;
+        try {
+            storedContent = this.objectStorageService.getObjectStream(contentSource.objectStorageKey());
+            // A legacy direct transfer's object is plaintext (S3-side encryption only, no
+            // schema-version tag of ours) - handing it to receiveStream would have it rejected as
+            // an unknown layout. Everything else is one of the two tagged layouts.
+            final InputStream rawContent = contentSource.isDirectTransfer() && !contentSource.isContentKeyProtected()
+                    ? storedContent
+                    : this.contentChannel.receiveStream(contentSource.fileId(), storedContent,
+                            contentSource.isContentKeyProtected());
+            final InputStream plaintext = contentSource.isCompressed()
+                    ? new InflaterInputStream(rawContent, new Inflater(), CONTENT_STREAM_BUFFER_BYTES)
+                    : rawContent;
+            return Optional.of(new ChecksumVerifyingInputStream(plaintext, file.checksum(), fileId));
+        } catch (final IOException e) {
+            closeQuietly(storedContent);
+            throw new ObjectStorageException(
+                    "@DefaultFileFactory.openContentStream: failed opening stored content for file '" + fileId + "'", e
+            );
+        } catch (final KeyWrapException | AuthenticationFailedException | RuntimeException failure) {
+            closeQuietly(storedContent);
+            throw failure;
+        }
+    }
+
+    /** Closes {@code stream} (a {@code null} is a no-op), ignoring any failure - used only while a failure is already being reported. */
+    private static void closeQuietly(final InputStream stream) {
+        if (stream == null) {
+            return;
+        }
+        try {
+            stream.close();
+        } catch (final IOException ignored) {
+            // nothing useful to do while already failing
+        }
+    }
+
+    /**
+     * Wraps a plaintext content stream and checks its {@link FileChecksum} as it is read, so
+     * {@link #openContentStream} keeps {@link FileFactory}'s "every download is checksum verified"
+     * contract without buffering the file. The digest is finalized when the wrapped stream reports
+     * end of input; a mismatch is raised there as an {@link IOException} whose {@code cause} is a
+     * {@link FileIntegrityException}, matching how a mid-stream authentication failure already
+     * surfaces from the streaming decryption path. A stream closed before its end is simply never
+     * verified - the caller got no complete content to trust either.
+     */
+    private static final class ChecksumVerifyingInputStream extends FilterInputStream {
+
+        /** Digest of everything read so far, over the plaintext bytes. */
+        private final MessageDigest digest;
+
+        /** The checksum the finished digest must equal. */
+        private final FileChecksum expected;
+
+        /** The file being read, for the failure message. */
+        private final String fileId;
+
+        /** Whether end of input has already been reached and the digest compared. */
+        private boolean verified;
+
+        /**
+         * @param content the plaintext stream to verify while it is read
+         * @param expected the checksum the finished digest must equal
+         * @param fileId the file being read, for the failure message
+         * @throws IllegalStateException if the JVM does not provide {@code expected}'s algorithm
+         */
+        private ChecksumVerifyingInputStream(final InputStream content, final FileChecksum expected, final String fileId) {
+            super(content);
+            this.expected = expected;
+            this.fileId = fileId;
+            try {
+                this.digest = MessageDigest.getInstance(expected.algorithm().jcaName());
+            } catch (final NoSuchAlgorithmException e) {
+                throw new IllegalStateException(
+                        "@DefaultFileFactory: JVM does not provide " + expected.algorithm().jcaName(), e);
+            }
+        }
+
+        /** {@inheritDoc} Folds the byte into the running digest, and verifies it at end of input. */
+        @Override
+        public int read() throws IOException {
+            final int value = super.read();
+            if (value < 0) {
+                this.verify();
+                return value;
+            }
+            this.digest.update((byte) value);
+            return value;
+        }
+
+        /** {@inheritDoc} Folds the bytes read into the running digest, and verifies it at end of input. */
+        @Override
+        public int read(final byte[] buffer, final int offset, final int length) throws IOException {
+            final int read = super.read(buffer, offset, length);
+            if (read < 0) {
+                this.verify();
+                return read;
+            }
+            this.digest.update(buffer, offset, read);
+            return read;
+        }
+
+        /**
+         * Finalizes the digest once and throws if it does not match {@link #expected}.
+         *
+         * @throws IOException caused by a {@link FileIntegrityException} if the content does not match
+         */
+        private void verify() throws IOException {
+            if (this.verified) {
+                return;
+            }
+            this.verified = true;
+            if (HexFormat.of().formatHex(this.digest.digest()).equals(this.expected.hexDigest())) {
+                return;
+            }
+            final String message = "@DefaultFileFactory: checksum mismatch for file '" + this.fileId
+                    + "' - decrypted content does not match its recorded " + this.expected.algorithm() + " checksum";
+            throw new IOException(message, new FileIntegrityException(message));
+        }
+    }
+
     /**
      * Persists {@code sizeBytes} onto {@code legacyRow} (via {@link
      * StoredFile#withDeclaredSizeBytes(long)} on the original, unhydrated row - so the update
@@ -539,7 +723,9 @@ public final class DefaultFileFactory extends FileFactory {
      * DEFLATE-compressed, so no {@link StoredFile#decompressIfNeeded(byte[])} step ever applies.
      * If it {@link StoredFile#isContentKeyProtected()}, the uploading client encrypted the object
      * itself in the standard chunked streaming layout, so {@link
-     * StoredFileContentChannel#receiveFully} decrypts it like any server-encrypted object; a
+     * StoredFileContentChannel#receiveFully} decrypts it like any server-encrypted object - and,
+     * since the server itself issued that object's streaming header, the read demands the chunked
+     * streaming layout rather than trusting the tag the uploading client wrote; a
      * legacy (pre-client-side-encryption) direct transfer is plaintext in the store (decrypted
      * transparently by S3's own server-side encryption on the way out) and is handed straight to
      * {@link StoredFile#withResolvedContent(byte[])}.
@@ -567,10 +753,12 @@ public final class DefaultFileFactory extends FileFactory {
                 // layout (the client wrote the server-issued header + chunk frames), so the very
                 // same receive path decrypts it - the one difference from the server-encrypted
                 // branch below is that a direct transfer is never DEFLATE-compressed, so no
-                // decompressIfNeeded step follows.
+                // decompressIfNeeded step follows. Such an object is the streaming layout by
+                // construction - the server issued its header - so the read demands that layout
+                // rather than trusting the stored tag, which the uploading client wrote itself.
                 final byte[] plaintext;
                 try (InputStream storedContent = this.objectStorageService.getObjectStream(file.objectStorageKey())) {
-                    plaintext = this.contentChannel.receiveFully(file.fileId(), storedContent);
+                    plaintext = this.contentChannel.receiveFully(file.fileId(), storedContent, true);
                 } catch (final IOException e) {
                     throw new ObjectStorageException(
                             "@DefaultFileFactory: failed reading object s3storage content for file '" + file.fileId() + "'", e

@@ -11,6 +11,8 @@ generic camelCase rule.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -186,6 +188,35 @@ class BeginDownloadUrl(_Model):
     encryption: DownloadEncryption | None = None
 
 
+class UploadSession(_Model):
+    """A resumable multipart upload session's geometry and progress.
+
+    The body of POST /files/upload-session (with `uploaded_part_numbers` empty) and of
+    GET /files/upload-session/{id} (with the object store's confirmed parts). The client cuts its
+    object stream - encrypted when `encryption` is set, the plaintext file itself when it is
+    ``None`` (a legacy plaintext session) - into `part_size_bytes` ranges and uploads exactly the
+    part numbers missing from `uploaded_part_numbers`. `checksum_sha256` is the plaintext digest
+    the session is bound to; ``None`` against an older server that reports none.
+    """
+
+    file_id: str = Field(alias="fileId")
+    part_size_bytes: int = Field(alias="partSizeBytes")
+    part_count: int = Field(alias="partCount")
+    total_object_bytes: int = Field(alias="totalObjectBytes")
+    uploaded_part_numbers: list[int] = Field(default_factory=list, alias="uploadedPartNumbers")
+    encryption: UploadEncryption | None = None
+    checksum_sha256: str | None = Field(default=None, alias="checksumSha256")
+
+
+class UploadSessionPartUrl(_Model):
+    """One presigned part upload - the body of POST /files/upload-session/{id}/parts/{n}/url."""
+
+    part_number: int = Field(alias="partNumber")
+    url: str
+    required_headers: dict[str, str] = Field(default_factory=dict, alias="requiredHeaders")
+    expires_at_epoch_milli: int = Field(alias="expiresAtEpochMilli")
+
+
 class LiveUpdateEvent(_Model):
     """One GET /ws/updates push payload - see CLAUDE.md's "Live push via WebSocket"."""
 
@@ -283,3 +314,29 @@ class PublicFileLinkSummary(_Model):
     token: str
     created_at_epoch_millis: int = Field(alias="createdAtEpochMillis")
     expires_at_epoch_millis: int | None = Field(default=None, alias="expiresAtEpochMillis")
+
+
+@dataclass(frozen=True)
+class ConditionalDownload:
+    """Result of a conditional download. ``not_modified`` means the server answered 304: the
+    destination was never opened, so an existing local copy is untouched and still current.
+    ``path`` is set iff ``not_modified`` is False. ``entity_tag`` is the server's ETag
+    verbatim - pass it back on the next download of the same file; ``None`` for a file the
+    server records no checksum for, which only ever costs a full transfer."""
+
+    not_modified: bool
+    path: Path | None
+    entity_tag: str | None
+
+
+@dataclass(frozen=True)
+class BeginUploadSessionResult:
+    """The outcome of beginning an upload session - exactly one field is set.
+
+    ``already_stored`` means the server's dedup precheck matched content this account already
+    stores, so nothing has to be uploaded at all; ``session`` is the session to upload through
+    otherwise.
+    """
+
+    already_stored: StoredFileSummary | None
+    session: UploadSession | None

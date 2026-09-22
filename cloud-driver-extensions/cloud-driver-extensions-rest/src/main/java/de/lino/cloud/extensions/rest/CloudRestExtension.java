@@ -161,12 +161,15 @@ public class CloudRestExtension extends Extension {
         // failure mode this project has already paid for in production.
         this.cloudDriver().getServiceContainer().setEmailSender(emailSender);
 
-        // Lets GET /files/{id}/content stream a direct-transfer file's content straight from S3
-        // instead of resolving it as a byte[] first - see DefaultRestFactory#resolveDownloadableContent.
-        // null on a deployment that hasn't opted into S3-backed s3storage, in which case that route
-        // simply keeps its prior, fully-materializing behavior.
+        // Lets GET /files/{id}/content and the public-link download stream an S3-backed file's
+        // content straight out of the store - decrypted chunk by chunk through the file factory -
+        // instead of materializing the whole plaintext first; see
+        // DefaultRestFactory#resolveDownloadableContent. null on a deployment that hasn't opted
+        // into S3-backed s3storage, in which case those routes simply keep their prior,
+        // fully-materializing behavior.
         final ObjectStorageService objectStorageService = this.cloudDriver().getFactoryContainer().getObjectStorageService();
-        final DefaultRestFactory restFactory = new DefaultRestFactory(dataFactory, authService, cloudUserService, objectStorageService);
+        final DefaultRestFactory restFactory = new DefaultRestFactory(
+                dataFactory, authService, cloudUserService, objectStorageService, fileFactory);
         REST_FACTORY = restFactory;
 
         // Live push via WebSocket: DefaultRestFactory

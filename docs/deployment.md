@@ -7,10 +7,13 @@ flowchart TD
     NET["Internet"] -->|HTTPS| PROXY["Reverse proxy (TLS termination)"]
     PROXY --> APP["cloud-driver-bootstrap jar<br/>+ extensions/ (same commit!)"]
     APP --> PG[("PostgreSQL")]
+    APP --> KMS["AWS KMS<br/>(the KEK — required at boot)"]
+    APP -.-> S3[("AWS S3<br/>(file content, optional)")]
     APP -.-> CLAM["clamd"]
     APP -.-> REDIS[("Redis")]
     APP -.-> INTEL["cloud-driver-intelligence<br/>(systemd service)"]
     APP --> BK["Backup archives<br/>(rotated, local)"]
+    BK -.->|"daily aws s3 sync (cron)"| BKB[("Backup bucket<br/>(never the content bucket)")]
     PROM["Prometheus"] -.->|"loopback scrape"| APP
 ```
 
@@ -20,19 +23,22 @@ etc.) involved. A handful of shell scripts under [`shell/`](../shell/) handle th
 | Script | Runs where | Purpose |
 |---|---|---|
 | `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
-| `deploy-cloud.sh` | Locally | Uploads the already-built, shaded bootstrap jar to the server, compressed and checksum-verified |
+| `deploy-cloud.sh` | Locally | Uploads the already-built shaded bootstrap jar, every built extension jar, the local `cloud-driver/configuration.json` and `start-cloud.sh` itself (executable bit restored) over one multiplexed SSH connection, up to 6 in parallel, each verified with SHA-256 on both ends. Prunes previous releases' jars first, since the bootstrap refuses to start when two jars claim the same extension name. Files are sent uncompressed on purpose — jars are already DEFLATE-compressed. It builds nothing and never restarts the running instance |
 | `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX` — or with a sibling `start-cloud.env`, see §"GUI installer"), auto-restarting it if it ever exits. The bootstrap jar is the single `cloud-driver-bootstrap-*.jar` in the script's own directory, so a version bump needs no edit. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
-| `release-and-package.sh` | Locally | One-shot release automation: bumps every version reference, builds, tags, pushes, and cuts a release. **The one script not in version control** — it is operator-local |
+| `release-and-package.sh` | Locally | One-shot release automation: bumps the version references it lists — every `pom.xml`, the desktop Gradle build, the iOS `project.yml` and the Python SDK, plus six of the twelve `extension.json` manifests (the bootstrap's, and `rest`, `backup`, `terminal`, `metrics`, `watcher`); the other six extensions' manifests are not in that hardcoded list and keep their previous version, so check them by hand after a release. Then rebuilds the reactor with `mvn clean install`, commits, tags, pushes, cuts a GitHub Release and waits for the publish workflow. Operator-local — one of the two scripts deliberately kept out of version control (the other is `deploy-homepage.sh`) |
 | `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
 
-None of these scripts build anything by themselves — always run `mvn clean install` (or the
-targeted `-pl ... -am package` form) first.
+None of the deploy/run scripts build anything by themselves — always run `mvn clean install` (or
+the targeted `-pl ... -am package` form) before `deploy-cloud.sh`. `release-and-package.sh` is the
+exception: building the reactor is part of what it does.
 
-Every script above except `release-and-package.sh` is checked into version control: each takes
-the target host as an argument (or reads it from an SSH alias) instead of hardcoding
-server-specific connection details, so none carries a secret of its own. Keep it that way — a
-script that would need a real hostname, credential, or key baked in belongs outside the
-repository, like `release-and-package.sh` does.
+Two of the scripts above — `release-and-package.sh` and `deploy-homepage.sh` — are deliberately
+kept out of version control (both are listed in `.gitignore`, alongside the `homepage/` directory
+itself). The three that are checked in — `provision-root-server.sh`, `deploy-cloud.sh` and
+`start-cloud.sh` — take the target host as an argument or read it from an SSH alias instead of
+hardcoding server-specific connection details, so none carries a secret of its own. Keep it that
+way: a script that would need a real hostname, credential, or key baked in belongs outside the
+repository, like those two do.
 
 ## Provisioning a new root server
 
@@ -53,8 +59,10 @@ loopback with a generated password, Caddy (installed always; a reverse-proxy sit
 `api-domain` is added if given), and the `/home/cloud/{cloud-driver,extensions}` layout
 `deploy-cloud.sh`/`start-cloud.sh` already assume. It also scaffolds
 `postgres-database.json`/`redis-database.json` (real, generated credentials) and
-`configuration.json` (a real generated `jwt-signing-key`, but `REPLACE-ME` placeholders for every
-`aws-*` key) — never overwriting files that already exist.
+`configuration.json` (a real generated `jwt-signing-key`, but `REPLACE-ME` placeholders for all six
+`aws-*` keys **and for `cloud-server-max-bytes-available`**, the server's total capacity — fill that
+one in too, or the operator terminal's `cloudUser` and `statistics` commands fail on it) — never
+overwriting files that already exist.
 
 It deliberately stops short of anything requiring your AWS account or an already-built jar; the
 script prints the remaining manual checklist on completion:
@@ -115,7 +123,7 @@ Sixteen steps run in the order the server needs them:
 | 11 | E-mail | The SES identity (domain with Easy DKIM, or a single address) or the SMTP settings |
 | 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded. The API domain is optional: with one, Caddy obtains a Let's Encrypt certificate for it; left empty, the site block is the plain-HTTP `:80` form serving whatever address the request arrived on (which also replaces Caddy's packaged placeholder site) |
 | 13 | Configuration files | `configuration.json`, `postgres-database.json`, `redis-database.json`, `start-cloud.env` — and the same `configuration.json` back into the checkout |
-| 14 | Application | The bootstrap jar, the extension jars, `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
+| 14 | Application | Optionally runs `mvn clean install` in the checkout first (*Build with Maven*), then uploads the bootstrap jar and only the extension jars this plan enables (`scan` follows ClamAV, `intelligence` the intelligence service), refusing any jar whose name does not carry the bootstrap's version and aborting when `rest`, `watcher` or `terminal` is not built; prunes the previous release's jars, then `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
 | 15 | Intelligence service | `/opt/cloud-driver-intelligence`, its virtual environment, env file and systemd unit |
 | 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL — `https://<domain>`, or `http://<server address>` without one, or `http://<server address>:<REST port>` with no proxy at all |
 
@@ -186,7 +194,9 @@ passwords and tokens cross the network unencrypted and the shipped apps (HTTPS-o
 connect. Switching the reverse proxy off entirely is the other domain-free shape: the JVM is then
 the public listener itself, which needs a non-loopback `rest-server-bind-host` (the firewall step
 opens that port, and `trust-proxy-headers` stays off — there is no proxy to trust). Filling the
-domain in later and re-running step 12 upgrades the very same site block to TLS.
+domain in later and re-running step 12 writes a TLS site block for that name, but does not rewrite
+the domain-less one: the site address changed, so the new block is appended and the old `:80` block
+stays in the Caddyfile until it is removed by hand (or by removing the step before re-applying it).
 
 What it deliberately does not do: create DNS records, request SES production access, configure the
 provider-level firewall, deploy the homepage, or rebuild the client apps (both hardcode
@@ -196,24 +206,30 @@ OS-level half.
 ## Companion processes
 
 The optional external processes (`clamd`, Redis, the Python intelligence service) run as ordinary
-system services beside the JVM — none is deployed by the scripts above. The intelligence service
-ships its own systemd unit and idempotent installer under `cloud-driver-intelligence/deploy/`
-(run from a local checkout against the target server); `clamd` and Redis are installed through
-the host OS's own package manager and bound to loopback. The installer installs the service with
-the `embeddings` and `store` extras, mirrors the `lino-database-driver-*` packages from the
-sibling `database-driver-v2` clone into `/opt/cloud-driver-intelligence/vendor/` (they are on no
+system services beside the JVM — none of them is deployed by `deploy-cloud.sh` or started by
+`start-cloud.sh`, which only ship and start the jar. `clamd` and Redis are installed through the
+host OS's own package manager and bound to loopback, either by `provision-root-server.sh` (its
+steps 6/9 and 7/9) or by the GUI installer's *ClamAV* and *Redis* steps. The intelligence service
+is the one neither of those touches: it ships its own systemd unit and idempotent installer under
+`cloud-driver-intelligence/deploy/` (run from a local checkout against the target server). That
+installer installs the service with the `embeddings` and `store` extras, mirrors the
+`lino-database-driver-*` packages from the sibling `database-driver-v2` clone into `/opt/cloud-driver-intelligence/vendor/` (they are on no
 package index yet), and — whenever that vendor directory exists — (re)installs them plus the
 `encryption` extra on every run, so redeploys can never silently drop the encrypted store.
 Vector at-rest encryption is enabled once with `install-on-server.sh --enable-encryption`: the
 key is generated server-side, appended to the root-owned env file (every later redeploy
 preserves it), and the freshly encrypted store starts empty — re-index with
 `intelligence backfill all --content` from the operator terminal, then delete the old plaintext
-Chroma files under the store directory.
+Chroma files under the store directory. The GUI installer's *Intelligence service* step offers the
+same at-rest encryption — it vendors the `lino-database-driver-*` packages from the
+`database-driver-v2` clone and refuses the option without them, rather than letting the service
+fall back to an unencrypted store — plus the optional `ocr` and `clip` extras.
 
 ## Homepage (cloud-driver.de)
 
-The static informational homepage under [`homepage/`](../homepage/) (`index.html`, the
-English-language legal pages `impressum.html`/`datenschutz.html`, `style.css`, and the
+The static informational homepage under `homepage/` (deliberately gitignored, not published with
+this repository — `index.html`, the English-language legal pages
+`impressum.html`/`datenschutz.html`, `style.css`, and the
 animation layer `script.js`) is served by the same reverse proxy that fronts the API, directly
 as files — the Java backend is not involved. The pages are deliberately self-contained: the
 only JavaScript is the dependency-free, self-hosted `script.js` (animations only — no cookies,
@@ -221,7 +237,7 @@ no data collection), and nothing is ever loaded from third parties (fonts, analy
 which is exactly what `datenschutz.html` claims, so keep it that way. All animation is disabled
 under `prefers-reduced-motion`, and the page renders fully with JS off.
 
-Deploying is one command — [`shell/deploy-homepage.sh`](../shell/deploy-homepage.sh):
+Deploying is one command — `shell/deploy-homepage.sh` (operator-local, also gitignored):
 
 ```bash
 ./shell/deploy-homepage.sh
@@ -266,12 +282,13 @@ when those change in a release, update `homepage/index.html` in the same change.
 
 ```mermaid
 flowchart LR
-    PUSH["Push / PR"] --> CI["Build checks:<br/>Maven · Swift · Python ×2 · Qodana"]
+    PUSH["Push / PR"] --> CI["Build checks:<br/>Maven · Swift · Qodana ·<br/>pytest ×3 (SDK · intelligence · installer)"]
     REL["GitHub Release created"] --> PUB["maven-publish.yml →<br/>GitHub Packages"]
-    OP["Operator, by hand — CI never deploys"] --> DEP["deploy-cloud.sh →<br/>server upload + restart"]
+    OP["Operator, by hand — CI never deploys"] --> DEP["deploy-cloud.sh →<br/>server upload only"]
+    DEP --> RST["start-cloud.sh on the server<br/>(the restart is a separate manual step)"]
 ```
 
-Six GitHub Actions workflows exist (`.github/workflows/`) — five automatic checks plus one
+Seven GitHub Actions workflows exist (`.github/workflows/`) — six automatic checks plus one
 publisher:
 
 | Workflow | Trigger | Does |
@@ -280,6 +297,7 @@ publisher:
 | `swift.yml` — Swift | Push / pull request (mobile app changes) | Builds the mobile app against the iOS Simulator SDK |
 | `python.yml` — Python | Push / pull request (Python SDK changes) | Installs the SDK and runs its `pytest` suite (3.10/3.11/3.12) |
 | `intelligence.yml` — Intelligence Service | Push / pull request (intelligence service changes) | Installs the service and runs its `pytest` suite |
+| `installer.yml` — Installer | Push / pull request (installer changes) | Installs `cloud-driver-installer` and runs its `pytest` suite (3.10/3.11/3.12). `tkinter` is deliberately not installed on the runner, so the window tests skip themselves |
 | `qodana_code_quality.yml` — Qodana | Push / pull request | JetBrains Qodana static analysis |
 | `maven-publish.yml` — Maven Package | GitHub Release creation | Publishes every backend module to this repository's own GitHub Packages registry |
 

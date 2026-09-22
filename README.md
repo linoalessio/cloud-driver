@@ -99,7 +99,11 @@ names and content-derived search terms in plaintext (see
 - Resumable multipart upload sessions for large files: fixed byte-range parts, crash-resume
   from nothing but the session id
 - Server-mediated uploads above 32 MiB stream end to end, never materializing the file in heap
-- Offline-safe uploads: queued locally and retried when connectivity returns
+- A server-side pending-upload queue: an upload that fails to persist is queued and retried by a
+  scheduler rather than lost (Redis-backed when available, so the queue is visible across
+  instances). The connectivity gate that used to feed it is deliberately disabled in the shipped
+  bootstrap — the database is co-located with the JVM, so an always-available connectivity checker
+  is wired in
 
 ### Authentication & Accounts
 
@@ -108,7 +112,8 @@ names and content-derived search terms in plaintext (see
 - Password reset and e-mail change, both two-step and e-mail-verified
 - Logout with server-side refresh-token revocation
 - Admin flag (grantable only through the operator terminal, never over the network)
-- Static API-key authentication as a separate, machine-to-machine alternative
+- Static API-key authentication as a separate alternative for an in-process embedder that
+  constructs its own REST factory — never enabled by the deployed backend
 - Persisted audit log of security-relevant actions
 
 ### Sharing
@@ -147,16 +152,21 @@ names and content-derived search terms in plaintext (see
 - Optional Redis-backed multi-instance coordination: once-per-window scheduler locks and
   cross-instance pending-upload visibility, degrading to single-instance behavior without it
 - An interactive operator terminal with a diagnostics/operations command catalog, tab completion,
-  per-command flags (`--skip-task`, `--limit=25`), and paged output for listings longer than the
-  window
+  declared per-command flags (e.g. `intelligence backfill --content`), paged output for listings
+  longer than the window, and an arm-then-confirm guard on every command that destroys data or
+  grants privilege — each needs a second invocation carrying the word `confirm`, and each leaves a
+  trace. The console survives an interrupt (`Ctrl+C` discards the typed line, `exit` stops the
+  process), and dispatched system commands are listable, cancellable and recorded
 - A plugin/extension framework for adding backend features without touching the core
 
 ### Clients
 
 - Desktop app (Compose Multiplatform): file browser, drag & drop, previews, trash, sharing,
-  dashboard, admin panel, live refresh
+  dashboard, activity feed, webhooks, admin panel, live refresh
 - iOS app (SwiftUI): file browser, document scanner, photo upload, previews, trash, sharing
-- Java, Swift, and Python client libraries covering the full API surface
+- Three client libraries: Java (the fullest — webhooks, resumable sessions and chunk-diff patch
+  included), Swift, and Python. Only the Java SDK covers the whole API surface; see
+  [Client SDKs](#client-sdks) for what each one leaves out
 
 ## Architecture
 
@@ -188,6 +198,8 @@ flowchart TD
     DESKTOP -->|HTTPS + JWT| REST
     MOBILE -->|HTTPS + JWT| REST
     PY -->|HTTPS + JWT| REST
+    DESKTOP -.->|"presigned URL,<br/>client-encrypted bytes"| S3
+    MOBILE -.->|"presigned URL,<br/>client-encrypted bytes"| S3
     REST --> AUTH
     AUTH --> CORE
     EXT --> CORE
@@ -247,9 +259,10 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Client->>REST: POST /files (raw bytes + Bearer JWT)
-    REST->>Auth: Validate JWT, resolve account
+    REST->>Auth: Validate JWT (before-filter), resolve account
+    REST->>REST: Stream body to an upload-scratch file
     Auth->>Auth: Quota + folder-ownership check
-    Note over REST,Auth: Above 32 MiB the body lands in a scratch file<br/>and every step below streams off it
+    Note over REST,Auth: Every body lands in a scratch file first. Above 32 MiB it is handed<br/>on as a path and every step below streams off it; below it is read<br/>back into memory, where DEFLATE and text extraction still apply
     Auth->>Core: Store file entity
     Core->>Enc: Encrypt (fresh DEK, AES-256-GCM)
     Enc->>Enc: Wrap DEK under active KEK (AWS KMS)
@@ -268,14 +281,13 @@ sequenceDiagram
 Downloading reverses the path, with two independent integrity checks before the caller ever sees
 plaintext:
 
-```text
-PostgreSQL ──> encrypted record ──> unwrap DEK ──> AES-256-GCM decrypt
-                                                       │  (authentication tag verified)
-                                                       ▼
-                                            plaintext checksum verified
-                                                       │
-                                                       ▼
-                                        REST streaming response ──> client
+```mermaid
+flowchart LR
+    SRC[("PostgreSQL row<br/>or S3 object")] --> REC["Encrypted record<br/>ciphertext + wrapped DEK"]
+    REC -->|"unwrap DEK (AWS KMS)"| DEK["DEK"]
+    DEK -->|"AES-256-GCM decrypt<br/>authentication tag verified"| PT["Plaintext content"]
+    PT -->|"plaintext checksum re-verified"| RESP["REST streaming response"]
+    RESP --> CLIENT["Client"]
 ```
 
 ### Security Architecture
@@ -315,7 +327,7 @@ See [docs/security.md](docs/security.md) for the complete model.
 | `cloud-driver-extensions` | Aggregator for the eleven feature extensions below |
 | `cloud-driver-extensions-rest` | Starts the JWT-authenticated REST API and WebSocket |
 | `cloud-driver-extensions-watcher` | PostgreSQL `LISTEN`/`NOTIFY` change notifications, feeding live push |
-| `cloud-driver-extensions-terminal` | Operator terminal command catalog (diagnostics, ops, hard reset) |
+| `cloud-driver-extensions-terminal` | Operator terminal command catalog (diagnostics, ops, system-command dispatch, hard reset) |
 | `cloud-driver-extensions-backup` | Streaming, keyset-paginated database backup job with retention |
 | `cloud-driver-extensions-metrics` | Prometheus-scrapeable `/metrics` endpoint on its own port |
 | `cloud-driver-extensions-thumbnails` | Image/PDF preview thumbnail generation |
@@ -329,7 +341,7 @@ See [docs/security.md](docs/security.md) for the complete model.
 | `cloud-driver-multiplatform` | Parent for the three per-language client SDKs |
 | `cloud-driver-multiplatform-java` | Java REST/WebSocket client library (used by the desktop app) |
 | `cloud-driver-multiplatform-swift` | Swift REST client library (used by the iOS app) |
-| `cloud-driver-multiplatform-python` | Full-coverage Python SDK (`cloud-driver-client` on pip) |
+| `cloud-driver-multiplatform-python` | Python REST/WebSocket SDK, sync + async (`cloud-driver-client` on pip) |
 | `cloud-driver-platforms` | Parent directory for the client apps |
 | `cloud-driver-platforms-desktop` | Desktop app — Kotlin / Compose Multiplatform (Gradle build) |
 | `cloud-driver-platforms-mobile` | iOS app — Swift / SwiftUI (Xcode project, generated via XcodeGen) |
@@ -355,9 +367,12 @@ cloud-driver/
 │   ├── cloud-driver-extensions-scan/
 │   └── cloud-driver-extensions-intelligence/
 ├── cloud-driver-intelligence/           # Python semantic-search service (own process)
+├── cloud-driver-installer/              # Python/tkinter GUI installer (own venv, pytest suite)
 ├── cloud-driver-multiplatform/          # client SDKs (Java / Swift / Python)
 ├── cloud-driver-platforms/              # client apps (desktop / mobile)
+├── cloud-driver/                        # runtime config JSONs — gitignored, never committed
 ├── docs/                                # cross-cutting documentation (incl. requirements.md)
+├── shell/                               # provisioning, deploy and start scripts
 ├── .github/workflows/                   # CI
 ├── pom.xml                              # Maven reactor root
 └── README.md
@@ -384,7 +399,7 @@ sizing): [`docs/requirements.md`](docs/requirements.md).
 
 | Requirement | Needed for |
 |---|---|
-| Nothing beyond a JDK | Desktop app ships its own Gradle wrapper |
+| JDK 21 + Maven | Desktop app: it ships its own Gradle wrapper, but resolves `cloud-driver-multiplatform-java` from the **local Maven repository**, so `mvn -pl cloud-driver-multiplatform/cloud-driver-multiplatform-java -am install` must run first |
 | Full Xcode with an iOS SDK + [XcodeGen](https://github.com/yonaskolb/XcodeGen) | iOS app (Command Line Tools alone are not sufficient) |
 | Python **3.10+** | Python SDK and the intelligence service |
 
@@ -407,8 +422,10 @@ Client apps are built separately — see [Desktop Client](#desktop-client) and
 
 ## Configuration
 
-All environment-specific values live in two gitignored JSON files under a `cloud-driver/`
-directory next to the running jar. **Never commit real values.**
+All environment-specific values live in three gitignored JSON files under a `cloud-driver/`
+directory next to the running jar — `postgres-database.json` (required, boot-fatal),
+`configuration.json` (required) and `redis-database.json` (optional; absent simply means Redis
+support stays off). **Never commit real values.**
 
 `cloud-driver/postgres-database.json`:
 
@@ -431,13 +448,18 @@ directory next to the running jar. **Never commit real values.**
   "aws-kms-key-id": "<KMS_KEY_ALIAS_OR_ID>",
   "jwt-signing-key": "<JWT_SIGNING_KEY>",
   "rest-server-port": 8080,
+  "rest-server-bind-host": "127.0.0.1",
   "cloud-user-max-bytes-to-upload": 5368709120
 }
 ```
 
 - `aws-kms-region` / `aws-kms-key-id` — required; the process crashes at boot without them.
-- `jwt-signing-key` — generate via `openssl rand -base64 32`; without it the REST API is skipped
-  (with a warning) while everything else still starts.
+- `jwt-signing-key` — generate via `openssl rand -base64 32`. The key must be **present**: a
+  *blank* value logs a warning and skips the JWT-authenticated REST API while everything else
+  still starts, but an absent key throws and the REST extension fails to load.
+- `rest-server-port` / `rest-server-bind-host` — both are read unguarded, so both must be present
+  or the REST extension fails to load. Behind a TLS-terminating proxy, bind `127.0.0.1`; a blank
+  bind host (not an absent one) falls back to `0.0.0.0`.
 - `cloud-user-max-bytes-to-upload` — defaults to a **strict 1 MiB** per-account quota if unset,
   not unlimited. Set it deliberately.
 - AWS credentials themselves are never read from this file — the AWS SDK's own default provider
@@ -475,10 +497,12 @@ Every other key (SMTP/SES, S3, metrics, rate limits, trash retention, ClamAV, se
    [Desktop Client](#desktop-client)), register an account, confirm the e-mailed code, log in,
    and upload a file.
 
-Alternatively, [`shell/`](shell/) carries the helper scripts the reference deployment uses —
-server provisioning, jar upload, on-server start, homepage deploy. They take the target host as
-an argument rather than hardcoding it, so they are checked in; the one exception,
-`release-and-package.sh`, is deliberately untracked. See
+Alternatively, [`shell/`](shell/) carries the helper scripts the reference deployment uses. Three
+are checked in: `provision-root-server.sh` (which takes `<ssh-host-or-alias> [api-domain]` as
+arguments, so it works against any new box), `deploy-cloud.sh` and `start-cloud.sh`. Two are
+deliberately untracked because they target one specific production host: `deploy-homepage.sh` and
+`release-and-package.sh`. Note that `deploy-cloud.sh` does hardcode its target — the
+`cloud_driver` ssh alias at `/home/cloud`. See
 [docs/deployment.md](docs/deployment.md).
 
 ## REST API
@@ -550,9 +574,13 @@ flowchart LR
   never from the request body; reading someone else's record yields `404`, not `403`, to avoid
   confirming existence. Sharing is an explicit, additive grant on top of ownership.
 - **Admin** routes require an account-level flag that can only be set through the operator
-  terminal — there is deliberately no network path to grant it.
-- A separate **static API-key** mode (constant-time digest comparison) exists for
-  machine-to-machine deployments; it is never combined with JWT auth on one server instance.
+  terminal — there is deliberately no network path to grant it. The console grant is armed and
+  confirmed in two steps; revoking takes effect at once, and both are recorded in the audit trail.
+- A separate **static API-key** mode (constant-time digest comparison) exists in
+  `DefaultRestFactory` for an embedder that constructs its own instance; it is never combined with
+  JWT auth on one server instance, and `cloud-driver-extensions-rest` never enables it — the
+  deployed backend is JWT-only. See [docs/api-usage.md](docs/api-usage.md) for the in-process
+  form.
 
 ## File Storage
 
@@ -595,7 +623,7 @@ documented in [docs/security.md](docs/security.md).
 | Hashing | SHA-256/384/512 only — weaker algorithms are not representable |
 | Transport | HTTPS via a TLS-terminating reverse proxy in front of the backend |
 | Malware | ClamAV scan on upload; non-clean files can't be downloaded (`409` while pending, `403` when flagged) |
-| Abuse | Per-IP auth rate limit, per-user read rate limit, request-size ceiling, upload quotas |
+| Abuse | Per-IP auth rate limit; a per-caller limit on reads **and on the low-volume writes that create outbound or externally reachable state** (webhook registration, share grants, public links); a per-IP-plus-token limit on public-link reads; a 256 MiB request-size ceiling; upload quotas |
 | Secrets | Config files are gitignored; secret redaction runs before audit-log persistence |
 
 ## Database
@@ -654,9 +682,10 @@ cd cloud-driver-platforms/cloud-driver-platforms-desktop
 
 Functionality: two-step registration, login with session persistence (OS keychain), a
 Finder-style file browser (upload, download, folder tree, drag & drop from the OS, previews for
-text/PDF/DOCX/images, ZIP extraction, multi-select, sorting, search), sharing with permission
-levels and public links, version history, trash, an account dashboard with storage stats, live
-refresh over WebSocket, and a read-only admin panel for admin accounts.
+text/PDF/DOCX, list-row thumbnails for JPEG/PNG/PDF, ZIP extraction, multi-select, sorting,
+search), sharing with permission levels and public links, version history, trash, an account
+dashboard with storage stats, an activity feed, a webhook-subscription panel, live refresh over
+WebSocket, and a read-only admin panel for admin accounts.
 
 The server URL is a hardcoded constant (`DEFAULT_SERVER_URL` in `Main.kt`) — change it and
 rebuild to point the app at your own deployment.
@@ -692,8 +721,13 @@ speaking the same REST/WebSocket contract (no shared code between them):
 | `cloud-driver-multiplatform-python` | Python microservices/scripts | `pip install -e .` from its directory (package `cloud-driver-client`) |
 
 All three cover authentication (with transparent refresh-on-401), files/folders, sharing, trash,
-search, versions, presigned transfer, and — Java and Python — live updates over WebSocket. Usage
-samples for each: [docs/api-usage.md](docs/api-usage.md).
+search and versions, and — Java and Python — live updates over WebSocket. Coverage diverges beyond
+that: presigned direct transfer is implemented with client-side chunked AES-GCM in the Java and
+Swift SDKs only, while the Python SDK refuses such a ticket with `UnsupportedEncryptionError`,
+whose message directs the caller to the server-mediated path instead. Admin routes exist in the
+Java and Python SDKs but not in Swift; webhooks, resumable multipart sessions and the chunk
+manifest/`PATCH` path exist in the Java SDK alone. Usage samples for each:
+[docs/api-usage.md](docs/api-usage.md).
 
 ## Backup & Recovery
 
@@ -704,7 +738,7 @@ without ever holding more than one bounded page in memory:
 flowchart LR
     DB[("PostgreSQL")] -->|"keyset pagination<br/>(WHERE id > ? LIMIT n)"| JOB["Backup extension<br/>(own connection pool,<br/>bounded parallel tables)"]
     JOB -->|"length-prefixed binary,<br/>GZIP per table"| STAGE["Staging directory"]
-    STAGE -->|"ZIP (no re-compression)"| ARCH["cloud-driver-backup-&lt;timestamp&gt;.zip"]
+    STAGE -->|"ZIP (no re-compression)"| ARCH["cloud-driver-backup-«timestamp».zip"]
     ARCH --> ROT["Retention: oldest deleted<br/>beyond 7 archives"]
 ```
 
@@ -723,9 +757,11 @@ API:
 ```mermaid
 flowchart LR
     PROM["Prometheus"] -->|"scrape GET /metrics<br/>(default 127.0.0.1:9404)"| MET["Metrics extension"]
-    MET --> C1["upload counters<br/>(success / failure / queued / quota-rejected)"]
-    MET --> G1["pending-upload queue depth"]
-    MET --> G2["extensions by lifecycle status"]
+    MET --> C1["cloud_driver_uploads_total<br/>(outcome: success / failure / queued)"]
+    MET --> C2["cloud_driver_upload_quota_rejections_total"]
+    MET --> G1["cloud_driver_pending_upload_queue_depth"]
+    MET --> G2["cloud_driver_webhook_dispatch_queue_depth"]
+    MET --> G3["cloud_driver_extensions<br/>(one series per lifecycle status)"]
 ```
 
 - **Loopback-only by default and unauthenticated by design** — widening the bind host is a
@@ -759,8 +795,10 @@ Honest summary — full detail in [docs/testing.md](docs/testing.md):
 - **Java/Kotlin/Swift**: no conventional automated test framework (JUnit, XCTest) is wired in.
   Files under `src/test` are runnable worked examples with a `main` method, not `mvn test`
   targets. Changes are verified by compiling and actually running the built artifact.
-- **Python**: both `cloud-driver-intelligence` and the Python SDK have real `pytest` suites, run
-  on every push by CI.
+- **Python**: three packages have real `pytest` suites, run on every relevant push by CI —
+  `cloud-driver-intelligence`, the Python SDK (`cloud-driver-multiplatform-python`), and
+  `cloud-driver-installer` (the largest suite, with the SSH layer replaced by a scripted fake and
+  AWS by `botocore`'s stubber).
 - **CI** builds (but does not test) the Maven reactor and the iOS app on every relevant push.
 
 ## Deployment
@@ -771,6 +809,13 @@ Full detail: [docs/deployment.md](docs/deployment.md).
   no Docker/Kubernetes/containerized deployment. The [`shell/`](shell/) scripts upload the build
   and run it in a detached, auto-restarting session with an explicit heap size (`-Xmx6g` on the
   reference deployment).
+- For a server you are standing up or re-checking interactively, `cloud-driver-installer`
+  (Python/tkinter, its own venv) provisions the whole deployment over one SSH connection in
+  sixteen check → apply → verify steps — OS packages, PostgreSQL, Redis, clamd, JDK 21, Python,
+  the AWS KMS key / content bucket / backup bucket / IAM user, Caddy, the config files, the jars
+  and the intelligence service — and can remove each of those steps again (the closing smoke
+  test installs nothing, so there is nothing to remove). See
+  [docs/deployment.md](docs/deployment.md#gui-installer-cloud-driver-installer).
 - Put a TLS-terminating reverse proxy in front of the REST port; keep the metrics port
   loopback-only or firewalled.
 - The optional companion processes (`clamd`, Redis, the Python intelligence service) run as
@@ -780,15 +825,17 @@ Full detail: [docs/deployment.md](docs/deployment.md).
   legal-notice/privacy pages) straight from the reverse proxy — see
   [docs/deployment.md](docs/deployment.md#homepage-cloud-driverde). Its sources live in a
   `homepage/` directory that is deliberately gitignored, not published with this repository.
-- CI (GitHub Actions): build checks for the Maven reactor, the iOS app, and both Python packages
-  (with pytest), Qodana static analysis, and a publish workflow that pushes every Maven module to
-  GitHub Packages when a release is created. **No workflow deploys to a server automatically** —
-  production pushes are always a separate, manual decision.
+- CI (GitHub Actions): seven workflows — build checks for the Maven reactor and the iOS app,
+  pytest runs for all three Python packages (SDK, intelligence service, installer), Qodana static
+  analysis, and a publish workflow that pushes every Maven module to GitHub Packages when a
+  release is created. **No workflow deploys to a server automatically** — production pushes are
+  always a separate, manual decision.
 
 ## Known Limitations
 
-- No containerized or orchestrated deployment; deployment tooling is shell scripting against a
-  single server.
+- No containerized or orchestrated deployment. Deployment targets a single server, driven either
+  by the `shell/` scripts or by the `cloud-driver-installer` GUI (which provisions and can
+  un-provision one whole box over SSH).
 - A few read paths still do a full in-memory scan of an entity type (purge-scheduler sweeps, the
   cross-owner folder-tree walk, the multi-target activity feed). The hot per-user/per-file
   lookups no longer do — they go through in-memory secondary indexes — but the storage layer

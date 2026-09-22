@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloud-driver-client"
-version = "1.0.8"
+version = "1.0.9"
 description = "Full-coverage Python SDK for the cloud-driver REST/WebSocket API, for writing microservices against it."
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
@@ -28,7 +28,11 @@ live = ["websockets>=12"]
 # Deliberately NOT part of dev below: CI installs from public indexes only, and the
 # DatabaseTokenStore tests skip themselves when the package is absent.
 driver = ["lino-database-driver-api>=0.1.0"]
-dev = ["pytest>=8", "respx>=0.21", "keyring>=24", "websockets>=12"]
+# Client-side content encryption for presigned direct-to-object-store transfers (the chunked
+# AES-256-GCM layout in crypto.py). Optional because the server-mediated upload/download paths
+# need no cipher at all, and a deployment without object storage never issues encrypted tickets.
+crypto = ["cryptography>=42"]
+dev = ["pytest>=8", "respx>=0.21", "keyring>=24", "websockets>=12", "cryptography>=42"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cloud_driver_client"]

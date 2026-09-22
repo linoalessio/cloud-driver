@@ -66,6 +66,12 @@ public final class InMemorySearchIndexService implements SearchIndexService {
         if (documents != null) documents.remove(storedFileId);
     }
 
+    /** {@inheritDoc} Drops every account's map in one call - this index is lost on restart anyway. */
+    @Override
+    public void clearAllData() {
+        this.documentsByUser.clear();
+    }
+
     /** {@inheritDoc} */
     @NotNull
     @Override

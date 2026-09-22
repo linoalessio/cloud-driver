@@ -42,6 +42,21 @@ import java.nio.charset.StandardCharsets;
  */
 final class EnvelopeEncryptedPayloadCodec {
 
+    /**
+     * Largest a metadata field's length prefix may claim to be. The key-encryption-key id, the
+     * wrapped key material, the two algorithm ids, the nonce and the associated data are all key
+     * ids, algorithm names or a few hundred bytes of wrapped key - none comes anywhere near this.
+     *
+     * <p>The bound exists because the length is read straight out of the object being parsed,
+     * before anything in it has been authenticated, and a presigned upload lets an ordinary
+     * account write arbitrary bytes at its own object key: without it a crafted prefix turns one
+     * download into a multi-gigabyte allocation, and a negative one throws past this class's own
+     * IO-exception contract. The payload's ciphertext is deliberately <em>not</em> bounded by this
+     * value - it carries the file's whole content, so it is bounded by the stored object's own
+     * length instead.
+     */
+    private static final int MAX_METADATA_FIELD_LENGTH_BYTES = 1 << 16;
+
     /** Not instantiable - every method is static. */
     private EnvelopeEncryptedPayloadCodec() {
     }
@@ -93,13 +108,16 @@ final class EnvelopeEncryptedPayloadCodec {
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             final int schemaVersion = in.readInt();
             final String keyEncryptionKeyId = readString(in);
-            final byte[] wrappedKeyMaterial = readBytes(in);
+            final byte[] wrappedKeyMaterial = readBytes(in, MAX_METADATA_FIELD_LENGTH_BYTES);
             final String wrapAlgorithm = readString(in);
             final String dataEncryptionKeyAlgorithmId = readString(in);
             final String payloadAlgorithmId = readString(in);
-            final byte[] nonce = readBytes(in);
-            final byte[] ciphertext = readBytes(in);
-            final byte[] associatedData = readBytes(in);
+            final byte[] nonce = readBytes(in, MAX_METADATA_FIELD_LENGTH_BYTES);
+            // The ciphertext is this file's entire content in the one-shot layout, so no fixed cap
+            // can apply to it. The object that carries it is already in memory, and no field inside
+            // an object can be longer than the object itself - that is the bound.
+            final byte[] ciphertext = readBytes(in, bytes.length);
+            final byte[] associatedData = readBytes(in, MAX_METADATA_FIELD_LENGTH_BYTES);
 
             final WrappedKey wrappedKey = new WrappedKey(keyEncryptionKeyId, wrappedKeyMaterial, wrapAlgorithm, dataEncryptionKeyAlgorithmId);
             final EncryptedPayload payload = new EncryptedPayload(payloadAlgorithmId, nonce, ciphertext, associatedData);
@@ -114,7 +132,7 @@ final class EnvelopeEncryptedPayloadCodec {
     }
 
     private static String readString(final DataInputStream in) throws IOException {
-        return new String(readBytes(in), StandardCharsets.UTF_8);
+        return new String(readBytes(in, MAX_METADATA_FIELD_LENGTH_BYTES), StandardCharsets.UTF_8);
     }
 
     private static void writeBytes(final DataOutputStream out, final byte[] value) throws IOException {
@@ -123,20 +141,17 @@ final class EnvelopeEncryptedPayloadCodec {
     }
 
     /**
-     * Largest a single length-prefixed field in this format may claim to be.
+     * Reads one length-prefixed field, rejecting an implausible declared length before allocating.
      *
-     * <p>Every field here is a key id, an algorithm name, a nonce or a wrapped key - all far
-     * smaller than this. The bound exists because the length is read out of the object being
-     * parsed, and a presigned upload lets an ordinary account write arbitrary bytes at its own
-     * object key: without it, a crafted prefix turns one download into a multi-gigabyte
-     * allocation, and a negative one throws past this class's own IO-exception contract.
-     * Matches the equivalent guard the streaming header parser already applies.
+     * @param in the stream, positioned at the field's 4-byte length prefix
+     * @param maximumLength the largest length this particular field may legitimately claim
+     * @return the field's bytes
+     * @throws IOException if the declared length is negative or exceeds {@code maximumLength}, or
+     *     if the stream ends before the field is complete
      */
-    private static final int MAX_FIELD_LENGTH_BYTES = 1 << 16;
-
-    private static byte[] readBytes(final DataInputStream in) throws IOException {
+    private static byte[] readBytes(final DataInputStream in, final int maximumLength) throws IOException {
         final int length = in.readInt();
-        if (length < 0 || length > MAX_FIELD_LENGTH_BYTES) {
+        if (length < 0 || length > maximumLength) {
             throw new IOException("@EnvelopeEncryptedPayloadCodec: implausible payload field length " + length);
         }
         final byte[] value = new byte[length];

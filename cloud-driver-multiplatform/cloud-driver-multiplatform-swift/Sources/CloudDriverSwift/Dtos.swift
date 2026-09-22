@@ -121,7 +121,7 @@ public struct BeginUploadUrlRequest: Encodable {
 /// write `headerBase64`'s bytes verbatim first, then chunk-encrypt under `contentKeyBase64`'s
 /// key with `associatedDataPrefix`/`chunkSizeBytes`; the finished file is exactly
 /// `objectLengthBytes` bytes, which the server verifies at completion.
-public struct UploadEncryptionInfo: Decodable {
+public struct UploadEncryptionInfo: Decodable, Sendable {
     public let contentKeyBase64: String
     public let headerBase64: String
     public let associatedDataPrefix: String
@@ -155,6 +155,58 @@ public struct CompleteUploadRequest: Encodable {
     }
 }
 
+/// Body for `POST /files/upload-session` - begins a crash-resumable multipart upload.
+/// `sizeBytes`/`checksumSha256` are the *plaintext* length and digest; a digest the account
+/// already stores comes back as a dedup alias instead of a session.
+public struct BeginUploadSessionRequest: Encodable {
+    public let fileName: String
+    public let sizeBytes: Int64
+    public let folderId: String?
+    public let checksumSha256: String
+
+    public init(fileName: String, sizeBytes: Int64, folderId: String?, checksumSha256: String) {
+        self.fileName = fileName
+        self.sizeBytes = sizeBytes
+        self.folderId = folderId
+        self.checksumSha256 = checksumSha256
+    }
+}
+
+/// A resumable multipart upload session's geometry and progress - the body of
+/// `POST /files/upload-session` (with `uploadedPartNumbers` empty) and of
+/// `GET /files/upload-session/{id}` (with the object store's confirmed parts). The client cuts
+/// its object stream into `partSizeBytes` ranges and uploads exactly the part numbers missing
+/// from `uploadedPartNumbers`. `encryption` is `nil` for a legacy plaintext session, where the
+/// object the parts assemble into is the file itself; `checksumSha256` is `nil` against an older
+/// server that reports none, leaving `totalObjectBytes` as the only structural gate on a resume.
+public struct UploadSessionResponse: Decodable, Sendable {
+    public let fileId: String
+    public let partSizeBytes: Int64
+    public let partCount: Int
+    public let totalObjectBytes: Int64
+    public let uploadedPartNumbers: [Int]?
+    public let encryption: UploadEncryptionInfo?
+    public let checksumSha256: String?
+}
+
+/// One presigned part upload - the body of `POST /files/upload-session/{id}/parts/{n}/url`.
+/// `requiredHeaders` must be replayed exactly on the `PUT`, or the object store rejects its
+/// signature.
+public struct UploadSessionPartUrl: Decodable, Sendable {
+    public let partNumber: Int
+    public let url: String
+    public let requiredHeaders: [String: String]
+    public let expiresAtEpochMilli: Int64
+}
+
+/// The outcome of beginning an upload session - exactly one case, never both: `.alreadyStored`
+/// when the server's dedup precheck matched content this account already stores (nothing to
+/// upload at all), `.session` otherwise.
+public enum BeginUploadSessionResult: Sendable {
+    case alreadyStored(StoredFileSummaryResponse)
+    case session(UploadSessionResponse)
+}
+
 /// The `encryption` object nested in `BeginDownloadUrlResponse` - present for a file that was
 /// uploaded client-encrypted: skip the fetched object's first `headerLengthBytes` bytes and
 /// chunk-decrypt the rest under `contentKeyBase64`'s key, verifying `associatedDataPrefix`
@@ -171,6 +223,15 @@ public struct BeginDownloadUrlResponse: Decodable {
     public let downloadUrl: String
     public let expiresAtEpochMillis: Int64
     public let encryption: DownloadEncryptionInfo?
+}
+
+/// The outcome of a conditional content fetch. `.notModified` means the server answered 304 -
+/// nothing was transferred and the caller's own cached copy is still current. `entityTag` is
+/// the server's `ETag` verbatim; `nil` on `.content` for a file with no recorded checksum,
+/// which simply means the next fetch cannot be conditional.
+public enum ConditionalContent: Sendable {
+    case notModified(entityTag: String?)
+    case content(data: Data, entityTag: String?)
 }
 
 /// Body for `PUT /folders/{id}` - a full replace of both fields (matching `PUT`'s
@@ -239,7 +300,7 @@ public struct AuthResponse: Decodable {
 /// `scanStatus` mirrors the server's content-scan verdict (`"CLEAN"`/`"PENDING"`/`"FLAGGED"`) -
 /// treated as opaque text here, not a Swift enum, the same "kept as a plain string, real meaning
 /// lives server-side" convention this file already applies to `FolderResponse.color`.
-public struct StoredFileSummaryResponse: Decodable, Identifiable, Hashable {
+public struct StoredFileSummaryResponse: Decodable, Identifiable, Hashable, Sendable {
     public var id: String { fileId }
     public let fileId: String
     public let fileName: String

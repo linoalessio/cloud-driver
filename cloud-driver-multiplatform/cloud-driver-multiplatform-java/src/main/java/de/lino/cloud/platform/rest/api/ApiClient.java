@@ -2,7 +2,6 @@ package de.lino.cloud.platform.rest.api;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import com.google.gson.stream.JsonReader;
 import de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse;
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthRequest;
@@ -61,7 +60,6 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.DownloadEncryptionInfo;
 import de.lino.cloud.platform.rest.api.dto.Dtos.UploadEncryptionInfo;
 import de.lino.cloud.platform.rest.crypto.ChunkedContentCipher;
 
-import java.io.Closeable;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -93,8 +91,11 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.HexFormat;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -116,6 +117,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -143,8 +145,8 @@ import java.util.stream.StreamSupport;
  * content at all (see {@code CloudUserService#listFileSummaries} server-side) - {@link
  * #listFiles()}/{@link #listFilesAsync()}/{@link #listFilesStream()} never touch a single file's
  * content just to list it; fetch a specific file's full base64 content afterwards via {@link
- * #downloadFile(String)}. {@link #listFilesStream()} still avoids materializing the whole
- * response array at once - see its own Javadoc.
+ * #downloadFile(String)}. {@link #listFilesStream()} never holds more than one page at a time
+ * while walking the caller's whole folder tree - see its own Javadoc.
  *
  * <p>{@link #uploadFile(Path)}/{@link #uploadFileAsync(Path)} stream the request body straight
  * from disk via {@link BodyPublishers#ofFile}, rather than requiring the caller to first read the
@@ -215,6 +217,9 @@ public final class ApiClient implements AutoCloseable {
      * though nothing is actually stuck.
      */
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(10);
+
+    /** The status a conditional content request gets when the caller's entity tag still matches - no body follows. */
+    private static final int NOT_MODIFIED_STATUS = 304;
 
     /** Path of {@link #refresh}'s route, checked by {@link #canRetryWithRefresh} to avoid ever attempting to auto-refresh the refresh call itself. */
     private static final String REFRESH_PATH = "/auth/refresh";
@@ -1311,33 +1316,37 @@ public final class ApiClient implements AutoCloseable {
 
     /**
      * {@code GET /files} on the main REST API - every file tracked as owned by the authenticated
-     * caller, as lightweight {@link StoredFileSummaryResponse} entries (no content) fully
-     * materialized as a {@link List} once the whole response has arrived. Prefer {@link
-     * #listFilesStream()} if the caller only needs to process entries one at a time and would
-     * rather not wait for the entire response at once. Fetch a specific file's full content via
-     * {@link #downloadFile(String)} once actually needed.
+     * caller, in any folder, as lightweight {@link StoredFileSummaryResponse} entries (no content)
+     * fully materialized as a {@link List}. Prefer {@link #listFilesStream()} if the caller only
+     * needs to process entries one at a time and would rather not hold them all. Fetch a specific
+     * file's full content via {@link #downloadFile(String)} once actually needed.
+     *
+     * <p>Assembled by walking the caller's folder tree and paging each folder (see {@link
+     * #forEachOwnedFile}), so the result is complete rather than a single capped response.
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<StoredFileSummaryResponse> listFiles() throws ApiException {
-        return this.listAllPages(null);
+        final List<StoredFileSummaryResponse> all = new ArrayList<>();
+        this.forEachOwnedFile(all::add);
+        return List.copyOf(all);
     }
 
     /**
-     * Walks {@code GET /files} page by page until the server reports no further cursor, returning
-     * every entry.
+     * Walks {@code GET /files} scoped to one folder, page by page, until the server reports no
+     * further cursor, returning every entry.
      *
      * <p>The bare, unpaginated form of that route is capped server-side and reports nothing about
      * the truncation - no header, no flag, no error - so a caller that issued it once believed it
      * had everything while silently holding only the first page. That is what this method exists
      * to prevent: a listing that promises completeness has to page.
      *
-     * @param folderId the folder to scope to, or {@code null} for every file the caller owns
+     * @param folderId the folder to scope to, or {@code null} for the root
      * @return every matching entry, in the order the server returned them
      * @throws ApiException on any failure, including {@code 401}
      */
-    private List<StoredFileSummaryResponse> listAllPages(final String folderId) throws ApiException {
-        final List<StoredFileSummaryResponse> all = new java.util.ArrayList<>();
+    private List<StoredFileSummaryResponse> listAllPagesInFolder(final String folderId) throws ApiException {
+        final List<StoredFileSummaryResponse> all = new ArrayList<>();
         String cursor = null;
         do {
             final Page<StoredFileSummaryResponse> page = this.listFilesPage(folderId, cursor, LISTING_PAGE_SIZE);
@@ -1347,10 +1356,48 @@ public final class ApiClient implements AutoCloseable {
         return List.copyOf(all);
     }
 
+    /**
+     * Visits every file the caller owns, in any folder, handing each to {@code consumer}: the
+     * root's own files first, then each folder's, depth first.
+     *
+     * <p>Assembled folder by folder rather than asked for in one call, because only a
+     * folder-scoped listing can be paged to completion - an unscoped one is answered in a single
+     * capped response that reports nothing about what it left out. Each folder's files and
+     * subfolders are themselves paged, so neither a wide folder nor a deep tree can truncate.
+     *
+     * @param consumer receives every entry exactly once, in visit order
+     * @throws ApiException on any failure, including {@code 401}
+     */
+    private void forEachOwnedFile(final Consumer<StoredFileSummaryResponse> consumer) throws ApiException {
+        final Deque<String> pendingFolders = new ArrayDeque<>();
+        // The literal "root" is a real folder id on both routes - {@code ?folderId=root} scopes
+        // files to the root and {@code ?parentFolderId=root} scopes folders to the top level - so
+        // the walk needs no null entry in the deque, which an ArrayDeque would reject anyway.
+        pendingFolders.add(ROOT_FOLDER_QUERY_VALUE);
+        while (!pendingFolders.isEmpty()) {
+            final String folderId = pendingFolders.poll();
+            String folderCursor = null;
+            do {
+                final Page<FolderResponse> folderPage = this.listFoldersPage(folderId, folderCursor, LISTING_PAGE_SIZE);
+                folderPage.items().forEach(folder -> pendingFolders.add(folder.folderId()));
+                folderCursor = folderPage.nextCursor();
+            } while (folderCursor != null);
+            String fileCursor = null;
+            do {
+                final Page<StoredFileSummaryResponse> filePage = this.listFilesPage(folderId, fileCursor, LISTING_PAGE_SIZE);
+                filePage.items().forEach(consumer);
+                fileCursor = filePage.nextCursor();
+            } while (fileCursor != null);
+        }
+    }
+
     /** Page size used by the paging helpers behind {@link #listFiles()} - large enough to keep the round trips down, small enough to stay a bounded response. */
     private static final int LISTING_PAGE_SIZE = 500;
 
-    /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. Pages internally, like its blocking form. */
+    /** Query value {@code GET /files} accepts for "the root folder", as distinct from an omitted {@code folderId}, which means "every folder". */
+    private static final String ROOT_FOLDER_QUERY_VALUE = "root";
+
+    /** Async form of {@link #listFiles()} - see the class Javadoc for the threading/executor contract. Walks the caller's whole folder tree, paging each folder, like its blocking form. */
     public CompletableFuture<List<StoredFileSummaryResponse>> listFilesAsync() {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -1371,7 +1418,7 @@ public final class ApiClient implements AutoCloseable {
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      */
     public List<StoredFileSummaryResponse> listFiles(final String folderId) throws ApiException {
-        return this.listAllPages(folderId);
+        return this.listAllPagesInFolder(folderId);
     }
 
     /** Async form of {@link #listFiles(String)} - see the class Javadoc for the threading/executor contract. Pages internally, like its blocking form. */
@@ -1383,12 +1430,6 @@ public final class ApiClient implements AutoCloseable {
                 throw new java.util.concurrent.CompletionException(failure);
             }
         });
-    }
-
-    /** Builds the {@code GET /files?folderId=...} request against {@link #apiBaseUrl}, scoped to one folder (or the root). */
-    private HttpRequest listFilesRequest(final String folderId) {
-        final String encodedFolderId = URLEncoder.encode(folderId == null ? "root" : folderId, StandardCharsets.UTF_8);
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files?folderId=" + encodedFolderId), true).GET().build();
     }
 
     /** {@link com.google.gson.reflect.TypeToken}-backed {@link Type} for a {@code Page<StoredFileSummaryResponse>} response body - see {@link #parseResponse(HttpResponse, Type)}. */
@@ -1417,10 +1458,12 @@ public final class ApiClient implements AutoCloseable {
     }
 
     private HttpRequest listFilesPageRequest(final String folderId, final String cursor, final int limit) {
-        final StringBuilder query = new StringBuilder("/files?limit=").append(limit);
-        if (folderId != null) {
-            query.append("&folderId=").append(URLEncoder.encode(folderId, StandardCharsets.UTF_8));
-        }
+        // "The root folder" and "every folder" are two different scopes on this route, and an
+        // omitted folderId is the one that means "every folder" - so a root-scoped page has to
+        // name the root rather than leave the parameter out, or the two become indistinguishable.
+        final StringBuilder query = new StringBuilder("/files?limit=").append(limit)
+                .append("&folderId=")
+                .append(URLEncoder.encode(folderId == null ? ROOT_FOLDER_QUERY_VALUE : folderId, StandardCharsets.UTF_8));
         if (cursor != null) {
             query.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
         }
@@ -1428,19 +1471,14 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
-     * Same route as {@link #listFiles()}, but never materializes the full response as one JSON
-     * array or {@code byte[]}/{@code String}: the returned {@link Stream} is backed by a {@link
-     * JsonReader} incrementally parsing directly off the still-open HTTP response body, one
-     * {@link StoredFileSummaryResponse} at a time, as bytes arrive on the wire. Since each entry
+     * Same set of entries as {@link #listFiles()} - every file the caller owns, in any folder -
+     * but handed out lazily instead of materialized: the returned {@link Stream} walks the
+     * caller's folder tree, fetching one page at a time as it is consumed. Since each entry
      * already carries no content, this mainly bounds peak memory against a very large file count
-     * rather than large file sizes, and lets a caller start acting on the first entry before the
-     * rest have even arrived.
+     * rather than large file sizes, and is the right choice for exactly that case.
      *
-     * <p><b>The caller must close the returned {@link Stream}</b> (a try-with-resources block, or
-     * an explicit {@code close()}/{@link Stream#onClose}) once done consuming it, even if not
-     * every element is read - closing releases the underlying HTTP connection and {@link
-     * JsonReader}; failing to would leak both, the same way an unclosed {@link
-     * java.nio.file.Files#lines} would.
+     * <p>Closing the returned {@link Stream} is harmless but no longer required: it holds no HTTP
+     * response body or parser open between pages, unlike the single-response form this replaces.
      *
      * @throws ApiException {@code 401} if not logged in / token expired, or any other failure
      *                       reaching/parsing the start of the response; a failure encountered
@@ -1449,24 +1487,35 @@ public final class ApiClient implements AutoCloseable {
      *                       since {@link Iterator#next()} cannot declare a checked exception
      */
     public Stream<StoredFileSummaryResponse> listFilesStream() throws ApiException {
-        // Page-driven, not one long response. The unpaginated route is capped server-side, so
-        // streaming it produced a stream that simply ended early - wrong for the one method whose
-        // whole reason to exist is a very large file count. Only one page is ever held at a time,
-        // so the memory property this method promises is unchanged.
+        // The lazy form of forEachOwnedFile: only one page of files is ever held at a time, and
+        // what grows instead is the queue of folder ids still to visit - orders of magnitude
+        // smaller than the file count this method exists to handle.
         final Iterator<StoredFileSummaryResponse> paging = new Iterator<>() {
-            private Iterator<StoredFileSummaryResponse> current = java.util.Collections.emptyIterator();
-            private String cursor;
-            private boolean exhausted;
+            private final Deque<String> pendingFolders = new ArrayDeque<>(List.of(ROOT_FOLDER_QUERY_VALUE));
+            private Iterator<StoredFileSummaryResponse> current = Collections.emptyIterator();
+            private String currentFolderId;
+            private String fileCursor;
 
             @Override
             public boolean hasNext() {
-                while (!this.current.hasNext() && !this.exhausted) {
+                while (!this.current.hasNext()) {
                     try {
-                        final Page<StoredFileSummaryResponse> page =
-                                ApiClient.this.listFilesPage(null, this.cursor, LISTING_PAGE_SIZE);
-                        this.current = page.items().iterator();
-                        this.cursor = page.nextCursor();
-                        this.exhausted = this.cursor == null;
+                        if (this.fileCursor != null) {
+                            this.advanceFilePage(this.currentFolderId, this.fileCursor);
+                            continue;
+                        }
+                        if (this.pendingFolders.isEmpty()) {
+                            return false;
+                        }
+                        this.currentFolderId = this.pendingFolders.poll();
+                        String folderCursor = null;
+                        do {
+                            final Page<FolderResponse> folderPage =
+                                    ApiClient.this.listFoldersPage(this.currentFolderId, folderCursor, LISTING_PAGE_SIZE);
+                            folderPage.items().forEach(folder -> this.pendingFolders.add(folder.folderId()));
+                            folderCursor = folderPage.nextCursor();
+                        } while (folderCursor != null);
+                        this.advanceFilePage(this.currentFolderId, null);
                     } catch (final ApiException failure) {
                         // Iterator#next cannot declare a checked exception - same contract this
                         // method's Javadoc already documents for mid-stream failures.
@@ -1476,10 +1525,18 @@ public final class ApiClient implements AutoCloseable {
                 return this.current.hasNext();
             }
 
+            /** Fetches one page of {@code folderId}'s files into {@link #current}, remembering its cursor. */
+            private void advanceFilePage(final String folderId, final String cursor) throws ApiException {
+                final Page<StoredFileSummaryResponse> page =
+                        ApiClient.this.listFilesPage(folderId, cursor, LISTING_PAGE_SIZE);
+                this.current = page.items().iterator();
+                this.fileCursor = page.nextCursor();
+            }
+
             @Override
             public StoredFileSummaryResponse next() {
                 if (!hasNext()) {
-                    throw new java.util.NoSuchElementException();
+                    throw new NoSuchElementException();
                 }
                 return this.current.next();
             }
@@ -1488,86 +1545,6 @@ public final class ApiClient implements AutoCloseable {
         final Spliterator<StoredFileSummaryResponse> spliterator = Spliterators.spliteratorUnknownSize(
                 paging, Spliterator.ORDERED | Spliterator.NONNULL);
         return StreamSupport.stream(spliterator, false);
-    }
-
-    /**
-     * Wraps {@code body} in a {@link JsonReader} positioned just inside its top-level array, then
-     * exposes it as a lazily-consumed {@link Stream} via {@link JsonArrayIterator}.
-     *
-     * @param body the still-open, successful response body to parse
-     * @return a stream the caller must close to release {@code body}/the underlying connection
-     * @throws ApiException if {@code body} isn't a JSON array
-     */
-    private static Stream<StoredFileSummaryResponse> streamJsonArray(final InputStream body) throws ApiException {
-        final JsonReader jsonReader = new JsonReader(new InputStreamReader(body, StandardCharsets.UTF_8));
-        try {
-            jsonReader.beginArray();
-        } catch (final IOException e) {
-            closeQuietly(jsonReader);
-            throw new ApiException(0, "malformed response body", e);
-        }
-
-        final Spliterator<StoredFileSummaryResponse> spliterator = Spliterators.spliteratorUnknownSize(
-                new JsonArrayIterator(jsonReader), Spliterator.ORDERED | Spliterator.NONNULL
-        );
-        return StreamSupport.stream(spliterator, false).onClose(() -> closeQuietly(jsonReader));
-    }
-
-    /** Builds the unscoped {@code GET /files} request against {@link #apiBaseUrl} - every file the caller owns, regardless of folder. */
-    private HttpRequest listFilesRequest() {
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files"), true).GET().build();
-    }
-
-    /** Lazily pulls one {@link StoredFileSummaryResponse} at a time off an open {@link JsonReader} positioned inside a JSON array. */
-    private static final class JsonArrayIterator implements Iterator<StoredFileSummaryResponse> {
-
-        /** The reader this iterator pulls elements from; positioned just inside the array's opening bracket. */
-        private final JsonReader jsonReader;
-
-        /** Cached result of the last {@link JsonReader#hasNext()} probe, cleared once that element is consumed by {@link #next()}; {@code null} means not yet probed. */
-        private Boolean hasNextCache;
-
-        /** @param jsonReader a reader already positioned just inside the array to iterate */
-        private JsonArrayIterator(final JsonReader jsonReader) {
-            this.jsonReader = jsonReader;
-        }
-
-        /**
-         * {@inheritDoc} Probes (and caches) whether another array element remains, ending the
-         * array on the reader once it doesn't.
-         *
-         * @throws UncheckedIOException if the underlying {@link JsonReader} fails to read
-         */
-        @Override
-        public boolean hasNext() {
-            if (this.hasNextCache == null) {
-                try {
-                    this.hasNextCache = this.jsonReader.hasNext();
-                    if (!this.hasNextCache) {
-                        this.jsonReader.endArray();
-                    }
-                } catch (final IOException e) {
-                    throw new UncheckedIOException(e);
-                }
-            }
-            return this.hasNextCache;
-        }
-
-        /**
-         * {@inheritDoc}
-         *
-         * @throws NoSuchElementException if no further element remains, per {@link #hasNext()}
-         */
-        @Override
-        public StoredFileSummaryResponse next() {
-            if (!this.hasNext()) {
-                throw new NoSuchElementException();
-            }
-            final StoredFileSummaryResponse value = GSON.fromJson(this.jsonReader, StoredFileSummaryResponse.class);
-            this.hasNextCache = null;
-            return value;
-        }
-
     }
 
     // --- files: download ------------------------------------------------
@@ -1642,7 +1619,7 @@ public final class ApiClient implements AutoCloseable {
      *                       caller, {@code 401} if not logged in / token expired, or any other failure
      */
     public Path downloadFileToPath(final String fileId, final Path destination, final LongConsumer onBytesTransferred) throws ApiException {
-        final HttpRequest request = this.downloadFileContentRequest(fileId);
+        final HttpRequest request = this.downloadFileContentRequest(fileId, null);
         final HttpResponse<Path> response;
         try {
             response = this.httpClient.send(request, progressTrackingFileHandler(destination, onBytesTransferred));
@@ -1655,6 +1632,81 @@ public final class ApiClient implements AutoCloseable {
         return requireSuccessfulFileDownload(response);
     }
 
+    /**
+     * {@link #downloadFileToPath(String, Path)} made conditional: tells the server which copy of
+     * the content the caller already has, so an unchanged file transfers no body at all.
+     *
+     * <p>Pass the {@link Dtos.ConditionalDownload#entityTag()} from the previous download of the
+     * same file as {@code knownEntityTag}; the server answers {@code 304} when it still matches,
+     * and the result's {@link Dtos.ConditionalDownload#notModified()} is then {@code true} with
+     * {@code destination} never created or written - keep using the copy the tag described. A
+     * {@code null} tag makes an ordinary unconditional download.
+     *
+     * <p>{@code destination} must not already exist when the content really is transferred - same
+     * contract as {@link #downloadFileToPath(String, Path)}.
+     *
+     * @param fileId         the file to fetch
+     * @param destination    the local path to write the file to; must not already exist
+     * @param knownEntityTag the tag from the previous download of this file, or {@code null}
+     * @return what happened - see {@link Dtos.ConditionalDownload}
+     * @throws ApiException {@code 404} if {@code fileId} doesn't exist or isn't owned by the
+     *                       caller, {@code 401} if not logged in / token expired, or any other failure
+     */
+    public Dtos.ConditionalDownload downloadFileToPathIfChanged(final String fileId, final Path destination,
+                                                                 final String knownEntityTag) throws ApiException {
+        return this.downloadFileToPathIfChanged(fileId, destination, knownEntityTag, bytesTransferred -> { });
+    }
+
+    /**
+     * Same as {@link #downloadFileToPathIfChanged(String, Path, String)}, additionally reporting
+     * progress the way {@link #downloadFileToPath(String, Path, LongConsumer)} does. On a {@code
+     * 304} no body arrives, so {@code onBytesTransferred} is never invoked.
+     *
+     * @param fileId             the file to fetch
+     * @param destination        the local path to write the file to; must not already exist
+     * @param knownEntityTag     the tag from the previous download of this file, or {@code null}
+     * @param onBytesTransferred invoked with the cumulative bytes written to {@code destination} so far
+     * @return what happened - see {@link Dtos.ConditionalDownload}
+     * @throws ApiException on any failure, including {@code 401}
+     */
+    public Dtos.ConditionalDownload downloadFileToPathIfChanged(final String fileId, final Path destination,
+                                                                 final String knownEntityTag,
+                                                                 final LongConsumer onBytesTransferred) throws ApiException {
+        final HttpRequest request = this.downloadFileContentRequest(fileId, knownEntityTag);
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, progressTrackingFileHandler(destination, onBytesTransferred));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return conditionalDownloadResult(response);
+    }
+
+    /** Async form of {@link #downloadFileToPathIfChanged(String, Path, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Dtos.ConditionalDownload> downloadFileToPathIfChangedAsync(final String fileId, final Path destination,
+                                                                                         final String knownEntityTag) {
+        return this.downloadFileToPathIfChangedAsync(fileId, destination, knownEntityTag, bytesTransferred -> { });
+    }
+
+    /** Async form of {@link #downloadFileToPathIfChanged(String, Path, String, LongConsumer)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Dtos.ConditionalDownload> downloadFileToPathIfChangedAsync(final String fileId, final Path destination,
+                                                                                         final String knownEntityTag,
+                                                                                         final LongConsumer onBytesTransferred) {
+        final HttpRequest request = this.downloadFileContentRequest(fileId, knownEntityTag);
+        return this.httpClient.sendAsync(request, progressTrackingFileHandler(destination, onBytesTransferred))
+                .thenApply(response -> {
+                    try {
+                        return conditionalDownloadResult(response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
     /** Async form of {@link #downloadFileToPath(String, Path)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Path> downloadFileToPathAsync(final String fileId, final Path destination) {
         return this.downloadFileToPathAsync(fileId, destination, bytesTransferred -> { });
@@ -1662,7 +1714,7 @@ public final class ApiClient implements AutoCloseable {
 
     /** Async form of {@link #downloadFileToPath(String, Path, LongConsumer)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Path> downloadFileToPathAsync(final String fileId, final Path destination, final LongConsumer onBytesTransferred) {
-        final HttpRequest request = this.downloadFileContentRequest(fileId);
+        final HttpRequest request = this.downloadFileContentRequest(fileId, null);
         return this.httpClient.sendAsync(request, progressTrackingFileHandler(destination, onBytesTransferred))
                 .thenApply(response -> {
                     try {
@@ -1682,7 +1734,15 @@ public final class ApiClient implements AutoCloseable {
      * @return a {@link BodyHandler} producing a {@link ProgressTrackingBodySubscriber} for each response
      */
     private static BodyHandler<Path> progressTrackingFileHandler(final Path destination, final LongConsumer onBytesTransferred) {
-        return responseInfo -> new ProgressTrackingBodySubscriber<>(BodySubscribers.ofFile(destination), onBytesTransferred);
+        return responseInfo -> {
+            if (responseInfo.statusCode() == NOT_MODIFIED_STATUS) {
+                // A 304 carries no body, and BodySubscribers.ofFile would still create (and so
+                // truncate) the destination - which on this path is the caller's own cached copy
+                // of exactly the content the server just said is unchanged.
+                return BodySubscribers.replacing(null);
+            }
+            return new ProgressTrackingBodySubscriber<>(BodySubscribers.ofFile(destination), onBytesTransferred);
+        };
     }
 
     /**
@@ -1751,12 +1811,24 @@ public final class ApiClient implements AutoCloseable {
 
     }
 
-    /** Builds the {@code GET /files/{id}/content} request against {@link #apiBaseUrl}. */
-    private HttpRequest downloadFileContentRequest(final String fileId) {
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/content"), true)
+    /**
+     * Builds the {@code GET /files/{id}/content} request against {@link #apiBaseUrl}, made
+     * conditional when {@code knownEntityTag} names a copy the caller already holds.
+     *
+     * @param fileId         the file to fetch
+     * @param knownEntityTag a prior response's {@code ETag}, or {@code null} for an unconditional fetch
+     */
+    private HttpRequest downloadFileContentRequest(final String fileId, final String knownEntityTag) {
+        final HttpRequest.Builder builder = this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/content"), true)
                 .timeout(TRANSFER_TIMEOUT)
-                .GET()
-                .build();
+                .GET();
+        if (knownEntityTag != null && !knownEntityTag.isBlank()) {
+            // Sent back exactly as it was received: the server hands the tag out quoted and also
+            // accepts the weak-validator and bare forms, so whatever it gave us round-trips. A tag
+            // it no longer recognises costs nothing but the full transfer it would have sent anyway.
+            builder.header("If-None-Match", knownEntityTag);
+        }
+        return builder.build();
     }
 
     /**
@@ -1777,6 +1849,23 @@ public final class ApiClient implements AutoCloseable {
             return destination;
         }
         throw new ApiException(status, extractErrorMessageFromFile(destination), null);
+    }
+
+    /**
+     * Turns a conditional download's completed response into a {@link Dtos.ConditionalDownload}.
+     *
+     * @param response the completed response of a request that carried {@code If-None-Match}
+     * @return the not-modified result, or the written path, with the server's {@code ETag} either way
+     * @throws ApiException on any status that is neither {@code 2xx} nor {@code 304}
+     */
+    private static Dtos.ConditionalDownload conditionalDownloadResult(final HttpResponse<Path> response) throws ApiException {
+        final String entityTag = response.headers().firstValue("ETag").orElse(null);
+        if (response.statusCode() == NOT_MODIFIED_STATUS) {
+            // Checked before requireSuccessfulFileDownload: a 304's body path is null, and that
+            // method's error branch would try to read the (nonexistent) error body from it.
+            return new Dtos.ConditionalDownload(null, entityTag, true);
+        }
+        return new Dtos.ConditionalDownload(requireSuccessfulFileDownload(response), entityTag, false);
     }
 
     /**
@@ -3022,6 +3111,23 @@ public final class ApiClient implements AutoCloseable {
         return new Dtos.BeginUploadSessionResult(null, GSON.fromJson(body, Dtos.UploadSessionResponse.class));
     }
 
+    /**
+     * Async form of {@link #beginUploadSession} - see the class Javadoc for the threading/executor
+     * contract. Begin on its own (rather than through {@link #uploadFileViaResumableSession}) when
+     * the session id has to be persisted <em>before</em> the first part is uploaded, which is what
+     * makes a crash mid-upload resumable at all; drive it afterwards with {@link #resumeUploadSession}.
+     */
+    public CompletableFuture<Dtos.BeginUploadSessionResult> beginUploadSessionAsync(final String fileName, final long sizeBytes,
+                                                                                     final String checksumSha256, final String folderId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.beginUploadSession(fileName, sizeBytes, checksumSha256, folderId);
+            } catch (final ApiException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
     /** The {@code {"fileName","sizeBytes","folderId","checksumSha256"}} body {@link #beginUploadSession} posts. */
     private record BeginUploadSessionRequest(String fileName, long sizeBytes, String folderId, String checksumSha256) {
     }
@@ -3112,9 +3218,32 @@ public final class ApiClient implements AutoCloseable {
     }
 
     /**
+     * Async form of {@link #uploadFileViaResumableSession} - runs the whole multi-step flow on
+     * {@link #executor()} (never a JDK-internal thread), matching this codebase's own {@code
+     * *Async} convention of wrapping a checked failure from the sync primitive in a {@link
+     * CompletionException}.
+     */
+    public CompletableFuture<StoredFileSummaryResponse> uploadFileViaResumableSessionAsync(final String fileName, final Path filePath,
+                                                                                            final String folderId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.uploadFileViaResumableSession(fileName, filePath, folderId);
+            } catch (final ApiException | IOException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
+    /**
      * Resumes a crashed/interrupted session: fetches its status (recovered encryption
      * parameters included), regenerates the deterministic object stream from {@code filePath},
      * uploads only the parts the store doesn't already hold, and completes.
+     *
+     * <p>{@code filePath} must still be the content the session was begun for, byte for byte - a
+     * session's parts are ranges of one encryption under one issued key, so different bytes would
+     * splice two encryptions into one object. A file whose digest no longer matches the session's
+     * is refused rather than uploaded; abort the session ({@link #abortUploadSession}) and begin a
+     * new one instead.
      *
      * @param sessionFileId the session's id, as returned by {@link #beginUploadSession}
      * @param filePath the same local plaintext file the session was begun for
@@ -3122,7 +3251,8 @@ public final class ApiClient implements AutoCloseable {
      * @param folderId the folder to place the file in, or {@code null} for the root
      * @return the registered file's summary
      * @throws ApiException any of the session routes' failures
-     * @throws IOException if reading/encrypting the local file fails
+     * @throws IOException if reading/encrypting the local file fails, or if {@code filePath} is no
+     *     longer the content the session was begun for
      */
     public StoredFileSummaryResponse resumeUploadSession(final String sessionFileId, final Path filePath,
                                                           final String fileName, final String folderId) throws ApiException, IOException {
@@ -3130,18 +3260,65 @@ public final class ApiClient implements AutoCloseable {
         return this.runUploadSession(session, filePath, fileName, sha256HexOf(filePath), folderId);
     }
 
+    /** Async form of {@link #resumeUploadSession} - runs the whole flow on {@link #executor()}, per this codebase's own {@code *Async} convention. */
+    public CompletableFuture<StoredFileSummaryResponse> resumeUploadSessionAsync(final String sessionFileId, final Path filePath,
+                                                                                  final String fileName, final String folderId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.resumeUploadSession(sessionFileId, filePath, fileName, folderId);
+            } catch (final ApiException | IOException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
+    /** Async form of {@link #getUploadSession} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Dtos.UploadSessionResponse> getUploadSessionAsync(final String sessionFileId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return this.getUploadSession(sessionFileId);
+            } catch (final ApiException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
+    /** Async form of {@link #abortUploadSession} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Void> abortUploadSessionAsync(final String sessionFileId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                this.abortUploadSession(sessionFileId);
+                return (Void) null;
+            } catch (final ApiException e) {
+                throw new CompletionException(e);
+            }
+        }, this.executor);
+    }
+
     /**
      * The shared upload loop behind {@link #uploadFileViaResumableSession}/{@link
      * #resumeUploadSession}: materializes the session's object stream (encrypting to a temp file
      * when the session says to - the object stream really is deterministic per issued key, since
      * the base nonce is derived from that key rather than drawn at random, so a resume regenerates
-     * byte-identical content <em>for byte-identical input</em>; the size check below is what
-     * enforces that precondition), {@code PUT}s every part not already in {@code
-     * session.uploadedPartNumbers()}, then completes.
+     * byte-identical content <em>for byte-identical input</em>; the digest comparison at the top is
+     * what enforces that precondition, with the object-length comparison further down as a second,
+     * structural gate for a session that reports no digest), {@code PUT}s every part not already in
+     * {@code session.uploadedPartNumbers()}, then completes.
      */
     private StoredFileSummaryResponse runUploadSession(final Dtos.UploadSessionResponse session, final Path filePath,
                                                         final String fileName, final String checksumSha256,
                                                         final String folderId) throws ApiException, IOException {
+        // The session's content key is fixed for its lifetime and the object's nonce base is
+        // derived from that key, so every pass over this session encrypts under one key/nonce
+        // pair. Re-encrypting different bytes under it would splice two encryptions into one
+        // object and reuse that pair across two plaintexts, so a session carries only the exact
+        // content it was begun for; anything else needs a new session.
+        final String sessionChecksum = session.checksumSha256();
+        if (sessionChecksum != null && !sessionChecksum.equalsIgnoreCase(checksumSha256)) {
+            throw new IOException("the local file is not the content upload session '" + session.fileId()
+                    + "' was begun for - abort the session (abortUploadSession) and start a new one");
+        }
+
         final Dtos.UploadEncryptionInfo encryption = session.encryption();
         final Path objectFile;
         final Path temporaryCiphertext;
@@ -3271,7 +3448,7 @@ public final class ApiClient implements AutoCloseable {
      *                       expired, or any other failure
      */
     public Path downloadFileVersion(final String fileId, final int versionNumber, final Path destination) throws ApiException {
-        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber);
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber, null);
         final HttpResponse<Path> response;
         try {
             response = this.httpClient.send(request, BodyHandlers.ofFile(destination));
@@ -3284,9 +3461,71 @@ public final class ApiClient implements AutoCloseable {
         return requireSuccessfulFileDownload(response);
     }
 
+    /**
+     * {@link #downloadFileVersion(String, int, Path)} made conditional, exactly as {@link
+     * #downloadFileToPathIfChanged(String, Path, String)} makes the current-content download
+     * conditional: an unchanged version transfers no body, and {@code destination} is then never
+     * created or written - see {@link Dtos.ConditionalDownload}.
+     *
+     * @param fileId         the file the version belongs to
+     * @param versionNumber  the 1-based version number, from a {@link FileVersionSummaryResponse}
+     * @param destination    the local path to write the version's content to; must not already exist
+     * @param knownEntityTag the tag from the previous download of this version, or {@code null}
+     * @return what happened - see {@link Dtos.ConditionalDownload}
+     * @throws ApiException {@code 404} if {@code fileId}/{@code versionNumber} doesn't exist or
+     *                       isn't reachable by the caller, {@code 401} if not logged in / token
+     *                       expired, or any other failure
+     */
+    public Dtos.ConditionalDownload downloadFileVersionIfChanged(final String fileId, final int versionNumber,
+                                                                  final Path destination, final String knownEntityTag) throws ApiException {
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber, knownEntityTag);
+        final HttpResponse<Path> response;
+        try {
+            response = this.httpClient.send(request, conditionalFileHandler(destination));
+        } catch (final IOException e) {
+            throw new ApiException(0, "network error calling " + request.uri(), e);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(0, "interrupted calling " + request.uri(), e);
+        }
+        return conditionalDownloadResult(response);
+    }
+
+    /** Async form of {@link #downloadFileVersionIfChanged(String, int, Path, String)} - see the class Javadoc for the threading/executor contract. */
+    public CompletableFuture<Dtos.ConditionalDownload> downloadFileVersionIfChangedAsync(final String fileId, final int versionNumber,
+                                                                                          final Path destination, final String knownEntityTag) {
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber, knownEntityTag);
+        return this.httpClient.sendAsync(request, conditionalFileHandler(destination))
+                .thenApply(response -> {
+                    try {
+                        return conditionalDownloadResult(response);
+                    } catch (final ApiException e) {
+                        // Matches this codebase's own *Async convention - see #sendAsync's own comment.
+                        throw new CompletionException(e);
+                    }
+                });
+    }
+
+    /**
+     * {@link BodyHandlers#ofFile} that skips creating {@code destination} entirely on a {@code
+     * 304} - a bodyless response would otherwise still create (and so truncate) what is, on this
+     * path, the caller's own cached copy of the content the server just called unchanged.
+     *
+     * @param destination the local path a real response body is written to
+     * @return a {@link BodyHandler} whose {@link HttpResponse#body()} is {@code null} on a {@code 304}
+     */
+    private static BodyHandler<Path> conditionalFileHandler(final Path destination) {
+        return responseInfo -> {
+            if (responseInfo.statusCode() == NOT_MODIFIED_STATUS) {
+                return BodySubscribers.replacing(null);
+            }
+            return BodySubscribers.ofFile(destination);
+        };
+    }
+
     /** Async form of {@link #downloadFileVersion(String, int, Path)} - see the class Javadoc for the threading/executor contract. */
     public CompletableFuture<Path> downloadFileVersionAsync(final String fileId, final int versionNumber, final Path destination) {
-        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber);
+        final HttpRequest request = this.downloadFileVersionRequest(fileId, versionNumber, null);
         return this.httpClient.sendAsync(request, BodyHandlers.ofFile(destination))
                 .thenApply(response -> {
                     try {
@@ -3298,12 +3537,24 @@ public final class ApiClient implements AutoCloseable {
                 });
     }
 
-    /** Builds the {@code GET /files/{id}/versions/{versionNumber}/content} request against {@link #apiBaseUrl}. */
-    private HttpRequest downloadFileVersionRequest(final String fileId, final int versionNumber) {
-        return this.requestBuilder(this.apiBaseUrl.resolve("/files/" + fileId + "/versions/" + versionNumber + "/content"), true)
+    /**
+     * Builds the {@code GET /files/{id}/versions/{versionNumber}/content} request against {@link
+     * #apiBaseUrl}, made conditional when {@code knownEntityTag} names a copy the caller already holds.
+     *
+     * @param fileId         the file the version belongs to
+     * @param versionNumber  the 1-based version number
+     * @param knownEntityTag a prior response's {@code ETag}, or {@code null} for an unconditional fetch
+     */
+    private HttpRequest downloadFileVersionRequest(final String fileId, final int versionNumber, final String knownEntityTag) {
+        final HttpRequest.Builder builder = this.requestBuilder(
+                        this.apiBaseUrl.resolve("/files/" + fileId + "/versions/" + versionNumber + "/content"), true)
                 .timeout(TRANSFER_TIMEOUT)
-                .GET()
-                .build();
+                .GET();
+        if (knownEntityTag != null && !knownEntityTag.isBlank()) {
+            // Round-tripped verbatim, for the reason downloadFileContentRequest spells out.
+            builder.header("If-None-Match", knownEntityTag);
+        }
+        return builder.build();
     }
 
     /**
@@ -3982,21 +4233,6 @@ public final class ApiClient implements AutoCloseable {
             }
             return results;
         });
-    }
-
-    /**
-     * Closes {@code closeable}, swallowing any {@link IOException} - used only on a best-effort
-     * cleanup path where nothing more useful can be done with a close failure.
-     *
-     * @param closeable the resource to close
-     */
-    private static void closeQuietly(final Closeable closeable) {
-        try {
-            closeable.close();
-        } catch (final IOException ignored) {
-            // Best-effort cleanup only - the caller already has what it needs (or is on an
-            // already-failed path), and there is nothing more useful to do with a close failure.
-        }
     }
 
     /** Shuts down the virtual-thread executor backing every async call this client makes. Idempotent. */

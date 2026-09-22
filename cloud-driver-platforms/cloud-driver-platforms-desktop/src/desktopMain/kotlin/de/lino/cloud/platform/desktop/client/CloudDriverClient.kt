@@ -5,7 +5,9 @@ import de.lino.cloud.platform.rest.api.SessionManager
 import de.lino.cloud.platform.rest.api.dto.Dtos.ActivityEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuditLogEntryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.AuthUserResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.BeginUploadSessionResult
 import de.lino.cloud.platform.rest.api.dto.Dtos.CloudUserResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.ConditionalDownload
 import de.lino.cloud.platform.rest.api.dto.Dtos.FileVersionSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.FolderResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.MeResponse
@@ -21,6 +23,7 @@ import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFileSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.SharedFolderSummaryResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.StoredFileSummaryResponse
+import de.lino.cloud.platform.rest.api.dto.Dtos.UploadSessionResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookDeliveryAttemptResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionCreatedResponse
 import de.lino.cloud.platform.rest.api.dto.Dtos.WebhookSubscriptionSummaryResponse
@@ -243,6 +246,51 @@ class CloudDriverClient(
      */
     suspend fun downloadFileViaPresignedUrl(fileId: String, destination: Path, onBytesTransferred: (Long) -> Unit = {}): Path =
         this.apiClient.downloadFileViaPresignedUrlAsync(fileId, destination, onBytesTransferred).await()
+
+    /**
+     * [downloadFileToPath] made conditional - see
+     * [ApiClient.downloadFileToPathIfChanged][de.lino.cloud.platform.rest.api.ApiClient.downloadFileToPathIfChanged]
+     * for the full contract, including what a
+     * [Dtos.ConditionalDownload.notModified][de.lino.cloud.platform.rest.api.dto.Dtos.ConditionalDownload.notModified]
+     * result means for [destination].
+     */
+    suspend fun downloadFileToPathIfChanged(
+        fileId: String,
+        destination: Path,
+        knownEntityTag: String?,
+        onBytesTransferred: (Long) -> Unit = {},
+    ): ConditionalDownload =
+        this.apiClient.downloadFileToPathIfChangedAsync(fileId, destination, knownEntityTag, onBytesTransferred).await()
+
+    /** [downloadFileVersion] made conditional - see [ApiClient.downloadFileVersionIfChanged][de.lino.cloud.platform.rest.api.ApiClient.downloadFileVersionIfChanged]. */
+    suspend fun downloadFileVersionIfChanged(
+        fileId: String,
+        versionNumber: Int,
+        destination: Path,
+        knownEntityTag: String?,
+    ): ConditionalDownload =
+        this.apiClient.downloadFileVersionIfChangedAsync(fileId, versionNumber, destination, knownEntityTag).await()
+
+    /** Uploads through a crash-resumable multipart session - see [ApiClient.uploadFileViaResumableSession][de.lino.cloud.platform.rest.api.ApiClient.uploadFileViaResumableSession]. */
+    suspend fun uploadFileViaResumableSession(fileName: String, filePath: Path, folderId: String?): StoredFileSummaryResponse =
+        this.apiClient.uploadFileViaResumableSessionAsync(fileName, filePath, folderId).await()
+
+    /** Resumes a previously begun session - see [ApiClient.resumeUploadSession][de.lino.cloud.platform.rest.api.ApiClient.resumeUploadSession]. */
+    suspend fun resumeUploadSession(sessionFileId: String, filePath: Path, fileName: String, folderId: String?): StoredFileSummaryResponse =
+        this.apiClient.resumeUploadSessionAsync(sessionFileId, filePath, fileName, folderId).await()
+
+    /** Begins a crash-resumable multipart session without driving it - see [ApiClient.beginUploadSession][de.lino.cloud.platform.rest.api.ApiClient.beginUploadSession]. */
+    suspend fun beginUploadSession(fileName: String, sizeBytes: Long, checksumSha256: String, folderId: String?): BeginUploadSessionResult =
+        this.apiClient.beginUploadSessionAsync(fileName, sizeBytes, checksumSha256, folderId).await()
+
+    /** One session's durable progress - see [ApiClient.getUploadSession][de.lino.cloud.platform.rest.api.ApiClient.getUploadSession]. */
+    suspend fun getUploadSession(sessionFileId: String): UploadSessionResponse =
+        this.apiClient.getUploadSessionAsync(sessionFileId).await()
+
+    /** Discards every part a session has uploaded - see [ApiClient.abortUploadSession][de.lino.cloud.platform.rest.api.ApiClient.abortUploadSession]. */
+    suspend fun abortUploadSession(sessionFileId: String) {
+        this.apiClient.abortUploadSessionAsync(sessionFileId).await()
+    }
 
     suspend fun deleteFile(fileId: String) {
         this.apiClient.deleteFileAsync(fileId).await()

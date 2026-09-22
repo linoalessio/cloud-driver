@@ -13,12 +13,14 @@ import de.lino.cloud.platform.desktop.model.SortOption
 import de.lino.cloud.platform.desktop.model.computeAccountStats
 import de.lino.cloud.platform.desktop.theme.FolderColorOption
 import de.lino.cloud.platform.desktop.theme.ThemeMode
+import de.lino.cloud.platform.desktop.utils.ContentCache
+import de.lino.cloud.platform.desktop.utils.UploadSessionRecord
+import de.lino.cloud.platform.desktop.utils.UploadSessionStore
 import de.lino.cloud.platform.desktop.utils.decodeJwtSubject
 import de.lino.cloud.platform.desktop.utils.downloadFileStreaming
 import de.lino.cloud.platform.desktop.utils.extractZip
 import de.lino.cloud.platform.desktop.utils.mapConcurrently
-import de.lino.cloud.platform.desktop.utils.requireContainedIn
-import de.lino.cloud.platform.desktop.utils.sanitizedForLocalPath
+import de.lino.cloud.platform.desktop.utils.safeLocalChildOf
 import de.lino.cloud.platform.desktop.utils.uninstallApp
 import de.lino.cloud.platform.desktop.utils.zipDirectory
 import de.lino.cloud.platform.rest.api.ApiClient
@@ -32,8 +34,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -80,6 +84,13 @@ data class TransferProgress(
 
 /** Page size [AppViewModel.refreshCurrentFolder]/[AppViewModel.loadMoreEntries] request per [CloudDriverClient.listFilesPage]/[listFoldersPage] call. */
 private const val FOLDER_VIEW_PAGE_SIZE = 200
+
+/**
+ * Above this size an upload goes through a resumable session: restarting a transfer this large
+ * from zero after a crash or a dropped link is the cost the session path exists to avoid, and
+ * below it the extra metadata round trips buy nothing a single-shot upload doesn't already give.
+ */
+private const val RESUMABLE_SESSION_THRESHOLD_BYTES = 64L * 1024 * 1024
 
 class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) {
 
@@ -621,6 +632,10 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      */
     fun uninstall() {
         this.scope.launch(Dispatchers.IO) {
+            // Cached plaintext and session records belong to the account that fetched them, so
+            // they go before the account's own local state does.
+            ContentCache.clear()
+            UploadSessionStore.clear()
             this@AppViewModel.client.clearPersistedSession()
             this@AppViewModel.client.close()
             uninstallApp()
@@ -636,6 +651,10 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      */
     fun logout() {
         this.client.stopLiveUpdates()
+        // Cached plaintext and in-flight session records belong to the account that fetched them -
+        // never left behind for whoever signs in next on this machine.
+        ContentCache.clear()
+        UploadSessionStore.clear()
         // No local token clearing here, deliberately. clearPersistedSession below is what revokes
         // the refresh token server-side, and it can only do that while the token is still in
         // memory - clearing first made that call read a null token and return without ever
@@ -841,7 +860,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         // names were chosen by the person who shared it, not by the person downloading it.
         val items = this.planSharedFolderDownload(
             folderId,
-            requireContainedIn(destinationDirectory, destinationDirectory.resolve(sanitizedForLocalPath(folderName))),
+            safeLocalChildOf(destinationDirectory, folderName),
         )
         this.runTransfer(TransferKind.DOWNLOAD, items, DownloadItem::sizeBytes) { item, onBytesTransferred ->
             this.client.downloadFileStreaming(item.fileId, item.fileName, item.destinationDirectory, onBytesTransferred)
@@ -856,7 +875,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         contents.subfolders().forEach { subfolder ->
             items += this.planSharedFolderDownload(
                 subfolder.folderId(),
-                requireContainedIn(destination, destination.resolve(sanitizedForLocalPath(subfolder.name()))),
+                safeLocalChildOf(destination, subfolder.name()),
             )
         }
         return items
@@ -1148,12 +1167,13 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     }
 
     /**
-     * Uploads [filePath] as [fileName] into [folderId], preferring the presigned direct-to-client
-     * path (bypassing this app's own server for the data path entirely) and transparently falling back to the ordinary
-     * server-mediated [CloudDriverClient.uploadFile] the moment the server reports (`503`) it
-     * hasn't configured presigned transfer - so every upload call site below works unchanged
-     * against an older or non-S3-configured deployment too, with no capability negotiation of its
-     * own needed. Shared by [uploadFiles]/[uploadFolderAsZip]/[uploadDroppedPaths]; the
+     * Uploads [filePath] as [fileName] into [folderId] down a three-tier chain, each tier falling
+     * back to the next the moment the server reports (`503`) it isn't configured: a crash-resumable
+     * multipart session for anything at or above [RESUMABLE_SESSION_THRESHOLD_BYTES], then the
+     * presigned direct-to-client path (bypassing this app's own server for the data path entirely),
+     * then the ordinary server-mediated [CloudDriverClient.uploadFile] - so every upload call site
+     * below works unchanged against an older or non-S3-configured deployment too, with no
+     * capability negotiation of its own needed. Shared by [uploadFiles]/[uploadFolderAsZip]/[uploadDroppedPaths]; the
      * archive-extraction re-upload path (`extractArchive`) deliberately still calls
      * [CloudDriverClient.uploadFile] directly - a secondary, lower-volume flow not worth the same
      * treatment in this first pass.
@@ -1163,8 +1183,23 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         filePath: Path,
         folderId: String?,
         onBytesTransferred: (Long) -> Unit,
-    ): StoredFileSummaryResponse =
-        try {
+    ): StoredFileSummaryResponse {
+        val sizeBytes = withContext(Dispatchers.IO) { Files.size(filePath) }
+        if (sizeBytes >= RESUMABLE_SESSION_THRESHOLD_BYTES) {
+            val viaSession = this.uploadViaResumableSession(fileName, filePath, folderId)
+            if (viaSession != null) {
+                // The session driver reports no byte-level progress of its own, so this item's
+                // share of the batch total is booked in one step on completion rather than left
+                // at zero, which would make a finished batch look unfinished.
+                onBytesTransferred(sizeBytes)
+                return viaSession
+            }
+            // Only a 503 gets here: this deployment has no session routes, so fall through to the
+            // presigned single-shot path below, which itself falls back to the server-mediated one
+            // on its own 503. That chain is what keeps this app working against an older or
+            // non-S3-configured deployment.
+        }
+        return try {
             this.client.uploadFileViaPresignedUrl(fileName, filePath, folderId, onBytesTransferred)
         } catch (e: ApiClient.ApiException) {
             if (e.statusCode() == 503) {
@@ -1173,6 +1208,92 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
                 throw e
             }
         }
+    }
+
+    /**
+     * Uploads [filePath] through a crash-resumable multipart session, resuming a record this app
+     * persisted for the same file if one is still usable, and returns `null` (having uploaded
+     * nothing) when the deployment offers no session routes at all.
+     *
+     * The session id is recorded *before* the first part is uploaded and forgotten only once the
+     * upload has completed - that ordering is the whole point: a session id learned only after the
+     * upload finished would be worthless to the crash it exists to recover from. That is also why
+     * the first attempt begins the session itself and then drives it through
+     * [CloudDriverClient.resumeUploadSession] rather than calling
+     * [CloudDriverClient.uploadFileViaResumableSession] blind, which would keep the id to itself:
+     * it costs one extra metadata call, not a second upload.
+     */
+    private suspend fun uploadViaResumableSession(
+        fileName: String,
+        filePath: Path,
+        folderId: String?,
+    ): StoredFileSummaryResponse? {
+        val accountId = this.currentUserId ?: return null
+        val sizeBytes = withContext(Dispatchers.IO) { Files.size(filePath) }
+        val existing = withContext(Dispatchers.IO) { UploadSessionStore.find(accountId, filePath, sizeBytes) }
+        if (existing != null) {
+            try {
+                val summary = this.client.resumeUploadSession(existing.sessionFileId, filePath, fileName, folderId)
+                withContext(Dispatchers.IO) { UploadSessionStore.forget(existing.sessionFileId) }
+                return summary
+            } catch (e: ApiClient.ApiException) {
+                if (e.statusCode() == 503) {
+                    return null
+                }
+                // The session is gone server-side, or the file no longer matches what it was begun
+                // for - either way the record is useless; drop it and begin a fresh session.
+                withContext(Dispatchers.IO) { UploadSessionStore.forget(existing.sessionFileId) }
+            } catch (e: IOException) {
+                withContext(Dispatchers.IO) { UploadSessionStore.forget(existing.sessionFileId) }
+            }
+        }
+
+        val checksum = withContext(Dispatchers.IO) { sha256HexOf(filePath) }
+        val begin = try {
+            this.client.beginUploadSession(fileName, sizeBytes, checksum, folderId)
+        } catch (e: ApiClient.ApiException) {
+            if (e.statusCode() == 503) {
+                return null
+            }
+            throw e
+        }
+        begin.alreadyStored()?.let { return it }
+        val session = begin.session()
+        withContext(Dispatchers.IO) {
+            UploadSessionStore.record(
+                UploadSessionRecord(
+                    sessionFileId = session.fileId(),
+                    accountId = accountId,
+                    localPath = filePath.toAbsolutePath().normalize().toString(),
+                    fileName = fileName,
+                    folderId = folderId,
+                    sizeBytes = sizeBytes,
+                    checksumSha256 = checksum,
+                    startedAtEpochMillis = System.currentTimeMillis(),
+                ),
+            )
+        }
+        // A failure here deliberately leaves the record in place: the whole point of writing it
+        // before the first part is that the next attempt - this run or the next launch - can pick
+        // the same session back up instead of re-uploading from zero.
+        val summary = this.client.resumeUploadSession(session.fileId(), filePath, fileName, folderId)
+        withContext(Dispatchers.IO) { UploadSessionStore.forget(session.fileId()) }
+        return summary
+    }
+
+    /** The file's plaintext SHA-256 as lowercase hex, read streaming - what a session is begun against. */
+    private fun sha256HexOf(filePath: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(filePath).use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
 
     /**
      * Uploads every chosen local file concurrently (capped - see [mapConcurrently]), reporting
@@ -1272,7 +1393,10 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
      */
     fun extractArchive(entry: Entry.FileEntry) = run {
         val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-extract") }
-        val archiveTempFile = tempDir.resolve(sanitizedForLocalPath(entry.name))
+        // A throwaway temp directory is still a directory this app owns: the archive's name comes
+        // from whoever uploaded it, so it is contained here the same way a user-chosen download
+        // directory is.
+        val archiveTempFile = safeLocalChildOf(tempDir, entry.name)
         val extractedDir = tempDir.resolve("extracted")
         try {
             this.runTransfer(TransferKind.EXTRACT, listOf(entry), Entry.FileEntry::sizeBytes) { _, onBytesTransferred ->
@@ -1416,7 +1540,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
                 is Entry.FileEntry -> items += DownloadItem(entry.id, entry.name, entry.sizeBytes, destinationDirectory)
                 is Entry.FolderEntry -> items += this.planFolderDownload(
                     entry.id,
-                    requireContainedIn(destinationDirectory, destinationDirectory.resolve(sanitizedForLocalPath(entry.name))),
+                    safeLocalChildOf(destinationDirectory, entry.name),
                 )
             }
         }
@@ -1429,7 +1553,7 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
         this.client.listFolders(folderId).forEach { subFolder ->
             items += this.planFolderDownload(
                 subFolder.folderId(),
-                requireContainedIn(destination, destination.resolve(sanitizedForLocalPath(subFolder.name()))),
+                safeLocalChildOf(destination, subFolder.name()),
             )
         }
         return items
@@ -1483,7 +1607,9 @@ class AppViewModel(private val scope: CoroutineScope, initialServerUrl: String) 
     /** Downloads [fileId] to a fresh, throwaway local temp directory and re-uploads it as [newName] into [targetFolderId], then cleans the temp file/directory up regardless of outcome. */
     private suspend fun duplicateFileInto(fileId: String, newName: String, targetFolderId: String?) {
         val tempDir = withContext(Dispatchers.IO) { Files.createTempDirectory("cloud-driver-duplicate") }
-        val tempFile = tempDir.resolve(sanitizedForLocalPath(newName))
+        // The copy's name is derived from remote names, so the temp path it is written to is
+        // contained the same way a user-chosen download directory's is.
+        val tempFile = safeLocalChildOf(tempDir, newName)
         try {
             this.client.downloadFileToPath(fileId, tempFile)
             this.client.uploadFile(newName, tempFile, targetFolderId)

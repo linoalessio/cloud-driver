@@ -17,9 +17,17 @@ import java.util.logging.Level;
  * through a {@link CommandService} - the interactive loop at the center of the terminal engine.
  * Deliberately not a daemon thread, since it is typically what keeps the process alive. Each
  * line is split on whitespace and dispatched via {@link CommandService#dispatchAsync(String,
- * String[])}; a blank line is skipped, and {@code Ctrl+C}/{@code Ctrl+D} end the loop.
+ * String[])}; a blank line is skipped, {@code Ctrl+C} discards the line being typed and returns to
+ * the prompt, and {@code Ctrl+D} (or a closed standard input) ends the loop. The process itself is
+ * stopped with the {@code exit} command, not with an interrupt.
  */
 public final class ReadingThread extends Thread {
+
+    /**
+     * How long this thread waits after an unexpected read failure before trying again, so a
+     * persistent, non-blocking failure inside {@code readLine()} cannot become a hot loop.
+     */
+    private static final long FAILURE_BACKOFF_MILLIS = 1_000L;
 
     /** The owning terminal input is read from and results are displayed through. */
     private final Terminal terminal;
@@ -46,7 +54,10 @@ public final class ReadingThread extends Thread {
         this.commandService = Asserts.requireNonNull(commandService, "@ReadingThread: commandService must not be null");
     }
 
-    /** Reads and dispatches lines until interrupted or {@code Ctrl+C}/{@code Ctrl+D} is seen. */
+    /**
+     * Reads and dispatches lines until this thread is interrupted, standard input closes, or
+     * {@code Ctrl+D} is pressed; {@code Ctrl+C} only discards the line being typed.
+     */
     @Override
     public void run() {
 
@@ -97,6 +108,16 @@ public final class ReadingThread extends Thread {
                 // spin - a tight, CPU-burning loop logging the same exception forever instead of
                 // ending the same way Ctrl+C/Ctrl+D above do.
                 CloudDriver.getInstance().getLogger().log(Level.SEVERE, "@ReadingThread.run: input handling failed", throwable);
+                // A failure that leaves the terminal active but keeps throwing would otherwise be
+                // retried with no blocking in between, burning a core while the server is under
+                // load. Interrupting breaks out instead of waiting, so Terminal#shutdown() is not
+                // delayed a second per failure.
+                try {
+                    Thread.sleep(FAILURE_BACKOFF_MILLIS);
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
 
         }

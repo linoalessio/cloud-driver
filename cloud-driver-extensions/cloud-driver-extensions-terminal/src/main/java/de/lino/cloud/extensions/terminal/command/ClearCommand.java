@@ -17,10 +17,15 @@ public class ClearCommand implements Command {
         return "clear";
     }
 
-    /** @return {@code "clc"} */
+    /**
+     * @return {@code "clc"}, {@code "reset"}
+     *
+     * <p>{@code reset} is what an operator types at a console that has stopped redrawing, which is
+     * the moment this command exists for. It resolves here so that reflex repairs the screen.
+     */
     @Override
     public @NotNull List<String> aliases() {
-        return List.of("clc");
+        return List.of("clc", "reset");
     }
 
     /** @return this service's description */

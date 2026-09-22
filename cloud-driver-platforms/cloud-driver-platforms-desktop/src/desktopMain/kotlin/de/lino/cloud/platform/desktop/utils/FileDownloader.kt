@@ -57,6 +57,23 @@ fun requireContainedIn(root: Path, candidate: Path): Path {
 }
 
 /**
+ * The one way to turn a remote name into a local path directly under [root]: [sanitizedForLocalPath]
+ * reduces [remoteName] to a single path component, and [requireContainedIn] re-checks the result
+ * structurally before anything is created or written.
+ *
+ * Both halves are needed, which is why they are bound together here rather than left to each call
+ * site. A sanitiser can always be incomplete: `:` is a legal character in a file name on macOS and
+ * Linux, so it is deliberately kept - but on Windows `"D:payload.exe"` is a drive-relative path, and
+ * [Path.resolve] hands such a name back instead of making it a child of [root], so the write would
+ * land outside [root] despite the name having been sanitised. The containment check is what catches
+ * that, and it costs nothing on the paths where the sanitiser was already enough.
+ *
+ * @throws IllegalArgumentException if the resulting path would sit outside [root]
+ */
+fun safeLocalChildOf(root: Path, remoteName: String): Path =
+    requireContainedIn(root, root.resolve(sanitizedForLocalPath(remoteName)))
+
+/**
  * Downloads [fileId] (whose current name is [fileName]) straight to disk under
  * [destinationDirectory], preferring the presigned direct-to-client path
  * ([CloudDriverClient.downloadFileViaPresignedUrl], bypassing this app's own server for the data
@@ -94,10 +111,9 @@ suspend fun CloudDriverClient.downloadFileStreaming(
 ): Path {
     val target = withContext(Dispatchers.IO) {
         Files.createDirectories(destinationDirectory)
-        val safeFileName = sanitizedForLocalPath(fileName)
-        val candidate = requireContainedIn(destinationDirectory, destinationDirectory.resolve(safeFileName))
+        val candidate = safeLocalChildOf(destinationDirectory, fileName)
         if (Files.exists(candidate)) {
-            requireContainedIn(destinationDirectory, destinationDirectory.resolve("${UUID.randomUUID()}_$safeFileName"))
+            safeLocalChildOf(destinationDirectory, "${UUID.randomUUID()}_${candidate.fileName}")
         } else {
             candidate
         }

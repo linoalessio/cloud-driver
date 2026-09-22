@@ -383,5 +383,10 @@ public final class ChunkPatchSample {
         public void reset() {
             throw new UnsupportedOperationException("not used by this sample");
         }
+
+        @Override
+        public java.util.List<String> resetScope() {
+            throw new UnsupportedOperationException("not used by this sample");
+        }
     }
 }

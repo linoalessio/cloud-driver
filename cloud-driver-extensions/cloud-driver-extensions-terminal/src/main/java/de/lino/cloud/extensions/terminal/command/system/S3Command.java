@@ -1,6 +1,9 @@
 package de.lino.cloud.extensions.terminal.command.system;
 
 import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.audit.AuditAction;
+import de.lino.cloud.api.audit.AuditEvent;
+import de.lino.cloud.api.audit.AuditLogService;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.s3storage.ObjectStorageException;
@@ -16,7 +19,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -34,10 +36,14 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>Safety</h2>
  *
- * {@code audit} is read-only and is the default. {@code purge} deletes, and therefore requires
- * being run twice within a short window - the same arm-then-confirm shape {@code hardReset} uses,
- * for the same reason: this operates on real user content, and getting the reconciliation wrong
- * in the deleting direction is unrecoverable.
+ * {@code audit} is read-only and is the default. {@code purge} deletes, so it is armed by one
+ * invocation and performed only by a second that carries the explicit word {@code confirm} - the
+ * same shape {@code hardReset}, {@code cloudUser reset/delete} and {@code share revoke-link} use.
+ * A bare repeat of the same line is deliberately not a confirmation: repeating a command that
+ * appeared to do nothing is what an operator does at a console that is not redrawing, and this
+ * operates on real user content.
+ *
+ * <p>A completed purge is recorded, so the console can be asked afterwards what was deleted.
  *
  * <p>An object is only ever treated as an orphan if the full row scan completed successfully. A
  * partial listing would make every unseen file's object look unreferenced, which in the purge
@@ -49,14 +55,14 @@ public class S3Command implements Command {
     /** Keys requested per {@code ListObjectsV2} page - S3's own maximum. */
     private static final int PAGE_SIZE = 1000;
 
-    /** How long a purge stays armed after being requested. */
-    private static final Duration CONFIRMATION_WINDOW = Duration.ofSeconds(10);
+    /** How long an armed purge stays confirmable. */
+    private static final Duration CONFIRMATION_WINDOW = Duration.ofSeconds(15);
 
-    /** Whether a purge is armed and awaiting confirmation. */
-    private static final AtomicBoolean PURGE_ARMED = new AtomicBoolean(false);
+    /** The exact invocation currently armed for confirmation, or {@code null} while none is. */
+    private static final AtomicReference<String> ARMED = new AtomicReference<>();
 
-    /** Deadline for the confirming second invocation, or {@code null} while unarmed. */
-    private static final AtomicReference<Long> PURGE_DEADLINE = new AtomicReference<>(null);
+    /** When the armed purge stops being confirmable, in epoch millis, or {@code null}. */
+    private static final AtomicReference<Long> ARMED_UNTIL = new AtomicReference<>();
 
     /** @return {@code "s3"} */
     @Override
@@ -81,7 +87,8 @@ public class S3Command implements Command {
     public @NotNull List<CommandUsage> usages() {
         return List.of(
                 CommandUsage.of("s3", "Compare the bucket against the file rows"),
-                CommandUsage.of("s3 purge", "Delete objects no file references - run twice to confirm")
+                CommandUsage.of("s3 purge", "Arm deleting every object no file references (does nothing on its own)"),
+                CommandUsage.of("s3 purge confirm", String.format("Confirm the armed purge, within %ss of arming it", CONFIRMATION_WINDOW.toSeconds()))
         );
     }
 
@@ -102,7 +109,7 @@ public class S3Command implements Command {
         }
 
         if (arguments.hasCommand(0, "purge")) {
-            this.purge(terminal, objectStorageService);
+            this.purge(terminal, objectStorageService, arguments);
             return;
         }
 
@@ -163,25 +170,39 @@ public class S3Command implements Command {
         }
 
         if (!orphans.isEmpty() && !purging) {
-            terminal.displayApproved("&7Run &fs3 purge &7to delete the orphaned objects (twice, to confirm).");
+            terminal.displayApproved("&7Run &fs3 purge &7to arm deleting the orphaned objects, then &fs3 purge confirm&7.");
         }
         terminal.emptyLine();
 
         return purging ? orphans : List.of();
     }
 
-    /** Arms, then on a second call within the window, deletes every orphaned object. */
-    private void purge(final Terminal terminal, final ObjectStorageService objectStorageService) {
+    /**
+     * Arms a purge, or - on an invocation carrying {@code confirm}, inside the window, for this
+     * same command line - deletes every orphaned object and records what was removed.
+     *
+     * @param terminal where to print
+     * @param objectStorageService the bucket to reconcile against
+     * @param arguments the invocation, checked for the confirming token
+     */
+    private void purge(final Terminal terminal, final ObjectStorageService objectStorageService, final CommandArguments arguments) {
 
-        if (PURGE_ARMED.get() && PURGE_DEADLINE.get() != null) {
-            if (PURGE_DEADLINE.get() <= System.currentTimeMillis()) {
-                terminal.displayApproved("The &cconfirmation window &7expired. Re-run &fs3 purge&7.");
-                PURGE_ARMED.set(false);
-                PURGE_DEADLINE.set(null);
+        // The confirming invocation must say so explicitly. A bare repeat of 's3 purge' is exactly
+        // what an operator types when the first line appeared to do nothing, and this deletes
+        // content that is not recoverable from here.
+        final boolean confirming = arguments.hasCommand(1, "confirm");
+        final Long armedUntil = ARMED_UNTIL.get();
+
+        if (confirming) {
+
+            final boolean armed = "s3 purge".equals(ARMED.get()) && armedUntil != null && armedUntil > System.currentTimeMillis();
+            ARMED.set(null);
+            ARMED_UNTIL.set(null);
+
+            if (!armed) {
+                terminal.displayApproved("&cNothing armed, or the confirmation window has passed - run &fs3 purge &cwithout 'confirm' first.");
                 return;
             }
-            PURGE_ARMED.set(false);
-            PURGE_DEADLINE.set(null);
 
             final List<String> orphans = this.audit(terminal, objectStorageService, true);
             if (orphans.isEmpty()) {
@@ -199,14 +220,39 @@ public class S3Command implements Command {
                     failed++;
                 }
             }
+
             terminal.displayApproved("Purged &b%s &7object(s)%s.", deleted, failed > 0 ? ", &c" + failed + " failed&7" : "");
+            this.recordPurge(deleted, failed);
             return;
         }
 
-        PURGE_ARMED.set(true);
-        PURGE_DEADLINE.set(System.currentTimeMillis() + CONFIRMATION_WINDOW.toMillis());
+        ARMED.set("s3 purge");
+        ARMED_UNTIL.set(System.currentTimeMillis() + CONFIRMATION_WINDOW.toMillis());
         terminal.displayApproved("This will &cpermanently delete &7every bucket object no StoredFile row references.");
-        terminal.displayApproved("Re-run &fs3 purge &7within &b%s seconds &7to confirm.", CONFIRMATION_WINDOW.toSeconds());
+        terminal.displayApproved("It cannot be undone from here. To confirm, run &fs3 purge confirm &7within &b%s seconds&7.", CONFIRMATION_WINDOW.toSeconds());
+    }
+
+    /**
+     * Records a completed purge in both places an operator can read afterwards: the persisted
+     * trail the {@code auditLog} command lists, and the process log the console session writes to
+     * its log file. Both, because the audit service is an optional facet that is {@code null}
+     * until the REST extension publishes one, while a purge is available whenever object storage
+     * is configured - so the log line is the record that is always written.
+     *
+     * @param deleted how many objects were removed
+     * @param failed how many deletions the bucket refused
+     */
+    private void recordPurge(final int deleted, final int failed) {
+
+        final String summary = deleted + " orphaned object(s) deleted, " + failed + " failed";
+        CloudDriver.getInstance().getLogger().warning("s3 purge, from the operator console: " + summary);
+
+        final AuditLogService auditLogService = CloudDriver.getInstance().getServiceContainer().getAuditLogService();
+        if (auditLogService == null) return;
+
+        // No authenticated actor exists at the console, and the purge is deployment-wide rather
+        // than aimed at one account, so actor and target are both absent by design.
+        auditLogService.record(new AuditEvent(null, AuditAction.OBJECT_STORAGE_PURGE, null, summary + " - operator console"));
     }
 
     /**

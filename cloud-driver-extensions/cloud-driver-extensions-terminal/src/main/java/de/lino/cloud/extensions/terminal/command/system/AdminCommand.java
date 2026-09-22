@@ -4,11 +4,13 @@ import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
+import de.lino.cloud.api.terminal.service.ArmedConfirmation;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.terminal.service.CommandUsage;
 import de.lino.cloud.extensions.terminal.command.CloudUserCommand;
 import org.jetbrains.annotations.NotNull;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -19,19 +21,35 @@ import java.util.Optional;
  * exposing this over HTTP, even behind a check, would be a privilege-escalation hole the moment
  * that check itself had a bug). Modeled on {@link CloudUserCommand}'s shape (email-keyed lookup,
  * {@link Terminal#displayApproved} status lines).
+ *
+ * <p>A grant is armed by one invocation and performed by a second carrying {@code confirm}: the
+ * flag it sets unlocks every account's record, the whole audit trail and the server metrics, so it
+ * must not be reachable by one mistyped line. A revoke takes effect on the first invocation and
+ * deliberately stays that way - shutting a privileged account out is the containment action, and
+ * it must never take two steps. Both are recorded in the audit trail by the service that performs
+ * them.
  */
 public class AdminCommand implements Command {
 
+    /**
+     * The arm-then-confirm guard a grant goes through, keyed on the exact command line so arming
+     * a grant for one address can never confirm one for another.
+     */
+    private static final ArmedConfirmation CONFIRMATION = new ArmedConfirmation(Duration.ofSeconds(15));
+
+    /** @return {@code "admin"} */
     @Override
     public @NotNull String name() {
         return "admin";
     }
 
+    /** @return {@code "isAdmin"} */
     @Override
     public @NotNull List<String> aliases() {
         return List.of("isAdmin");
     }
 
+    /** @return this command's description */
     @Override
     public @NotNull String description() {
         return "Grant or revoke admin privileges for an account";
@@ -41,11 +59,19 @@ public class AdminCommand implements Command {
     @Override
     public @NotNull List<CommandUsage> usages() {
         return List.of(
-                CommandUsage.of("admin grant <email>", "Give one account admin privileges"),
-                CommandUsage.of("admin revoke <email>", "Take one account's admin privileges away")
+                CommandUsage.of("admin grant <email>", "Arm giving one account admin privileges (does nothing on its own)"),
+                CommandUsage.of("admin grant <email> confirm", "Confirm the armed grant, within 15s of arming it"),
+                CommandUsage.of("admin revoke <email>", "Take one account's admin privileges away, at once")
         );
     }
 
+    /**
+     * Grants (armed, then confirmed) or revokes (at once) the admin flag for one account,
+     * answering immediately when the account already is what the invocation asks for.
+     *
+     * @param arguments {@code grant}/{@code revoke}, the account's e-mail address, and - for a
+     *     confirming grant - the word {@code confirm}
+     */
     @Override
     public void execute(@NotNull final CommandArguments arguments) {
 
@@ -71,6 +97,19 @@ public class AdminCommand implements Command {
 
         if (authUser.isEmpty()) {
             terminal.displayApproved("Account '&b%s&7' does not exist", emailAddress);
+            return;
+        }
+
+        // Answered before the guard: an operator asking for something that is already true must
+        // not end up arming a grant, and must not leave a stale armed slot behind either.
+        if (authUser.get().isAdmin() == grant) {
+            terminal.displayApproved("Account '&b%s&7' is already %s", emailAddress, grant ? "&aan admin" : "&cnot an admin");
+            return;
+        }
+
+        final String canonicalEmail = authUser.get().getEmailAddress();
+        if (grant && !CONFIRMATION.armOrConfirm(terminal, arguments, 2, "admin grant " + canonicalEmail,
+                "gives '" + canonicalEmail + "' the admin flag - read access to every account's record, the whole audit trail and the server metrics")) {
             return;
         }
 

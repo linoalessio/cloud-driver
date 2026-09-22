@@ -6,10 +6,12 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.factory.DataFactory;
+import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.RestFactory;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.file.StoredFileSummary;
+import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.jwt.EmailAlreadyRegisteredException;
 import de.lino.cloud.api.jwt.InvalidCredentialsException;
@@ -25,7 +27,6 @@ import de.lino.cloud.api.ratelimit.RateLimitAdmin;
 import de.lino.cloud.api.file.FileWithFolder;
 import de.lino.cloud.api.file.PresignedDownloadEncryption;
 import de.lino.cloud.api.file.PresignedUploadEncryption;
-import de.lino.cloud.api.s3storage.ObjectStorageException;
 import de.lino.cloud.api.s3storage.PresignedDownload;
 import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
@@ -390,6 +391,21 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final int DEFAULT_API_RATE_LIMIT_READ_MAX_REQUESTS = 300;
     /** Default {@code READ}-class rate-limit window, in seconds. */
     private static final long DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS = 60L;
+    /** {@code configuration.json} key for {@link #resolvePublicDownloadRateLimitMaxRequests}. */
+    private static final String PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY = "public-download-rate-limit-max-requests";
+    /** {@code configuration.json} key for {@link #resolvePublicDownloadRateLimitWindowSeconds}. */
+    private static final String PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY = "public-download-rate-limit-window-seconds";
+    /**
+     * Default request cap for the anonymous public-link download surface, per {@link
+     * #DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS}-second window - deliberately far tighter
+     * than the general {@code READ} budget. A public link is fetched once, occasionally a few more
+     * times when a client resumes with ranges; the bucket is keyed on the client address <em>and</em>
+     * the link token, so an ordinary recipient never approaches this, while a scripted loop against
+     * one link from one address does immediately.
+     */
+    private static final int DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS = 30;
+    /** Default public-download rate-limit window, in seconds. */
+    private static final long DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS = 60L;
     /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
     private static final long API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
     /**
@@ -402,6 +418,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String AUTH_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:auth:";
     /** Redis key prefix {@link #requireWithinApiRateLimit}'s {@code READ}-class counters live under - see {@link #AUTH_RATE_LIMIT_REDIS_KEY_PREFIX}. */
     private static final String API_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:api-read:";
+    /** Redis key prefix the anonymous public-download counters live under - kept apart from the {@code READ}-class prefix so the two budgets can never share a counter. */
+    private static final String PUBLIC_DOWNLOAD_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:public-download:";
     /** {@link #incrementRedisWindow}'s return value meaning "Redis is unavailable or the command failed - fall back to the in-process bucket". */
     private static final long REDIS_WINDOW_UNAVAILABLE = -1L;
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
@@ -505,9 +523,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final int UPLOAD_STREAM_BUFFER_SIZE = 8192;
 
     /**
-     * Above this size, {@link #handleUploadFile} hands the received scratch file to {@link
+     * Above this size, {@link #handleUploadFile}/{@link #handleReplaceFileContent} hand the
+     * received scratch file - and {@link #handleRestoreFileVersion} a scratch file spilled from
+     * the reconstructed snapshot - to the {@code Path} overloads of {@link
      * de.lino.cloud.api.user.ICloudUserService#uploadFile(String, String, java.nio.file.Path,
-     * String)} (the streaming
+     * String)}/{@link de.lino.cloud.api.user.ICloudUserService#replaceFileContent(String, String,
+     * java.nio.file.Path, Long)} (the streaming
      * path: checksum and chunk encryption run straight off the file, O(chunk size) heap) instead
      * of reading it back into a {@code byte[]} for the inline path. Below it, the inline path is
      * deliberately kept: its full-content pass is what powers DEFLATE compression and
@@ -519,6 +540,15 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * #MAX_REQUEST_SIZE_BYTES} - stream with bounded memory.
      */
     private static final long STREAMED_UPLOAD_THRESHOLD_BYTES = 32L * 1024 * 1024;
+
+    /**
+     * Upper bound on how many entries one {@code PATCH /files/{id}/content} body may carry: the
+     * number of whole {@link Constraints#CONTENT_CHUNK_SIZE_BYTES} chunks that fit in {@link
+     * #MAX_REQUEST_SIZE_BYTES}. No legitimate request reaches it - base64 inflates each chunk by
+     * a third, so a body at the request-size ceiling holds roughly 192 of them - but without it a
+     * body of empty-chunk entries buys a map entry and an array per ~35 bytes on the wire.
+     */
+    private static final int MAX_PATCH_CHUNKS_PER_REQUEST = (int) (MAX_REQUEST_SIZE_BYTES / Constraints.CONTENT_CHUNK_SIZE_BYTES);
 
     /**
      * {@code Cache-Control} value every conditional content route sends: the response may be
@@ -602,6 +632,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     @Nullable
     private final ObjectStorageService objectStorageService;
+
+    /** Opens a file's content as a decrypted stream for {@link #resolveDownloadableContent}, or {@code null} if this instance was built without one. */
+    @Nullable
+    private final FileFactory fileFactory;
 
     /** Paths with a {@code POST} handler registered via {@link #register}. */
     private final Map<String, Class<? extends Serialized>> registerResources = Maps.newHashMap();
@@ -702,10 +736,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * the live one would leave an operator's "reset" quietly ineffective - the exact class of
      * silent half-success this codebase has repeatedly been bitten by.
      *
-     * <p>An identity is cleared under both limiter prefixes and under both key shapes it can
-     * appear as: {@link #requireWithinAuthRateLimit} keys by the raw client address, while {@link
-     * #requireWithinApiRateLimit} keys by {@code "user:<id>"}/{@code "ip:<address>"}. An operator
-     * types one identifier and expects it cleared everywhere, so both are tried.
+     * <p>An identity is cleared under both limiter prefixes and under every key shape it can
+     * appear as: {@link #requireWithinAuthRateLimit} keys by the raw client address, {@link
+     * #requireWithinApiRateLimit} keys by {@code "user:<id>"}/{@code "ip:<address>"} for the
+     * {@code READ} class, and by {@code "public:<address>:<link path>"} for an anonymous
+     * public-link download - that third shape can only be matched by prefix, since it also carries
+     * the link, and an operator types the address alone expecting every link's window under it
+     * cleared. A Redis-backed public window cannot be cleared that way (there is no scan here) and
+     * instead expires on its own within its configured window.
      */
     @Override
     public int reset(@Nullable final String identity) {
@@ -718,6 +756,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
         int cleared = 0;
         if (this.authRateLimitBuckets.remove(identity) != null) cleared++;
+        // A public-download bucket is keyed by address *and* link path, so it can only be matched
+        // by prefix - an operator types the address alone and expects every link's window under it
+        // cleared.
+        final String publicPrefix = "public:" + identity + ":";
+        cleared += (int) this.apiRateLimitBuckets.keySet().stream().filter(key -> key.startsWith(publicPrefix)).count();
+        this.apiRateLimitBuckets.keySet().removeIf(key -> key.startsWith(publicPrefix));
         for (final String candidate : new String[]{identity, "user:" + identity, "ip:" + identity}) {
             if (this.apiRateLimitBuckets.remove(candidate) != null) cleared++;
             if (deleteRedisWindow(AUTH_RATE_LIMIT_REDIS_KEY_PREFIX + candidate)) cleared++;
@@ -779,6 +823,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         this.authService = null;
         this.cloudUserService = null;
         this.objectStorageService = null;
+        this.fileFactory = null;
     }
 
     /**
@@ -836,24 +881,47 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * Same as {@link #DefaultRestFactory(DataFactory, AuthService, CloudUserService)}, additionally
-     * taking {@code objectStorageService} so {@link #handleDownloadFileContent} can stream a
-     * direct-transfer file's content straight from S3 instead of resolving it as a {@code byte[]}
-     * first - see that method's own Javadoc. {@code null} (the other constructor's default)
-     * disables that streaming path entirely; {@code GET /files/{id}/content} still works exactly as
-     * before, just without the streaming optimization for a direct-transfer file.
+     * taking {@code objectStorageService} so {@link #handleDownloadFileContent} can stream an
+     * S3-backed file's content instead of resolving it as a {@code byte[]} first - see that
+     * method's own Javadoc. {@code null} (the other constructor's default) disables that streaming
+     * path entirely; {@code GET /files/{id}/content} still works exactly as before, just always
+     * fully materializing. No {@link FileFactory} is supplied here, so only the layouts this class
+     * can stream by itself take the streaming path - see {@link #DefaultRestFactory(DataFactory,
+     * AuthService, CloudUserService, ObjectStorageService, FileFactory)}.
      *
      * @param dataFactory the {@link DataFactory} every registered resource is backed by
      * @param authService verifies login and issued JWTs; must not be {@code null}
      * @param cloudUserService backs the {@code /files} routes, or {@code null} to leave them unmounted
-     * @param objectStorageService backs a direct-transfer file's streamed download, or {@code null} if this deployment hasn't opted into S3-backed s3storage
+     * @param objectStorageService backs a streamed download, or {@code null} if this deployment hasn't opted into S3-backed s3storage
      */
     public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
                                @Nullable final CloudUserService cloudUserService, @Nullable final ObjectStorageService objectStorageService) {
+        this(dataFactory, authService, cloudUserService, objectStorageService, null);
+    }
+
+    /**
+     * Same as {@link #DefaultRestFactory(DataFactory, AuthService, CloudUserService,
+     * ObjectStorageService)}, additionally taking the {@link FileFactory} whose {@link
+     * FileFactory#openContentStream} decrypts an S3-backed file's content chunk by chunk - which
+     * is what lets {@code GET /files/{id}/content} and the public-link download answer a file far
+     * larger than this process's heap without ever materializing it.
+     *
+     * @param dataFactory the {@link DataFactory} every registered resource is backed by
+     * @param authService verifies login and issued JWTs; must not be {@code null}
+     * @param cloudUserService backs the {@code /files} routes, or {@code null} to leave them unmounted
+     * @param objectStorageService backs a streamed download, or {@code null} if this deployment hasn't opted into S3-backed s3storage
+     * @param fileFactory streams a file's content straight out of object storage instead of
+     *     materializing it, or {@code null} to keep the fully-materializing behaviour
+     */
+    public DefaultRestFactory(@NonNull final DataFactory dataFactory, @NonNull final AuthService authService,
+                               @Nullable final CloudUserService cloudUserService, @Nullable final ObjectStorageService objectStorageService,
+                               @Nullable final FileFactory fileFactory) {
         this.dataFactory = dataFactory;
         this.apiKey = null;
         this.authService = Objects.requireNonNull(authService, "@DefaultRestFactory.init: authService cannot be null");
         this.cloudUserService = cloudUserService;
         this.objectStorageService = objectStorageService;
+        this.fileFactory = fileFactory;
     }
 
     /** Registers a {@code POST} handler for {@code path}, via {@link #registerOperation}. */
@@ -1312,11 +1380,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * access, where "per user" has no meaning to scope against; adding IP-only limiting there
      * would protect a threat model this codebase's {@code ApiKey} path doesn't actually have today.
      *
-     * <p>Excludes {@link #AUTH_PATH_PREFIX} entirely (already covered by {@link
-     * #requireWithinAuthRateLimit}'s own dedicated, tighter limiter - not duplicated here) and
-     * {@link #PUBLIC_PATH_PREFIX} (a public share link's own request volume is bounded by its
-     * token's 384-bit search space making brute-forcing infeasible regardless; a dedicated limiter
-     * for that surface is a known, flagged, out-of-scope follow-up, not silently forgotten).
+     * <p>Excludes {@link #AUTH_PATH_PREFIX} entirely - already covered by {@link
+     * #requireWithinAuthRateLimit}'s own dedicated, tighter limiter, not duplicated here.
+     *
+     * <p>{@link #PUBLIC_PATH_PREFIX} is metered here too, but under its own, tighter budget
+     * ({@link #PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY}/{@link
+     * #PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY}) and its own bucket, keyed on the
+     * client address <em>and</em> the link token together: it is the only surface with no account
+     * behind it, so neither one link nor one client may exhaust the allowance of the others.
      *
      * <p>Also excludes {@code GET /files/{id}/thumbnail} ({@link #FILES_PATH} + {@link
      * #THUMBNAIL_PATH_SUFFIX}, added 2026-09-10): the desktop/mobile file browsers fire one
@@ -1355,8 +1426,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * configured limit right at a window boundary; acceptable here for the same "slow down abuse,
      * not a hard security perimeter" reasoning).
      *
-     * @throws TooManyRequestsResponse if this identity has exceeded the {@code READ}-class
-     *     configured cap within the current window
+     * @throws TooManyRequestsResponse if this identity has exceeded the configured cap of its
+     *     class ({@code READ}, or public download) within that class's current window
      */
     private void requireWithinApiRateLimit(@NotNull final Context ctx) {
         if (ctx.path().startsWith(AUTH_PATH_PREFIX)) {
@@ -1371,17 +1442,21 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (ctx.path().startsWith(FILES_PATH + "/") && ctx.path().endsWith(THUMBNAIL_PATH_SUFFIX)) {
             return;
         }
-        final long windowSeconds = resolveApiRateLimitReadWindowSeconds();
+        final long windowSeconds = publicDownload
+                ? resolvePublicDownloadRateLimitWindowSeconds() : resolveApiRateLimitReadWindowSeconds();
         final long windowMillis = windowSeconds * 1000L;
-        final int maxRequests = resolveApiRateLimitReadMaxRequests();
+        final int maxRequests = publicDownload
+                ? resolvePublicDownloadRateLimitMaxRequests() : resolveApiRateLimitReadMaxRequests();
         // The public prefix is the only surface with no account behind it, so it is keyed on the
         // client address *and* the token: one shared link cannot then exhaust the allowance of
         // every other link, and one client cannot exhaust a popular link's for everyone else.
         final String bucketKey = publicDownload
                 ? "public:" + resolveRateLimitKey(ctx) + ":" + ctx.path()
                 : resolveApiRateLimitIdentity(ctx);
+        final String redisKeyPrefix = publicDownload
+                ? PUBLIC_DOWNLOAD_RATE_LIMIT_REDIS_KEY_PREFIX : API_RATE_LIMIT_REDIS_KEY_PREFIX;
 
-        final long redisCount = incrementRedisWindow(API_RATE_LIMIT_REDIS_KEY_PREFIX + bucketKey, windowSeconds);
+        final long redisCount = incrementRedisWindow(redisKeyPrefix + bucketKey, windowSeconds);
         if (redisCount != REDIS_WINDOW_UNAVAILABLE) {
             if (redisCount > maxRequests) {
                 throw new TooManyRequestsResponse("Too many requests - try again later");
@@ -1401,7 +1476,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 throw new TooManyRequestsResponse("Too many requests - try again later");
             }
         }
-        maybeSweepApiRateLimitBuckets(windowMillis);
+        // Both classes share one bucket map, so the sweep must age entries out on the longer of
+        // the two windows - sweeping on the shorter one would evict the other class's live buckets.
+        maybeSweepApiRateLimitBuckets(Math.max(
+                resolveApiRateLimitReadWindowSeconds(), resolvePublicDownloadRateLimitWindowSeconds()) * 1000L);
     }
 
     /**
@@ -1508,6 +1586,22 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         return configuration.contains(API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY)
                 ? configuration.getLong(API_RATE_LIMIT_READ_WINDOW_SECONDS_CONFIG_KEY)
                 : DEFAULT_API_RATE_LIMIT_READ_WINDOW_SECONDS;
+    }
+
+    /** Reads {@link #PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY}, defaulting to {@link #DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS} if unset. */
+    private static int resolvePublicDownloadRateLimitMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS;
+    }
+
+    /** Reads {@link #PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY}, defaulting to {@link #DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS} if unset. */
+    private static long resolvePublicDownloadRateLimitWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS;
     }
 
     /**
@@ -2487,6 +2581,35 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     }
 
     /**
+     * Writes {@code content} to a fresh temp file under {@link Constraints#UPLOAD_SCRATCH_PATH}
+     * (created on first use), the counterpart of {@link #receiveUploadToScratchFile} for content
+     * this server already holds: it lets an already-materialized body take a streaming service
+     * overload instead of being cloned, DEFLATE-compressed and base64-encoded on the heap again.
+     * Deletes the partially-written file before propagating a write failure.
+     *
+     * @param content the bytes to spill to disk
+     * @param namePrefix the temp file's name prefix, so an operator can tell what produced it
+     * @return the scratch file's path, fully written - the caller is responsible for deleting it
+     */
+    private static Path writeToScratchFile(@NotNull final byte[] content, @NotNull final String namePrefix) {
+        try {
+            Files.createDirectories(Constraints.UPLOAD_SCRATCH_PATH);
+            final Path scratchFile = Files.createTempFile(Constraints.UPLOAD_SCRATCH_PATH, namePrefix, ".tmp");
+            try {
+                Files.write(scratchFile, content);
+            } catch (final IOException writeFailure) {
+                deleteScratchFileQuietly(scratchFile);
+                throw writeFailure;
+            }
+            return scratchFile;
+        } catch (final IOException e) {
+            throw new UncheckedIOException(
+                    "@DefaultRestFactory.writeToScratchFile: failed to write a scratch file under "
+                            + Constraints.UPLOAD_SCRATCH_PATH, e);
+        }
+    }
+
+    /**
      * Builds a {@link StoredFileSummary} straight from a freshly uploaded/fetched {@link
      * StoredFile} plus its resolved folder placement - the same descriptive-fields-only shape
      * {@link CloudUserService#resolveFileSummary} builds for a listing, reused here by {@link
@@ -2619,10 +2742,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * The session-geometry half of a {@code POST /files/upload-session}/{@code GET
-     * /files/upload-session/{id}} response body - see each handler's own Javadoc.
+     * /files/upload-session/{id}} response body - see each handler's own Javadoc. {@code
+     * checksumSha256} is the plaintext digest the session is bound to: the session may only ever
+     * carry that content, and completion refuses any other declaration.
      */
     private record UploadSessionDto(String fileId, long partSizeBytes, int partCount, long totalObjectBytes,
-                                     List<Integer> uploadedPartNumbers, UploadEncryptionDto encryption) {
+                                     List<Integer> uploadedPartNumbers, UploadEncryptionDto encryption,
+                                     String checksumSha256) {
     }
 
     /** Serializes {@code encryption} the same base64 way {@link #handleBeginPresignedUpload} does, or {@code null} through. */
@@ -2639,7 +2765,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * BeginUploadRequest} body, but {@code checksumSha256} is <b>required</b> here (it drives
      * the dedup precheck and completion metadata). Responds {@code 200} with either {@code
      * {"alreadyStored": <summary>}} (dedup precheck hit - upload nothing) or the session's
-     * geometry ({@link UploadSessionDto}, {@code uploadedPartNumbers} empty) - part URLs are
+     * geometry ({@link UploadSessionDto}, {@code uploadedPartNumbers} empty, {@code
+     * checksumSha256} echoing the digest the session is bound to) - part URLs are
      * fetched one at a time via the part-url route as the upload proceeds. {@code 503} when
      * resumable sessions aren't configured on this deployment.
      */
@@ -2663,7 +2790,7 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                         final de.lino.cloud.api.file.ResumableUploadTicket ticket = begin.ticket();
                         ctx.status(200).contentType("application/json").result(this.gson.toJson(new UploadSessionDto(
                                 ticket.fileId(), ticket.partSizeBytes(), ticket.partCount(), ticket.totalObjectBytes(),
-                                List.of(), toEncryptionDto(ticket.encryption()))));
+                                List.of(), toEncryptionDto(ticket.encryption()), ticket.checksumSha256Hex())));
                         return null;
                     }
                     throw folderFailureOrPropagate(failure, StoredFile.class, request.fileName());
@@ -2672,9 +2799,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
 
     /**
      * {@code GET /files/upload-session/{id}} - the session's durable progress (which parts the
-     * object store already holds) plus its geometry and recovered encryption parameters, so a
-     * client resuming after a crash needs nothing but the session id. {@code 404} for an
-     * unknown session or someone else's.
+     * object store already holds) plus its geometry, recovered encryption parameters and {@code
+     * checksumSha256} (the digest the session is bound to), so a client resuming after a crash
+     * needs nothing but the session id and can check its local file is still that content before
+     * re-encrypting anything. {@code 404} for an unknown session or someone else's.
      */
     private void handleResumableUploadStatus(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -2685,7 +2813,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     if (failure == null) {
                         ctx.contentType("application/json").result(this.gson.toJson(new UploadSessionDto(
                                 status.fileId(), status.partSizeBytes(), status.partCount(), status.totalObjectBytes(),
-                                status.uploadedPartNumbers(), toEncryptionDto(status.encryption()))));
+                                status.uploadedPartNumbers(), toEncryptionDto(status.encryption()),
+                                status.checksumSha256Hex())));
                         return null;
                     }
                     throw notFoundOrPropagate(failure, StoredFile.class, id);
@@ -2728,7 +2857,9 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * runs (same {@link CompleteUploadRequest} body, same {@code 201} summary response, same
      * length-verification rejections). A still-incomplete session (missing parts) answers
      * {@code 404}-shaped failure with the missing-parts message - fetch {@code GET
-     * /files/upload-session/{id}} and upload what's missing first.
+     * /files/upload-session/{id}} and upload what's missing first. A body declaring a {@code
+     * checksumSha256} other than the one the session was begun for answers {@code 409}: the
+     * session is bound to one content, so the client aborts it and begins a new session.
      */
     private void handleCompleteResumableUpload(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -2932,21 +3063,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * unchanged, alongside this route) returns. Ownership-checked the same way via {@link
      * CloudUserService#getFile}.
      *
-     * <p>{@link StoredFile#content()} still fully materializes the decrypted plaintext in memory
-     * before this method runs for an inline or app-encrypted-S3 file - {@code
-     * EnvelopeEncryptionService}'s AES-GCM decrypt is single-shot, not chunked - a real,
-     * deliberately out-of-scope limitation, not an oversight here. What this route eliminates for those files is everything
-     * downstream of that plaintext: the ~1.37x base64 string, the enclosing JSON document, and the
-     * UTF-8 re-encoding {@link Context#result(String)} would otherwise perform on top of it - {@link
-     * Context#writeSeekableStream(java.io.InputStream, String, long)} streams the already-resolved
-     * bytes straight to the response instead.
+     * <p><b>An S3-backed file whose size the row records is streamed, never materialized</b> -
+     * see {@link #resolveDownloadableContent}: its content is decrypted chunk by chunk straight off
+     * the object-store stream, so heap use is bounded by the chunk size regardless of the file's
+     * size, whether the object was written by this server or by a client on the direct-transfer
+     * path. Inline content, a legacy row with no recorded size, and any instance with no object
+     * store configured still resolve via {@link CloudUserService#getFile} as before, fully
+     * materializing the plaintext first.
      *
-     * <p><b>A direct-transfer (SSE-S3) file is streamed straight from S3</b> when {@link
-     * #objectStorageService} is configured - see {@link #resolveDownloadableContent} - so that mode
-     * never materializes a {@code byte[]} in this JVM at all, not even briefly. Every other content
-     * mode (inline, app-encrypted-S3, or a direct-transfer file on an instance with no {@link
-     * #objectStorageService} configured) still resolves via {@link CloudUserService#getFile} as
-     * before.
+     * <p>What this route eliminates on either path, compared with {@link #handleDownloadFile}, is
+     * everything downstream of the plaintext: the ~1.37x base64 string, the enclosing JSON
+     * document, and the UTF-8 re-encoding {@link Context#result(String)} would otherwise perform on
+     * top of it - {@link Context#writeSeekableStream(java.io.InputStream, String, long)} streams
+     * the content straight to the response instead.
      */
     private void handleDownloadFileContent(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -3168,19 +3297,19 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      *
      * <p>If {@link #objectStorageService} is configured, checks access via {@link
      * CloudUserService#checkFileAccess} (no content resolution) and looks up the file's bare,
-     * unresolved metadata via {@link #dataFactory} directly (never through {@link
-     * de.lino.cloud.api.factory.FileFactory}, which would resolve content). If that metadata shows a
-     * direct-transfer, S3-backed file, its content is streamed straight from S3 via {@link
-     * ObjectStorageService#getObjectStream} - {@link StoredFile#sizeBytes()} already reports the
-     * real, confirmed size for such a file without needing its content at all (see {@code
-     * StoredFile}'s own {@code declaredSizeBytes} Javadoc), so nothing about the response needs the
-     * bytes materialized up front either.
+     * unresolved metadata via {@link #dataFactory} directly (never through {@link FileFactory},
+     * which would resolve content). A file whose plaintext size the row itself records ({@link
+     * StoredFile#sizeBytesIfKnown()}) is then opened as a decrypted stream through {@link
+     * FileFactory#openContentStream} and forwarded to the response without ever being
+     * materialized - so a file far larger than this process's heap is served with memory use
+     * bounded by the chunk size, not the file's size. The recorded size is what makes that
+     * possible: a streamed response must declare an exact {@code Content-Length}, so a row whose
+     * size could only be learned by fetching its content is not eligible.
      *
-     * <p>Every other case - inline content, app-encrypted-S3 content, a direct-transfer file whose
-     * metadata vanished between the two lookups above (a genuine, narrow race - treated the same as
-     * "not eligible for streaming" rather than failing outright), or no {@link #objectStorageService}
-     * configured on this instance at all - falls back to {@link CloudUserService#getFile}'s existing,
-     * fully-materializing resolution.
+     * <p>Every other case - a legacy row with no recorded size, a file whose stream could not be
+     * opened, metadata that vanished between the two lookups above (a genuine, narrow race), or no
+     * {@link #objectStorageService}/{@link #fileFactory} configured on this instance at all -
+     * falls back to {@link CloudUserService#getFile}'s existing, fully-materializing resolution.
      */
     private DownloadableContent resolveDownloadableContent(final String userId, final String storedFileId) {
         if (this.objectStorageService != null) {
@@ -3192,26 +3321,44 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 throw new RuntimeException(
                         "@DefaultRestFactory.resolveDownloadableContent: failed to look up metadata for " + storedFileId, e);
             }
-            // isContentKeyProtected excluded deliberately: such an object is ciphertext in the
-            // standard chunked layout, so streaming it raw would hand the caller undecryptable
-            // bytes - the materializing fall-back below decrypts it server-side instead.
-            if (metadata.isPresent() && metadata.get().isS3Backed() && metadata.get().isDirectTransfer()
-                    && !metadata.get().isContentKeyProtected()) {
+            if (metadata.isPresent()) {
                 final StoredFile file = metadata.get();
-                final InputStream stream;
-                try {
-                    stream = this.objectStorageService.getObjectStream(file.objectStorageKey());
-                } catch (final ObjectStorageException e) {
-                    throw new RuntimeException(
-                            "@DefaultRestFactory.resolveDownloadableContent: failed to stream S3 content for " + storedFileId, e);
+                // A streamed response must declare an exact Content-Length, so a row whose size
+                // can only be learned by fetching its content is not eligible.
+                final Long declaredSize = file.sizeBytesIfKnown();
+                if (declaredSize != null) {
+                    final InputStream stream = openStreamedContent(storedFileId);
+                    if (stream != null) {
+                        return new DownloadableContent(file.fileName(), file.contentType(), declaredSize, stream);
+                    }
                 }
-                return new DownloadableContent(file.fileName(), file.contentType(), file.sizeBytes(), stream);
             }
         }
         final FileWithFolder entry = this.cloudUserService.getFile(userId, storedFileId);
         final StoredFile file = entry.file();
         final byte[] content = file.content();
         return new DownloadableContent(file.fileName(), file.contentType(), content.length, new ByteArrayInputStream(content));
+    }
+
+    /**
+     * Opens {@code storedFileId}'s content as a decrypted stream via {@link #fileFactory}, or
+     * {@code null} if this instance has no file factory, the file cannot be streamed, or opening
+     * it failed - in every one of which cases the caller falls back to the materializing path
+     * rather than failing the request.
+     *
+     * @param storedFileId the file whose content to open
+     * @return the decrypted content stream, or {@code null} to fall back
+     */
+    private InputStream openStreamedContent(final String storedFileId) {
+        if (this.fileFactory == null) {
+            return null;
+        }
+        try {
+            return this.fileFactory.openContentStream(storedFileId).orElse(null);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException
+                       | FileIntegrityException | RuntimeException failure) {
+            return null;
+        }
     }
 
     /**
@@ -3261,8 +3408,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@link CloudUserService#replaceFileContent} (versioning). Streams the raw {@code application/octet-stream} request body to a
      * scratch file first, the same {@link #receiveUploadToScratchFile} primitive {@link
      * #handleUploadFile} already uses, for the same "never buffer an arbitrarily large body in
-     * heap" reasoning. Responds {@code 200} (not {@code 201} - this replaces an existing resource,
-     * it doesn't create one) with a {@link StoredFileSummary} of the updated file.
+     * heap" reasoning. Above {@link #STREAMED_UPLOAD_THRESHOLD_BYTES} the scratch file is handed
+     * straight to {@link de.lino.cloud.api.user.ICloudUserService#replaceFileContent(String, String,
+     * java.nio.file.Path, Long)} instead of being read back into a {@code byte[]} - checksum and
+     * chunk encryption then run off the file, and the new content is stored uncompressed and
+     * reindexed by name alone, with no text extraction. Below the threshold the inline path is
+     * kept deliberately, for the DEFLATE compression and text extraction it powers. Responds
+     * {@code 200} (not {@code 201} - this replaces an existing resource, it doesn't create one)
+     * with a {@link StoredFileSummary} of the updated file.
      */
     private void handleReplaceFileContent(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -3369,7 +3522,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * rule, versioning, quota, reindexing) is byte-for-byte the {@code PUT} route's behavior -
      * see {@link CloudUserService#patchFileContent}, which delegates to the same replacement
      * pipeline. A stale manifest (patching chunks that no longer line up) answers {@code 400} -
-     * the client should re-fetch the manifest, or fall back to a full {@code PUT}.
+     * the client should re-fetch the manifest, or fall back to a full {@code PUT}. A body
+     * declaring a {@code totalSizeBytes} larger than the current content plus the bytes it
+     * actually carries, or carrying more than {@link #MAX_PATCH_CHUNKS_PER_REQUEST} chunk
+     * entries, is refused with {@code 400} as well - neither can describe content this route
+     * could assemble.
      */
     private void handlePatchFileContent(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -3380,6 +3537,14 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         if (request == null || request.totalSizeBytes() == null || request.totalSizeBytes() < 0
                 || request.changedChunks() == null || request.changedChunks().isEmpty()) {
             throw new BadRequestResponse("Body must carry 'totalSizeBytes' and a non-empty 'changedChunks' array");
+        }
+        if (request.totalSizeBytes() > Integer.MAX_VALUE) {
+            throw new BadRequestResponse("'totalSizeBytes' exceeds the largest content this route can assemble ("
+                    + Integer.MAX_VALUE + " bytes)");
+        }
+        if (request.changedChunks().size() > MAX_PATCH_CHUNKS_PER_REQUEST) {
+            throw new BadRequestResponse("'changedChunks' carries more than " + MAX_PATCH_CHUNKS_PER_REQUEST
+                    + " entries - patch in smaller batches or fall back to a full upload");
         }
         final Map<Integer, byte[]> changedChunks = new HashMap<>();
         for (final PatchChunk chunk : request.changedChunks()) {
@@ -3550,6 +3715,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * file's owner or a direct {@code EDIT} grantee on it. Restoring is content, not structure,
      * and is no more powerful than the overwrite an {@code EDIT} grantee already holds - see
      * {@link de.lino.cloud.api.file.SharePermission}'s own Javadoc.
+     *
+     * <p>A snapshot larger than {@link #STREAMED_UPLOAD_THRESHOLD_BYTES} is written to a scratch
+     * file and restored through {@link de.lino.cloud.api.user.ICloudUserService#replaceFileContent(String,
+     * String, java.nio.file.Path, Long)} rather than being handed over as a {@code byte[]}: the
+     * restored content is then chunk-encrypted straight off disk, and - exactly as a large upload
+     * or a large replacement does - it is stored uncompressed and reindexed by name alone, with no
+     * text extraction. The scratch file is deleted on every exit path.
      */
     private void handleRestoreFileVersion(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -3571,7 +3743,22 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 .supplyAsync(() -> {
                     final Optional<de.lino.cloud.api.versioning.FileVersionContent> version = versioningService.getVersionContent(id, versionNumber);
                     if (version.isEmpty()) return Optional.<StoredFileSummary>empty();
-                    return Optional.of(this.cloudUserService.replaceFileContent(userId, id, version.get().content()));
+                    final byte[] content = version.get().content();
+                    // The same threshold split handleUploadFile/handleReplaceFileContent apply. A
+                    // snapshot is as large as the content it was captured from, and the inline
+                    // path would hold a clone of it, its DEFLATE output and its base64 encoding
+                    // alongside the snapshot itself - several times the file, for one request.
+                    // Spilling it to a scratch file lets the persistence layer chunk-encrypt
+                    // straight off disk instead.
+                    if (content.length > STREAMED_UPLOAD_THRESHOLD_BYTES) {
+                        final Path scratchFile = writeToScratchFile(content, "restore-");
+                        try {
+                            return Optional.of(this.cloudUserService.replaceFileContent(userId, id, scratchFile, null));
+                        } finally {
+                            deleteScratchFileQuietly(scratchFile);
+                        }
+                    }
+                    return Optional.of(this.cloudUserService.replaceFileContent(userId, id, content));
                 })
                 .handle((summary, failure) -> {
                     if (failure != null) {
@@ -4427,7 +4614,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * CloudUserService#resolvePublicFileLink}, which itself checks the link exists, hasn't expired,
      * and its file hasn't since been trashed/removed by its owner - {@code 404} (via {@link
      * #folderFailureOrPropagate}'s {@link de.lino.cloud.api.file.exception.PublicShareLinkInvalidException}
-     * handling) if any of those checks fail, one message for all three (don't leak which).
+     * handling) if any of those checks fail, one message for all three (don't leak which). A file
+     * whose malware-scan verdict is not clean is reported as that same invalid-link error, never as
+     * the {@code 409}/{@code 403} an authenticated caller would get - an anonymous caller must not
+     * be able to tell a real-but-flagged token from an unknown one. The content itself is streamed
+     * rather than buffered, so a file's size never becomes this process's memory use.
      */
     private void handleResolvePublicFileLink(@NotNull final Context ctx) {
         final String token = ctx.pathParam("token");
@@ -4437,9 +4628,15 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                     // authenticated content route does. Materializing the plaintext here instead
                     // meant every anonymous request held a whole file in heap - on the one route
                     // with no account behind it to bound how many of those there can be.
-                    final de.lino.cloud.api.user.ICloudUserService.PublicFileLinkTarget target =
-                            this.cloudUserService.resolvePublicFileLinkTarget(token);
-                    return resolveDownloadableContent(target.ownerAuthUserId(), target.storedFileId());
+                    try {
+                        final de.lino.cloud.api.user.ICloudUserService.PublicFileLinkTarget target =
+                                this.cloudUserService.resolvePublicFileLinkTarget(token);
+                        return resolveDownloadableContent(target.ownerAuthUserId(), target.storedFileId());
+                    } catch (final de.lino.cloud.api.file.exception.FileScanBlockedException scanBlocked) {
+                        // A caller with no account must never be told a token is real but its file
+                        // was flagged: every "not usable" reason answers identically here.
+                        throw new de.lino.cloud.api.file.exception.PublicShareLinkInvalidException();
+                    }
                 })
                 .handle((download, failure) -> {
                     if (failure == null) {

@@ -58,8 +58,9 @@ import java.util.stream.Stream;
  * fakes of the two thin object-store boundaries ({@link ResumableUploadService}/{@link
  * PresignedTransferService}) - the real {@code S3ResumableUploadService} is a direct AWS-SDK
  * wrapper, so everything worth testing (session persistence, dedup precheck, status merge,
- * completion validation and registration, abort, the purge sweep's multipart abort) lives in the
- * code this sample drives. Prints pass/fail per check and exits non-zero on any failure.
+ * completion validation and registration, declared-digest binding, abort, the purge sweep's
+ * multipart abort) lives in the code this sample drives. Prints pass/fail per check and exits
+ * non-zero on any failure.
  */
 public final class ResumableUploadSample {
 
@@ -120,6 +121,7 @@ public final class ResumableUploadSample {
             store.putPart(ticket.fileId(), partOf(content, 3, ticket), 3);
             final ResumableUploadStatus status = cloudUserService.getResumableUploadStatus(userId, ticket.fileId());
             check("status reports exactly the parts the store holds", status.uploadedPartNumbers().equals(java.util.List.of(1, 3)));
+            check("status echoes the checksum the session was begun for", checksumHex.equals(status.checksumSha256Hex()));
 
             boolean completeRejected = false;
             try {
@@ -130,6 +132,15 @@ public final class ResumableUploadSample {
             check("completing with a missing part is rejected", completeRejected);
 
             store.putPart(ticket.fileId(), partOf(content, 2, ticket), 2);
+
+            boolean wrongChecksumRejected = false;
+            try {
+                cloudUserService.completeResumableUpload(userId, ticket.fileId(), "big-file.bin", sha256Hex(new byte[]{1}), null);
+            } catch (final IllegalStateException differentContent) {
+                wrongChecksumRejected = true;
+            }
+            check("completing with a checksum other than the session's is rejected", wrongChecksumRejected);
+
             final StoredFileSummary summary = cloudUserService.completeResumableUpload(
                     userId, ticket.fileId(), "big-file.bin", checksumHex, null);
             check("completion registers the file at the real size", summary.sizeBytes() == content.length);
@@ -373,6 +384,11 @@ public final class ResumableUploadSample {
 
         @Override
         public void reset() {
+            throw new UnsupportedOperationException("not used by this sample");
+        }
+
+        @Override
+        public java.util.List<String> resetScope() {
             throw new UnsupportedOperationException("not used by this sample");
         }
     }

@@ -16,6 +16,7 @@ from .exceptions import (
     ApiException,
     BadRequestError,
     ConflictError,
+    ContentIntegrityError,
     ForbiddenError,
     NotFoundError,
     PayloadTooLargeError,
@@ -26,6 +27,7 @@ from .exceptions import (
     UnauthorizedError,
 )
 from .live_updates import LiveUpdateClient
+from .models import BeginUploadSessionResult, ConditionalDownload, UploadSession, UploadSessionPartUrl
 from .token_store import DatabaseTokenStore, FileTokenStore, InMemoryTokenStore, KeyringTokenStore, TokenStore
 
 __all__ = [
@@ -48,6 +50,11 @@ __all__ = [
     "TooManyRequestsError",
     "ServiceUnavailableError",
     "UnsupportedEncryptionError",
+    "ContentIntegrityError",
+    "ConditionalDownload",
+    "BeginUploadSessionResult",
+    "UploadSession",
+    "UploadSessionPartUrl",
 ]
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"

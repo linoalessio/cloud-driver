@@ -39,7 +39,8 @@ private const val MAX_TOTAL_DECOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024
  * (the archive being extracted may have come from anywhere), and a `../`-prefixed entry name is a
  * well-known way to escape the intended extraction directory. Entry names are normalized from
  * `\` to `/` first (some Windows-authored zips use backslashes), mirroring [zipDirectory]'s own
- * entry-name normalization on the write side.
+ * entry-name normalization on the write side. Both the entry's resolved path and the destination
+ * are absolutised and normalised before they are compared.
  *
  * `suspend`, dispatched on [Dispatchers.IO] - matches [zipDirectory]'s own reasoning: blocking
  * filesystem I/O plus DEFLATE decompression has no business running on the calling coroutine's
@@ -56,13 +57,16 @@ private const val MAX_TOTAL_DECOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024
  *                      or the archive's total decompressed size would exceed [MAX_TOTAL_DECOMPRESSED_BYTES]
  */
 suspend fun extractZip(zipPath: Path, destinationDirectory: Path): Unit = withContext(Dispatchers.IO) {
-    Files.createDirectories(destinationDirectory)
+    // Both sides of the containment check below have to be absolute and normalised, or a relative
+    // or `..`-containing destination makes the comparison succeed on a path that really escapes.
+    val root = destinationDirectory.toAbsolutePath().normalize()
+    Files.createDirectories(root)
     var totalDecompressedBytes = 0L
     ZipFile(zipPath.toFile()).use { zipFile ->
         for (entry in zipFile.entries()) {
             val entryName = entry.name.replace('\\', '/')
-            val resolved = destinationDirectory.resolve(entryName).normalize()
-            if (!resolved.startsWith(destinationDirectory)) {
+            val resolved = root.resolve(entryName).toAbsolutePath().normalize()
+            if (!resolved.startsWith(root)) {
                 throw IOException("Zip entry escapes destination directory: ${entry.name}")
             }
             if (entry.isDirectory) {

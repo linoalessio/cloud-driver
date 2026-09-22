@@ -278,6 +278,30 @@ public actor APIClient {
         return data
     }
 
+    /// `downloadFileContent(fileId:)` made conditional: tells the server which copy of the content
+    /// the caller already has, so an unchanged file transfers no body at all.
+    ///
+    /// Pass the `entityTag` the previous fetch of the same file returned; the server answers 304
+    /// when it still matches and the result is `.notModified`, meaning "keep using the copy that
+    /// tag described". A `nil` tag makes an ordinary unconditional fetch.
+    public func downloadFileContentIfChanged(fileId: String, entityTag: String?) async throws -> ConditionalContent {
+        var request = plainRequest("/files/\(fileId)/content", method: "GET", authenticated: true)
+        if let entityTag {
+            request.setValue(entityTag, forHTTPHeaderField: "If-None-Match")
+            // URLSession keeps its own URLCache for this configuration and would otherwise run
+            // (or answer) the revalidation itself, turning the server's 304 into a 200 served
+            // from that cache - this request's validator is the caller's, so it must reach the
+            // server and its status must come back unrewritten.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        let (data, httpResponse) = try await execute(request, passthroughStatusCodes: [304])
+        let serverTag = httpResponse.value(forHTTPHeaderField: "ETag")
+        if httpResponse.statusCode == 304 {
+            return .notModified(entityTag: serverTag ?? entityTag)
+        }
+        return .content(data: data, entityTag: serverTag)
+    }
+
     public func deleteFile(fileId: String) async throws {
         let request = plainRequest("/files/\(fileId)", method: "DELETE", authenticated: true)
         _ = try await execute(request)
@@ -498,6 +522,231 @@ public actor APIClient {
         try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 
+    // MARK: - Resumable multipart upload sessions
+
+    /// `POST /files/upload-session` - begins a crash-resumable multipart upload. `sizeBytes` and
+    /// `checksumSha256` are the *plaintext* length and digest; a dedup precheck hit comes back as
+    /// `.alreadyStored` with no session at all, meaning nothing has to be uploaded.
+    ///
+    /// Throws `APIError.server(status: 503, ...)` if this deployment offers no resumable sessions -
+    /// callers should fall back to `uploadFileViaPresignedURL` on exactly that status.
+    public func beginUploadSession(fileName: String, sizeBytes: Int64, checksumSha256: String,
+                                   folderId: String?) async throws -> BeginUploadSessionResult {
+        let request = try jsonRequest(
+            "/files/upload-session",
+            method: "POST",
+            body: BeginUploadSessionRequest(fileName: fileName, sizeBytes: sizeBytes, folderId: folderId, checksumSha256: checksumSha256),
+            authenticated: true
+        )
+        let (data, _) = try await execute(request)
+        // The two outcomes share one route and one status, distinguished only by the presence of
+        // the `alreadyStored` key - probed on the raw body rather than guessed at by trying both
+        // decodes, which is what the Java client does against the same response.
+        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           object["alreadyStored"] != nil {
+            struct AlreadyStoredEnvelope: Decodable {
+                let alreadyStored: StoredFileSummaryResponse
+            }
+            let envelope: AlreadyStoredEnvelope = try decode(data)
+            return .alreadyStored(envelope.alreadyStored)
+        }
+        let session: UploadSessionResponse = try decode(data)
+        return .session(session)
+    }
+
+    /// `GET /files/upload-session/{id}` - the session's durable progress: geometry, the parts the
+    /// object store already holds, and an encrypted session's recovered encryption parameters, so
+    /// resuming needs nothing but the session id.
+    public func uploadSessionStatus(sessionFileId: String) async throws -> UploadSessionResponse {
+        let request = plainRequest("/files/upload-session/\(sessionFileId)", method: "GET", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// `POST /files/upload-session/{id}/parts/{n}/url` - presigns one 1-based part's upload.
+    public func presignUploadSessionPart(sessionFileId: String, partNumber: Int) async throws -> UploadSessionPartUrl {
+        let request = plainRequest("/files/upload-session/\(sessionFileId)/parts/\(partNumber)/url", method: "POST", authenticated: true)
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// `POST /files/upload-session/{id}/complete` - assembles the uploaded parts and registers the
+    /// file, the object's exact length verified server-side.
+    public func completeUploadSession(sessionFileId: String, fileName: String, checksumSha256: String,
+                                      folderId: String?) async throws -> StoredFileSummaryResponse {
+        let request = try jsonRequest(
+            "/files/upload-session/\(sessionFileId)/complete",
+            method: "POST",
+            body: CompleteUploadRequest(fileName: fileName, checksumSha256: checksumSha256, folderId: folderId),
+            authenticated: true
+        )
+        let (data, _) = try await execute(request)
+        return try decode(data)
+    }
+
+    /// `DELETE /files/upload-session/{id}` - discards every uploaded part. The object store bills
+    /// for them until told this, so abort a session that will not be finished.
+    public func abortUploadSession(sessionFileId: String) async throws {
+        let request = plainRequest("/files/upload-session/\(sessionFileId)", method: "DELETE", authenticated: true)
+        _ = try await execute(request)
+    }
+
+    /// Uploads `fileURL` through a resumable multipart session, end to end: computes the plaintext
+    /// digest, begins the session (a dedup precheck hit returns immediately - zero bytes uploaded),
+    /// encrypts when the session says to, uploads every missing part, and completes.
+    ///
+    /// A caller that wants to survive its own crash should drive the flow itself instead -
+    /// `beginUploadSession`, persist the session id, then `resumeUploadSession` - since the id is
+    /// otherwise only known inside this call.
+    public func uploadFileViaResumableSession(fileName: String, fileURL: URL, folderId: String?,
+                                              onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws -> StoredFileSummaryResponse {
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        let checksumSha256 = try sha256Hex(of: fileURL)
+        let begin = try await beginUploadSession(fileName: fileName, sizeBytes: sizeBytes, checksumSha256: checksumSha256, folderId: folderId)
+        switch begin {
+        case .alreadyStored(let summary):
+            return summary
+        case .session(let session):
+            return try await runUploadSession(session: session, fileURL: fileURL, fileName: fileName,
+                                              checksumSha256: checksumSha256, folderId: folderId, onProgress: onProgress)
+        }
+    }
+
+    /// Resumes a crashed or interrupted session: re-reads its status, uploads only the parts the
+    /// object store does not already hold, and completes. `fileURL` must still be the content the
+    /// session was begun for - see `runUploadSession` for why, and what happens when it is not.
+    public func resumeUploadSession(sessionFileId: String, fileURL: URL, fileName: String, folderId: String?,
+                                    onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws -> StoredFileSummaryResponse {
+        let session = try await uploadSessionStatus(sessionFileId: sessionFileId)
+        return try await runUploadSession(session: session, fileURL: fileURL, fileName: fileName,
+                                          checksumSha256: try sha256Hex(of: fileURL), folderId: folderId,
+                                          onProgress: onProgress)
+    }
+
+    /// The shared upload loop behind `uploadFileViaResumableSession`/`resumeUploadSession`:
+    /// materialises the session's object stream, `PUT`s every part not already in
+    /// `uploadedPartNumbers`, then completes.
+    ///
+    /// Only ever the exact content the session was begun for: a session's content key is fixed for
+    /// its lifetime and the object's base nonce is derived from that key, so every pass over the
+    /// session encrypts under one key/nonce pair. Re-encrypting different bytes under it would both
+    /// splice two encryptions into one object and reuse that pair across two plaintexts, so a file
+    /// whose digest no longer matches the session's is refused rather than uploaded. Where the
+    /// server reports no digest, the object-length comparison below is the refusal instead.
+    ///
+    /// Memory stays O(part size): each part is read as a byte range off the object on disk, never
+    /// the whole object at once. Progress is cumulative across parts, counting the parts already
+    /// held as done, so a resume's bar does not restart at zero.
+    private func runUploadSession(session: UploadSessionResponse, fileURL: URL, fileName: String,
+                                  checksumSha256: String, folderId: String?,
+                                  onProgress: (@MainActor (Int64, Int64) -> Void)?) async throws -> StoredFileSummaryResponse {
+        if let sessionChecksum = session.checksumSha256,
+           sessionChecksum.caseInsensitiveCompare(checksumSha256) != .orderedSame {
+            throw APIError.server(status: 0, message: "the local file is not the content upload session '\(session.fileId)' was begun for - abort the session and start a new one")
+        }
+
+        let objectURL: URL
+        var temporaryCiphertext: URL?
+        if let encryption = session.encryption {
+            guard let keyMaterial = Data(base64Encoded: encryption.contentKeyBase64),
+                  let header = Data(base64Encoded: encryption.headerBase64) else {
+                throw APIError.decoding(URLError(.cannotDecodeContentData))
+            }
+            let encrypted = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cloud-driver-session-\(UUID().uuidString).enc")
+            try ChunkedContentCipher.encrypt(source: fileURL, destination: encrypted, keyMaterial: keyMaterial,
+                                             header: header, associatedDataPrefix: encryption.associatedDataPrefix,
+                                             chunkSizeBytes: encryption.chunkSizeBytes)
+            temporaryCiphertext = encrypted
+            objectURL = encrypted
+        } else {
+            // A legacy plaintext session: the object the parts assemble into is the file itself.
+            objectURL = fileURL
+        }
+        defer {
+            if let temporaryCiphertext {
+                try? FileManager.default.removeItem(at: temporaryCiphertext)
+            }
+        }
+
+        let objectSize = ((try FileManager.default.attributesOfItem(atPath: objectURL.path))[.size] as? NSNumber)?.int64Value ?? -1
+        guard objectSize == session.totalObjectBytes else {
+            throw APIError.server(status: 0, message: "local object stream is \(objectSize) bytes but the session expects \(session.totalObjectBytes) - was the file modified since the session began?")
+        }
+
+        let alreadyUploaded = Set(session.uploadedPartNumbers ?? [])
+        var transferred: Int64 = alreadyUploaded.reduce(Int64(0)) { total, part in
+            let offset = Int64(part - 1) * session.partSizeBytes
+            return total + min(session.partSizeBytes, objectSize - offset)
+        }
+
+        let handle = try FileHandle(forReadingFrom: objectURL)
+        defer { try? handle.close() }
+        for partNumber in 1...session.partCount {
+            if alreadyUploaded.contains(partNumber) {
+                continue
+            }
+            let offset = Int64(partNumber - 1) * session.partSizeBytes
+            let length = min(session.partSizeBytes, objectSize - offset)
+            try handle.seek(toOffset: UInt64(offset))
+            let partBytes = try handle.read(upToCount: Int(length)) ?? Data()
+
+            let part = try await presignUploadSessionPart(sessionFileId: session.fileId, partNumber: partNumber)
+            guard let partURL = URL(string: part.url) else {
+                throw APIError.network(URLError(.badURL))
+            }
+            try await putToPresignedURL(url: partURL, requiredHeaders: part.requiredHeaders, body: partBytes)
+            transferred += Int64(partBytes.count)
+            if let onProgress {
+                let reported = transferred
+                // Same hop the streaming paths' ProgressForwardingDelegate makes: the callback is
+                // @MainActor, and this loop runs on the actor's own executor.
+                await Task { @MainActor [onProgress] in onProgress(reported, objectSize) }.value
+            }
+        }
+        return try await completeUploadSession(sessionFileId: session.fileId, fileName: fileName,
+                                               checksumSha256: checksumSha256, folderId: folderId)
+    }
+
+    /// `PUT`s `body`'s bytes directly to `url` (a presigned part URL, not this app's own server) -
+    /// the in-memory counterpart to `putToPresignedURL(url:requiredHeaders:fileURL:)`, for one
+    /// part-sized byte range rather than a whole file. Unauthenticated: nothing needs an
+    /// `Authorization` header against the object store, and this account's bearer token must never
+    /// be sent to a third-party host. `requiredHeaders` are replayed exactly, or the object store
+    /// rejects the request's signature.
+    private func putToPresignedURL(url: URL, requiredHeaders: [String: String], body: Data) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        for (key, value) in requiredHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.upload(for: request, from: body)
+        } catch {
+            throw APIError.network(error)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.network(URLError(.badServerResponse))
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            // The object store's own error body (XML, not this app's JSON ErrorResponse shape).
+            let responseBody = String(data: data, encoding: .utf8) ?? "(no body)"
+            throw APIError.server(status: httpResponse.statusCode, message: "presigned part upload failed: \(responseBody)")
+        }
+    }
+
+    /// The plaintext SHA-256 of `fileURL`, lowercase hex - what a resumable session is begun
+    /// against and what a completed upload is checked by. Exposed so a caller driving the session
+    /// flow itself (begin, persist the id, then resume) computes the same digest this client does,
+    /// rather than reimplementing it.
+    public func plaintextChecksum(of fileURL: URL) throws -> String {
+        try sha256Hex(of: fileURL)
+    }
+
     /// Computes `fileURL`'s SHA-256 checksum as a lowercase hex string, streamed via `InputStream`
     /// rather than loading the whole file into memory - the shape the server's `FileChecksum`
     /// carries, so it can persist the value verbatim without knowing anything about this type.
@@ -587,6 +836,25 @@ public actor APIClient {
         let request = plainRequest("/files/\(fileId)/versions/\(versionNumber)/content", method: "GET", authenticated: true)
         let (data, _) = try await execute(request)
         return data
+    }
+
+    /// `downloadFileVersion(fileId:versionNumber:)` made conditional, exactly as
+    /// `downloadFileContentIfChanged(fileId:entityTag:)` makes the current-content fetch
+    /// conditional - an unchanged version transfers no body.
+    public func downloadFileVersionIfChanged(fileId: String, versionNumber: Int, entityTag: String?) async throws -> ConditionalContent {
+        var request = plainRequest("/files/\(fileId)/versions/\(versionNumber)/content", method: "GET", authenticated: true)
+        if let entityTag {
+            request.setValue(entityTag, forHTTPHeaderField: "If-None-Match")
+            // See `downloadFileContentIfChanged` - URLSession's own cache must not answer or
+            // rewrite a revalidation whose validator belongs to the caller.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        let (data, httpResponse) = try await execute(request, passthroughStatusCodes: [304])
+        let serverTag = httpResponse.value(forHTTPHeaderField: "ETag")
+        if httpResponse.statusCode == 304 {
+            return .notModified(entityTag: serverTag ?? entityTag)
+        }
+        return .content(data: data, entityTag: serverTag)
     }
 
     /// Restores `versionNumber` as the file's live content - this itself captures whatever was live

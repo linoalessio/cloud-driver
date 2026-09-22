@@ -54,9 +54,12 @@ public final class Dtos {
      * @param totalObjectBytes the exact total byte size of the object the parts assemble into
      * @param uploadedPartNumbers every part number the store already holds, ascending
      * @param encryption the client-side encryption parameters, or {@code null} for a plaintext session
+     * @param checksumSha256 the plaintext digest the session is bound to - a resume must present
+     *     that exact content; {@code null} against a server that does not report one
      */
     public record UploadSessionResponse(String fileId, long partSizeBytes, int partCount, long totalObjectBytes,
-                                         java.util.List<Integer> uploadedPartNumbers, UploadEncryptionInfo encryption) {
+                                         java.util.List<Integer> uploadedPartNumbers, UploadEncryptionInfo encryption,
+                                         String checksumSha256) {
     }
 
     /**
@@ -81,6 +84,23 @@ public final class Dtos {
      * @param session the session to upload through, otherwise
      */
     public record BeginUploadSessionResult(StoredFileSummaryResponse alreadyStored, UploadSessionResponse session) {
+    }
+
+    /**
+     * The outcome of a conditional content download - a download that told the server which copy
+     * of the content the caller already has, so the server could answer "still that one" instead
+     * of sending it again.
+     *
+     * @param path where the content was written; {@code null} exactly when {@code notModified} is
+     *     {@code true}, since nothing was transferred
+     * @param entityTag the server's {@code ETag} verbatim, quotes included - hand it back on the
+     *     next download of the same file. {@code null} for a file the server records no checksum
+     *     for; such a file is simply never revalidatable, which costs a full transfer and never a
+     *     wrong reuse
+     * @param notModified {@code true} when the server answered {@code 304}: the destination was
+     *     never created or written, and the caller's own cached copy is still current
+     */
+    public record ConditionalDownload(java.nio.file.Path path, String entityTag, boolean notModified) {
     }
 
     /** Not instantiable - a pure namespace for the nested record types below. */

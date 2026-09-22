@@ -21,6 +21,24 @@ final class ImageThumbnailGenerator implements ThumbnailGenerator {
 
     private static final Set<String> SUPPORTED_CONTENT_TYPES = Set.of("image/jpeg", "image/png");
 
+    /**
+     * Largest source image this generator will decode, in pixels.
+     *
+     * <p>Read from the image's own header before any raster is allocated - that check is the whole
+     * defence against a decompression bomb, since a few kilobytes declaring an enormous image would
+     * otherwise make the decoder reserve gigabytes up front. A sane value is far beyond any real
+     * photograph a preview is wanted for, and far below what a deliberately crafted header can claim.
+     */
+    private final long maxSourcePixels;
+
+    /**
+     * @param maxSourcePixels the largest image, in pixels, this generator may allocate a raster for -
+     *     the deployment's {@code thumbnail-max-decoded-pixels} setting
+     */
+    ImageThumbnailGenerator(final long maxSourcePixels) {
+        this.maxSourcePixels = maxSourcePixels;
+    }
+
     /** {@inheritDoc} */
     @Override
     public boolean supports(final String contentType) {
@@ -47,9 +65,9 @@ final class ImageThumbnailGenerator implements ThumbnailGenerator {
                 // 23000x23000 image makes the decoder reserve gigabytes up front, and the
                 // allocation lands wherever in the process happens to ask for memory next.
                 final long pixels = (long) reader.getWidth(0) * (long) reader.getHeight(0);
-                if (pixels > MAX_SOURCE_PIXELS) {
+                if (pixels > this.maxSourcePixels) {
                     throw new IOException("@ImageThumbnailGenerator.generate: image declares " + pixels
-                            + " pixels, above the " + MAX_SOURCE_PIXELS + " budget - refusing to decode it");
+                            + " pixels, above the " + this.maxSourcePixels + " budget - refusing to decode it");
                 }
                 final BufferedImage source = reader.read(0);
                 if (source == null) {
@@ -61,13 +79,5 @@ final class ImageThumbnailGenerator implements ThumbnailGenerator {
             }
         }
     }
-
-    /**
-     * Largest source image this generator will decode, in pixels.
-     *
-     * <p>Fifty megapixels is far beyond any real photograph a preview is wanted for, and far below
-     * what a deliberately crafted header can claim.
-     */
-    private static final long MAX_SOURCE_PIXELS = 50_000_000L;
 
 }

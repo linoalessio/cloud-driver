@@ -24,9 +24,18 @@ final class PdfThumbnailGenerator implements ThumbnailGenerator {
      *
      * <p>A page box is author-controlled and unbounded in the format: a 20000-by-20000 point page
      * renders to well over a gigabyte at even modest resolution, allocated in one buffer before
-     * anything is scaled down. Real documents are a tiny fraction of this.
+     * anything is scaled down. The raster's size follows from the crop box and the DPI, both known
+     * before rendering, so an implausible page is refused rather than allocated.
      */
-    private static final long MAX_RENDERED_PIXELS = 40_000_000L;
+    private final long maxRenderedPixels;
+
+    /**
+     * @param maxRenderedPixels the largest first page, in pixels, this generator may rasterize -
+     *     the deployment's {@code thumbnail-max-decoded-pixels} setting
+     */
+    PdfThumbnailGenerator(final long maxRenderedPixels) {
+        this.maxRenderedPixels = maxRenderedPixels;
+    }
 
     /** {@inheritDoc} */
     @Override
@@ -41,9 +50,9 @@ final class PdfThumbnailGenerator implements ThumbnailGenerator {
             final org.apache.pdfbox.pdmodel.common.PDRectangle box = document.getPage(0).getCropBox();
             final float scale = RENDER_DPI / 72f;
             final long renderedPixels = (long) Math.ceil(box.getWidth() * scale) * (long) Math.ceil(box.getHeight() * scale);
-            if (renderedPixels > MAX_RENDERED_PIXELS) {
+            if (renderedPixels > this.maxRenderedPixels) {
                 throw new IOException("@PdfThumbnailGenerator.generate: first page would render to " + renderedPixels
-                        + " pixels, above the " + MAX_RENDERED_PIXELS + " budget - refusing to rasterize it");
+                        + " pixels, above the " + this.maxRenderedPixels + " budget - refusing to rasterize it");
             }
             final PDFRenderer renderer = new PDFRenderer(document);
             final BufferedImage firstPage = renderer.renderImageWithDPI(0, RENDER_DPI, ImageType.RGB);

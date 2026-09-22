@@ -109,6 +109,7 @@ import de.lino.cloud.platform.desktop.utils.formatBytes
 import de.lino.cloud.platform.desktop.utils.iconFor
 import de.lino.cloud.platform.desktop.utils.isZipArchive
 import de.lino.cloud.platform.desktop.utils.rememberThumbnail
+import de.lino.cloud.platform.desktop.utils.safeLocalChildOf
 import de.lino.cloud.platform.desktop.utils.sortedFiles
 import de.lino.cloud.platform.desktop.utils.sortedFolders
 import de.lino.cloud.platform.desktop.viewmodel.AppViewModel
@@ -585,7 +586,7 @@ fun FileBrowserScreen(viewModel: AppViewModel) {
     }
 
     previewEntry?.let { entry ->
-        FilePreviewDialog(entry = entry, client = viewModel.client, onDismiss = { previewEntry = null })
+        FilePreviewDialog(entry = entry, client = viewModel.client, accountId = viewModel.currentUserId, onDismiss = { previewEntry = null })
     }
 
     versionHistoryEntry?.let { entry ->
@@ -1306,7 +1307,11 @@ private fun VersionHistoryDialog(viewModel: AppViewModel, entry: Entry.FileEntry
         actionInFlight = true
         scope.launch {
             try {
-                viewModel.client.downloadFileVersion(entry.id, versionNumber, destination.resolve("v${versionNumber}_${entry.name}"))
+                // A file's name is arbitrary text chosen by whoever uploaded it - on a shared file,
+                // not by the person downloading it - so it is reduced to a single path component and
+                // re-checked against the chosen directory before the version is written there.
+                val target = safeLocalChildOf(destination, "v${versionNumber}_${entry.name}")
+                viewModel.client.downloadFileVersion(entry.id, versionNumber, target)
             } catch (e: Exception) {
                 dialogError = e.message ?: "Failed to download version"
             } finally {

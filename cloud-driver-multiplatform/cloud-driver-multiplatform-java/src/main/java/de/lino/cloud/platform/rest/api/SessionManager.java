@@ -146,8 +146,9 @@ public final class SessionManager {
     /**
      * Call once at desktop startup. Loads a previously persisted access/refresh token pair (if
      * any) and verifies the access token is still accepted by the server with a single
-     * lightweight authenticated call ({@code GET /files}) - there's no dedicated "whoami"
-     * endpoint, so this doubles as that check. If the access token has since expired, {@link
+     * lightweight authenticated call (a single one-item page of {@code GET /files}) - there's no
+     * dedicated "whoami" endpoint, so this doubles as that check. If the access token has since
+     * expired, {@link
      * ApiClient} transparently refreshes it via the persisted refresh token as part of that same
      * call (see the class Javadoc) - this method does not need its own refresh-handling logic.
      *
@@ -164,7 +165,10 @@ public final class SessionManager {
 
         this.apiClient.restoreSession(session.get().accessToken(), session.get().refreshToken());
         try {
-            this.apiClient.listFiles();
+            // Only ever asks whether the token is still accepted, so it must cost exactly one
+            // bounded request. The complete-listing helpers walk the caller's whole folder tree,
+            // which would turn a startup check into an account-sized crawl.
+            this.apiClient.listFilesPage(null, null, 1);
             return true;
         } catch (final ApiException probeFailed) {
             this.handleFailure(probeFailed);
@@ -201,15 +205,15 @@ public final class SessionManager {
 
     /**
      * Restores {@code session} into {@link #apiClient} and probes it with a lightweight
-     * authenticated call, clearing the session on a {@code 401} the same way {@link
-     * #tryRestoreSession()} does.
+     * authenticated call - one bounded page, for the reason {@link #tryRestoreSession()} spells
+     * out - clearing the session on a {@code 401} the same way that method does.
      *
      * @param session the session loaded from {@link #tokenStore}
      * @return a future completing with {@code true} if the session is still accepted, {@code false} otherwise
      */
     private CompletableFuture<Boolean> probeRestoredSessionAsync(final StoredSession session) {
         this.apiClient.restoreSession(session.accessToken(), session.refreshToken());
-        return this.apiClient.listFilesAsync().handleAsync((ignored, error) -> {
+        return this.apiClient.listFilesPageAsync(null, null, 1).handleAsync((ignored, error) -> {
             if (error == null) {
                 return Boolean.TRUE;
             }

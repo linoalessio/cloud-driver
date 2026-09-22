@@ -3,19 +3,26 @@
 Everything an operator needs to have provisioned/configured before `cloud-driver-bootstrap` will
 start and run correctly.
 
-```
+```text
 <working-dir>/
 ├── cloud-driver-bootstrap-<version>.jar
 ├── cloud-driver/                  <- Constraints.CONFIGURATION_PATH
 │   ├── postgres-database.json     <- required
 │   ├── configuration.json         <- required
-│   └── redis-database.json        <- optional (absent = single-instance, in-process fallbacks)
+│   ├── redis-database.json        <- optional (absent = single-instance, in-process fallbacks)
+│   └── backup/                    <- created by cloud-driver-extensions-backup, holds its archives
 ├── extensions/                    <- Constraints.EXTENSIONS_PATH (drop *.jar here)
 └── upload-scratch/                <- created automatically, scratch space for in-flight uploads
 ```
 
 The JVM must be started **from this directory** (`cd` into it first) — extension discovery and
 every config-file path are resolved relative to `user.dir`, not the jar's own location.
+
+It must also be started **with a real TTY on stdin**. `DefaultCloudDriver.setInstance`
+unconditionally builds the operator console with jline (`TerminalBuilder.builder().system(true)
+.dumb(false)`), which throws — killing the process during startup — when stdin is not a terminal.
+That is why `shell/start-cloud.sh` launches the jar inside a detached `screen` session: a plain
+`nohup java -jar …`, a pipe, a cron job, or a bare `systemd` unit with no pty will not start.
 
 ---
 
@@ -35,6 +42,7 @@ Client modules (only needed if building those specific pieces — not needed to 
 | `cloud-driver-platforms-desktop` | Gradle (wrapper bundled, pinned 9.7.1), Kotlin 2.1.0, JDK 21. Resolves `cloud-driver-multiplatform-java` via `mavenLocal()` — build/`mvn install` that module first. |
 | `cloud-driver-platforms-mobile` | Full Xcode (not just Command Line Tools) + `xcodegen` (`brew install xcodegen`). iOS 17.0+ target. |
 | `cloud-driver-multiplatform-python` | Python 3.10+, `pip install -e ".[dev]"`. |
+| `cloud-driver-installer` | Python 3.10+ **with `tkinter`** (Debian/Ubuntu: `apt install python3-tk` — the GUI prints that hint and exits 1 if `import tkinter` fails), then `pip install -e ".[dev]"`. Runtime dependencies are `paramiko>=3.4,<4` and `boto3>=1.34,<2`. It runs on the **operator's** machine, never on the server, and needs the reactor already built (`mvn clean install`) because it uploads the jars from the checkout. Launch with `cloud-driver-installer` or `python -m cloud_driver_installer`. |
 
 ---
 
@@ -125,6 +133,10 @@ Location: `<working-dir>/cloud-driver/configuration.json` — **required** (a co
 Re-read from disk on every access (`CloudDriver#getConfiguration()`), never cached — a value can be
 changed without restarting, for whatever reads it fresh each time.
 
+The key-by-key reference — type, default and notes for every key the backend reads — is
+[configuration.md](configuration.md). This section covers the same keys from the operator's angle:
+what has to be decided **before** first start, and what breaks when it is missing.
+
 **⚠️ Never commit this file** — gitignored (`cloud-driver/configuration.json`) since it holds real
 secrets (JWT signing key, SMTP password if SMTP is used).
 
@@ -135,27 +147,33 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `aws-kms-region` | string | `CloudBootstrap.initiateCloudDriver()` | **Crashes the whole process at boot** (`NullPointerException` from `JsonDocument#getString` on a missing key) — `AwsKmsKeyEncryptionService` is unconditionally constructed, no fallback exists in current code. |
 | `aws-kms-key-id` | string | same | same — crashes at boot. |
 | `jwt-signing-key` | string, `openssl rand -base64 32` | `CloudRestExtension.startRestApi` | Not fatal to the process, but the entire REST API/JWT auth layer is skipped (logged warning) — every client-facing route stays down. |
-| `cloud-server-max-bytes-available` | long (bytes) | `CloudUserCommand`/`StatisticsCommand` (terminal) | Not checked at boot, but **`cloudUser limit`/`stats`/`ab`** throw `NullPointerException` the moment they're run without it set — no default exists. |
+| `cloud-server-max-bytes-available` | long (bytes) | `CloudUserCommand`/`StatisticsCommand` (terminal) | Not checked at boot, but **`cloudUser limit`** and **`statistics`** (alias `stats`) throw `NullPointerException` the moment they're run without it set — no default exists. |
+| `rest-server-port` | int | `CloudRestExtension.onLoading()` | No default and no guard: a missing key throws `NullPointerException` out of the extension's load, so the whole REST API (and with it every client-facing route) fails to start. The rest of the process boots normally — `CloudRestExtension.onException` stops the factory and logs `SEVERE`. Reference deployment uses `8080`. |
 
 ### 3.2 Optional, with a real default
 
 | Key | Default | Consumed by |
 |---|---|---|
-| `rest-server-port` | — (effectively required if the REST API is wanted) | `CloudRestExtension` |
-| `rest-server-bind-host` | — | `CloudRestExtension` |
+| `rest-server-bind-host` | **`0.0.0.0`** (every interface) when the value is blank — *not* loopback | `CloudRestExtension` — Javalin serves plain HTTP, so a non-loopback bind exposes every request, JWTs included, unencrypted to whatever network can reach it. A non-loopback value only logs a startup **warning**; it never refuses to start. Production shape is `"127.0.0.1"` behind Caddy (§6) |
 | `cloud-user-max-bytes-to-upload` | `1048576` (1 MiB) — **strict, not unlimited** | `CloudUser` |
 | `trash-retention-days` | `30` | `TrashPurgeScheduler`, `CloudUserService` (purge-eligibility timestamps) |
 | `auth-rate-limit-max-requests` | `10` | `DefaultRestFactory` (`/auth/*` limiter) |
 | `auth-rate-limit-window-seconds` | `300` | same |
 | `trust-proxy-headers` | `false` | `DefaultRestFactory` (rate-limit identity via `X-Forwarded-For`) — only enable behind a genuinely trusted single reverse-proxy hop |
+| `trusted-proxy-addresses` | unset → falls back to `trust-proxy-headers` | `DefaultRestFactory` — comma-separated list of reverse-proxy peer addresses whose `X-Forwarded-For` may be believed. **Authoritative when present and non-blank**; only when it is absent/blank does the older boolean `trust-proxy-headers` apply, and then only for loopback peers (`127.0.0.1`, `::1`, `0:0:0:0:0:0:0:1`). Neither key set means forwarded-for headers are never believed |
 | `api-rate-limit-read-max-requests` | `300` | `DefaultRestFactory` (general API limiter, `GET`/`HEAD` only — there is no separate write limiter; writes are bounded by the upload quota and the request-size ceiling instead) |
 | `api-rate-limit-read-window-seconds` | `60` | same |
+| `public-download-rate-limit-max-requests` | `30` | `DefaultRestFactory` (anonymous public-link download limiter, keyed on client address + link token) |
+| `public-download-rate-limit-window-seconds` | `60` | same |
 | `metrics-port` | `9404` | `CloudMetricsExtension` |
 | `metrics-bind-host` | `127.0.0.1` | `CloudMetricsExtension` |
 | `clamav-host` | `"localhost"` | `CloudScanExtension` |
 | `clamav-port` | `3310` | `CloudScanExtension` |
 | `clamav-timeout-seconds` | `30` | `CloudScanExtension` |
 | `content-scan-max-bytes` | `104857600` (100 MiB) | `CloudScanExtension` |
+| `thumbnail-max-source-bytes` | `67108864` (64 MiB) | `CloudThumbnailsExtension` (largest file a preview is generated from) |
+| `thumbnail-max-decoded-pixels` | `50000000` | `CloudThumbnailsExtension` (raster budget shared by the image decoder and the PDF renderer) |
+| `thumbnail-render-timeout-seconds` | `20` | `CloudThumbnailsExtension` (a longer decode/render is abandoned) |
 | `file-versioning-max-versions-per-file` | `10` | `FileVersionPurgeScheduler` |
 | `file-versioning-retention-days` | `30` | `FileVersionPurgeScheduler` |
 | `aws-s3-region` | unset → S3 disabled | `CloudBootstrap`/`CloudRestExtension` |
@@ -170,7 +188,8 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `smtp-from-address` | required alongside `smtp-host`, else log-only | same |
 | `aws-ses-configuration-set` | unset → no configuration set named on sends | `CloudRestExtension` — SES bounce/complaint event routing; only set once the set actually exists in that account/region, or every send fails |
 | `aws-s3-max-concurrency` | `50` | `S3ObjectStorageService` — concurrent-connection cap of the shared async S3 client. With several instances against one bucket, size it per instance, not per process |
-| `presigned-upload-ticket-retention-hours` | `6` | `PendingPresignedUploadPurgeScheduler` — how long an unfinished presigned/resumable upload survives before its ticket is dropped and its multipart upload aborted (S3 bills for uploaded parts until then). S3 deployments only |
+| `presigned-upload-ticket-retention-hours` | `6` | `PendingPresignedUploadPurgeScheduler` — how long an unfinished **single-`PUT` presigned ticket** survives before it is dropped and its orphaned object deleted. Comfortably longer than the presigned URL's own 15-minute expiry. S3 deployments only |
+| `resumable-upload-session-retention-hours` | `72` | `PendingPresignedUploadPurgeScheduler` — how long an idle resumable multipart **session** survives, measured from its last activity rather than its creation, before the row is aged out and its multipart upload aborted (S3 bills for uploaded parts until then). Deliberately a separate, longer window than `presigned-upload-ticket-retention-hours`: a session can legitimately span days of a large file moving over a slow link. S3 deployments only |
 | `webhook-dispatch-pool-size` | `4` | `DefaultWebhookService` — first-attempt delivery concurrency; queue depth is observable as the `cloud_driver_webhook_dispatch_queue_depth` gauge |
 | `intelligence-shared-secret` | **no default** — `cloud-driver-extensions-intelligence` refuses to load without it | The semantic-search bridge (secret) |
 | `intelligence-host` | `127.0.0.1` | same |
@@ -195,7 +214,7 @@ Example, using AWS SES for email delivery (the current setup):
   "aws-ses-from-address": "webmaster@example.com",
 
   "aws-kms-region": "eu-central-1",
-  "aws-kms-key-id": "alias/cloud-driver-kms-key",
+  "aws-kms-key-id": "alias/REPLACE-ME",
 
   "aws-s3-region": "eu-central-1",
   "aws-s3-bucket": "your-bucket-name",
@@ -222,7 +241,13 @@ constructs today).
 - **AWS KMS** (required)
   - Create a symmetric Customer Master Key (CMK).
   - IAM permissions the running identity needs on that key: `kms:Encrypt`, `kms:Decrypt` (always),
-    plus `kms:CreateKey` only if `KeyEncryptionService#rotate()` will ever be invoked.
+    plus `kms:CreateKey` only if `KeyEncryptionService#rotate()` will ever be invoked — `rotate()`
+    provisions a genuinely new symmetric CMK rather than rotating the existing key's backing
+    material. `cloud-driver-installer` additionally grants `kms:DescribeKey` in the least-privilege
+    policy it writes for the runtime identity, so a mistyped key id fails loudly rather than on the
+    first wrap; the backend itself never calls it. Nothing else is granted — no
+    `ScheduleKeyDeletion`, no IAM — and that absence is the deletion guard for the KEK every stored
+    row depends on.
   - Credentials are resolved via the **AWS SDK's own default credential provider chain**
     (`~/.aws/credentials`/`~/.aws/config`, environment variables, an EC2/ECS instance role, etc.)
     — **deliberately never read from `configuration.json`**, only the region/key-id are. Set these
@@ -232,8 +257,11 @@ constructs today).
 - **AWS S3** (optional — only activates once `aws-s3-bucket`/`aws-s3-region` are both set)
   - Powers S3-backed `StoredFile` content, presigned direct-to-client upload/download, and the
     `MigrateToS3Command`/`TrashPurgeScheduler` codepaths that clean up S3 objects.
-  - Create a bucket. Required IAM permissions on it: `s3:PutObject`, `s3:GetObject`,
-    `s3:DeleteObject`, `s3:AbortMultipartUpload`, `s3:ListBucket`.
+  - Create a bucket. Required IAM permissions, split by resource:
+    - on `arn:aws:s3:::<bucket>/*` — `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`,
+      `s3:AbortMultipartUpload`, `s3:ListMultipartUploadParts` (the resumable-upload service pages
+      through `ListParts` to resume a session — without it every resume is `AccessDenied`).
+    - on `arn:aws:s3:::<bucket>` — `s3:ListBucket`, `s3:ListBucketMultipartUploads`.
   - Same credential-resolution rule as KMS — default provider chain, not `configuration.json`.
   - Config: `aws-s3-region`, `aws-s3-bucket`, optional `aws-s3-key-prefix` (default `""`).
   - Presigned uploads sign with SSE-S3 (`AES256`), not SSE-KMS — no extra `kms:GenerateDataKey`
@@ -243,7 +271,10 @@ constructs today).
   - Backed by `SesEmailSender` (`cloud-driver-auth`, `software.amazon.awssdk:sesv2`) — sends via
     SES's `SendEmail` raw-message API, so the outgoing message (HTML + plain-text + inline logo) is
     byte-for-byte identical to what `SmtpEmailSender` would have sent; only the transport differs.
-  - Required IAM permission for the running identity: `ses:SendEmail`.
+  - Required IAM permissions for the running identity: `ses:SendEmail` **and `ses:SendRawEmail`** —
+    `SesEmailSender` calls SESv2 `SendEmail` with *raw-message* content (the MIME message
+    `SmtpEmailSender` would have sent, serialized via `MimeMessage#writeTo`), which IAM authorizes
+    under `ses:SendRawEmail`.
   - The `configuration.json` `aws-ses-from-address` value **must already be a verified sending
     identity** (a verified email address, or a verified domain) in that AWS account/region — SES
     rejects `SendEmail` outright otherwise.
@@ -283,8 +314,8 @@ downgraded to SMTP even if `smtp-*` keys also happen to be present in `configura
 over TCP from it. If the `cloud-driver-extensions-scan-*.jar` isn't dropped into `extensions/` at
 all, none of this applies and every upload is simply never scanned.
 
-Setup notes (all confirmed by actually installing and testing this against a real `clamd` on
-`strato`, 2026-09-08):
+Setup notes (all confirmed by actually installing and testing this against a real `clamd` on the
+reference deployment, 2026-09-08):
 
 1. Install `clamav-daemon` + `clamav-freshclam` (e.g. `apt install clamav-daemon
    clamav-freshclam` on Debian/Ubuntu). Let `freshclam` finish its first virus-database download
@@ -302,22 +333,24 @@ Setup notes (all confirmed by actually installing and testing this against a rea
 3. **Do not also add an IPv6 (`[::1]:PORT`) `ListenStream` alongside the IPv4 one** — confirmed
    empirically that `clamd` 1.4.3 crash-loops (`"ERROR: TCP: Received more than two file
    descriptors from systemd"`) if given two TCP sockets via activation at once. IPv4-only
-   (`127.0.0.1`) is sufficient: `ClamAvClient`'s default `clamav-host` value is the string
-   `"localhost"`, and Java's `InetSocketAddress`/`InetAddress` default resolution behavior
+   (`127.0.0.1`) is sufficient: the default `clamav-host` value is the string `"localhost"`
+   (`CloudScanExtension.DEFAULT_CLAMD_HOST`), and Java's `InetSocketAddress`/`InetAddress` default resolution behavior
    (`preferIPv6Addresses=false`) prefers the IPv4 record for it regardless of what the OS's own
    `/etc/hosts`/NSS order says — confirmed by compiling and running a one-off test with the exact
    JVM in use. If in doubt, pin `"clamav-host": "127.0.0.1"` explicitly in `configuration.json`.
 4. **Raise `clamd`'s own size limits above this application's scan ceiling.** Debian's default
    `StreamMaxLength`/`MaxFileSize` (25M) sit well under the app's own `content-scan-max-bytes`
    default (100 MiB) — a file in that gap would be sent to `clamd` and rejected as a scan-level
-   error, silently triggering the app's retry-then-fail-open path (marks the file `CLEAN` without
-   ever actually scanning it) for a size range the app itself considers scannable. Set
+   error, triggering the app's retry-then-fail-open path (3 attempts, then the file is marked
+   `CLEAN` with a `WARNING` log without ever actually having been scanned) for a size range the app
+   itself considers scannable — a loud line in the server log is the only signal, so it is easy to
+   miss rather than genuinely silent. Set
    `StreamMaxLength 128M`, `MaxFileSize 128M`, `MaxScanSize 300M` (or proportionally higher/lower
    if `content-scan-max-bytes` is overridden).
 5. **Bind loopback-only, and mean it.** `clamd` has no authentication of its own — a `TCPSocket`
    with no `TCPAddr` (or a systemd `ListenStream=3310` with no address) binds every interface. On
-   any host without its own firewall (confirmed to be the case on `strato` — see §6 below), that
-   exposes an unauthenticated malware scanner to the whole internet.
+   any host without its own firewall (confirmed to be the case on the reference deployment on that
+   date — see §6 below), that exposes an unauthenticated malware scanner to the whole internet.
 6. `systemctl enable clamav-daemon clamav-freshclam` so both survive a reboot.
 7. Config: `clamav-host`/`clamav-port`/`clamav-timeout-seconds`/`content-scan-max-bytes`, all
    optional with sane defaults (see §3.2) — set `clamav-host` explicitly if `clamd` isn't reachable
@@ -331,6 +364,31 @@ Covered in §1 — needed to *build* the project (resolving `database-driver-api
 separately (write access) to *publish* a release via `shell/release-and-package.sh`. The running
 application never talks to GitHub Packages itself.
 
+### 4.5 `cloud-driver-intelligence` (Python/FastAPI) — optional, required only if `cloud-driver-extensions-intelligence` is deployed
+
+**A genuinely separate operating-system process, not a library dependency** — like `clamd`. It owns
+the embedding model and the vector store; the backend only speaks HTTP to it.
+
+- Python 3.10+ in its own virtualenv. Install with `pip install -e ".[embeddings,store]"` for a
+  real deployment (the embedding backend pulls PyTorch, ~2 GB). The bare install still starts and
+  still answers every call *successfully*: `POST /index` returns `204 No Content` without storing a
+  vector and `POST /search` returns an empty list, so semantic search silently yields nothing
+  rather than erroring (the 204 is deliberate — the Java bridge would otherwise retry every upload
+  three times and log a give-up). `GET /health` — `embeddingsAvailable`, `persistentStore`,
+  `encryptedStore`, `imageEmbeddingsAvailable` — is the only place that tells "the extra is not
+  installed" apart from "nothing matched".
+- Reachable at `intelligence-host`/`intelligence-port` (defaults `127.0.0.1`/`8600`).
+  `cloud-driver-intelligence/deploy/cloud-driver-intelligence.service` binds `uvicorn` to
+  `127.0.0.1:8600` deliberately: the service has no transport security of its own.
+- **The shared secret must match on both sides**: `intelligence-shared-secret` in
+  `configuration.json` must equal `CLOUD_DRIVER_INTELLIGENCE_SECRET` in the Python process's
+  environment (the unit reads it from a root-owned `0600` `/etc/cloud-driver-intelligence.env`).
+  The backend sends it as the `X-Internal-Secret` header; a mismatch is a 401 on every call. The
+  extension refuses to load at all if the key is absent or blank.
+- The service is configured **entirely from environment variables**, never from `cloud-driver`'s
+  own JSON files — see [configuration.md](configuration.md) and [deployment.md](deployment.md).
+- Budget 2 GB of RAM for it (its unit sets `MemoryMax=2G`) — see §7.
+
 ---
 
 ## 5. Filesystem / disk
@@ -338,24 +396,59 @@ application never talks to GitHub Packages itself.
 | Path (relative to `user.dir`) | Purpose | Created by |
 |---|---|---|
 | `cloud-driver/` | Config + credentials files | Operator (must exist before first start) |
-| `extensions/` | Extension jars, scanned on boot | Operator (drop `cloud-driver-extensions-*.jar` files here) |
+| `cloud-driver/backup/` | Database backup archives (`cloud-driver-backup-<yyyyMMdd_HHmmss>.zip`) plus a `.staging/` working directory during a run | Application, automatically — only if `cloud-driver-extensions-backup` is deployed |
+| `extensions/` | Extension jars, scanned on boot | Application, automatically if absent; the operator drops `cloud-driver-extensions-*.jar` files into it |
 | `upload-scratch/` | Per-upload scratch files, streamed-then-deleted | Application, automatically |
+
+Every extension jar must come from the same build as the bootstrap jar beside it, and the folder
+must hold exactly **one** jar per extension: two jars claiming the same extension name abort
+startup before any extension runs, so the whole process comes up dead. That is why
+`shell/deploy-cloud.sh` prunes stale release jars from the remote folder before uploading, and why
+`cloud-driver-installer` refuses to upload an extension jar whose file name does not carry the
+bootstrap's version.
 
 No fixed minimum disk size is documented, but note: uploads are streamed through
 `upload-scratch/` rather than buffered in heap, so scratch-disk headroom should comfortably exceed
 the largest single expected upload (`MAX_REQUEST_SIZE_BYTES`, 256 MB by default) at any given
 concurrency level.
 
+Size the disk for backups too when that extension is deployed: a cycle runs every 3 days, exports
+every `id`/`data`-shaped table into a compressed archive, and the seven most recent archives are
+retained (older ones are deleted), so the steady state is roughly seven compressed copies of the
+encrypted corpus plus one cycle's staging directory. Off-site copying of those archives to a
+dedicated bucket is a cron line outside the JVM — see [deployment.md](deployment.md).
+
 ---
 
 ## 6. Networking & security
 
+### Ports
+
+| Port | Default bind | What | Public? |
+|---|---|---|---|
+| `rest-server-port` (reference deployment: `8080`) | `rest-server-bind-host` — **`0.0.0.0` in code** when left blank | Javalin REST + WebSocket API, plain HTTP | **No** — set `127.0.0.1` and front it with the reverse proxy |
+| `80`/`443` | all interfaces | Caddy: TLS termination, reverse-proxied to the REST port | Yes |
+| `metrics-port` (`9404`) | `metrics-bind-host`, `127.0.0.1` | Prometheus text exposition, on a second Javalin instance | **No** — deliberately unauthenticated |
+| `clamav-port` (`3310`) | `127.0.0.1`, via the systemd socket drop-in (§4.3) | `clamd` scan socket | **No** — `clamd` has no authentication of its own |
+| `intelligence-port` (`8600`) | `127.0.0.1` (`uvicorn --host 127.0.0.1`) | `cloud-driver-intelligence` FastAPI service (§4.5) | **No** — guarded only by the shared secret |
+| `5432` (`postgres-database.json`) | as configured | PostgreSQL | **No** |
+| `6379` (`redis-database.json`) | `127.0.0.1` | Redis | **No** |
+| `22` | all interfaces | SSH — required by every deploy script below | Restricted |
+
 - **This application does not manage its own firewall.** Confirmed the hard way on the reference
-  deployment (2026-09-08, then under the `strato` alias): the box had **no firewall at all** (`ufw`
-  not installed, `iptables` chains empty, default-`ACCEPT`) — meaning anything bound to `0.0.0.0` is
-  reachable from the entire internet by default. Bind every service that has no authentication of
-  its own (`clamd`'s TCP socket) strictly to `127.0.0.1`/loopback, and put a real firewall or
-  cloud-provider security group in front of the host regardless.
+  deployment (2026-09-08): the box had **no firewall at all** (`ufw` not installed, `iptables`
+  chains empty, default-`ACCEPT`) — meaning anything bound to `0.0.0.0` is reachable from the
+  entire internet by default. The *application* still manages no firewall, but both provisioning
+  paths now install and enable one: `shell/provision-root-server.sh` installs `ufw` with its base
+  packages (step 1/9) and configures it in step 3/9, while `cloud-driver-installer`'s Firewall step
+  `apt install`s it itself when it is absent. Both then allow SSH plus `80/tcp` and `443/tcp`, set
+  `default deny incoming`/`default allow outgoing`, and enable it. The installer
+  additionally opens the REST port when no reverse proxy is configured and the REST bind host is
+  not loopback (otherwise a proxy-less deployment is firewalled off from its own clients), and it
+  refuses to enable `ufw` at all if this session's SSH port is not in the allow list. Bind every
+  service that has no authentication of its own (`clamd`'s TCP socket, the metrics endpoint, the
+  intelligence service) strictly to `127.0.0.1`/loopback regardless — the firewall is the second
+  line, not the first.
 - **SSH access for deployment**: `shell/deploy-cloud.sh`, `shell/deploy-homepage.sh`,
   `shell/provision-root-server.sh`, and `cloud-driver-intelligence/deploy/install-on-server.sh` all
   shell out to `ssh`/`scp` against the `cloud_driver` host alias — a passwordless, key-based root
@@ -363,7 +456,10 @@ concurrency level.
   private key whose public half is in the server's `/root/.ssh/authorized_keys`) before any of
   these scripts will work; none of them prompt for a password or provision the key itself. The
   alias has been renamed before (`strato` → `netcup` → `cloud_driver`) — if it's renamed again,
-  update `REMOTE_HOST` in all four scripts above to match. `cloud-driver-installer` is the
+  update the hardcoded `REMOTE_HOST` in `shell/deploy-cloud.sh`, `shell/deploy-homepage.sh` and
+  `cloud-driver-intelligence/deploy/install-on-server.sh`. `shell/provision-root-server.sh` needs
+  no edit: it takes the host or alias as its first argument (`REMOTE_HOST="${1:-}"`), so it is run
+  as `./provision-root-server.sh cloud_driver [api-domain]`. `cloud-driver-installer` is the
   alternative for a box that has neither yet: it authenticates with a password if need be, and can
   install your public key and write the alias itself (see
   [deployment.md](deployment.md#gui-installer-cloud-driver-installer)).
@@ -387,9 +483,13 @@ Not a hard requirement, but grounded in two real incidents hit on the reference 
 planning around:
 
 - **JVM heap**: launch with an explicit `-Xmx` (the reference deployment uses `-Xmx6g` on a 7.7 GB
-  box, via `JVM_XMX` in `shell/start-cloud.sh`). Without one, JVM ergonomics can cap the heap far
-  below what's actually free — a real `OutOfMemoryError` was hit on exactly that gap persisting a
-  ~195 MB file with no `-Xmx` set. Both root causes behind the two historical incidents have since
+  box). `shell/start-cloud.sh` passes `JVM_XMX` (default `6g`) as `-Xmx`; the per-box value is
+  overridden in a sibling `start-cloud.env` — written by `cloud-driver-installer` alongside
+  `SCREEN_SESSION` and `SCREEN_LOG_FILE` — which the script sources before anything else, so the
+  setting survives `deploy-cloud.sh` re-uploading the script. See
+  [configuration.md](configuration.md) for that file. Without an explicit `-Xmx`, JVM ergonomics
+  can cap the heap far below what's actually free — a real `OutOfMemoryError` was hit on exactly
+  that gap persisting a ~195 MB file with no `-Xmx` set. Both root causes behind the two historical incidents have since
   been fixed, but neither fix removes the need to size the heap:
   - Uploads no longer hold several full copies of a file in heap. Above 32 MiB the request body
     lands in a scratch file and checksumming, encryption and the S3 write all stream off it, so
@@ -411,17 +511,25 @@ planning around:
   Postgres all co-located, and headroom is genuinely tight — don't add further memory-hungry
   services to the same box without re-checking.
 - **Sizing rule of thumb**: budget `-Xmx` above the total encrypted payload the database holds,
-  then add ~1 GB for the JVM outside the heap, ~1 GB for Postgres, and ~1 GB for `clamd` if
-  content scanning is enabled. Re-check as the corpus grows — this floor moves with the data,
-  which is exactly what caused the 2026-09-09 boot crash-loop.
+  then add ~1 GB for the JVM outside the heap, ~1 GB for a co-located Postgres, ~1 GB for `clamd`
+  if content scanning is enabled, and **2 GB for `cloud-driver-intelligence` if it runs on the same
+  box** — its systemd unit caps it at `MemoryMax=2G`, and PyTorch alone settles in the gigabyte
+  range. Never go below `-Xmx2g`: under that, the in-memory upload path for files below 32 MiB
+  cannot serve even a handful of concurrent uploads. Re-check as the corpus grows — this floor
+  moves with the data, which is exactly what caused the 2026-09-09 boot crash-loop.
+  (`cloud-driver-installer` derives its suggested `-Xmx` from exactly these overheads.)
 
 ---
 
 ## 8. Extension-by-extension requirement summary
 
-Only `cloud-driver-bootstrap` itself (Postgres + AWS KMS, §2.1/§4.1) is non-optional. Everything
-else is an independent jar dropped into `extensions/` — omit any of these entirely if the feature
-isn't wanted:
+Only `cloud-driver-bootstrap` itself (Postgres + AWS KMS, §2.1/§4.1) is non-optional to the
+*backend*: it registers whatever jars `ExtensionFolderScanner` finds under `extensions/` and starts
+cleanly with none present at all. In practice three are treated as required — `rest`, `watcher` and
+`terminal`: `cloud-driver-installer` aborts the install when any of those three jars is missing
+from the checkout and only warns about the other eight (and skips `scan`/`intelligence` entirely
+unless ClamAV / the intelligence service are enabled). Everything else is an independent jar
+dropped into `extensions/` — omit any of these entirely if the feature isn't wanted:
 
 | Extension | Extra requirement beyond core |
 |---|---|
@@ -452,7 +560,8 @@ unchecked boxes are exactly what it deliberately leaves for you (AWS, DNS, the j
 - [ ] PostgreSQL database + dedicated owner role created
 - [ ] AWS account: KMS CMK created, IAM credentials with `kms:Encrypt`/`kms:Decrypt` on the host
 - [ ] (optional) S3 bucket + IAM permissions, if S3-backed storage is wanted
-- [ ] (optional) AWS SES: sending identity verified, `ses:SendEmail` IAM permission, sandbox mode
+- [ ] (optional) AWS SES: sending identity verified, `ses:SendEmail`/`ses:SendRawEmail` IAM
+      permissions, sandbox mode
       lifted (or test recipients individually verified) — **or** SMTP credentials as a fallback, if
       real email delivery is wanted
 - [ ] (optional) `clamd` installed and TCP-reachable, if content scanning is wanted — remember the

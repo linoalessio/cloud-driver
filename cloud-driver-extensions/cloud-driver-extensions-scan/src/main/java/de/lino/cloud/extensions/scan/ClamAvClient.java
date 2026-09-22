@@ -64,14 +64,17 @@ final class ClamAvClient {
     }
 
     /**
-     * Scans {@code content} via {@code clamd}'s {@code INSTREAM} command.
+     * Scans everything {@code content} yields via {@code clamd}'s {@code INSTREAM} command,
+     * forwarding it in {@link #CHUNK_SIZE} chunks as it is read. The stream is drained but not
+     * closed - the caller owns it - and is never held in memory as a whole, so a file's size
+     * bounds nothing but the time this takes.
      *
-     * @param content the raw bytes to scan
+     * @param content the plaintext byte stream to scan; drained, not closed
      * @return the parsed verdict
-     * @throws IOException if the connection itself fails (refused, timed out, reset, ...)
+     * @throws IOException if the connection itself fails (refused, timed out, reset, ...) or reading {@code content} fails
      * @throws ClamAvScanException if {@code clamd} accepted the connection but reported a scan-level error (e.g. its own size limit exceeded)
      */
-    ClamAvScanResult scan(final byte[] content) throws IOException, ClamAvScanException {
+    ClamAvScanResult scan(final InputStream content) throws IOException, ClamAvScanException {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(this.host, this.port), (int) this.timeout.toMillis());
             socket.setSoTimeout((int) this.timeout.toMillis());
@@ -79,11 +82,14 @@ final class ClamAvClient {
             final OutputStream out = socket.getOutputStream();
             out.write("zINSTREAM\0".getBytes(StandardCharsets.US_ASCII));
 
-            int offset = 0;
-            while (offset < content.length) {
-                final int length = Math.min(CHUNK_SIZE, content.length - offset);
-                writeChunk(out, content, offset, length);
-                offset += length;
+            final byte[] buffer = new byte[CHUNK_SIZE];
+            int read;
+            while ((read = content.read(buffer)) != -1) {
+                // A zero-length chunk is the protocol's end-of-stream marker, so a zero-byte read
+                // must never be forwarded as one.
+                if (read > 0) {
+                    writeChunk(out, buffer, 0, read);
+                }
             }
             out.write(new byte[]{0, 0, 0, 0}); // zero-length chunk terminates the stream
             out.flush();

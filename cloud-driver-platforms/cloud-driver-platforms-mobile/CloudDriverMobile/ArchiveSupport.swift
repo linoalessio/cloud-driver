@@ -31,8 +31,52 @@ func archiveBaseName(_ archiveFileName: String) -> String {
 /// download/preview/extraction tries to write to a temp path built directly from the raw name.
 /// Every local temp-path construction in `AppViewModel.swift` (`download`/`previewFile`/
 /// `downloadAndExtractArchive`) must call this on `file.fileName` first, never append it raw.
+///
+/// Every separator and relative segment is neutralised, not just `/`: `..` as a whole name walks up
+/// a directory, and a trailing dot or space is silently dropped by some filesystems, which would
+/// make the written name differ from the checked one. `\` is not a separator here, but a name that
+/// travels on to another platform through the share sheet is safer without it. When nothing usable
+/// remains, `"file"` is returned rather than an empty component.
+///
+/// This is one half of the defence; `safeLocalChild(of:named:)` is the other. Every local path built
+/// from a server-supplied name must pass through both.
 func sanitizedForLocalPath(_ fileName: String) -> String {
-    fileName.replacingOccurrences(of: "/", with: "_")
+    let withoutSeparators = fileName
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "\\", with: "_")
+    let trimmed = withoutSeparators
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "file" : trimmed
+}
+
+/// Thrown when a local path built from a server-supplied name would land outside the directory it
+/// was meant to go into - see `safeLocalChild(of:named:)`.
+struct LocalPathEscapeError: Error, LocalizedError {
+    let name: String
+
+    var errorDescription: String? {
+        "Couldn't save \"\(name)\" - its name isn't usable as a file name here."
+    }
+}
+
+/// The one way to turn a server-supplied name into a local URL directly inside `directory`:
+/// `sanitizedForLocalPath` reduces it to a single path component, and the result is then re-checked
+/// structurally before anything is written.
+///
+/// Both halves are needed - a sanitiser can always be incomplete, and `appendingPathComponent` does
+/// nothing to stop a component that walks back up. The comparison is by path components, not by
+/// string prefix, so a sibling directory whose name merely starts with `directory`'s (".../tmp/AB"
+/// against ".../tmp/ABC") is not mistaken for a child.
+func safeLocalChild(of directory: URL, named name: String) throws -> URL {
+    let root = directory.standardizedFileURL
+    let candidate = directory.appendingPathComponent(sanitizedForLocalPath(name)).standardizedFileURL
+    guard candidate.pathComponents.count > root.pathComponents.count,
+          Array(candidate.pathComponents.prefix(root.pathComponents.count)) == root.pathComponents else {
+        throw LocalPathEscapeError(name: name)
+    }
+    return candidate
 }
 
 /// Picks a folder name for `baseName` that doesn't collide with anything in `existingNames` -

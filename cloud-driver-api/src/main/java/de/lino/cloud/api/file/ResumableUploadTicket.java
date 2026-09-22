@@ -21,7 +21,9 @@ import org.jetbrains.annotations.Nullable;
  * @param encryption the client-side encryption parameters (same contract as a plain presigned
  *     upload's {@link PresignedUploadTicket#encryption()}), or {@code null} on a deployment
  *     without a content-key service (the object is stored as the client sends it)
+ * @param checksumSha256Hex the plaintext SHA-256 (lowercase hex) this session is bound to - the
+ *     session may only ever carry this exact content, and completion refuses any other declaration
  */
 public record ResumableUploadTicket(String fileId, long partSizeBytes, int partCount, long totalObjectBytes,
-                                     @Nullable PresignedUploadEncryption encryption) {
+                                     @Nullable PresignedUploadEncryption encryption, String checksumSha256Hex) {
 }

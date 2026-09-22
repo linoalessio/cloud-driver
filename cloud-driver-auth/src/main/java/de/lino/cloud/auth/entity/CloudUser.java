@@ -2,9 +2,12 @@ package de.lino.cloud.auth.entity;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.file.StoredFile;
+import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.jwt.rest.Owned;
 import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.user.ICloudUser;
+import de.lino.cloud.api.user.ICloudUserService;
+import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.database.database.entity.Serialized;
 import de.lino.database.json.JsonDocument;
@@ -118,13 +121,24 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      * Resolves the full {@link AuthUser} this row belongs to, via the process-wide {@link
      * CloudDriver} singleton's {@code AuthService}.
      *
+     * <p>That facet is optional - it stays {@code null} until the REST extension publishes it, and
+     * that extension deliberately publishes nothing when no JWT signing key is configured - so this
+     * accessor may only be called from a path that has already established the account subsystem is
+     * up. Every caller reaching it through {@code ICloudUserService} has, because the two facets are
+     * published together. The assertion states that precondition rather than leaving a bare
+     * dereference to fail without naming what was missing.
+     *
      * @return the matching {@link AuthUser}
+     * @throws NullPointerException if the account subsystem is not running
      * @throws java.util.NoSuchElementException if no {@link AuthUser} exists under {@link #authUserId}
      *     (should not normally happen - a {@code CloudUser} is only ever created for an existing account)
      */
     @Override
     public @NonNull AuthUser getAuthUser() {
-        return CloudDriver.getInstance().getServiceContainer().getAuthService().getAuthUser(this.authUserId).orElseThrow();
+        final IAuthService authService = Asserts.requireNonNull(
+                CloudDriver.getInstance().getServiceContainer().getAuthService(),
+                "@CloudUser.getAuthUser: the account subsystem is not running");
+        return authService.getAuthUser(this.authUserId).orElseThrow();
     }
 
     /**
@@ -145,12 +159,20 @@ public final class CloudUser extends Serialized implements ICloudUser, Owned {
      * entity - see {@link CloudUserService#listFiles} for the underlying lookup (including its
      * full-table-scan trade-off) this delegates to.
      *
+     * <p>Carries the same precondition as {@link #getAuthUser()}: the account subsystem must be
+     * running. It deliberately does not degrade to an empty list, which would report an account's
+     * files as gone during an outage instead of reporting the outage.
+     *
      * @return an unmodifiable view of every {@link StoredFile} currently tracked as belonging
      *     to this user
+     * @throws NullPointerException if the account subsystem is not running
      */
     @UnmodifiableView
     public @NotNull List<StoredFile> getStoredFiles() {
-        return CloudDriver.getInstance().getServiceContainer().getCloudUserService().listFiles(this.authUserId);
+        final ICloudUserService cloudUserService = Asserts.requireNonNull(
+                CloudDriver.getInstance().getServiceContainer().getCloudUserService(),
+                "@CloudUser.getStoredFiles: the account subsystem is not running");
+        return cloudUserService.listFiles(this.authUserId);
     }
 
     /** @return this entity's primary key, {@link #authUserId} */

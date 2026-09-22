@@ -473,3 +473,132 @@ def test_suggest_file_tags_inaccessible_file_is_a_404(client: CloudDriverClient)
     )
     with pytest.raises(NotFoundError):
         client.suggest_file_tags("other")
+
+
+def _file_json(file_id: str, file_name: str, folder_id: str | None) -> dict:
+    return {
+        "fileId": file_id,
+        "fileName": file_name,
+        "contentType": "text/plain",
+        "sizeBytes": 5,
+        "createdAtEpochMilli": 1,
+        "updatedAtEpochMilli": 1,
+        "folderId": folder_id,
+    }
+
+
+@respx.mock
+def test_iter_all_unscoped_walks_the_folder_tree(client: CloudDriverClient) -> None:
+    """The unscoped listing cannot be paged server-side, so completeness comes from the tree."""
+    client._access_token = "token"
+
+    def folders_page(request: httpx.Request) -> httpx.Response:
+        parent = request.url.params.get("parentFolderId")
+        if parent is None:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "folderId": "f-1",
+                            "name": "sub",
+                            "ownerId": "u1",
+                            "parentFolderId": None,
+                            "color": None,
+                            "createdAtEpochMillis": 1,
+                            "modifiedAtEpochMillis": 1,
+                        }
+                    ],
+                    "nextCursor": None,
+                },
+            )
+        return httpx.Response(200, json={"items": [], "nextCursor": None})
+
+    def files_page(request: httpx.Request) -> httpx.Response:
+        folder = request.url.params.get("folderId")
+        if folder == "root":
+            return httpx.Response(200, json={"items": [_file_json("root-file", "a.txt", None)], "nextCursor": None})
+        return httpx.Response(200, json={"items": [_file_json("nested-file", "b.txt", "f-1")], "nextCursor": None})
+
+    respx.get(f"{BASE_URL}/folders").mock(side_effect=folders_page)
+    respx.get(f"{BASE_URL}/files").mock(side_effect=files_page)
+
+    assert [f.file_id for f in client.files.iter_all()] == ["root-file", "nested-file"]
+
+
+@respx.mock
+def test_iter_all_scoped_stays_one_folder(client: CloudDriverClient) -> None:
+    """The scoped form must not have become a tree walk - it is what the browser view uses."""
+    client._access_token = "token"
+    folders_route = respx.get(f"{BASE_URL}/folders").mock(
+        return_value=httpx.Response(200, json={"items": [], "nextCursor": None})
+    )
+    files_route = respx.get(f"{BASE_URL}/files").mock(
+        return_value=httpx.Response(200, json={"items": [_file_json("nested-file", "b.txt", "f-1")], "nextCursor": None})
+    )
+
+    assert [f.file_id for f in client.files.iter_all("f-1")] == ["nested-file"]
+    assert files_route.call_count == 1
+    assert files_route.calls.last.request.url.params.get("folderId") == "f-1"
+    assert folders_route.called is False
+
+
+@respx.mock
+def test_download_to_path_if_changed_sends_the_tag_and_leaves_the_file_untouched_on_304(
+    client: CloudDriverClient, tmp_path
+) -> None:
+    client._access_token = "token"
+    destination = tmp_path / "f.bin"
+    destination.write_bytes(b"the copy we already have")
+    route = respx.get(f"{BASE_URL}/files/f1/content").mock(
+        return_value=httpx.Response(304, headers={"ETag": '"abc"'})
+    )
+
+    result = client.files.download_to_path_if_changed("f1", destination, entity_tag='"abc"')
+
+    assert result.not_modified is True
+    assert result.path is None
+    assert result.entity_tag == '"abc"'
+    # The destination must not have been created, truncated or rewritten.
+    assert destination.read_bytes() == b"the copy we already have"
+    assert route.calls.last.request.headers["If-None-Match"] == '"abc"'
+
+
+@respx.mock
+def test_download_to_path_if_changed_writes_and_returns_the_new_tag(client: CloudDriverClient, tmp_path) -> None:
+    client._access_token = "token"
+    respx.get(f"{BASE_URL}/files/f1/content").mock(
+        return_value=httpx.Response(200, content=b"fresh bytes", headers={"ETag": '"def"'})
+    )
+
+    destination = tmp_path / "f.bin"
+    result = client.files.download_to_path_if_changed("f1", destination, entity_tag='"abc"')
+
+    assert result.not_modified is False
+    assert result.path == destination
+    assert result.entity_tag == '"def"'
+    assert destination.read_bytes() == b"fresh bytes"
+
+
+@respx.mock
+def test_download_to_path_without_a_tag_sends_no_conditional_header(client: CloudDriverClient, tmp_path) -> None:
+    client._access_token = "token"
+    route = respx.get(f"{BASE_URL}/files/f1/content").mock(return_value=httpx.Response(200, content=b"x"))
+
+    client.files.download_to_path_if_changed("f1", tmp_path / "f.bin")
+
+    assert "If-None-Match" not in route.calls.last.request.headers
+
+
+@respx.mock
+def test_download_version_to_path_if_changed_hits_the_version_route(client: CloudDriverClient, tmp_path) -> None:
+    client._access_token = "token"
+    route = respx.get(f"{BASE_URL}/files/f1/versions/3/content").mock(
+        return_value=httpx.Response(304, headers={"ETag": '"v3"'})
+    )
+
+    result = client.files.download_version_to_path_if_changed("f1", 3, tmp_path / "v3.bin", entity_tag='"v3"')
+
+    assert result.not_modified is True
+    assert (tmp_path / "v3.bin").exists() is False
+    assert route.calls.last.request.headers["If-None-Match"] == '"v3"'

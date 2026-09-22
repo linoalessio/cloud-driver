@@ -66,6 +66,8 @@ DEFAULTED_KEYS: dict[str, Any] = {
     "auth-rate-limit-window-seconds": 300,
     "api-rate-limit-read-max-requests": 300,
     "api-rate-limit-read-window-seconds": 60,
+    "public-download-rate-limit-max-requests": 30,
+    "public-download-rate-limit-window-seconds": 60,
     "file-versioning-max-versions-per-file": 10,
     "file-versioning-retention-days": 30,
     "presigned-upload-ticket-retention-hours": 6,

@@ -1,6 +1,7 @@
 package de.lino.cloud.plugin;
 
 import de.lino.cloud.api.CloudDriver;
+import de.lino.cloud.api.audit.AuditEvent;
 import de.lino.cloud.api.event.Event;
 import de.lino.cloud.api.event.extension.ExtensionUnregisterEvent;
 import de.lino.cloud.api.extension.Extension;
@@ -8,9 +9,11 @@ import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.container.IFactoryContainer;
 import de.lino.cloud.api.factory.service.IServiceContainer;
+import de.lino.cloud.api.file.FileChunkManifest;
 import de.lino.cloud.api.file.Folder;
 import de.lino.cloud.api.file.StoredFile;
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.search.SearchIndexService;
 import de.lino.cloud.api.security.connectivity.ConnectivityChecker;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
@@ -21,10 +24,19 @@ import de.lino.cloud.api.redis.RedisSupport;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.prompt.DefaultPromptProvider;
+import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.versioning.FileVersioningService;
+import de.lino.cloud.api.webhook.WebhookService;
 import de.lino.cloud.auth.entity.CloudUser;
+import de.lino.cloud.auth.entity.PublicShareLink;
+import de.lino.cloud.auth.entity.RefreshToken;
+import de.lino.cloud.auth.entity.SharedFileGrant;
+import de.lino.cloud.auth.entity.SharedFolderGrant;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
+import de.lino.cloud.auth.pending.PendingEmailChange;
 import de.lino.cloud.auth.pending.PendingPasswordReset;
+import de.lino.cloud.auth.pending.PendingPresignedUpload;
 import de.lino.cloud.auth.pending.PendingRegistration;
 import de.lino.cloud.plugin.connectivity.InternetConnectivityChecker;
 import de.lino.cloud.plugin.factory.*;
@@ -32,12 +44,14 @@ import de.lino.cloud.plugin.factory.container.FactoryContainer;
 import de.lino.cloud.plugin.factory.container.ServiceContainer;
 import de.lino.cloud.plugin.security.envelope.EnvelopeEncryptionService;
 import de.lino.database.database.DatabaseProvider;
+import de.lino.database.database.entity.Serialized;
 import de.lino.database.json.JsonDocument;
 import lombok.Getter;
 import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -243,62 +257,49 @@ public final class DefaultCloudDriver extends CloudDriver {
     }
 
     /**
-     * Wipes every {@link de.lino.database.database.entity.Serialized} entity section this
-     * repository defines - every {@link AuthUser}, {@link CloudUser}, {@link Folder}, {@link
-     * StoredFile}, {@link StoredFileOwnership}, {@link PendingRegistration}, {@link
-     * PendingPasswordReset}, and {@link ApiKey} row, across the whole database - and, if S3-backed
-     * content storage is configured ({@link IFactoryContainer#getObjectStorageService()}
-     * non-{@code null}), every S3 object any {@link StoredFile} row currently points at. Called by
-     * the terminal package's {@code HardResetCommand} (aliased {@code reset}) after its own
-     * two-step confirmation - there is no undo.
+     * Every entity section {@link #reset()} clears, in the order it clears them - the one list
+     * both the wipe and {@link #resetScope()} read, so what an operator is shown before
+     * confirming cannot drift from what is actually deleted. A new entity type is added here and
+     * nowhere else.
+     */
+    private static final List<Class<? extends Serialized>> RESET_SECTIONS = List.of(
+            AuthUser.class, CloudUser.class, Folder.class,
+            PendingRegistration.class, PendingPasswordReset.class, PendingEmailChange.class,
+            PendingPresignedUpload.class, StoredFile.class, StoredFileOwnership.class,
+            SharedFileGrant.class, SharedFolderGrant.class, PublicShareLink.class,
+            RefreshToken.class, FileChunkManifest.class, AuditEvent.class, ApiKey.class);
+
+    /**
+     * {@inheritDoc}
      *
-     * <p><b>S3 purge added 2026-09-08, closing a real, previously-documented gap.</b> {@link
-     * de.lino.cloud.plugin.factory.DefaultFileFactory#clear()}/{@code #deleteSection()} never
-     * purged S3 objects - an accepted trade-off for those two methods on their own, since an
-     * orphaned object left behind by a routine {@code clear()}/{@code deleteSection()} call is
-     * cheap to clean up later - but this method bypasses {@link FileFactory} entirely and calls
-     * {@link DataFactory#deleteSectionAsync} directly, so it never benefited from {@link
-     * de.lino.cloud.plugin.factory.DefaultFileFactory#delete(String)}'s own S3 cleanup either, and
-     * a full, deliberate, operator-confirmed account wipe leaving every S3 object behind is a much
-     * larger gap than either of those two routine-operation ones. {@link #purgeS3BackedContent}
-     * enumerates every {@link StoredFile} row (via {@link DataFactory#getEntities}, <b>before</b>
-     * the {@code StoredFile} section itself is wiped below - the object keys live only on those
-     * rows, so they must be read first) and best-effort deletes each {@link
-     * StoredFile#isS3Backed()} row's own object; a dedup alias ({@link StoredFile#isDedupAlias()})
-     * is naturally skipped, since an alias is never itself {@code isS3Backed()} (it carries no
-     * {@code objectStorageKey} of its own), so each real S3 object is still purged exactly once
-     * regardless of how many aliases point at it. Runs synchronously, before the concurrent
-     * section wipe below starts - deliberately not folded into the same {@link
-     * CompletableFuture#allOf} batch, since the {@code StoredFile} row list must be read in full
-     * before {@code deleteSectionAsync(StoredFile.class)} can be allowed to remove it; racing the
-     * two would risk the section wipe reaching a row before its object was ever purged.
+     * <p>Runs in three stages. First, if S3-backed content storage is configured ({@link
+     * IFactoryContainer#getObjectStorageService()} non-{@code null}), {@link
+     * #purgeS3BackedContent} deletes every object a {@link StoredFile} row currently points at.
+     * That has to happen before the section wipe rather than alongside it: the object keys live
+     * only on those rows, so a racing {@code deleteSectionAsync(StoredFile.class)} could remove a
+     * row before its object was ever read. A dedup alias ({@link StoredFile#isDedupAlias()})
+     * carries no {@code objectStorageKey} of its own and is skipped naturally, so each real object
+     * is purged exactly once however many aliases point at it.
      *
-     * <p>Deliberately does <b>not</b> touch key-encryption-key (KEK) material: KEK rotation state
-     * lives in its own raw {@code "kek"} {@link de.lino.database.database.DatabaseSection}
-     * (constructed directly by {@code DatabaseKeyEncryptionService}, given that section by {@code
-     * CloudBootstrap.initiateCloudDriver()} - see {@code CloudBootstrap.java}), not through a
-     * {@link Serialized} entity class reachable via {@link DataFactory#deleteSection}, so it isn't
-     * reachable from here without new plumbing (e.g. exposing the raw {@link DatabaseProvider}
-     * through {@link IFactoryContainer}). Once every entity above is gone there is nothing left
-     * for that KEK to protect anyway, so leaving it in place is safe, not merely an oversight -
-     * but it does mean a KEK rotated before this reset stays around after it. An earlier revision
-     * of this method tried to reach it via {@code dataFactory.deleteSectionAsync(
-     * DatabaseKeyEncryptionService.class)} - that never compiled ({@code
-     * DatabaseKeyEncryptionService} implements {@link
-     * de.lino.cloud.api.security.keys.KeyEncryptionService}, not {@link Serialized}, so it can't
-     * satisfy {@link DataFactory#deleteSectionAsync}'s {@code <T extends Serialized>} bound) and,
-     * even had it compiled, would have deleted the wrong section - {@code deleteSection} derives
-     * a section name from {@code type.getSimpleName()} ({@code "DatabaseKeyEncryptionService"}),
-     * not the {@code "kek"} section the KEK material actually lives in.
+     * <p>Second, every section in {@link #RESET_SECTIONS} is deleted concurrently (each {@link
+     * DataFactory#deleteSectionAsync} call dispatches its own task) and this method waits for all
+     * of them via {@link CompletableFuture#allOf}, propagating the first failure once every
+     * deletion has been attempted - the same "attempt everything concurrently, don't report until
+     * all are attempted" convention {@code EntityDatabaseClient}'s own batch operations use. A
+     * wipe that failed part-way must never read as a wipe that succeeded.
      *
-     * <p>Every deletion runs concurrently (each {@link DataFactory#deleteSectionAsync} call
-     * dispatches its own task); unlike the previous revision, this method now waits for every one
-     * to finish (via {@link CompletableFuture#allOf}) before returning, and propagates the first
-     * failure encountered once every deletion has been attempted - the same "attempt everything
-     * concurrently, don't report until all are attempted" convention {@code
-     * EntityDatabaseClient}'s own batch operations use - rather than firing eight requests and
-     * discarding every result, which previously left both the caller and {@code HardResetCommand}
-     * with no way to know whether the reset actually completed or silently failed partway through.
+     * <p>Third, {@link #clearExtensionOwnedData()} clears what the optional extensions own. Unlike
+     * the section wipe, that stage is best-effort: one dead optional subsystem must not leave the
+     * rest of the wipe undone.
+     *
+     * <p>Key-encryption-key material is deliberately not touched: KEK rotation state lives in its
+     * own raw {@code "kek"} {@link de.lino.database.database.DatabaseSection}, constructed directly
+     * by {@code DatabaseKeyEncryptionService} rather than as a {@link Serialized} entity type, so
+     * it is not reachable through {@link DataFactory#deleteSection} at all. Once every entity above
+     * is gone there is nothing left for that key to protect, so leaving it in place is safe - but
+     * it does mean a KEK rotated before this reset stays around after it.
+     *
+     * @see #resetScope()
      */
     @Override
     public void reset() {
@@ -307,70 +308,122 @@ public final class DefaultCloudDriver extends CloudDriver {
         final ObjectStorageService objectStorageService = this.getFactoryContainer().getObjectStorageService();
 
         if (objectStorageService != null) {
-            this.purgeS3BackedContent(dataFactory, objectStorageService);
+            final int purgedObjects = this.purgeS3BackedContent(dataFactory, objectStorageService);
+            this.getLogger().log(Level.INFO, "@DefaultCloudDriver.reset: purged " + purgedObjects + " object storage object(s)");
         }
 
-        // Every entity section this module can name. The eight originally listed here left eleven
-        // behind - among them the audit log (every registered address and the full login history),
-        // every live session credential, every share and public link - so a wipe run to
-        // decommission or hand on an instance left exactly the data it was run to destroy.
-        final List<CompletableFuture<Void>> deletions = List.of(
-                dataFactory.deleteSectionAsync(AuthUser.class),
-                dataFactory.deleteSectionAsync(CloudUser.class),
-                dataFactory.deleteSectionAsync(Folder.class),
-                dataFactory.deleteSectionAsync(PendingRegistration.class),
-                dataFactory.deleteSectionAsync(PendingPasswordReset.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.pending.PendingEmailChange.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.pending.PendingPresignedUpload.class),
-                dataFactory.deleteSectionAsync(StoredFile.class),
-                dataFactory.deleteSectionAsync(StoredFileOwnership.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.SharedFileGrant.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.SharedFolderGrant.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.PublicShareLink.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.auth.entity.RefreshToken.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.api.file.FileChunkManifest.class),
-                dataFactory.deleteSectionAsync(de.lino.cloud.api.audit.AuditEvent.class),
-                dataFactory.deleteSectionAsync(ApiKey.class)
-        );
+        // Driven off RESET_SECTIONS rather than an inline list, so the wipe and resetScope() can
+        // never describe different things.
+        final List<CompletableFuture<Void>> deletions = RESET_SECTIONS.stream()
+                .map(type -> dataFactory.deleteSectionAsync(type))
+                .toList();
 
         CompletableFuture.allOf(deletions.toArray(new CompletableFuture[0])).join();
 
-        // The remaining sections belong to extensions, whose entity types this module cannot name.
-        // Each optional facet clears its own; an absent extension has no section to clear.
-        clearExtensionOwnedData();
+        this.getLogger().log(Level.WARNING, "@DefaultCloudDriver.reset: cleared " + RESET_SECTIONS.size()
+                + " entity section(s): " + String.join(", ", RESET_SECTIONS.stream().map(Class::getSimpleName).toList()));
+
+        // The remaining data belongs to extensions, whose entity types this module cannot name.
+        // Each optional facet clears its own; an absent extension has nothing to clear.
+        this.clearExtensionOwnedData();
 
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Reads no rows: it names targets and asks each optional facet only whether it is
+     * published. That is deliberate - the {@code StoredFile} section is pinned to the {@code NONE}
+     * cache mode precisely because enumerating it in full is this codebase's known
+     * out-of-memory shape, and a diagnostic printed before a wipe must never be the thing that
+     * kills the process.
+     *
+     * <p>Object storage is named first, then every {@link #RESET_SECTIONS} entry, then each
+     * published extension's own data - the order {@link #reset()} actually clears them in.
+     */
+    @NotNull
+    @Override
+    public List<String> resetScope() {
+
+        final List<String> scope = new ArrayList<>();
+
+        if (this.getFactoryContainer().getObjectStorageService() != null) {
+            scope.add("object storage: every object a file row references");
+        }
+
+        for (final Class<? extends Serialized> type : RESET_SECTIONS) {
+            scope.add("entity section: " + type.getSimpleName());
+        }
+
+        final IServiceContainer services = this.getServiceContainer();
+        if (services.getFileVersioningService() != null) scope.add("extension data: file versions");
+        if (services.getThumbnailService() != null) scope.add("extension data: thumbnails");
+        if (services.getWebhookService() != null) scope.add("extension data: webhook subscriptions and delivery history");
+        if (services.getSearchIndexService() != null) scope.add("extension data: keyword search index");
+
+        return List.copyOf(scope);
+
+    }
 
     /**
-     * Clears the entity sections owned by optional extensions - versions, thumbnails and webhook
-     * subscriptions.
+     * Clears the data owned by optional extensions - file versions, thumbnails, webhook
+     * subscriptions together with their recorded delivery history, and the keyword search index.
      *
-     * <p>Their entity types live inside those extensions, so {@link #reset()} cannot name them
-     * directly without inverting this project's dependency direction. Each service clears its own
-     * section instead, and an extension that is not running simply has nothing to clear.
-     * Best-effort throughout: a wipe must not stop half-way because one optional subsystem failed.
+     * <p>Their entity types and stores live inside those extensions, so {@link #reset()} cannot
+     * name them directly without inverting this project's dependency direction. Each service
+     * clears its own instead, and an extension that is not running simply has nothing to clear.
+     *
+     * <p>The keyword search index belongs here for a second reason beyond ownership: it is the one
+     * store in this system that holds plaintext - file names and lexemes derived from file content
+     * - so a wipe that left it behind would leave exactly the readable material it was run to
+     * destroy. Everything in it is derived from the files being wiped and is rebuildable from
+     * them, so there is nothing in it to preserve once they are gone.
+     *
+     * <p>Best-effort throughout: a wipe must not stop half-way because one optional subsystem
+     * failed.
      */
     private void clearExtensionOwnedData() {
-        final de.lino.cloud.api.factory.service.IServiceContainer services = this.getServiceContainer();
-        try {
-            final de.lino.cloud.api.versioning.FileVersioningService versioning = services.getFileVersioningService();
-            if (versioning != null) versioning.clearAllData();
-        } catch (final RuntimeException ignored) {
-            // best-effort - see this method's own Javadoc
+
+        final IServiceContainer services = this.getServiceContainer();
+
+        final FileVersioningService versioning = services.getFileVersioningService();
+        this.clearBestEffort("file versions", versioning, () -> versioning.clearAllData());
+
+        final ThumbnailService thumbnails = services.getThumbnailService();
+        this.clearBestEffort("thumbnails", thumbnails, () -> thumbnails.clearAllData());
+
+        final WebhookService webhooks = services.getWebhookService();
+        this.clearBestEffort("webhook subscriptions and delivery history", webhooks, () -> webhooks.clearAllData());
+
+        final SearchIndexService searchIndex = services.getSearchIndexService();
+        this.clearBestEffort("the keyword search index", searchIndex, () -> searchIndex.clearAllData());
+
+    }
+
+    /**
+     * Runs one optional facet's own clear step, logging what happened rather than propagating it -
+     * the per-facet half of {@link #clearExtensionOwnedData()}'s best-effort contract. An absent
+     * facet is logged as absent rather than skipped silently, so the process log left behind by a
+     * wipe says which subsystems were and were not reached.
+     *
+     * @param label what is being cleared, as it appears in the log
+     * @param facet the optional service, or {@code null} if this deployment never published one
+     * @param action the clear call to run when {@code facet} is present
+     */
+    private void clearBestEffort(@NonNull final String label, final Object facet, @NonNull final Runnable action) {
+
+        if (facet == null) {
+            this.getLogger().log(Level.INFO, "@DefaultCloudDriver.reset: " + label + " is not published - nothing to clear");
+            return;
         }
+
         try {
-            final de.lino.cloud.api.thumbnail.ThumbnailService thumbnails = services.getThumbnailService();
-            if (thumbnails != null) thumbnails.clearAllData();
-        } catch (final RuntimeException ignored) {
-            // best-effort
+            action.run();
+            this.getLogger().log(Level.INFO, "@DefaultCloudDriver.reset: cleared " + label);
+        } catch (final RuntimeException clearFailed) {
+            this.getLogger().log(Level.WARNING, "@DefaultCloudDriver.reset: failed to clear " + label, clearFailed);
         }
-        try {
-            final de.lino.cloud.api.webhook.WebhookService webhooks = services.getWebhookService();
-            if (webhooks != null) webhooks.clearAllData();
-        } catch (final RuntimeException ignored) {
-            // best-effort
-        }
+
     }
 
     /**
@@ -391,25 +444,30 @@ public final class DefaultCloudDriver extends CloudDriver {
      *
      * @param dataFactory the facet {@link StoredFile} rows are read through
      * @param objectStorageService the facet each S3-backed row's object is deleted through
+     * @return how many objects were actually deleted - {@code 0} if the row enumeration itself
+     * failed, since nothing could then be identified to delete
      */
-    private void purgeS3BackedContent(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService) {
+    private int purgeS3BackedContent(@NotNull final DataFactory dataFactory, @NotNull final ObjectStorageService objectStorageService) {
         final List<StoredFile> files;
         try {
             files = dataFactory.getEntities(StoredFile.class);
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException enumerationFailed) {
             this.getLogger().log(Level.WARNING,
                     "@DefaultCloudDriver.reset: failed to enumerate StoredFile rows for the S3 purge - leaving any S3 objects behind", enumerationFailed);
-            return;
+            return 0;
         }
+        int deleted = 0;
         for (final StoredFile file : files) {
             if (!file.isS3Backed()) continue;
             try {
                 objectStorageService.deleteObject(file.objectStorageKey());
+                deleted++;
             } catch (final ObjectStorageException deleteFailed) {
                 this.getLogger().log(Level.WARNING,
                         "@DefaultCloudDriver.reset: failed to delete S3 object '" + file.objectStorageKey() + "' for file '" + file.fileId() + "'", deleteFailed);
             }
         }
+        return deleted;
     }
 
     /**

@@ -16,7 +16,10 @@ documents that capability as Java-only.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
+import tempfile
 import urllib.parse
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -24,9 +27,11 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 import httpx
 
+from . import crypto
 from ._http import raise_for_status
 from .exceptions import (
     ConflictError,
+    ContentIntegrityError,
     NotFoundError,
     ServiceUnavailableError,
     SyncConflictError,
@@ -38,8 +43,10 @@ from .models import (
     AuthTokens,
     AuthUser,
     BeginDownloadUrl,
+    BeginUploadSessionResult,
     BeginUploadUrl,
     CloudUser,
+    ConditionalDownload,
     EmailExists,
     FileVersionSummary,
     Folder,
@@ -60,6 +67,9 @@ from .models import (
     StoredFileSummary,
     TrashedFileSummary,
     TrashedFolderSummary,
+    UploadEncryption,
+    UploadSession,
+    UploadSessionPartUrl,
 )
 from .token_store import InMemoryTokenStore, TokenStore
 
@@ -89,6 +99,42 @@ def _iter_file_chunks(
         if on_progress is not None:
             on_progress(transferred)
         yield chunk
+
+
+class _LazyFileWriter:
+    """Opens ``destination`` for writing on the first chunk only, so a 304 (no chunks) leaves
+    an existing local copy untouched instead of truncating it the moment the request starts."""
+
+    def __init__(self, destination: Path) -> None:
+        self._destination = destination
+        self._handle: BinaryIO | None = None
+        self._opened = False
+
+    def write(self, chunk: bytes) -> None:
+        if self._handle is None:
+            self._handle = self._destination.open("wb")
+            self._opened = True
+        self._handle.write(chunk)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    @property
+    def opened(self) -> bool:
+        """Whether the destination was ever written to - stays True after :meth:`close`."""
+        return self._opened
+
+
+def _sha256_hex(local_path: Path, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
+    """The file's plaintext SHA-256, lowercase hex - the digest complete-upload is checked
+    against, always computed over the plaintext whether the object is encrypted or not."""
+    digest = hashlib.sha256()
+    with local_path.open("rb") as source:
+        while chunk := source.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class CloudDriverClient:
@@ -198,15 +244,21 @@ class CloudDriverClient:
         on_progress: Callable[[int], None] | None,
         chunk_size: int,
         auth_required: bool = True,
+        extra_headers: dict[str, str] | None = None,
+        not_modified_ok: bool = False,
     ) -> httpx.Response:
         def _do() -> httpx.Response:
-            headers = self._headers(auth_required)
+            headers = self._headers(auth_required, extra_headers)
             with self._client.stream("GET", path, headers=headers, timeout=TRANSFER_TIMEOUT) as resp:
                 if resp.status_code >= 400:
                     # Must fully read the body *before* the `with` block exits (a streaming
                     # response's .json()/.text raise httpx.ResponseNotRead otherwise) so
                     # raise_for_status can still extract the error message afterward.
                     resp.read()
+                    return resp
+                if not_modified_ok and resp.status_code == 304:
+                    # A 304 carries no body - returned before iter_bytes, so `on_chunk` is never
+                    # called and nothing downstream opens or truncates a destination file.
                     return resp
                 transferred = 0
                 for chunk in resp.iter_bytes(chunk_size):
@@ -220,6 +272,35 @@ class CloudDriverClient:
         if auth_required and resp.status_code == 401 and self._try_refresh():
             resp = _do()
         return raise_for_status(resp)
+
+    def _conditional_download(
+        self,
+        path: str,
+        destination: str | os.PathLike[str],
+        entity_tag: str | None,
+        on_progress: Callable[[int], None] | None,
+        chunk_size: int,
+    ) -> ConditionalDownload:
+        """GETs `path` conditionally, writing to `destination` only if the server sends a body."""
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        writer = _LazyFileWriter(destination)
+        headers = {"If-None-Match": entity_tag} if entity_tag else None
+        try:
+            resp = self._stream_download(
+                path,
+                on_chunk=writer.write,
+                on_progress=on_progress,
+                chunk_size=chunk_size,
+                extra_headers=headers,
+                not_modified_ok=True,
+            )
+        finally:
+            writer.close()
+        server_tag = resp.headers.get("ETag")
+        if resp.status_code == 304:
+            return ConditionalDownload(not_modified=True, path=None, entity_tag=server_tag or entity_tag)
+        return ConditionalDownload(not_modified=False, path=destination, entity_tag=server_tag)
 
     # -- live updates ---------------------------------------------------------------------------
 
@@ -455,6 +536,13 @@ class _FilesResource(_Resource):
     def list(
         self, folder_id: str | None | object = UNSCOPED, *, limit: int | None = None, cursor: str | None = None
     ) -> list[StoredFileSummary] | Page[StoredFileSummary]:
+        """GET /files - one listing, exactly as the route answers it.
+
+        `folder_id` left at `UNSCOPED` omits the parameter, which spans every folder; `None` means
+        the root specifically. With `limit` the response is a cursor `Page`; without it, a bare
+        array the server caps at 500 entries and flags in no way - no header, no field, no error.
+        So anything that needs completeness must go through :meth:`iter_all`, never this.
+        """
         params: dict[str, Any] = {}
         if folder_id is not UNSCOPED:
             params["folderId"] = "root" if folder_id is None else folder_id
@@ -470,6 +558,20 @@ class _FilesResource(_Resource):
     def iter_all(
         self, folder_id: str | None | object = UNSCOPED, *, page_size: int = 200
     ) -> Iterator[StoredFileSummary]:
+        """Yields every matching file, paging as it goes.
+
+        With an explicit `folder_id` (including `None`, the root) this pages that one folder.
+        The default, unscoped form walks the whole folder tree instead of asking for every file
+        at once: only a folder-scoped listing can be paged to completion, so an unscoped call
+        that opted into paging would quietly come back scoped to the root.
+        """
+        if folder_id is UNSCOPED:
+            yield from self._iter_tree(None, page_size=page_size)
+        else:
+            yield from self._iter_folder(folder_id, page_size=page_size)
+
+    def _iter_folder(self, folder_id: str | None, *, page_size: int) -> Iterator[StoredFileSummary]:
+        """Pages one folder's direct contents to exhaustion."""
         cursor: str | None = None
         while True:
             page = self.list(folder_id, limit=page_size, cursor=cursor)
@@ -478,6 +580,19 @@ class _FilesResource(_Resource):
             if page.next_cursor is None:
                 return
             cursor = page.next_cursor
+
+    def _iter_tree(self, root_folder_id: str | None, *, page_size: int) -> Iterator[StoredFileSummary]:
+        """Walks `root_folder_id` and every folder beneath it, yielding each folder's files.
+
+        An explicit stack rather than recursion: a deeply nested tree must not be able to hit the
+        interpreter's recursion limit. `folders.iter_all(None)` already means "the top-level
+        folders", so the root needs no special case.
+        """
+        pending: list[str | None] = [root_folder_id]
+        while pending:
+            folder_id = pending.pop()
+            yield from self._iter_folder(folder_id, page_size=page_size)
+            pending.extend(sub.folder_id for sub in self._c.folders.iter_all(folder_id, page_size=page_size))
 
     def get(self, file_id: str) -> StoredFile:
         return StoredFile.model_validate(self._c._request("GET", f"/files/{file_id}").json())
@@ -497,6 +612,26 @@ class _FilesResource(_Resource):
                 f"/files/{file_id}/content", on_chunk=out.write, on_progress=on_progress, chunk_size=chunk_size
             )
         return destination
+
+    def download_to_path_if_changed(
+        self,
+        file_id: str,
+        destination: str | os.PathLike[str],
+        *,
+        entity_tag: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> ConditionalDownload:
+        """GET /files/{id}/content, telling the server which copy the caller already holds.
+
+        Pass the `entity_tag` the previous download of this file returned: the server answers 304
+        while it still matches, and the result's `not_modified` is then True with `destination`
+        never opened - keep using the copy that tag described. A `None` tag makes an ordinary
+        unconditional download. See `download_to_path` for the plain form.
+        """
+        return self._c._conditional_download(
+            f"/files/{file_id}/content", destination, entity_tag, on_progress, chunk_size
+        )
 
     def download_bytes(self, file_id: str, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bytes:
         buffer = bytearray()
@@ -578,6 +713,22 @@ class _FilesResource(_Resource):
                 chunk_size=chunk_size,
             )
         return destination
+
+    def download_version_to_path_if_changed(
+        self,
+        file_id: str,
+        version_number: int,
+        destination: str | os.PathLike[str],
+        *,
+        entity_tag: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> ConditionalDownload:
+        """GET /files/{id}/versions/{n}/content, conditional exactly as
+        `download_to_path_if_changed` is - an unchanged version transfers no body."""
+        return self._c._conditional_download(
+            f"/files/{file_id}/versions/{version_number}/content", destination, entity_tag, on_progress, chunk_size
+        )
 
     def download_version_bytes(self, file_id: str, version_number: int, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> bytes:
         buffer = bytearray()
@@ -686,13 +837,25 @@ class _FilesResource(_Resource):
         resp = self._c._request("GET", "/files/shared-by-me/count")
         return SharedByMeCount.model_validate(resp.json()).count
 
-    def begin_upload_url(self, file_name: str, size_bytes: int, *, folder_id: str | None = None) -> BeginUploadUrl:
-        """Issue a presigned upload ticket.
+    def begin_upload_url(
+        self,
+        file_name: str,
+        size_bytes: int,
+        *,
+        folder_id: str | None = None,
+        allow_encrypted: bool = False,
+    ) -> BeginUploadUrl:
+        """Issue a raw presigned upload ticket.
 
-        Raises :class:`UnsupportedEncryptionError` when the server issues a ticket that requires
-        client-side encryption, which this SDK cannot yet perform. Uploading plaintext against
-        such a ticket is rejected by the server at completion anyway, with an error about
-        declared sizes that says nothing about the real cause.
+        `size_bytes` is the PLAINTEXT length - the server derives the stored object's own length
+        from it. A ticket carrying an `encryption` object expects the encrypted object at its URL,
+        not the file, so by default such a ticket is refused rather than handed back: PUTting the
+        plaintext against it is rejected by the server at completion anyway, with an error about
+        declared sizes that says nothing about the real cause. Pass `allow_encrypted=True` only if
+        you intend to produce the stored object yourself with
+        :mod:`cloud_driver_client.crypto`; :meth:`upload_via_presigned_url` does that for you.
+
+        Raises :class:`UnsupportedEncryptionError` on an encrypted ticket without the opt-in.
         """
         resp = self._c._request(
             "POST",
@@ -700,10 +863,12 @@ class _FilesResource(_Resource):
             json={"fileName": file_name, "sizeBytes": size_bytes, "folderId": folder_id},
         )
         ticket = BeginUploadUrl.model_validate(resp.json())
-        if ticket.encryption is not None:
+        if ticket.encryption is not None and not allow_encrypted:
             raise UnsupportedEncryptionError(
-                "this deployment stores content client-side encrypted, which this SDK cannot yet "
-                "write - use the server-mediated upload (files.upload) instead"
+                "this deployment stores content client-side encrypted - use "
+                "files.upload_via_presigned_url, the server-mediated files.upload, or pass "
+                "allow_encrypted=True to handle the ciphertext yourself with "
+                "cloud_driver_client.crypto"
             )
         return ticket
 
@@ -717,21 +882,392 @@ class _FilesResource(_Resource):
         )
         return StoredFileSummary.model_validate(resp.json())
 
-    def begin_download_url(self, file_id: str) -> BeginDownloadUrl:
-        """Issue a presigned download ticket.
+    def upload_via_presigned_url(
+        self,
+        local_path: str | os.PathLike[str],
+        *,
+        folder_id: str | None = None,
+        file_name: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> StoredFileSummary:
+        """Uploads `local_path` straight to the object store, bypassing the cloud-driver server for
+        the data path: begin ticket, PUT, complete.
 
-        Raises :class:`UnsupportedEncryptionError` when the stored object is client-side
-        encrypted, which this SDK cannot yet decrypt. Returning the ticket regardless would hand
-        the caller a URL whose bytes are ciphertext - written to disk as though they were the
-        file, with nothing anywhere reporting a problem.
+        Encrypts client-side when the ticket carries encryption material, producing exactly the
+        stored object the server expects; a ticket with `encryption` of `None` means the deployment
+        stores this object plaintext and the file is PUT as it is. Memory stays O(`chunk_size`),
+        though an encrypted upload stages the ciphertext in a temp file first.
+
+        `on_progress` receives the cumulative number of bytes PUT so far - on an encrypted upload
+        that is ciphertext bytes, a few dozen per MiB more than the plaintext.
+
+        Raises :class:`ServiceUnavailableError` (503) when this deployment has no presigned
+        transfer configured; fall back to :meth:`upload` on exactly that.
+        """
+        local_path = Path(local_path)
+        name = file_name or local_path.name
+        size_bytes = local_path.stat().st_size
+        checksum = _sha256_hex(local_path)
+
+        ticket = self.begin_upload_url(name, size_bytes, folder_id=folder_id, allow_encrypted=True)
+        if ticket.encryption is None:
+            # A legacy plaintext object: the deployment stores this one unencrypted, and that path
+            # must keep working exactly as it did.
+            with local_path.open("rb") as body:
+                self._put_presigned_object(
+                    ticket.upload_url, ticket.required_headers, body, size_bytes, on_progress, chunk_size
+                )
+        else:
+            encrypted_path, encrypted_length = self._encrypt_for_presigned_upload(local_path, ticket.encryption)
+            try:
+                with encrypted_path.open("rb") as body:
+                    self._put_presigned_object(
+                        ticket.upload_url, ticket.required_headers, body, encrypted_length, on_progress, chunk_size
+                    )
+            finally:
+                encrypted_path.unlink(missing_ok=True)
+        # The digest is over the plaintext either way - it is the file's identity, not the object's.
+        return self.complete_upload(ticket.file_id, name, checksum, folder_id=folder_id)
+
+    def begin_download_url(self, file_id: str, *, allow_encrypted: bool = False) -> BeginDownloadUrl:
+        """Issue a raw presigned download ticket.
+
+        A ticket carrying an `encryption` object names a stored object whose bytes are ciphertext -
+        fetched and written to disk as though they were the file, with nothing anywhere reporting a
+        problem. So by default such a ticket is refused rather than handed back. Pass
+        `allow_encrypted=True` only if you intend to decrypt it yourself with
+        :mod:`cloud_driver_client.crypto`; :meth:`download_via_presigned_url` does that for you.
+
+        Raises :class:`UnsupportedEncryptionError` on an encrypted ticket without the opt-in.
         """
         ticket = BeginDownloadUrl.model_validate(self._c._request("GET", f"/files/{file_id}/download-url").json())
-        if ticket.encryption is not None:
+        if ticket.encryption is not None and not allow_encrypted:
             raise UnsupportedEncryptionError(
-                "this file is stored client-side encrypted, which this SDK cannot yet decrypt - "
-                "use the server-mediated download (files.download_to_path) instead"
+                "this file is stored client-side encrypted - use files.download_via_presigned_url, "
+                "the server-mediated files.download_to_path, or pass allow_encrypted=True to "
+                "decrypt it yourself with cloud_driver_client.crypto"
             )
         return ticket
+
+    def download_via_presigned_url(
+        self,
+        file_id: str,
+        destination: str | os.PathLike[str],
+        *,
+        on_progress: Callable[[int], None] | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Path:
+        """Downloads `file_id` straight from the object store, bypassing the cloud-driver server for
+        the data path, and decrypts it when the ticket carries encryption material.
+
+        A ticket with `encryption` of `None` names a legacy plaintext object, streamed to
+        `destination` unchanged. Memory stays O(`chunk_size`), though an encrypted download stages
+        the fetched ciphertext in a temp file first.
+
+        Raises :class:`ServiceUnavailableError` (503) when this deployment has no presigned
+        transfer configured; fall back to :meth:`download_to_path` on exactly that, and
+        :class:`ContentIntegrityError` when the stored object fails verification.
+        """
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        ticket = self.begin_download_url(file_id, allow_encrypted=True)
+        if ticket.encryption is None:
+            # A legacy plaintext object: what the object store serves is already the file.
+            with destination.open("wb") as out:
+                self._fetch_presigned_object(ticket.download_url, out.write, on_progress, chunk_size)
+            return destination
+
+        fd, raw_name = tempfile.mkstemp(prefix="cloud-driver-download-", suffix=".enc")
+        ciphertext_path = Path(raw_name)
+        try:
+            with os.fdopen(fd, "wb") as staged:
+                self._fetch_presigned_object(ticket.download_url, staged.write, on_progress, chunk_size)
+            try:
+                with ciphertext_path.open("rb") as stored, destination.open("wb") as out:
+                    crypto.decrypt_object(
+                        stored,
+                        out,
+                        key_material=base64.b64decode(ticket.encryption.content_key_base64),
+                        associated_data_prefix=ticket.encryption.associated_data_prefix,
+                        header_length_bytes=ticket.encryption.header_length_bytes,
+                    )
+            except BaseException:
+                # A failed or partial decrypt must never leave unverified bytes behind where the
+                # caller would take them for the file.
+                destination.unlink(missing_ok=True)
+                raise
+        finally:
+            ciphertext_path.unlink(missing_ok=True)
+        return destination
+
+    # -- resumable multipart upload sessions ---------------------------------------------------
+
+    def begin_upload_session(
+        self, file_name: str, size_bytes: int, checksum_sha256: str, *, folder_id: str | None = None
+    ) -> BeginUploadSessionResult:
+        """POST /files/upload-session - begins a crash-resumable multipart upload.
+
+        `size_bytes` and `checksum_sha256` are the PLAINTEXT length and digest. A dedup precheck
+        hit comes back as `already_stored` with no session at all: nothing needs uploading.
+
+        Raises :class:`ServiceUnavailableError` (503) when this deployment offers no resumable
+        sessions; fall back to :meth:`upload_via_presigned_url` or :meth:`upload` on exactly that.
+        """
+        body = self._c._request(
+            "POST",
+            "/files/upload-session",
+            json={
+                "fileName": file_name,
+                "sizeBytes": size_bytes,
+                "folderId": folder_id,
+                "checksumSha256": checksum_sha256,
+            },
+        ).json()
+        if "alreadyStored" in body:
+            return BeginUploadSessionResult(
+                already_stored=StoredFileSummary.model_validate(body["alreadyStored"]), session=None
+            )
+        return BeginUploadSessionResult(already_stored=None, session=UploadSession.model_validate(body))
+
+    def get_upload_session(self, session_file_id: str) -> UploadSession:
+        """GET /files/upload-session/{id} - the session's durable progress: geometry, the parts the
+        object store already holds, and the recovered encryption parameters of an encrypted
+        session, so resuming needs nothing but the session id."""
+        return UploadSession.model_validate(
+            self._c._request("GET", f"/files/upload-session/{session_file_id}").json()
+        )
+
+    def presign_upload_session_part(self, session_file_id: str, part_number: int) -> UploadSessionPartUrl:
+        """POST /files/upload-session/{id}/parts/{n}/url - presigns one 1-based part's upload."""
+        return UploadSessionPartUrl.model_validate(
+            self._c._request("POST", f"/files/upload-session/{session_file_id}/parts/{part_number}/url").json()
+        )
+
+    def complete_upload_session(
+        self, session_file_id: str, file_name: str, checksum_sha256: str, *, folder_id: str | None = None
+    ) -> StoredFileSummary:
+        """POST /files/upload-session/{id}/complete - assembles the uploaded parts and registers
+        the file, the object's exact length verified server-side."""
+        resp = self._c._request(
+            "POST",
+            f"/files/upload-session/{session_file_id}/complete",
+            json={"fileName": file_name, "checksumSha256": checksum_sha256, "folderId": folder_id},
+        )
+        return StoredFileSummary.model_validate(resp.json())
+
+    def abort_upload_session(self, session_file_id: str) -> None:
+        """DELETE /files/upload-session/{id} - discards every uploaded part. The object store bills
+        for them until told this, so abort a session you will not finish."""
+        self._c._request("DELETE", f"/files/upload-session/{session_file_id}")
+
+    def upload_via_session(
+        self,
+        local_path: str | os.PathLike[str],
+        *,
+        folder_id: str | None = None,
+        file_name: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> StoredFileSummary:
+        """Uploads `local_path` through a resumable multipart session, end to end.
+
+        A dedup precheck hit returns the existing file immediately, with zero bytes uploaded.
+        Otherwise the session id is available from the returned file only after completion, so a
+        caller that wants to survive its own crash should drive the flow itself:
+        :meth:`begin_upload_session`, persist ``result.session.file_id``, then
+        :meth:`resume_upload_session`.
+
+        `on_progress` receives the cumulative number of object bytes uploaded so far, counting the
+        parts the store already holds as done.
+
+        Raises :class:`ServiceUnavailableError` (503) when this deployment offers no sessions.
+        """
+        local_path = Path(local_path)
+        name = file_name or local_path.name
+        checksum = _sha256_hex(local_path)
+        begin = self.begin_upload_session(
+            name, local_path.stat().st_size, checksum, folder_id=folder_id
+        )
+        if begin.already_stored is not None:
+            return begin.already_stored
+        assert begin.session is not None
+        return self._run_upload_session(begin.session, local_path, name, checksum, folder_id, on_progress)
+
+    def resume_upload_session(
+        self,
+        session_file_id: str,
+        local_path: str | os.PathLike[str],
+        *,
+        file_name: str | None = None,
+        folder_id: str | None = None,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> StoredFileSummary:
+        """Resumes a crashed or interrupted session: re-reads its status, uploads only the parts
+        the object store does not already hold, and completes.
+
+        `local_path` must still be the content the session was begun for, byte for byte - see
+        :meth:`_run_upload_session` for why, and what happens when it is not.
+        """
+        local_path = Path(local_path)
+        session = self.get_upload_session(session_file_id)
+        return self._run_upload_session(
+            session,
+            local_path,
+            file_name or local_path.name,
+            _sha256_hex(local_path),
+            folder_id,
+            on_progress,
+        )
+
+    def _run_upload_session(
+        self,
+        session: UploadSession,
+        local_path: Path,
+        file_name: str,
+        checksum_sha256: str,
+        folder_id: str | None,
+        on_progress: Callable[[int], None] | None,
+    ) -> StoredFileSummary:
+        """The shared upload loop: materialise the object stream, PUT every missing part, complete."""
+        # The session's content key is fixed for its lifetime and the object's nonce base is
+        # derived from that key, so every pass over this session encrypts under one key/nonce
+        # pair. Re-encrypting different bytes under it would splice two encryptions into one
+        # object and reuse that pair across two plaintexts, so a session carries only the exact
+        # content it was begun for; anything else needs a new session.
+        if session.checksum_sha256 is not None and session.checksum_sha256.lower() != checksum_sha256.lower():
+            raise ValueError(
+                f"the local file is not the content upload session '{session.file_id}' was begun "
+                f"for - abort the session (files.abort_upload_session) and start a new one"
+            )
+
+        encrypted_path: Path | None = None
+        if session.encryption is not None:
+            encrypted_path, _ = self._encrypt_for_presigned_upload(local_path, session.encryption)
+            object_path = encrypted_path
+        else:
+            # A legacy plaintext session: the object the parts assemble into is the file itself.
+            object_path = local_path
+
+        try:
+            object_size = object_path.stat().st_size
+            if object_size != session.total_object_bytes:
+                # The structural gate behind the digest comparison above, and the only one against
+                # a server that reports no digest at all.
+                raise ValueError(
+                    f"local object stream is {object_size} bytes but the session expects "
+                    f"{session.total_object_bytes} - was the file modified since the session began?"
+                )
+            already_uploaded = set(session.uploaded_part_numbers)
+            transferred = sum(
+                min(session.part_size_bytes, object_size - (part - 1) * session.part_size_bytes)
+                for part in already_uploaded
+            )
+            with object_path.open("rb") as object_stream:
+                for part_number in range(1, session.part_count + 1):
+                    if part_number in already_uploaded:
+                        continue
+                    offset = (part_number - 1) * session.part_size_bytes
+                    length = min(session.part_size_bytes, object_size - offset)
+                    object_stream.seek(offset)
+                    part_bytes = object_stream.read(length)
+                    part = self.presign_upload_session_part(session.file_id, part_number)
+                    # No Authorization header: the presigned signature covers the header set, and
+                    # this account's bearer token must never reach the object store's host.
+                    resp = self._c._client.request(
+                        "PUT", part.url, content=part_bytes, headers=dict(part.required_headers),
+                        timeout=TRANSFER_TIMEOUT,
+                    )
+                    raise_for_status(resp)
+                    transferred += len(part_bytes)
+                    if on_progress is not None:
+                        on_progress(transferred)
+            return self.complete_upload_session(
+                session.file_id, file_name, checksum_sha256, folder_id=folder_id
+            )
+        finally:
+            if encrypted_path is not None:
+                encrypted_path.unlink(missing_ok=True)
+
+    # -- presigned transfer primitives ---------------------------------------------------------
+    # Both deliberately bypass CloudDriverClient._request/_stream_download: those attach the
+    # account's bearer token and the 401-refresh retry, and a presigned URL belongs to the object
+    # store, a third-party host that must never see this account's token. An unexpected header can
+    # also break the request's signature. self._c._client merges nothing into an absolute URL and
+    # carries no default Authorization header.
+
+    def _put_presigned_object(
+        self,
+        url: str,
+        required_headers: dict[str, str],
+        body: BinaryIO,
+        content_length: int,
+        on_progress: Callable[[int], None] | None,
+        chunk_size: int,
+    ) -> None:
+        """PUTs `body` to a presigned URL, replaying the ticket's required headers exactly."""
+        headers = dict(required_headers)
+        # The object store rejects a chunked PUT; an explicit Content-Length makes httpx send the
+        # streamed body with a fixed length instead of Transfer-Encoding: chunked.
+        headers["Content-Length"] = str(content_length)
+        resp = self._c._client.request(
+            "PUT",
+            url,
+            content=_iter_file_chunks(body, chunk_size, on_progress),
+            headers=headers,
+            timeout=TRANSFER_TIMEOUT,
+        )
+        raise_for_status(resp)
+
+    def _fetch_presigned_object(
+        self,
+        url: str,
+        on_chunk: Callable[[bytes], None],
+        on_progress: Callable[[int], None] | None,
+        chunk_size: int,
+    ) -> None:
+        """Streams a presigned URL's object, handing each chunk to `on_chunk`."""
+        with self._c._client.stream("GET", url, timeout=TRANSFER_TIMEOUT) as resp:
+            if resp.status_code >= 400:
+                # A streamed response's body must be read before the block exits, or
+                # raise_for_status cannot extract the error message.
+                resp.read()
+                raise_for_status(resp)
+            transferred = 0
+            for chunk in resp.iter_bytes(chunk_size):
+                transferred += len(chunk)
+                on_chunk(chunk)
+                if on_progress is not None:
+                    on_progress(transferred)
+
+    def _encrypt_for_presigned_upload(self, local_path: Path, encryption: UploadEncryption) -> tuple[Path, int]:
+        """Encrypts `local_path` into a temp file as the exact stored object `encryption` describes.
+
+        :return: the temp file's path and its length, which the caller must PUT and then delete
+        :raises ContentIntegrityError: if the produced object is not exactly the length the ticket
+            requires - what the server verifies at completion, caught here before any byte moves
+        """
+        fd, raw_name = tempfile.mkstemp(prefix="cloud-driver-upload-", suffix=".enc")
+        encrypted_path = Path(raw_name)
+        try:
+            with local_path.open("rb") as plaintext, os.fdopen(fd, "wb") as sink:
+                produced = crypto.encrypt_object(
+                    plaintext,
+                    sink,
+                    key_material=base64.b64decode(encryption.content_key_base64),
+                    header=base64.b64decode(encryption.header_base64),
+                    associated_data_prefix=encryption.associated_data_prefix,
+                    chunk_size_bytes=encryption.chunk_size_bytes,
+                )
+            if produced != encryption.object_length_bytes:
+                raise ContentIntegrityError(
+                    f"encrypted upload is {produced} bytes but the ticket requires exactly "
+                    f"{encryption.object_length_bytes} - did the file change since the upload began?"
+                )
+        except BaseException:
+            encrypted_path.unlink(missing_ok=True)
+            raise
+        return encrypted_path, produced
 
 
 class _FoldersResource(_Resource):

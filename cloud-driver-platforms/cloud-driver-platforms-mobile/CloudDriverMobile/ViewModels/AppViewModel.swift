@@ -34,6 +34,32 @@ struct IdentifiableURL: Identifiable {
 /// Presigned transfer itself (the normal path) streams and has no such limit.
 private let maxNonPresignedTransferBytes: Int64 = 200 * 1024 * 1024
 
+/// Above this size an upload goes through a resumable multipart session: restarting a transfer
+/// this large from zero after the app is killed or the link drops is the cost the session path
+/// exists to avoid, and below it the extra metadata round trips buy nothing a single-shot
+/// presigned upload doesn't already give.
+private let resumableSessionThresholdBytes: Int64 = 64 * 1024 * 1024
+
+/// `UserDefaults` key under which in-flight resumable upload sessions are recorded, so one
+/// survives the app being killed mid-upload. Holds no content and no key material - only what is
+/// needed to ask the server for a session's own state again.
+private let uploadSessionRecordsDefaultsKey = "cloud-driver.upload-sessions"
+
+/// How long a recorded session is offered for resumption before being dropped. The server expires
+/// sessions on its own schedule; holding a record past that only produces a confusing failed resume.
+private let uploadSessionRecordMaxAgeMillis: Int64 = 7 * 24 * 60 * 60 * 1000
+
+/// One in-flight resumable upload, as this app persists it between launches.
+private struct UploadSessionRecord: Codable {
+    let sessionFileId: String
+    let accountId: String
+    let fileName: String
+    let folderId: String?
+    let sizeBytes: Int64
+    let checksumSha256: String
+    let startedAtEpochMillis: Int64
+}
+
 /// A file or folder as a single, selectable browser entry - the one shared file/folder union type
 /// backing both `FileBrowserView`'s multi-select set and the single-item payload its per-row "..."
 /// menu already builds (a selection of one). Replaces what used to be two near-identical
@@ -253,6 +279,10 @@ final class AppViewModel: ObservableObject {
 
     func logout() {
         run {
+            // Cached plaintext and in-flight session records belong to the account that fetched
+            // them - never left behind for whoever signs in next on this device.
+            ContentCache.shared.clear()
+            self.clearUploadSessionRecords()
             await self.sessionManager.clearSession()
             self.currentUserEmail = nil
             self.currentUserId = nil
@@ -614,8 +644,12 @@ final class AppViewModel: ObservableObject {
     func downloadFileVersion(_ file: StoredFileSummaryResponse, versionNumber: Int) {
         run {
             let data = try await self.client.downloadFileVersion(fileId: file.fileId, versionNumber: versionNumber)
-            let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(UUID().uuidString)_v\(versionNumber)_\(sanitizedForLocalPath(file.fileName))")
+            // The UUID keeps two transfers of the same file apart; the name itself is server-supplied,
+            // so it is sanitised and contained rather than trusted to stay a single component.
+            let destination = try safeLocalChild(
+                of: FileManager.default.temporaryDirectory,
+                named: "\(UUID().uuidString)_v\(versionNumber)_\(file.fileName)"
+            )
             try data.write(to: destination)
             self.fileToShare = IdentifiableURL(url: destination)
         }
@@ -1366,6 +1400,17 @@ final class AppViewModel: ObservableObject {
     private func uploadFileStreaming(fileName: String, sourceURL: URL, folderId: String?, onProgress: (@MainActor (Int64, Int64) -> Void)? = nil) async throws {
         let accessing = sourceURL.startAccessingSecurityScopedResource()
         defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+        if self.fileSize(at: sourceURL) >= resumableSessionThresholdBytes {
+            let uploadedViaSession = try await self.uploadViaResumableSession(
+                fileName: fileName, sourceURL: sourceURL, folderId: folderId, onProgress: onProgress
+            )
+            if uploadedViaSession {
+                return
+            }
+        }
+        // Only a deployment without the session routes falls through to here: the presigned
+        // single-shot path below, which itself falls back to the server-mediated one on its own
+        // 503. That chain is what keeps this app working against an older or non-S3 deployment.
         do {
             _ = try await client.uploadFileViaPresignedURL(fileName: fileName, fileURL: sourceURL, folderId: folderId, onProgress: onProgress)
         } catch APIError.server(let status, _) where status == 503 {
@@ -1383,6 +1428,117 @@ final class AppViewModel: ObservableObject {
             _ = try await client.uploadFile(fileName: fileName, data: data, folderId: folderId)
             onProgress?(Int64(data.count), Int64(data.count))
         }
+    }
+
+    /// Uploads `sourceURL` through a crash-resumable multipart session, resuming a record this app
+    /// persisted for the same file if one is still usable. Returns `false` - having uploaded
+    /// nothing - when the deployment offers no session routes at all, so the caller falls through
+    /// to the presigned single-shot path.
+    ///
+    /// The session id is recorded *before* the first part is uploaded and forgotten only once the
+    /// upload has completed: a session id learned only after the upload finished would be worthless
+    /// to the crash it exists to recover from. That is also why the first attempt begins the
+    /// session itself and then drives it through `resumeUploadSession`, rather than calling
+    /// `uploadFileViaResumableSession` blind, which would keep the id to itself - it costs one
+    /// extra metadata call, not a second upload.
+    private func uploadViaResumableSession(fileName: String, sourceURL: URL, folderId: String?,
+                                           onProgress: (@MainActor (Int64, Int64) -> Void)?) async throws -> Bool {
+        guard let accountId = self.currentUserId else { return false }
+        let sizeBytes = self.fileSize(at: sourceURL)
+
+        if let existing = self.findUploadSessionRecord(accountId: accountId, fileName: fileName, sizeBytes: sizeBytes) {
+            do {
+                _ = try await self.client.resumeUploadSession(sessionFileId: existing.sessionFileId, fileURL: sourceURL,
+                                                              fileName: fileName, folderId: folderId, onProgress: onProgress)
+                self.forgetUploadSessionRecord(sessionFileId: existing.sessionFileId)
+                return true
+            } catch APIError.server(let status, _) where status == 503 {
+                return false
+            } catch {
+                // The session is gone server-side, or the file no longer matches what it was begun
+                // for - either way the record is useless; drop it and begin a fresh session.
+                self.forgetUploadSessionRecord(sessionFileId: existing.sessionFileId)
+            }
+        }
+
+        let checksum = try await self.client.plaintextChecksum(of: sourceURL)
+        let begin: BeginUploadSessionResult
+        do {
+            begin = try await self.client.beginUploadSession(fileName: fileName, sizeBytes: sizeBytes,
+                                                             checksumSha256: checksum, folderId: folderId)
+        } catch APIError.server(let status, _) where status == 503 {
+            return false
+        }
+        switch begin {
+        case .alreadyStored:
+            // The server's dedup precheck matched content this account already stores - nothing to
+            // upload at all.
+            onProgress?(sizeBytes, sizeBytes)
+            return true
+        case .session(let session):
+            self.recordUploadSession(
+                UploadSessionRecord(
+                    sessionFileId: session.fileId,
+                    accountId: accountId,
+                    fileName: fileName,
+                    folderId: folderId,
+                    sizeBytes: sizeBytes,
+                    checksumSha256: checksum,
+                    startedAtEpochMillis: Int64(Date().timeIntervalSince1970 * 1000)
+                )
+            )
+            // A failure here deliberately leaves the record in place: the whole point of writing it
+            // before the first part is that the next attempt can pick the same session back up.
+            _ = try await self.client.resumeUploadSession(sessionFileId: session.fileId, fileURL: sourceURL,
+                                                          fileName: fileName, folderId: folderId, onProgress: onProgress)
+            self.forgetUploadSessionRecord(sessionFileId: session.fileId)
+            return true
+        }
+    }
+
+    /// Every still-eligible persisted session record, oldest first - anything past its age cutoff
+    /// is dropped on the way out rather than offered for a resume the server would refuse.
+    private func loadUploadSessionRecords() -> [UploadSessionRecord] {
+        guard let data = UserDefaults.standard.data(forKey: uploadSessionRecordsDefaultsKey),
+              let decoded = try? JSONDecoder().decode([UploadSessionRecord].self, from: data) else {
+            return []
+        }
+        let cutoff = Int64(Date().timeIntervalSince1970 * 1000) - uploadSessionRecordMaxAgeMillis
+        return decoded.filter { $0.startedAtEpochMillis >= cutoff }
+    }
+
+    /// Writes `records` back, replacing whatever was stored.
+    private func saveUploadSessionRecords(_ records: [UploadSessionRecord]) {
+        guard let encoded = try? JSONEncoder().encode(records) else { return }
+        UserDefaults.standard.set(encoded, forKey: uploadSessionRecordsDefaultsKey)
+    }
+
+    /// Remembers `record`, replacing any earlier record for the same session id.
+    private func recordUploadSession(_ record: UploadSessionRecord) {
+        var records = self.loadUploadSessionRecords().filter { $0.sessionFileId != record.sessionFileId }
+        records.append(record)
+        self.saveUploadSessionRecords(records)
+    }
+
+    /// The most recently begun record for this account's upload of `fileName` at `sizeBytes`.
+    private func findUploadSessionRecord(accountId: String, fileName: String, sizeBytes: Int64) -> UploadSessionRecord? {
+        self.loadUploadSessionRecords()
+            .filter { $0.accountId == accountId && $0.fileName == fileName && $0.sizeBytes == sizeBytes }
+            .max { $0.startedAtEpochMillis < $1.startedAtEpochMillis }
+    }
+
+    /// Forgets one session - call on a completed upload and on a deliberate abort.
+    private func forgetUploadSessionRecord(sessionFileId: String) {
+        let records = self.loadUploadSessionRecords()
+        let remaining = records.filter { $0.sessionFileId != sessionFileId }
+        if remaining.count != records.count {
+            self.saveUploadSessionRecords(remaining)
+        }
+    }
+
+    /// Drops every persisted session record - call on sign-out, like the content cache.
+    private func clearUploadSessionRecords() {
+        UserDefaults.standard.removeObject(forKey: uploadSessionRecordsDefaultsKey)
     }
 
     /// Uploads a freshly-scanned document (`DocumentScannerView`, VisionKit's built-in document
@@ -1418,8 +1574,10 @@ final class AppViewModel: ObservableObject {
     func download(_ file: StoredFileSummaryResponse) {
         run {
             defer { self.transferProgress = nil }
-            let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
+            let destination = try safeLocalChild(
+                of: FileManager.default.temporaryDirectory,
+                named: "\(UUID().uuidString)_\(file.fileName)"
+            )
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
             try await self.downloadFileStreaming(fileId: file.fileId, destination: destination, knownSizeBytes: file.sizeBytes) { transferred, total in
                 self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
@@ -1453,14 +1611,49 @@ final class AppViewModel: ObservableObject {
         }
         run {
             defer { self.transferProgress = nil }
-            let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "_" + sanitizedForLocalPath(file.fileName))
+            // Reopening the same preview would otherwise re-download the whole file every time, so
+            // the fetched plaintext is kept in ContentCache and the next open only revalidates it:
+            // a conditional request carrying the cached copy's entity tag, which an unchanged file
+            // answers with one bodyless metadata round trip instead of the content. This goes
+            // through the server-mediated content route rather than downloadFileStreaming, which
+            // has no conditional form - the memory guard behind `maxNonPresignedTransferBytes`
+            // still holds here, since every preview cap is far below it.
+            let cached = ContentCache.shared.lookup(accountId: self.currentUserId, fileId: file.fileId)
             self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: file.sizeBytes, transferredBytes: 0)
-            try await self.downloadFileStreaming(fileId: file.fileId, destination: destination, knownSizeBytes: file.sizeBytes) { transferred, total in
-                self.transferProgress = TransferProgress(kind: .download, totalItems: 1, completedItems: 0, totalBytes: total > 0 ? total : file.sizeBytes, transferredBytes: transferred)
+            let result = try await self.client.downloadFileContentIfChanged(fileId: file.fileId, entityTag: cached?.entityTag)
+            switch result {
+            case .notModified:
+                if let cached {
+                    // Nothing transferred at all - the copy on disk is still exactly this content.
+                    self.previewURL = IdentifiableURL(url: cached.url)
+                    return
+                }
+                // A 304 with nothing to reuse can only mean the cache entry went away underneath
+                // this call; fetch it properly rather than show nothing.
+                let data = try await self.client.downloadFileContent(fileId: file.fileId)
+                self.previewURL = IdentifiableURL(url: try self.cachePreview(file: file, data: data, entityTag: nil))
+            case .content(let data, let entityTag):
+                self.previewURL = IdentifiableURL(url: try self.cachePreview(file: file, data: data, entityTag: entityTag))
             }
-            self.previewURL = IdentifiableURL(url: destination)
         }
+    }
+
+    /// Writes a freshly fetched preview's bytes to a throwaway temp file, hands it to
+    /// `ContentCache` under the signed-in account, and returns the URL the preview should read
+    /// from - the cache's own copy when it took one, the temp file otherwise.
+    private func cachePreview(file: StoredFileSummaryResponse, data: Data, entityTag: String?) throws -> URL {
+        let temporary = try safeLocalChild(
+            of: FileManager.default.temporaryDirectory,
+            named: "\(UUID().uuidString)_\(file.fileName)"
+        )
+        try data.write(to: temporary, options: .completeFileProtection)
+        let cached = ContentCache.shared.store(
+            accountId: self.currentUserId, fileId: file.fileId, source: temporary, entityTag: entityTag
+        )
+        if cached != temporary {
+            try? FileManager.default.removeItem(at: temporary)
+        }
+        return cached
     }
 
     /// Downloads `fileId` directly to `destination`, preferring the presigned direct-to-client
@@ -1529,7 +1722,7 @@ final class AppViewModel: ObservableObject {
     /// directory (archive + extracted contents) is removed afterward regardless of outcome.
     private func downloadAndExtractArchive(file: StoredFileSummaryResponse) async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let archiveURL = tempDirectory.appendingPathComponent(sanitizedForLocalPath(file.fileName))
+        let archiveURL = try safeLocalChild(of: tempDirectory, named: file.fileName)
         let extractedDirectory = tempDirectory.appendingPathComponent("extracted")
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
 

@@ -84,11 +84,23 @@ def exception_for_status(status_code: int, message: str, body: Any = None) -> Ap
 
 
 class UnsupportedEncryptionError(ApiException):
-    """Raised when a presigned transfer requires client-side encryption this SDK cannot perform.
-
-    The Java and Swift SDKs implement the chunked content cipher the server's presigned paths use;
-    this one does not yet. Rather than hand back a ticket whose bytes the caller would write to
-    disk as though they were the file, or upload plaintext the server will reject at completion
-    with an unrelated-sounding error, the presigned methods refuse up front and say which
-    server-mediated call to use instead.
+    """Raised when a presigned transfer needs the client-side chunked content cipher and this
+    client cannot run it: the optional `cryptography` dependency is missing (install
+    `cloud-driver-client[crypto]`), or a raw begin-ticket carrying encryption material was
+    requested without opting in to handling the ciphertext.
     """
+
+    def __init__(self, message: str) -> None:
+        # status_code 0: no HTTP response is involved - the refusal happens locally, before
+        # any byte moves. Matches how the Java client reports its own local transfer failures.
+        super().__init__(0, message)
+
+
+class ContentIntegrityError(ApiException):
+    """Raised when a stored object fails verification: truncated, reordered, tampered with,
+    carrying trailing data, or a chunk whose authentication tag does not match. Fails closed -
+    no plaintext produced before the failing chunk is ever handed to the caller as the file.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(0, message)

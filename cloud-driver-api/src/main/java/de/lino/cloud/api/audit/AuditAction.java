@@ -81,6 +81,22 @@ public enum AuditAction {
     ACCOUNT_SUSPEND,
 
     /** An {@code AuthService#setSuspended} call lifting a suspension - see {@link #ACCOUNT_SUSPEND}. */
-    ACCOUNT_UNSUSPEND
+    ACCOUNT_UNSUSPEND,
+
+    /**
+     * A system command run from the operator console through {@code DispatchCommand} - an
+     * arbitrary executable launched as the server process itself, and therefore the widest
+     * action the console can take. Recorded before the process starts, so a command that never
+     * returns still leaves an entry.
+     */
+    SYSTEM_COMMAND_DISPATCH,
+
+    /**
+     * An object-storage reconciliation that deleted objects - every bucket object no
+     * {@code StoredFile} row referenced, removed. The only destructive action in this system that
+     * operates on object storage rather than on rows, and the only one no service method owns:
+     * the reconciliation is the operator command itself, so it is recorded there.
+     */
+    OBJECT_STORAGE_PURGE
 
 }
