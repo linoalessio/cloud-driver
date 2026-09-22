@@ -11,7 +11,7 @@ from cloud_driver_installer.engine import Context, StepError, StepStatus
 from cloud_driver_installer.model import InstallPlan
 from cloud_driver_installer.steps.email import EmailStep
 
-from .fake_remote import FakeRemote
+from fake_remote import FakeRemote
 
 FROM = "noreply@example.com"
 DOMAIN = "example.com"

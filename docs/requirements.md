@@ -363,7 +363,10 @@ concurrency level.
   private key whose public half is in the server's `/root/.ssh/authorized_keys`) before any of
   these scripts will work; none of them prompt for a password or provision the key itself. The
   alias has been renamed before (`strato` → `netcup` → `cloud_driver`) — if it's renamed again,
-  update `REMOTE_HOST` in all four scripts above to match.
+  update `REMOTE_HOST` in all four scripts above to match. `cloud-driver-installer` is the
+  alternative for a box that has neither yet: it authenticates with a password if need be, and can
+  install your public key and write the alias itself (see
+  [deployment.md](deployment.md#gui-installer-cloud-driver-installer)).
 - **`rest-server-bind-host`** is typically `127.0.0.1` on the reference deployment — a reverse
   proxy (the reference deployment uses **Caddy**) terminates TLS on 80/443 and forwards to it. This
   is an operational choice, not a hard code requirement, but is the realistic way to expose the API
@@ -438,8 +441,10 @@ isn't wanted:
 
 ## 9. Quick checklist for a fresh deployment
 
-`shell/provision-root-server.sh` (see [deployment.md](deployment.md#provisioning-a-new-root-server))
-automates every OS-level box below (JDK 21, PostgreSQL, firewall, swap, clamd, Redis, Caddy,
+`cloud-driver-installer` (a GUI, see
+[deployment.md](deployment.md#gui-installer-cloud-driver-installer)) covers every box below,
+including the AWS, DNS-verification and deploy steps. `shell/provision-root-server.sh` (see
+[deployment.md](deployment.md#provisioning-a-new-root-server)) automates every OS-level box below (JDK 21, PostgreSQL, firewall, swap, clamd, Redis, Caddy,
 directory layout, config-file scaffolding) in one idempotent run against a fresh root server — the
 unchecked boxes are exactly what it deliberately leaves for you (AWS, DNS, the jar itself).
 

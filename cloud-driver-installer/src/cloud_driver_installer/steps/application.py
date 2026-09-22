@@ -1,621 +1,508 @@
-"""Application step: (optionally) build, then deploy and start the JVM process.
-
-Mirrors ``shell/deploy-cloud.sh`` (prune stale versioned jars first - the bootstrap registers every
-jar it finds and refuses to start when two claim the same extension name - upload with SHA-256
-verification, restore ``+x`` on ``start-cloud.sh``) and ``shell/start-cloud.sh`` (a detached
-``screen`` session running the restart loop; the operator terminal needs a real TTY, so this is
-deliberately not a systemd unit). On top of what the shell scripts do, the step owns the pieces the
-reference box had by hand: the ``@reboot`` autostart, the scratch sweep and the off-site backup sync
-in one managed crontab block, and the logrotate file for the persisted console log.
-
-``start-cloud.env`` itself is written by the config step; this step only reads it back to verify
-the jar name it names is the one being uploaded.
-"""
+"""The config files, the jars, the launcher, the scheduled jobs, and the final smoke test."""
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 import time
-from collections import deque
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Callable
 
-from cloud_driver_installer.config_files import render_start_env
-from cloud_driver_installer.engine import Cancelled, CheckResult, Context, Step, StepError, VerifyResult
-from cloud_driver_installer.model import Discovered, InstallPlan
-from cloud_driver_installer.remote import RemoteError, sha256_of_file
+from cloud_driver_installer.config_files import (
+    SCREEN_LOG_FILE,
+    changed_sensitive_keys,
+    masked,
+    parse_json,
+    removed_keys,
+    render_configuration,
+    render_postgres_credentials,
+    render_redis_credentials,
+    render_start_env,
+    to_json,
+)
+from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
+from cloud_driver_installer.model import InstallPlan
+from cloud_driver_installer.remote import timestamp
+from cloud_driver_installer.secrets import generate_base64
 
-#: The hardcoded fallback of ``shell/start-cloud.sh`` - used only when neither a local build nor a
-#: remote jar can tell us the real name.
-DEFAULT_BOOTSTRAP_JAR_NAME = "cloud-driver-bootstrap-1.0.7.jar"
-
-#: Markers delimiting the crontab lines this installer owns; everything outside them is kept.
+#: Delimiters of the crontab region this installer owns; everything outside is never touched.
 CRON_BEGIN = "# cloud-driver-installer BEGIN"
 CRON_END = "# cloud-driver-installer END"
 
-#: The logrotate stanza for the console log ``screen -L`` keeps appending to.
-LOGROTATE_PATH = "/etc/logrotate.d/cloud-driver"
+LOGROTATE_FILE = "/etc/logrotate.d/cloud-driver"
 
-EXTENSION_PREFIX = "cloud-driver-extensions-"
-BOOTSTRAP_GLOB = "cloud-driver-bootstrap-*.jar"
-
-#: How long ``verify`` waits for the REST API after a start (the JVM loads every cached table first).
-API_READY_TIMEOUT_SECONDS = 120.0
-API_POLL_INTERVAL_SECONDS = 3.0
-#: How long ``apply`` waits for ``screen -X quit`` to take the old session down.
-SESSION_STOP_TIMEOUT_SECONDS = 10.0
-SESSION_POLL_INTERVAL_SECONDS = 0.5
-
-_JAR_STALE_RE = re.compile(r"^removing stale (.+)$")
-
-
-# --- pure helpers (unit-tested on their own) ----------------------------------------------------
-
-
-def extension_short_name(jar_name: str) -> str:
-    """``cloud-driver-extensions-scan-1.0.7.jar`` -> ``scan`` (the manifest/extension name)."""
-    stem = jar_name[:-4] if jar_name.endswith(".jar") else jar_name
-    if stem.startswith(EXTENSION_PREFIX):
-        stem = stem[len(EXTENSION_PREFIX):]
-    return re.sub(r"-\d.*$", "", stem)
+#: The eleven feature modules; the three marked required make the backend usable at all.
+EXTENSION_MODULES: tuple[str, ...] = (
+    "rest",
+    "watcher",
+    "terminal",
+    "backup",
+    "metrics",
+    "thumbnails",
+    "versioning",
+    "search",
+    "webhooks",
+    "scan",
+    "intelligence",
+)
+REQUIRED_EXTENSIONS: tuple[str, ...] = ("rest", "watcher", "terminal")
 
 
-def cron_lines(plan: InstallPlan, bucket: str = "") -> list[str]:
-    """The managed crontab lines for ``plan`` (empty when every cron feature is off).
-
-    ``bucket`` is the resolved S3 bucket (``secrets.s3_bucket``); it falls back to the plan's.
-    """
-    quote = shlex.quote
-    install_dir = plan.server.install_dir.rstrip("/")
-    lines: list[str] = []
-    if plan.app.autostart_on_reboot:
-        lines.append(f"@reboot cd {quote(install_dir)} && ./start-cloud.sh")
-    if plan.app.scratch_sweep:
-        lines.append(f"17 * * * * find {quote(install_dir + '/upload-scratch')} -name 'upload-*.tmp' -mmin +180 -delete")
-    bucket = bucket or plan.aws.s3_bucket
-    if plan.app.backup_offsite and plan.aws.s3_enabled and bucket:
-        prefix = (plan.aws.s3_key_prefix or "") + (plan.app.backup_offsite_prefix or "")
-        if prefix and not prefix.endswith("/"):
-            prefix += "/"
-        lines.append(
-            f"30 3 * * * aws s3 sync {quote(plan.config_dir + '/backup')} s3://{bucket}/{prefix} "
-            "--exclude '.staging/*' --only-show-errors"
-        )
-    return lines
+def render_crontab(existing: str, lines: list[str]) -> str:
+    """Return ``existing`` with the managed region replaced by ``lines`` (removed when empty)."""
+    kept: list[str] = []
+    inside = False
+    for line in existing.splitlines():
+        if line.strip() == CRON_BEGIN:
+            inside = True
+            continue
+        if line.strip() == CRON_END:
+            inside = False
+            continue
+        if not inside:
+            kept.append(line)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    if lines:
+        kept.extend([CRON_BEGIN, *lines, CRON_END])
+    return "\n".join(kept).lstrip("\n") + ("\n" if kept else "")
 
 
-def extract_managed_block(crontab: str) -> list[str] | None:
-    """The lines between the BEGIN/END markers of ``crontab`` (``None`` when there is no block)."""
-    lines = (crontab or "").splitlines()
-    try:
-        start = lines.index(CRON_BEGIN)
-    except ValueError:
-        return None
-    try:
-        end = lines.index(CRON_END, start + 1)
-    except ValueError:
-        end = len(lines)
-    return lines[start + 1:end]
-
-
-def strip_managed_block(crontab: str) -> str:
-    """``crontab`` without its managed block (an unterminated block is dropped to the end)."""
-    lines = (crontab or "").splitlines()
-    try:
-        start = lines.index(CRON_BEGIN)
-    except ValueError:
-        return crontab or ""
-    try:
-        end = lines.index(CRON_END, start + 1) + 1
-    except ValueError:
-        end = len(lines)
-    kept = lines[:start] + lines[end:]
-    return "\n".join(kept) + ("\n" if kept else "")
-
-
-def render_crontab(existing: str, managed: list[str]) -> str:
-    """Pure: ``existing`` crontab text with its managed block replaced by ``managed`` lines.
-
-    Unrelated lines are kept verbatim (order included); the block goes at the end, separated by a
-    blank line; no block at all is written when ``managed`` is empty. The result always ends with a
-    newline (``crontab -`` wants one) or is the empty string.
-    """
-    body = strip_managed_block(existing).rstrip("\n")
-    if managed:
-        block = "\n".join([CRON_BEGIN, *managed, CRON_END])
-        body = f"{body}\n\n{block}" if body else block
-    return body + "\n" if body else ""
-
-
-def render_logrotate(plan: InstallPlan) -> str:
-    """``/etc/logrotate.d/cloud-driver`` for the console log (weekly, 8 kept, copytruncate)."""
-    log_path = f"{plan.server.install_dir.rstrip('/')}/cloud.log"
+def render_logrotate(log_file: str) -> str:
+    """The logrotate stanza for the console log (root-only, since it can carry verification codes)."""
     return (
-        f"{log_path} {{\n"
+        f"{log_file} {{\n"
         "    weekly\n"
         "    rotate 8\n"
         "    compress\n"
         "    missingok\n"
         "    notifempty\n"
         "    copytruncate\n"
+        "    create 0600 root root\n"
         "}\n"
     )
 
 
-# --- the step ------------------------------------------------------------------------------------
+class ConfigStep(Step):
+    """Writes ``configuration.json``, the credentials files and ``start-cloud.env``."""
+
+    id = "config"
+    title = "Configuration files"
+    mandatory = True
+    depends_on = ("postgres", "aws")
+
+    def resolve_secrets(self, ctx: Context) -> None:
+        """Fill the JWT key and the intelligence secret: kept from the server unless rotating."""
+        existing = ctx.discovered.existing_config
+        if not ctx.secrets.jwt_signing_key:
+            current = existing.get("jwt-signing-key")
+            if isinstance(current, str) and current and not ctx.plan.app.jwt_rotate:
+                ctx.secrets.jwt_signing_key, ctx.secrets.jwt_kept = current, True
+            else:
+                ctx.secrets.jwt_signing_key, ctx.secrets.jwt_kept = generate_base64(32), False
+            ctx.remember_secret(ctx.secrets.jwt_signing_key)
+        if ctx.plan.intelligence.enabled and not ctx.secrets.intelligence_secret:
+            current = existing.get("intelligence-shared-secret")
+            env_secret = ctx.discovered.intelligence_env.get("CLOUD_DRIVER_INTELLIGENCE_SECRET", "")
+            if isinstance(current, str) and current and not ctx.plan.intelligence.secret_rotate:
+                ctx.secrets.intelligence_secret, ctx.secrets.intelligence_secret_kept = current, True
+                if env_secret and env_secret != current:
+                    ctx.warn("[Configuration] the server's intelligence env file holds a different shared secret - it will be rewritten to match configuration.json")
+            else:
+                ctx.secrets.intelligence_secret, ctx.secrets.intelligence_secret_kept = generate_base64(32), False
+            ctx.remember_secret(ctx.secrets.intelligence_secret)
+
+    def documents(self, ctx: Context) -> dict[str, tuple[str, int]]:
+        """``path -> (contents, mode)`` for every file this step owns."""
+        self.resolve_secrets(ctx)
+        plan = ctx.plan
+        files: dict[str, tuple[str, int]] = {
+            f"{plan.config_dir}/configuration.json": (to_json(render_configuration(plan, ctx.secrets, ctx.discovered.existing_config)), 0o600),
+            f"{plan.server.install_dir.rstrip('/')}/start-cloud.env": (render_start_env(plan), 0o600),
+        }
+        password = ctx.secrets.pg_password or str(ctx.discovered.existing_postgres.get("password", ""))
+        if password:
+            files[f"{plan.config_dir}/postgres-database.json"] = (to_json(render_postgres_credentials(plan, password)), 0o600)
+        if plan.redis.enabled and ctx.secrets.redis_password:
+            files[f"{plan.config_dir}/redis-database.json"] = (to_json(render_redis_credentials(plan, ctx.secrets.redis_password)), 0o600)
+        return files
+
+    def check(self, ctx: Context) -> CheckResult:
+        differing = [path for path, (text, _) in self.documents(ctx).items() if (ctx.remote.read_text(path) or "") != text]
+        setattr(ctx.discovered, "config_changed", bool(differing))
+        note = "JWT key kept" if ctx.secrets.jwt_kept else "JWT key generated"
+        if not differing:
+            return CheckResult.ok(f"all {len(self.documents(ctx))} files current · {note}")
+        return CheckResult.needs_apply(f"{len(differing)} file(s) to write: {', '.join(Path(p).name for p in differing)} · {note}")
+
+    def apply(self, ctx: Context) -> None:
+        documents = self.documents(ctx)
+        rendered = parse_json(documents[f"{ctx.plan.config_dir}/configuration.json"][0])
+        for key in removed_keys(ctx.discovered.existing_config, rendered):
+            ctx.warn(f"[Configuration] removing {key} from configuration.json (its feature is disabled in this plan)")
+        for key in changed_sensitive_keys(ctx.discovered.existing_config, rendered):
+            ctx.warn(f"[Configuration] {key} changes value - existing data may depend on the old one")
+        for path, (text, mode) in documents.items():
+            ctx.remote.put_text(path, text, mode=mode)
+            ctx.info(f"[Configuration] wrote {path}")
+        if not ctx.plan.redis.enabled and ctx.remote.exists(f"{ctx.plan.config_dir}/redis-database.json"):
+            ctx.warn("[Configuration] redis-database.json is still on the server - Redis stays enabled for the backend until it is removed by hand")
+        setattr(ctx.discovered, "config_changed", True)
+        self._write_local(ctx, documents)
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        documents = self.documents(ctx)
+        for path, (text, _) in documents.items():
+            if (ctx.remote.read_text(path) or "") != text:
+                return VerifyResult(False, f"{path} does not match what was written")
+        return VerifyResult(True, f"{len(documents)} files written · " + ", ".join(sorted(masked(parse_json(documents[f'{ctx.plan.config_dir}/configuration.json'][0])).keys())[:4]) + " …")
+
+    def describe(self, plan: InstallPlan) -> str:
+        targets = ["configuration.json", "postgres-database.json", "start-cloud.env"]
+        if plan.redis.enabled:
+            targets.insert(2, "redis-database.json")
+        local = " + write configuration.json back to the checkout" if plan.app.write_local_config else ""
+        return f"write {', '.join(targets)} into {plan.config_dir}{local}"
+
+    def _write_local(self, ctx: Context, documents: dict[str, tuple[str, int]]) -> None:
+        plan = ctx.plan
+        if not plan.app.repo_root or not plan.app.write_local_config:
+            if not plan.app.write_local_config:
+                ctx.warn("[Configuration] write-back is off: the next shell/deploy-cloud.sh run would overwrite the server's configuration.json with the local copy")
+            return
+        local_dir = Path(plan.app.repo_root) / "cloud-driver"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir = Path.home() / ".config" / "cloud-driver-installer" / "backups" / timestamp()
+        wanted = {"configuration.json"}
+        if plan.app.write_local_db_config:
+            wanted |= {"postgres-database.json", "redis-database.json"}
+        for path, (text, _) in documents.items():
+            name = Path(path).name
+            if name not in wanted:
+                continue
+            target = local_dir / name
+            if target.is_file() and target.read_text() != text:
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                backup = backup_dir / name
+                backup.write_text(target.read_text())
+                os.chmod(backup, 0o600)
+            target.write_text(text)
+            os.chmod(target, 0o600)
+            ctx.info(f"[Configuration] wrote {target}")
 
 
 class ApplicationStep(Step):
-    """Deploy the bootstrap + extension jars and ``start-cloud.sh``, then (re)start the screen session."""
+    """Uploads the jars and the launcher, installs the scheduled jobs, and (re)starts the JVM."""
 
     id = "application"
     title = "Application"
-    depends_on = ("java", "config")
     mandatory = True
+    depends_on = ("java", "config")
 
-    def __init__(self) -> None:
-        #: Injection points so the wait loops are testable without real time passing.
-        self.sleep: Callable[[float], None] = time.sleep
-        self.clock: Callable[[], float] = time.monotonic
-
-    # --- local artefact discovery (static so the config step and the GUI page can reuse them) ---
+    # --- local artefacts -------------------------------------------------------------------------
 
     @staticmethod
     def bootstrap_jar(plan: InstallPlan) -> Path | None:
-        """The newest ``cloud-driver-bootstrap-*.jar`` under ``<repo>/cloud-driver-bootstrap/target`` (never ``original-*``)."""
+        """The shaded bootstrap jar in the checkout (the ``original-`` one is Maven's, not ours)."""
         if not plan.app.repo_root:
             return None
         target = Path(plan.app.repo_root) / "cloud-driver-bootstrap" / "target"
-        if not target.is_dir():
-            return None
-        candidates = [p for p in target.glob(BOOTSTRAP_GLOB) if p.is_file() and not p.name.startswith("original-")]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda p: (p.stat().st_mtime, p.name))
+        jars = sorted(p for p in target.glob("cloud-driver-bootstrap-*.jar") if not p.name.startswith("original-"))
+        return jars[-1] if jars else None
 
     @staticmethod
-    def bootstrap_jar_name(plan: InstallPlan, discovered: Discovered | None = None) -> str:
-        """The bootstrap jar name ``start-cloud.env`` must name.
-
-        The local build wins when jars are being deployed; otherwise a bootstrap jar already on the
-        server (from ``discovered.existing_jars``), then a local jar that is not being uploaded, and
-        finally the shell script's own hardcoded default.
-        """
-        local = ApplicationStep.bootstrap_jar(plan)
-        if local is not None and plan.app.deploy_jars:
-            return local.name
-        remote_names = sorted(
-            Path(name).name
-            for name in (discovered.existing_jars if discovered else [])
-            if Path(name).name.startswith("cloud-driver-bootstrap-") and name.endswith(".jar")
-        )
-        if remote_names:
-            return remote_names[-1]
-        if local is not None:
-            return local.name
-        return DEFAULT_BOOTSTRAP_JAR_NAME
+    def bootstrap_jar_name(plan: InstallPlan) -> str:
+        """Its file name, for the pruning keep-list."""
+        jar = ApplicationStep.bootstrap_jar(plan)
+        return jar.name if jar else ""
 
     @staticmethod
-    def extension_jars(plan: InstallPlan, log: Callable[[str], None] | None = None) -> list[Path]:
-        """Every built extension jar minus the operator's exclusions and the ones whose service is off.
-
-        ``log`` (when given) receives one line per automatic exclusion (scan without ClamAV,
-        intelligence without the intelligence service).
-        """
-        if not plan.app.repo_root:
-            return []
-        root = Path(plan.app.repo_root)
-        found = sorted(
-            (p for p in root.glob(f"cloud-driver-extensions/*/target/{EXTENSION_PREFIX}*.jar") if p.is_file() and not p.name.startswith("original-")),
-            key=lambda p: p.name,
-        )
-        excluded = {name.strip() for name in plan.app.excluded_extensions if name and name.strip()}
-        result: list[Path] = []
-        for jar in found:
-            short = extension_short_name(jar.name)
-            if {jar.name, jar.stem, short, EXTENSION_PREFIX + short} & excluded:
-                continue
-            if short == "scan" and not plan.clamav.enabled:
-                if log:
-                    log(f"leaving out {jar.name}: ClamAV is disabled in the plan")
-                continue
-            if short == "intelligence" and not plan.intelligence.enabled:
-                if log:
-                    log(f"leaving out {jar.name}: the intelligence service is disabled in the plan")
-                continue
-            result.append(jar)
+    def module_jars(plan: InstallPlan) -> dict[str, Path | None]:
+        """``module -> built jar`` for all eleven extensions (``None`` when not built)."""
+        result: dict[str, Path | None] = {}
+        root = Path(plan.app.repo_root) if plan.app.repo_root else None
+        for module in EXTENSION_MODULES:
+            jar = None
+            if root:
+                target = root / "cloud-driver-extensions" / f"cloud-driver-extensions-{module}" / "target"
+                jars = sorted(p for p in target.glob(f"cloud-driver-extensions-{module}-*.jar") if not p.name.startswith("original-"))
+                jar = jars[-1] if jars else None
+            result[module] = jar
         return result
 
     @staticmethod
-    def start_script(plan: InstallPlan) -> Path | None:
-        """``<repo>/shell/start-cloud.sh`` when the checkout has it."""
-        if not plan.app.repo_root:
-            return None
-        path = Path(plan.app.repo_root) / "shell" / "start-cloud.sh"
-        return path if path.is_file() else None
+    def selected_modules(plan: InstallPlan) -> list[str]:
+        """The extensions this plan deploys (features that are off are left out on purpose)."""
+        selected = []
+        for module in EXTENSION_MODULES:
+            if module in plan.app.excluded_extensions:
+                continue
+            if module == "scan" and not plan.clamav.enabled:
+                continue
+            if module == "intelligence" and not plan.intelligence.enabled:
+                continue
+            selected.append(module)
+        return selected
 
-    # --- remote paths ------------------------------------------------------------------------------
-
-    @staticmethod
-    def _install_dir(plan: InstallPlan) -> str:
-        return plan.server.install_dir.rstrip("/")
-
-    @classmethod
-    def _remote_start_script(cls, plan: InstallPlan) -> str:
-        return f"{cls._install_dir(plan)}/start-cloud.sh"
-
-    @classmethod
-    def _remote_start_env(cls, plan: InstallPlan) -> str:
-        return f"{cls._install_dir(plan)}/start-cloud.env"
-
-    @classmethod
-    def _scratch_dir(cls, plan: InstallPlan) -> str:
-        return f"{cls._install_dir(plan)}/upload-scratch"
-
-    @classmethod
-    def _log_path(cls, plan: InstallPlan) -> str:
-        return f"{cls._install_dir(plan)}/cloud.log"
-
-    # --- probes ------------------------------------------------------------------------------------
-
-    def _session_running(self, ctx: Context) -> bool:
-        """Whether the screen session of the plan exists (the exact test ``start-cloud.sh`` uses)."""
-        session = ctx.plan.server.screen_session
-        return ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '\\.{session}[[:space:]]'")
-
-    def _read_crontab(self, ctx: Context) -> str:
-        """Root's current crontab, ``""`` when there is none (``crontab -l`` exits 1 then)."""
-        result = ctx.remote.run("crontab -l", quiet=True)
-        return result.out if result.ok else ""
-
-    def _remote_jar_names(self, ctx: Context) -> list[str]:
-        """Names of every versioned jar currently on the server (the two patterns the prune touches)."""
+    def upload_set(self, ctx: Context) -> dict[Path, str]:
+        """``local jar -> remote path`` for everything this run deploys."""
         plan = ctx.plan
-        result = ctx.remote.run(
-            f"ls -1 {shlex.quote(self._install_dir(plan))}/{BOOTSTRAP_GLOB} {shlex.quote(plan.extensions_dir)}/*.jar 2>/dev/null",
-            quiet=True,
-        )
-        return [Path(line.strip()).name for line in result.out.splitlines() if line.strip()]
+        bootstrap = self.bootstrap_jar(plan)
+        if bootstrap is None:
+            raise StepError("no cloud-driver-bootstrap jar in the checkout - run 'mvn clean install' or tick 'Build with Maven'")
+        version = re.sub(r"^cloud-driver-bootstrap-|\.jar$", "", bootstrap.name)
+        uploads: dict[Path, str] = {bootstrap: f"{plan.server.install_dir.rstrip('/')}/{bootstrap.name}"}
+        jars = self.module_jars(plan)
+        missing_required = []
+        for module in self.selected_modules(plan):
+            jar = jars[module]
+            if jar is None:
+                if module in REQUIRED_EXTENSIONS:
+                    missing_required.append(module)
+                else:
+                    ctx.warn(f"[Application] cloud-driver-extensions-{module} is not built - that feature will be missing")
+                continue
+            if version not in jar.name:
+                raise StepError(f"{jar.name} does not match the bootstrap version {version} - rebuild the whole reactor, mixed versions crash at startup")
+            uploads[jar] = f"{plan.extensions_dir}/{jar.name}"
+        if missing_required:
+            raise StepError("these modules are not built but are required: " + ", ".join(missing_required) + " - run 'mvn clean install' first")
+        return uploads
 
-    def _api_status(self, ctx: Context) -> str:
-        """HTTP status of ``GET /auth/me`` on the loopback REST port (``""`` when unreachable)."""
-        port = ctx.plan.app.rest_port
-        result = ctx.remote.run(f"curl -s -o /dev/null -w '%{{http_code}}' -m 3 http://127.0.0.1:{port}/auth/me", quiet=True)
-        return result.text if result.ok else ""
+    def cron_lines(self, plan: InstallPlan) -> list[str]:
+        """The managed crontab region for this plan."""
+        install_dir = plan.server.install_dir.rstrip("/")
+        lines: list[str] = []
+        if plan.app.autostart_on_reboot:
+            # screen (not a plain systemd ExecStart) because the operator terminal needs a pty.
+            lines.append(f"@reboot cd {install_dir} && ./start-cloud.sh")
+        if plan.app.scratch_sweep:
+            lines.append(f"17 * * * * find {install_dir}/upload-scratch -name 'upload-*.tmp' -mmin +180 -delete")
+        if plan.app.backup_offsite and plan.aws.s3_enabled:
+            lines.append(
+                f"30 3 * * * aws s3 sync {plan.config_dir}/backup s3://{plan.aws.effective_backup_bucket}/$(hostname)/ "
+                "--exclude '.staging/*' --only-show-errors"
+            )
+        return lines
 
-    # --- Step -------------------------------------------------------------------------------------
+    # --- step ------------------------------------------------------------------------------------
 
     def check(self, ctx: Context) -> CheckResult:
-        """Compare every artefact with the server (SHA-256 for files) and the session state; never writes."""
-        plan = ctx.plan
-        remote = ctx.remote
-        problems: list[str] = []
-        notes: list[str] = []
-        if plan.app.build_with_maven:
-            problems.append("Maven build requested (always redeploys)")
-        jar_name = self.bootstrap_jar_name(plan, ctx.discovered)
-        keep: list[str] = [jar_name]
-        if plan.app.deploy_jars:
-            jar = self.bootstrap_jar(plan)
-            if jar is None:
-                problems.append(f"no {BOOTSTRAP_GLOB} under {plan.app.repo_root or '<repo>'}/cloud-driver-bootstrap/target (build first or tick 'Build with Maven')")
-            elif remote.sha256(f"{self._install_dir(plan)}/{jar.name}") != sha256_of_file(jar):
-                problems.append(f"{jar.name} (upload)")
-            extensions = self.extension_jars(plan, log=ctx.debug)
-            keep.extend(ext.name for ext in extensions)
-            differing = [ext.name for ext in extensions if remote.sha256(f"{plan.extensions_dir}/{ext.name}") != sha256_of_file(ext)]
-            if differing:
-                problems.append(f"{len(differing)} of {len(extensions)} extension jars (upload: {', '.join(differing)})")
-            else:
-                notes.append(f"{len(extensions)} extension jars in place")
-            stale = [name for name in self._remote_jar_names(ctx) if name not in keep]
-            if stale:
-                problems.append(f"stale jars to prune: {', '.join(stale)}")
-        else:
-            notes.append("jar upload disabled")
-
-        script = self.start_script(plan)
-        if script is None:
-            problems.append("shell/start-cloud.sh missing in the checkout")
-        elif remote.sha256(self._remote_start_script(plan)) != sha256_of_file(script):
-            problems.append("start-cloud.sh (upload)")
-
-        expected_env = render_start_env(plan, jar_name)
-        if remote.read_text(self._remote_start_env(plan)) != expected_env:
-            problems.append("start-cloud.env (rewrite)")
-
-        if extract_managed_block(self._read_crontab(ctx)) != (cron_lines(plan, ctx.secrets.s3_bucket) or None):
-            problems.append("crontab block")
-
-        if plan.app.persist_log and remote.read_text(LOGROTATE_PATH) != render_logrotate(plan):
-            problems.append(f"{LOGROTATE_PATH}")
-
-        if not remote.exists(self._scratch_dir(plan)):
-            problems.append("upload-scratch directory")
-
-        running = self._session_running(ctx)
-        ctx.discovered.screen_running = running
-        if running:
-            notes.append(f"screen session '{plan.server.screen_session}' running")
-        elif plan.app.start_after_deploy:
-            problems.append(f"screen session '{plan.server.screen_session}' not running (start)")
-        else:
-            notes.append(f"screen session '{plan.server.screen_session}' not running (start disabled)")
-
+        if ctx.plan.app.build_with_maven:
+            return CheckResult.needs_apply("a Maven build was requested")
+        uploads = self.upload_set(ctx)
+        outdated = [local.name for local, remote in uploads.items() if ctx.remote.sha256(remote) != self._sha(local)]
+        launcher = self._launcher_outdated(ctx)
+        cron_ok = self._cron_current(ctx)
+        running = ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '[.]{ctx.plan.server.screen_session}[[:space:]]'")
+        problems = []
+        if outdated:
+            problems.append(f"{len(outdated)} jar(s) to upload")
+        if launcher:
+            problems.append("start-cloud.sh")
+        if not cron_ok:
+            problems.append("scheduled jobs")
+        if not running and ctx.plan.app.start_after_deploy:
+            problems.append("JVM not running")
+        if getattr(ctx.discovered, "config_changed", False):
+            problems.append("configuration changed - restart required")
         if problems:
-            return CheckResult.needs_apply("; ".join(problems))
-        return CheckResult.ok(f"{jar_name} deployed · " + " · ".join(notes))
+            return CheckResult.needs_apply(" · ".join(problems))
+        return CheckResult.ok(f"{len(uploads)} jars current · JVM running in screen '{ctx.plan.server.screen_session}'")
 
     def apply(self, ctx: Context) -> None:
-        """Build (optional), prune, upload, cron, logrotate, (re)start - each part skipping what is already right."""
         plan = ctx.plan
         if plan.app.build_with_maven:
-            self._build_with_maven(ctx)
-            ctx.check_cancelled()
+            self._maven(ctx)
+        uploads = self.upload_set(ctx)
+        self._check_launcher_source(ctx)
 
-        jar_name = self.bootstrap_jar_name(plan, ctx.discovered)
-        if plan.app.deploy_jars:
-            jar = self.bootstrap_jar(plan)
-            if jar is None:
-                raise StepError(
-                    f"no {BOOTSTRAP_GLOB} under {plan.app.repo_root or '<repo>'}/cloud-driver-bootstrap/target - "
-                    "run 'mvn clean install' first or tick 'Build with Maven'"
-                )
-            extensions = self.extension_jars(plan, log=ctx.info)
-            if not extensions:
-                ctx.warn("no extension jars found under cloud-driver-extensions/*/target - the server will run without REST API, terminal and the other extensions")
-            jar_name = jar.name
-            self._prune_stale_jars(ctx, [jar.name, *(ext.name for ext in extensions)])
+        total = len(uploads) + 1
+        for index, (local, remote) in enumerate(uploads.items(), start=1):
             ctx.check_cancelled()
-            self._upload_all(ctx, jar, extensions)
-            ctx.check_cancelled()
-        else:
-            self._upload_start_script(ctx)
-            ctx.check_cancelled()
+            ctx.progress(index / total, f"uploading {local.name}")
+            if ctx.remote.sha256(remote) == self._sha(local):
+                ctx.debug(f"[Application] {local.name} already current")
+                continue
+            ctx.remote.put_file(local, remote)
+            ctx.info(f"[Application] uploaded {local.name}")
+        self._prune(ctx, uploads)
 
-        try:
-            ctx.remote.mkdirs(self._scratch_dir(plan))
-        except RemoteError as exc:
-            raise StepError(f"could not create {self._scratch_dir(plan)}: {exc}") from exc
-
-        self._ensure_start_env(ctx, jar_name)
-        self._ensure_crontab(ctx)
-        self._ensure_logrotate(ctx)
-        ctx.check_cancelled()
-
+        launcher = Path(plan.app.repo_root) / "shell" / "start-cloud.sh"
+        ctx.remote.put_file(launcher, f"{plan.server.install_dir.rstrip('/')}/start-cloud.sh", mode=0o755)
+        ctx.remote.mkdirs(f"{plan.server.install_dir.rstrip('/')}/upload-scratch")
+        if plan.app.persist_log:
+            ctx.remote.mkdirs(str(Path(SCREEN_LOG_FILE).parent), mode=0o700)
+            ctx.remote.put_text(LOGROTATE_FILE, render_logrotate(SCREEN_LOG_FILE))
+        self._install_cron(ctx)
         if plan.app.start_after_deploy:
             self._restart(ctx)
-        else:
-            ctx.info("start after deploy is off - the running instance (if any) keeps serving the old jars until restarted")
 
     def verify(self, ctx: Context) -> VerifyResult:
-        """Poll the REST API on the loopback port until it answers ``401`` on ``/auth/me``."""
-        plan = ctx.plan
-        port = plan.app.rest_port
-        if not plan.app.start_after_deploy and not self._session_running(ctx):
-            ctx.discovered.screen_running = False
-            return VerifyResult(True, f"deployed to {self._install_dir(plan)}; not started (start after deploy is off)")
-        deadline = self.clock() + API_READY_TIMEOUT_SECONDS
-        last = ""
-        while True:
-            last = self._api_status(ctx)
-            if last == "401":
-                ctx.discovered.screen_running = True
-                return VerifyResult(True, f"API answering on 127.0.0.1:{port} (401 on /auth/me)")
-            if not self._session_running(ctx):
-                ctx.discovered.screen_running = False
-                raise StepError(
-                    f"screen session '{plan.server.screen_session}' died while waiting for the API:\n" + self._log_tail(ctx)
-                )
-            if self.clock() >= deadline:
-                shown = last or "no answer"
-                return VerifyResult(False, f"API on 127.0.0.1:{port} did not answer 401 within {int(API_READY_TIMEOUT_SECONDS)} s (last: {shown}); see {self._log_path(plan)}")
-            self.sleep(API_POLL_INTERVAL_SECONDS)
+        port = ctx.plan.app.rest_port
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
             ctx.check_cancelled()
+            code = ctx.remote.run(f"curl -s -o /dev/null -w '%{{http_code}}' -m 3 http://127.0.0.1:{port}/auth/me", quiet=True).out.strip()
+            if code == "401":  # the API is up and the JWT layer is active
+                return VerifyResult(True, f"API answering on 127.0.0.1:{port}")
+            if code.startswith("2") or code.startswith("4"):
+                return VerifyResult(True, f"API answering on 127.0.0.1:{port} (HTTP {code})")
+            if not ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '[.]{ctx.plan.server.screen_session}[[:space:]]'"):
+                tail = ctx.remote.run(f"tail -n 40 {SCREEN_LOG_FILE} 2>/dev/null", quiet=True).out
+                return VerifyResult(False, "the screen session exited" + (f":\n{tail.strip()}" if tail.strip() else ""))
+            time.sleep(3)
+        return VerifyResult(False, f"no answer from 127.0.0.1:{port} within 120s - attach with 'screen -r {ctx.plan.server.screen_session}' to see why")
 
     def describe(self, plan: InstallPlan) -> str:
-        """One summary line mirroring :meth:`apply`."""
-        parts: list[str] = []
+        modules = self.selected_modules(plan)
+        parts = [f"upload the bootstrap jar + {len(modules)} extension jars, start-cloud.sh"]
         if plan.app.build_with_maven:
-            parts.append("build with Maven (mvn -q clean install -DskipTests)")
-        if plan.app.deploy_jars:
-            jar = self.bootstrap_jar(plan)
-            count = len(self.extension_jars(plan))
-            parts.append(f"prune stale jars and upload {jar.name if jar else BOOTSTRAP_GLOB} + {count} extension jars and start-cloud.sh to {self._install_dir(plan)}")
-        else:
-            parts.append(f"upload start-cloud.sh to {self._install_dir(plan)} (jars untouched)")
-        cron = [name for name, on in (("autostart", plan.app.autostart_on_reboot), ("scratch sweep", plan.app.scratch_sweep), ("off-site backup", plan.app.backup_offsite and plan.aws.s3_enabled)) if on]
-        parts.append("crontab block (" + ", ".join(cron) + ")" if cron else "remove the crontab block")
-        if plan.app.persist_log:
-            parts.append(f"logrotate for cloud.log")
+            parts.insert(0, "run mvn clean install")
+        if self.cron_lines(plan):
+            parts.append(f"{len(self.cron_lines(plan))} cron job(s)")
         if plan.app.start_after_deploy:
-            parts.append(f"restart screen session '{plan.server.screen_session}'")
-        return ", ".join(parts)
+            parts.append(f"(re)start the screen session '{plan.server.screen_session}'")
+        return " · ".join(parts)
 
-    # --- apply parts -------------------------------------------------------------------------------
+    # --- internals -------------------------------------------------------------------------------
 
-    def _build_with_maven(self, ctx: Context) -> None:
-        """Local ``mvn -q clean install -DskipTests`` with its output streamed to the log."""
-        repo = ctx.plan.app.repo_root
-        command = ["mvn", "-q", "clean", "install", "-DskipTests"]
-        ctx.info(f"building in {repo}: {' '.join(command)}")
-        try:
-            process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        except OSError as exc:
-            raise StepError(f"could not start mvn in {repo}: {exc} - install Maven or untick 'Build with Maven'") from exc
-        tail: deque[str] = deque(maxlen=25)
-        assert process.stdout is not None
-        try:
-            for raw in process.stdout:
-                line = raw.rstrip("\n")
-                tail.append(line)
-                ctx.debug("  " + line)
-                try:
-                    ctx.check_cancelled()
-                except Cancelled:
-                    process.terminate()
-                    process.wait()
-                    raise
-        finally:
-            process.stdout.close()
-        code = process.wait()
-        if code != 0:
-            raise StepError(f"Maven build failed (exit {code}):\n" + "\n".join(tail))
-        ctx.info("Maven build finished")
+    @staticmethod
+    def _sha(path: Path) -> str:
+        from cloud_driver_installer.remote import sha256_of_file
 
-    def _prune_stale_jars(self, ctx: Context, keep: list[str]) -> None:
-        """Remove versioned jars the plan supersedes - exactly the two patterns ``deploy-cloud.sh`` prunes."""
-        plan = ctx.plan
-        install_dir = shlex.quote(self._install_dir(plan))
-        extensions_dir = shlex.quote(plan.extensions_dir)
-        script = (
-            'keep="$(cat)"\n'
-            f"for existing in {install_dir}/{BOOTSTRAP_GLOB} {extensions_dir}/*.jar; do\n"
-            '    [ -e "$existing" ] || continue\n'
-            "    if ! printf '%s\\n' \"$keep\" | grep -qxF \"$(basename \"$existing\")\"; then\n"
-            '        echo "removing stale $existing"\n'
-            '        rm -f "$existing"\n'
-            "    fi\n"
-            "done\n"
+        return sha256_of_file(path)
+
+    def _maven(self, ctx: Context) -> None:
+        ctx.info("[Application] running mvn clean install (this takes a few minutes)")
+        process = subprocess.Popen(
+            ["mvn", "-B", "--no-transfer-progress", "clean", "install", "-DskipTests"],
+            cwd=ctx.plan.app.repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
-        try:
-            result = ctx.remote.run(script, input="".join(f"{name}\n" for name in keep), check=True)
-        except RemoteError as exc:
-            raise StepError(f"could not prune stale jars on the server: {exc}") from exc
-        for line in result.out.splitlines():
-            match = _JAR_STALE_RE.match(line.strip())
-            if match:
-                ctx.info(f"removed stale jar {match.group(1)}")
+        assert process.stdout is not None
+        for line in process.stdout:
+            ctx.debug("  " + line.rstrip())
+        if process.wait() != 0:
+            raise StepError("the Maven build failed - see the log above (a missing GitHub Packages token in ~/.m2/settings.xml is the usual cause)")
 
-    def _upload_all(self, ctx: Context, jar: Path, extensions: list[Path]) -> None:
-        """Upload bootstrap + extensions + start-cloud.sh, skipping files whose SHA-256 already matches."""
-        plan = ctx.plan
-        script = self.start_script(plan)
-        if script is None:
-            raise StepError(f"{plan.app.repo_root}/shell/start-cloud.sh not found - the checkout is incomplete")
-        targets: list[tuple[Path, str, int]] = [(jar, f"{self._install_dir(plan)}/{jar.name}", 0o644)]
-        targets.extend((ext, f"{plan.extensions_dir}/{ext.name}", 0o644) for ext in extensions)
-        targets.append((script, self._remote_start_script(plan), 0o755))
-        total = len(targets)
-        uploaded = 0
-        for index, (local, remote_path, mode) in enumerate(targets):
-            ctx.check_cancelled()
-            expected = sha256_of_file(local)
-            if ctx.remote.sha256(remote_path) == expected:
-                ctx.debug(f"{local.name} unchanged on the server")
-                if mode == 0o755:
-                    self._restore_exec_bit(ctx, remote_path)
-                ctx.progress((index + 1) / total, f"{local.name} unchanged")
+    def _check_launcher_source(self, ctx: Context) -> None:
+        launcher = Path(ctx.plan.app.repo_root) / "shell" / "start-cloud.sh"
+        if not launcher.is_file():
+            raise StepError(f"{launcher} not found in the checkout")
+        text = launcher.read_text()
+        if "start-cloud.env" not in text or "jar_candidates" not in text:
+            raise StepError("this checkout's shell/start-cloud.sh predates the start-cloud.env contract - update your checkout before deploying")
+
+    def _launcher_outdated(self, ctx: Context) -> bool:
+        launcher = Path(ctx.plan.app.repo_root) / "shell" / "start-cloud.sh" if ctx.plan.app.repo_root else None
+        if launcher is None or not launcher.is_file():
+            return False
+        return ctx.remote.sha256(f"{ctx.plan.server.install_dir.rstrip('/')}/start-cloud.sh") != self._sha(launcher)
+
+    def _prune(self, ctx: Context, uploads: dict[Path, str]) -> None:
+        """Remove superseded versions of the jars just uploaded; never a jar nothing replaced."""
+        keep = {Path(remote).name for remote in uploads.values()}
+        stems = {re.sub(r"-\d[\d.]*\.jar$", "", name) for name in keep}
+        listing = ctx.remote.run(
+            f"ls -1 {shlex.quote(ctx.plan.server.install_dir.rstrip('/'))}/cloud-driver-bootstrap-*.jar {shlex.quote(ctx.plan.extensions_dir)}/*.jar 2>/dev/null",
+            quiet=True,
+        ).out
+        for path in [line.strip() for line in listing.splitlines() if line.strip()]:
+            name = Path(path).name
+            if name in keep:
                 continue
-            size = local.stat().st_size
-            ctx.progress(index / total, f"uploading {local.name}")
+            if re.sub(r"-\d[\d.]*\.jar$", "", name) in stems:
+                ctx.remote.run(f"rm -f {shlex.quote(path)}", check=True, quiet=True)
+                ctx.info(f"[Application] removed superseded {name}")
 
-            def on_bytes(done: int, total_bytes: int, _index: int = index, _name: str = local.name) -> None:
-                fraction = done / total_bytes if total_bytes else 1.0
-                ctx.progress((_index + fraction) / total, f"uploading {_name} ({done // 1024} / {max(total_bytes, 1) // 1024} KiB)")
+    def _cron_current(self, ctx: Context) -> bool:
+        existing = ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out
+        wanted = render_crontab(existing, self.cron_lines(ctx.plan))
+        return wanted.strip() == existing.strip()
 
-            try:
-                ctx.remote.put_file(local, remote_path, mode=mode, progress=on_bytes)
-            except RemoteError as exc:
-                raise StepError(f"upload of {local.name} failed: {exc}") from exc
-            uploaded += 1
-            ctx.info(f"uploaded {local.name} ({size // 1024} KiB) -> {remote_path}")
-        ctx.progress(1.0, "uploads done")
-        ctx.discovered.existing_jars = [jar.name, *(ext.name for ext in extensions)]
-        if uploaded == 0:
-            ctx.info("every jar and start-cloud.sh already matched the server")
-
-    def _upload_start_script(self, ctx: Context) -> None:
-        """``deploy_jars`` off: still ship the start script (it is what sources start-cloud.env)."""
-        plan = ctx.plan
-        script = self.start_script(plan)
-        if script is None:
-            raise StepError(f"{plan.app.repo_root}/shell/start-cloud.sh not found - the checkout is incomplete")
-        remote_path = self._remote_start_script(plan)
-        if ctx.remote.sha256(remote_path) == sha256_of_file(script):
-            self._restore_exec_bit(ctx, remote_path)
-            return
-        try:
-            ctx.remote.put_file(script, remote_path, mode=0o755)
-        except RemoteError as exc:
-            raise StepError(f"upload of start-cloud.sh failed: {exc}") from exc
-        ctx.info(f"uploaded start-cloud.sh -> {remote_path}")
-
-    def _restore_exec_bit(self, ctx: Context, remote_path: str) -> None:
-        """``chmod +x`` on the start script (deploy-cloud.sh does the same: scp does not preserve it)."""
-        ctx.remote.run(f"chmod +x {shlex.quote(remote_path)}", quiet=True)
-
-    def _ensure_start_env(self, ctx: Context, jar_name: str) -> None:
-        """Make sure ``start-cloud.env`` names the jar just deployed (the config step wrote it first)."""
-        plan = ctx.plan
-        path = self._remote_start_env(plan)
-        expected = render_start_env(plan, jar_name)
-        if ctx.remote.read_text(path) == expected:
-            return
-        try:
-            ctx.remote.put_text(path, expected, mode=0o644)
-        except RemoteError as exc:
-            raise StepError(f"could not write {path}: {exc}") from exc
-        ctx.info(f"wrote {path} (JAR_NAME={jar_name}, JVM_XMX={plan.app.jvm_xmx})")
-
-    def _ensure_crontab(self, ctx: Context) -> None:
-        """Replace the managed block in root's crontab (installed through ``crontab -`` on stdin)."""
-        existing = self._read_crontab(ctx)
-        managed = cron_lines(ctx.plan, ctx.secrets.s3_bucket)
-        rendered = render_crontab(existing, managed)
-        if rendered == existing or (not rendered and not existing.strip()):
-            ctx.debug("crontab block already current")
-            return
-        try:
-            ctx.remote.run("crontab -", input=rendered, check=True)
-        except RemoteError as exc:
-            raise StepError(f"could not install the crontab: {exc}") from exc
-        if managed:
-            ctx.info(f"installed crontab block ({len(managed)} entries: {', '.join(line.split(' ', 1)[0] if line.startswith('@') else 'scheduled' for line in managed)})")
-        else:
-            ctx.info("removed the installer's crontab block (every cron feature is off)")
-
-    def _ensure_logrotate(self, ctx: Context) -> None:
-        """Write ``/etc/logrotate.d/cloud-driver`` when the console log is persisted."""
-        plan = ctx.plan
-        if not plan.app.persist_log:
-            if ctx.remote.exists(LOGROTATE_PATH):
-                ctx.debug(f"{LOGROTATE_PATH} left in place (log persistence is off)")
-            return
-        expected = render_logrotate(plan)
-        if ctx.remote.read_text(LOGROTATE_PATH) == expected:
-            return
-        try:
-            ctx.remote.put_text(LOGROTATE_PATH, expected, mode=0o644)
-        except RemoteError as exc:
-            raise StepError(f"could not write {LOGROTATE_PATH}: {exc}") from exc
-        ctx.info(f"wrote {LOGROTATE_PATH}")
+    def _install_cron(self, ctx: Context) -> None:
+        lines = self.cron_lines(ctx.plan)
+        existing = ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out
+        updated = render_crontab(existing, lines)
+        if updated != existing:
+            ctx.remote.run("crontab -", input=updated, check=True)
+            ctx.info(f"[Application] installed {len(lines)} scheduled job(s) in root's crontab")
 
     def _restart(self, ctx: Context) -> None:
-        """Stop a running session (waiting for it to disappear) and start ``start-cloud.sh``."""
-        plan = ctx.plan
-        session = plan.server.screen_session
-        if self._session_running(ctx):
-            ctx.info(f"stopping screen session '{session}'")
-            ctx.remote.run(f"screen -S {shlex.quote(session)} -X quit", quiet=True)
-            deadline = self.clock() + SESSION_STOP_TIMEOUT_SECONDS
-            while self._session_running(ctx):
-                if self.clock() >= deadline:
-                    raise StepError(f"screen session '{session}' did not stop within {int(SESSION_STOP_TIMEOUT_SECONDS)} s - stop it by hand (screen -S {session} -X quit) and retry")
-                self.sleep(SESSION_POLL_INTERVAL_SECONDS)
-        install_dir = self._install_dir(plan)
-        try:
-            ctx.remote.run(f"cd {shlex.quote(install_dir)} && ./start-cloud.sh", check=True)
-        except RemoteError as exc:
-            raise StepError(f"start-cloud.sh failed: {exc}") from exc
-        ctx.discovered.screen_running = True
-        ctx.info(f"started screen session '{session}' (attach with: screen -r {session})")
+        session = ctx.plan.server.screen_session
+        install_dir = ctx.plan.server.install_dir.rstrip("/")
+        running = ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '[.]{session}[[:space:]]'")
+        if running:
+            pid = ctx.remote.run("pgrep -f 'java .*cloud-driver-bootstrap' | head -1", quiet=True).out.strip()
+            ctx.remote.run(f"screen -S {shlex.quote(session)} -X quit", check=False)
+            if pid:
+                # The old JVM runs shutdown hooks for a few seconds; starting before it releases
+                # the REST port leaves the new process up with the API silently not started.
+                for attempt in range(20):
+                    if not ctx.remote.run_ok(f"kill -0 {pid} 2>/dev/null"):
+                        break
+                    if attempt == 12:
+                        ctx.warn(f"[Application] JVM {pid} still running - sending SIGTERM")
+                        ctx.remote.run(f"kill {pid}", check=False, quiet=True)
+                    if attempt == 18:
+                        ctx.warn(f"[Application] JVM {pid} still running - sending SIGKILL")
+                        ctx.remote.run(f"kill -9 {pid}", check=False, quiet=True)
+                    time.sleep(3)
+            ctx.info("[Application] stopped the running instance")
+        ctx.remote.run(f"cd {shlex.quote(install_dir)} && ./start-cloud.sh", check=True, timeout=120)
+        ctx.info(f"[Application] started the JVM in screen session '{session}'")
 
-    def _log_tail(self, ctx: Context) -> str:
-        """The last 40 lines of the persisted console log, or a note when there is none."""
-        text = ctx.remote.read_text(self._log_path(ctx.plan))
-        if not text:
-            return f"(no {self._log_path(ctx.plan)} - enable 'persist log' to keep the console output)"
-        return "\n".join(text.splitlines()[-40:])
+
+class SmokeStep(Step):
+    """The end-to-end probe: the API, the metrics port, the daemons and the scheduled jobs."""
+
+    id = "smoke"
+    title = "Smoke test"
+    mandatory = True
+    depends_on = ("application",)
+
+    def check(self, ctx: Context) -> CheckResult:
+        return CheckResult.needs_apply("probe the running deployment")
+
+    def apply(self, ctx: Context) -> None:
+        return None
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        plan = ctx.plan
+        results: list[str] = []
+        code = ctx.remote.run(f"curl -s -o /dev/null -w '%{{http_code}}' -m 5 http://127.0.0.1:{plan.app.rest_port}/auth/me", quiet=True).out.strip()
+        api_ok = code.startswith("4") or code.startswith("2")
+        results.append(f"API 127.0.0.1:{plan.app.rest_port} HTTP {code or 'no answer'}")
+        if ctx.remote.run_ok(f"timeout 3 bash -c '</dev/tcp/127.0.0.1/{plan.app.metrics_port}'"):
+            results.append(f"metrics :{plan.app.metrics_port} open")
+        if plan.clamav.enabled:
+            results.append("clamd " + ("active" if ctx.remote.service_active("clamav-daemon.socket") else "NOT active"))
+        if plan.intelligence.enabled:
+            healthy = ctx.remote.run_ok(f"curl -fsS -m 5 http://127.0.0.1:{plan.intelligence.port}/health")
+            results.append("intelligence " + ("healthy" if healthy else "not answering"))
+        if plan.app.autostart_on_reboot:
+            has_block = CRON_BEGIN in ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out
+            results.append("reboot autostart " + ("installed" if has_block else "MISSING"))
+        if plan.proxy.enabled and plan.proxy.api_domain:
+            results.append(self._public_probe(ctx))
+        return VerifyResult(api_ok, " · ".join(results))
+
+    def describe(self, plan: InstallPlan) -> str:
+        return "probe the API, the metrics port, the daemons, the cron block and the public URL"
+
+    @staticmethod
+    def _public_probe(ctx: Context) -> str:
+        url = f"https://{ctx.plan.proxy.api_domain}/auth/me"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - fixed https URL
+                return f"{url} HTTP {response.status}"
+        except urllib.error.HTTPError as exc:
+            return f"{url} HTTP {exc.code}"
+        except Exception as exc:  # noqa: BLE001 - certificate/DNS/firewall are all "not yet"
+            return f"{url} not reachable from here yet ({type(exc).__name__}) - certificate, DNS or provider firewall"

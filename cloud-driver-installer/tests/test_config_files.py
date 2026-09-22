@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from cloud_driver_installer.config_files import (
+    SCREEN_LOG_FILE,
     DEFAULTED_KEYS,
     MANAGED_KEYS,
     OBSOLETE_KEYS,
@@ -118,7 +119,7 @@ class TestRenderConfiguration:
         assert doc["cloud-user-max-bytes-to-upload"] == str(GIB)
         assert doc["jwt-signing-key"] == JWT
         assert doc["trust-proxy-headers"] is True
-        assert doc["trusted-proxy-addresses"] == "127.0.0.1,::1"
+        assert doc["trusted-proxy-addresses"] == "127.0.0.1"
         assert doc["aws-kms-region"] == "eu-central-1"
         assert doc["aws-kms-key-id"] == "alias/cloud-driver-kms-key"
         assert doc["aws-s3-region"] == "eu-central-1"
@@ -180,8 +181,8 @@ class TestRenderConfiguration:
 
     def test_key_prefix_is_written(self, plan: InstallPlan, filled_secrets: GeneratedSecrets) -> None:
         """A non-empty prefix is passed through verbatim."""
-        plan.aws.s3_key_prefix = "prod/"
-        assert render_configuration(plan, filled_secrets)["aws-s3-key-prefix"] == "prod/"
+        plan.aws.s3_key_prefix = "prod"
+        assert render_configuration(plan, filled_secrets)["aws-s3-key-prefix"] == "prod"
 
 
 class TestTrustedProxy:
@@ -193,7 +194,7 @@ class TestTrustedProxy:
         plan.app.rest_bind_host = bind
         doc = render_configuration(plan, filled_secrets)
         assert doc["trust-proxy-headers"] is True
-        assert doc["trusted-proxy-addresses"] == "127.0.0.1,::1"
+        assert doc["trusted-proxy-addresses"] == "127.0.0.1"
 
     def test_public_bind_never_trusts_headers(self, plan: InstallPlan, filled_secrets: GeneratedSecrets) -> None:
         """A public bind with Caddy enabled must not trust X-Forwarded-For."""
@@ -300,28 +301,27 @@ class TestStartEnv:
     """``start-cloud.env`` as sourced by start-cloud.sh."""
 
     def test_with_persistent_log(self, plan: InstallPlan) -> None:
-        """JVM_XMX, JAR_NAME, SCREEN_SESSION and SCREEN_LOG_FILE, trailing newline."""
-        text = render_start_env(plan, "cloud-driver-bootstrap-1.0.7.jar")
+        """JVM_XMX, SCREEN_SESSION and SCREEN_LOG_FILE, trailing newline - and never a pinned jar name."""
+        text = render_start_env(plan)
         assert text.endswith("\n")
         assert text.splitlines()[0].startswith("#")
         assert parse_env_file(text) == {
             "JVM_XMX": "5g",
-            "JAR_NAME": "cloud-driver-bootstrap-1.0.7.jar",
             "SCREEN_SESSION": "cloud",
-            "SCREEN_LOG_FILE": "/home/cloud/cloud.log",
+            "SCREEN_LOG_FILE": SCREEN_LOG_FILE,
         }
 
     def test_without_persistent_log(self, plan: InstallPlan) -> None:
         """No SCREEN_LOG_FILE line when the log is not persisted."""
         plan.app.persist_log = False
-        assert "SCREEN_LOG_FILE" not in render_start_env(plan, "x.jar")
+        assert "SCREEN_LOG_FILE" not in render_start_env(plan)
 
-    def test_install_dir_trailing_slash(self, plan: InstallPlan) -> None:
-        """A trailing slash on the install dir does not produce a double slash."""
+    def test_log_path_is_fixed_and_root_only(self, plan: InstallPlan) -> None:
+        """The console log always lands in /var/log/cloud-driver, whatever the install directory is."""
         plan.server.install_dir = "/srv/cloud/"
         plan.server.screen_session = "cloud2"
-        env = parse_env_file(render_start_env(plan, "x.jar"))
-        assert env["SCREEN_LOG_FILE"] == "/srv/cloud/cloud.log"
+        env = parse_env_file(render_start_env(plan))
+        assert env["SCREEN_LOG_FILE"] == SCREEN_LOG_FILE
         assert env["SCREEN_SESSION"] == "cloud2"
 
 

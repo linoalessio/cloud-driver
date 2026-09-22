@@ -78,9 +78,10 @@ flowchart LR
 
 ## Python packages
 
-The exception to the above: `cloud-driver-multiplatform-python` (the SDK) and
-`cloud-driver-intelligence` (the semantic-search service) each have a real `pytest` suite —
-network calls mocked in the SDK's case, so no live server is needed:
+The exception to the above: `cloud-driver-multiplatform-python` (the SDK),
+`cloud-driver-intelligence` (the semantic-search service) and `cloud-driver-installer` (the GUI
+installer) each have a real `pytest` suite — network calls mocked in the SDK's case, so no live
+server is needed:
 
 ```
 cd <package-dir>
@@ -97,9 +98,15 @@ install them into the venv from that clone with
 Without them those tests **skip** rather than fail, which is also what CI does — the workflows
 install only the `dev` extra from public indexes.
 
+The installer's suite needs neither a server nor an AWS account: SSH is replaced by a scripted
+fake with the same surface every step talks to (`tests/fake_remote.py`), so a test can assert on
+the exact commands a step ran and the files it wrote, and the AWS client is exercised through
+`botocore`'s own stubber. Its window tests build a real Tk window and skip themselves wherever
+there is no display, which is what CI runners are.
+
 ## CI
 
-Five automated checks run on pushes/pull requests (see [deployment.md](deployment.md) for the
+Six automated checks run on pushes/pull requests (see [deployment.md](deployment.md) for the
 full pipeline):
 
 | Workflow | Verifies |
@@ -108,4 +115,5 @@ full pipeline):
 | Mobile build (`swift.yml`) | An Xcode simulator build of the mobile app — build only |
 | Python SDK (`python.yml`) | `pytest` across Python 3.10/3.11/3.12 |
 | Intelligence service (`intelligence.yml`) | `pytest` for the semantic-search service |
+| GUI installer (`installer.yml`) | `pytest` across Python 3.10/3.11/3.12 (the window tests skip without a display) |
 | Qodana (`qodana_code_quality.yml`) | Static analysis |

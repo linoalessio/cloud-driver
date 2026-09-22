@@ -12,7 +12,7 @@ from cloud_driver_installer.model import InstallPlan
 from cloud_driver_installer.steps import aws as aws_step_module
 from cloud_driver_installer.steps.aws import AWS_HOME, CONFIG_PATH, CREDENTIALS_PATH, AwsStep, parse_ini_section
 
-from .fake_remote import FakeRemote
+from fake_remote import FakeRemote
 
 ALIAS = "alias/cloud-driver-kms-key"
 BUCKET = "cloud-driver-test-bucket"

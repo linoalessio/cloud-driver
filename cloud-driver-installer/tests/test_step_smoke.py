@@ -11,7 +11,7 @@ import pytest
 from cloud_driver_installer.engine import Context, StepStatus
 from cloud_driver_installer.steps.smoke import SmokeStep, https_status
 
-from .fake_remote import FakeRemote
+from fake_remote import FakeRemote
 
 
 @pytest.fixture

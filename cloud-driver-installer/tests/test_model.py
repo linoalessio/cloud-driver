@@ -113,8 +113,8 @@ PROBLEM_CASES: list[tuple[str, Mutator, str]] = [
     ("aws-s3-bucket-underscore", set_fields("aws", s3_bucket="cloud_driver"), "S3 bucket name is invalid"),
     ("aws-s3-bucket-ip", set_fields("aws", s3_bucket="192.168.0.1"), "S3 bucket name is invalid"),
     ("aws-s3-bucket-blank", set_fields("aws", s3_bucket=""), "S3 bucket name is invalid"),
-    ("aws-s3-prefix-leading-slash", set_fields("aws", s3_key_prefix="/files/"), "S3 key prefix must not start with /"),
-    ("aws-s3-prefix-double-slash", set_fields("aws", s3_key_prefix="a//b/"), "S3 key prefix must not start with /"),
+    ("aws-s3-prefix-leading-slash", set_fields("aws", s3_key_prefix="/files/"), "S3 key prefix must not start or end with /"),
+    ("aws-s3-prefix-double-slash", set_fields("aws", s3_key_prefix="a//b/"), "S3 key prefix must not start or end with /"),
     ("aws-s3-abort-days", set_fields("aws", s3_abort_multipart_days=-1), "multipart abort days cannot be negative"),
     ("aws-iam-user-name-space", set_fields("aws", iam_user_name="bad name"), "IAM user name is invalid"),
     ("aws-iam-user-name-blank", set_fields("aws", iam_user_name=""), "IAM user name is invalid"),
@@ -167,10 +167,13 @@ class TestValidate:
         plan.app.rest_port = 0
         plan.email.mode = "bogus"
         problems = plan.validate()
-        assert len(problems) == 3
+        # Port 0 is reported twice on purpose: as an invalid port, and as a collision with the
+        # REST listener that is also on 0.
+        assert len(problems) == 4
         assert problems[0].startswith("PostgreSQL:")
         assert problems[1].startswith("E-mail:")
         assert problems[2].startswith("Application:")
+        assert problems[3].startswith("PostgreSQL:")
 
     @pytest.mark.parametrize(
         "mutate",

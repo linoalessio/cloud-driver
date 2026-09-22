@@ -21,7 +21,7 @@ etc.) involved. A handful of shell scripts under [`shell/`](../shell/) handle th
 |---|---|---|
 | `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
 | `deploy-cloud.sh` | Locally | Uploads the already-built, shaded bootstrap jar to the server, compressed and checksum-verified |
-| `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX`), auto-restarting it if it ever exits. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
+| `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX` — or with a sibling `start-cloud.env`, see §"GUI installer"), auto-restarting it if it ever exits. The bootstrap jar is the single `cloud-driver-bootstrap-*.jar` in the script's own directory, so a version bump needs no edit. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
 | `release-and-package.sh` | Locally | One-shot release automation: bumps every version reference, builds, tags, pushes, and cuts a release. **The one script not in version control** — it is operator-local |
 | `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
 
@@ -77,6 +77,81 @@ if the alias name is kept the same and `/home/cloud` is the deploy target on bot
 the same commit.** Feature-module jars resolve shared types off the running bootstrap jar's own
 classpath at load time — mixing versions crashes the process at startup, and the auto-restart loop
 will simply repeat that crash indefinitely rather than recovering.
+
+## GUI installer (`cloud-driver-installer`)
+
+For a server you are standing up (or re-checking) interactively, `cloud-driver-installer` does
+everything `provision-root-server.sh` does and everything it deliberately left out — the AWS
+resources, the config files, the jars, the companion services — from one window, over one SSH
+connection entered at startup:
+
+```bash
+cd cloud-driver-installer
+python3 -m venv .venv && ./.venv/bin/pip install -e .
+./.venv/bin/cloud-driver-installer
+```
+
+(On Python 3.14 an editable install's `.pth` file is ignored, so run it as
+`PYTHONPATH=src ./.venv/bin/python -m cloud_driver_installer` there, or install non-editable.
+The GUI needs `tkinter`: on Debian/Ubuntu operator machines, `apt-get install python3-tk`.)
+
+Sixteen steps run in the order the server needs them:
+
+| # | Step | Does |
+|---|---|---|
+| 1 | Server | Refuses a non-root, non-apt or non-systemd host; discovers OS, RAM, disk, clock, versions and everything already installed; takes the existing `configuration.json` over; creates the directory layout; optionally installs your public key and writes an `~/.ssh/config` alias |
+| 2 | Base packages | `screen`, `curl`, `gnupg`, `ca-certificates`, `apt-transport-https`, `openssl`, `unzip`, `cron`, `logrotate`, `fonts-dejavu-core` (+ `awscli` for off-site backups) |
+| 3 | Java 21 | `openjdk-21-jdk-headless`, verified to report 21 |
+| 4 | Python 3 | `python3`, `python3-venv`, `python3-pip`, verified by actually building a throwaway virtual environment |
+| 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects |
+| 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING` |
+| 7 | ClamAV | `clamav-daemon` + `freshclam`, the systemd socket drop-in on `127.0.0.1:3310`, raised size limits |
+| 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443, then deny-incoming and enable |
+| 9 | Swap | A swapfile (an existing one is kept, never switched off under a running JVM) |
+| 10 | AWS | KMS key + alias, the content bucket, a separate backup bucket, a least-privilege IAM user, and that user's access key in `/root/.aws/credentials` |
+| 11 | E-mail | The SES identity (domain with Easy DKIM, or a single address) or the SMTP settings |
+| 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded |
+| 13 | Configuration files | `configuration.json`, `postgres-database.json`, `redis-database.json`, `start-cloud.env` — and the same `configuration.json` back into the checkout |
+| 14 | Application | The bootstrap jar, the extension jars, `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
+| 15 | Intelligence service | `/opt/cloud-driver-intelligence`, its virtual environment, env file and systemd unit |
+| 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL |
+
+Every step is **check → apply → verify**: the check only reads, the apply is idempotent, and the
+verify probes the real thing (a `psql` login, a Redis `PING`, clamd's socket, the API answering
+`401` on `/auth/me`). Re-running against a provisioned box is the normal case, so:
+
+- a credential is only ever rotated together with the file that records it, and a password already
+  on the server is read back and kept unless *rotate* is ticked;
+- the KMS key and S3 bucket named in the server's own `configuration.json` are adopted
+  automatically — replacing either, or disabling S3 while content is stored there, needs an
+  explicit acknowledgement, because existing rows would otherwise become unreadable;
+- a disabled feature's keys are removed from `configuration.json` (a left-over `aws-s3-bucket`
+  would keep S3 active against a bucket the plan no longer knows), while keys the installer does
+  not manage pass through untouched;
+- every file it rewrites is copied first into `/var/backups/cloud-driver-installer/<run>/`, and
+  written through an atomic rename so the running JVM — which re-reads `configuration.json` on
+  every access — can never see a half-written file;
+- secrets travel over stdin, never on a command line, are written `0600`, and are masked in the
+  log.
+
+**`start-cloud.env`** is the launcher's own environment file, written next to `start-cloud.sh`:
+`JVM_XMX` (the heap the installer sizes from the box's RAM minus Postgres, clamd and the
+intelligence service), `SCREEN_SESSION`, and `SCREEN_LOG_FILE` (`/var/log/cloud-driver/cloud.log`,
+root-only and rotated weekly — the JVM writes no log of its own, and a detached `screen` has no
+scrollback). The jar name is deliberately *not* pinned, so a later `deploy-cloud.sh` release bump
+keeps working. The same run installs a managed crontab region (`# cloud-driver-installer
+BEGIN/END`): the `@reboot` relaunch — inside `screen`, because the operator terminal needs a pty —
+an hourly sweep of abandoned upload scratch files, and the daily off-site backup copy into the
+backup bucket.
+
+**Config write-back matters**: `shell/deploy-cloud.sh` ships the *local* `cloud-driver/configuration.json`
+on every run, so the installer writes the file it generated back into the checkout. Leave that
+switched off and the next routine deploy reverts the server to whatever the checkout still holds.
+
+What it deliberately does not do: create DNS records, request SES production access, configure the
+provider-level firewall, deploy the homepage, or rebuild the client apps (both hardcode
+`https://api.cloud-driver.de`). `provision-root-server.sh` stays as the scriptable path for the
+OS-level half.
 
 ## Companion processes
 

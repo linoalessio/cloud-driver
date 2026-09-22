@@ -1,0 +1,52 @@
+# This workflow installs cloud-driver-installer and runs its test suite.
+
+name: Installer
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-installer/**'
+      - '.github/workflows/installer.yml'
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'cloud-driver-installer/**'
+      - '.github/workflows/installer.yml'
+  workflow_dispatch:
+
+# cloud-driver-installer is the desktop GUI that provisions a whole deployment over SSH. Its tests
+# need neither a server nor an AWS account: the SSH layer is replaced by a scripted fake and the
+# AWS calls by botocore's stubber (see docs/testing.md). The window tests build a real Tk window
+# and skip themselves when there is no display, which is the case on these runners - so tkinter is
+# deliberately not installed here.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: cloud-driver-installer
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.10", "3.11", "3.12" ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: cloud-driver-installer/pyproject.toml
+
+      - name: Install cloud-driver-installer (with dev extras)
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -v

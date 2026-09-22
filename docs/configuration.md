@@ -27,6 +27,7 @@ next to the running backend process — two required files (below) plus an optio
 | `metrics-port` | int | `9404` | Metrics endpoint |
 | `metrics-bind-host` | string | `127.0.0.1` (loopback-only) | Metrics endpoint |
 | `trust-proxy-headers` | boolean | `false` | Rate-limit identity resolution behind a reverse proxy |
+| `trusted-proxy-addresses` | string | unset → falls back to `trust-proxy-headers` | Comma-separated list of reverse-proxy addresses whose `X-Forwarded-For` may be believed. Authoritative when present. Match the spelling the backend sees: IPv4 loopback is `127.0.0.1`, IPv6 loopback renders as `0:0:0:0:0:0:0:1` |
 | `auth-rate-limit-max-requests` | int | `10` | Per-IP auth rate limit |
 | `auth-rate-limit-window-seconds` | long | `300` | Per-IP auth rate limit window |
 | `trash-retention-days` | int | `30` | Trash purge scheduler |
@@ -52,6 +53,7 @@ next to the running backend process — two required files (below) plus an optio
 | `file-versioning-max-versions-per-file` | int | `10` | Version pruning (`cloud-driver-extensions-versioning`) |
 | `file-versioning-retention-days` | int | `30` | Version pruning by age |
 | `presigned-upload-ticket-retention-hours` | long | `6` | Orphaned presigned-upload cleanup (S3 deployments only) |
+| `resumable-upload-session-retention-hours` | long | `72` | How long an unfinished resumable upload session survives before it is dropped and its multipart upload aborted |
 | `cloud-server-max-bytes-available` | long | **no default** — the terminal's `cloudUser limit`/`stats` commands fail without it | Operator terminal storage commands |
 
 ## Notes
@@ -83,5 +85,9 @@ next to the running backend process — two required files (below) plus an optio
   delivery history, and multi-instance coordination (once-per-window scheduler locks and
   cross-instance pending-upload visibility) — absent, malformed, or unreachable simply falls
   back to in-process, single-instance behavior.
+- `start-cloud.env` is **not** a configuration file the backend reads. It sits next to
+  `start-cloud.sh` and carries the launcher's own settings (`JVM_XMX`, `SCREEN_SESSION`,
+  `SCREEN_LOG_FILE`); `cloud-driver-installer` writes it — see
+  [deployment.md](deployment.md#gui-installer-cloud-driver-installer).
 - [`requirements.md`](requirements.md) §3 documents the same keys from the operator's
   perspective, including which ones fail loudly versus silently when misconfigured.

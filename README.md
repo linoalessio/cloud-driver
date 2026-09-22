@@ -325,6 +325,7 @@ See [docs/security.md](docs/security.md) for the complete model.
 | `cloud-driver-extensions-scan` | Malware scanning via an external `clamd` daemon |
 | `cloud-driver-extensions-intelligence` | Java bridge to the Python semantic-search service |
 | `cloud-driver-intelligence` | Standalone Python/FastAPI service: embeddings, vector store, semantic search, duplicates, tagging |
+| `cloud-driver-installer` | Desktop GUI (Python/tkinter) that installs and configures a whole deployment on a fresh root server over SSH |
 | `cloud-driver-multiplatform` | Parent for the three per-language client SDKs |
 | `cloud-driver-multiplatform-java` | Java REST/WebSocket client library (used by the desktop app) |
 | `cloud-driver-multiplatform-swift` | Swift REST client library (used by the iOS app) |

@@ -35,4 +35,4 @@ packages = ["src/cloud_driver_installer"]
 testpaths = ["tests"]
 # Python 3.14 ignores .pth files whose name starts with "_" (hatchling's editable hook is one), so an
 # editable install is invisible there; the explicit source path keeps `pytest` working regardless.
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]

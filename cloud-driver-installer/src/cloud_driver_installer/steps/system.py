@@ -1,0 +1,456 @@
+"""OS-level steps: preflight discovery, base packages, Java, Python, firewall and swap."""
+
+from __future__ import annotations
+
+import os
+import re
+import shlex
+from pathlib import Path
+
+from cloud_driver_installer.config_files import parse_env_file, parse_json
+from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
+from cloud_driver_installer.model import InstallPlan, apply_existing_config
+from cloud_driver_installer.sizing import suggest_jvm_xmx
+
+#: Packages every deployment needs (screen for the jline pty, cron/logrotate for the managed jobs,
+#: fonts so PDFBox renders thumbnails of PDFs without embedded fonts).
+BASE_PACKAGES: tuple[str, ...] = (
+    "screen",
+    "curl",
+    "gnupg",
+    "ca-certificates",
+    "apt-transport-https",
+    "openssl",
+    "unzip",
+    "cron",
+    "logrotate",
+    "fonts-dejavu-core",
+)
+
+#: NTP implementations that satisfy the clock requirement (AWS SigV4 rejects a drifted clock).
+NTP_PACKAGES: tuple[str, ...] = ("systemd-timesyncd", "chrony", "ntpsec", "ntp")
+
+
+def _text(ctx: Context, command: str) -> str:
+    """Run ``command`` quietly and return its stripped stdout (empty on failure)."""
+    result = ctx.remote.run(command, quiet=True, timeout=60)
+    return result.out.strip() if result.ok else ""
+
+
+def _int(value: str, default: int = 0) -> int:
+    try:
+        return int(value.strip())
+    except (AttributeError, ValueError):
+        return default
+
+
+class ServerStep(Step):
+    """Preflight: refuse an unsupported host, discover its state, and take over an existing config."""
+
+    id = "server"
+    title = "Server"
+    mandatory = True
+
+    def check(self, ctx: Context) -> CheckResult:
+        remote, found = ctx.remote, ctx.discovered
+        found.is_root = _text(ctx, "id -u") == "0"
+        found.has_apt = remote.command_exists("apt-get")
+        found.has_systemd = remote.command_exists("systemctl")
+        if not found.has_apt:
+            raise StepError("this is not a Debian/Ubuntu (apt) host - the installer only supports apt-based distributions")
+        if not found.has_systemd:
+            raise StepError("no systemd on this host - clamd's socket unit and the intelligence service both need it")
+        if not found.is_root:
+            raise StepError("connect as root: the JVM, its /root/.aws credentials and the managed crontab all belong to root")
+
+        os_line = _text(ctx, '. /etc/os-release 2>/dev/null; printf "%s|%s" "$PRETTY_NAME" "$ID"')
+        found.os_pretty, _, found.os_id = os_line.partition("|")
+        found.kernel = _text(ctx, "uname -r")
+        found.cpu_count = _int(_text(ctx, "nproc"))
+        found.ram_mib = _int(_text(ctx, "free -m | awk '/^Mem:/{print $2}'"))
+        found.swap_mib = _int(_text(ctx, "free -m | awk '/^Swap:/{print $2}'"))
+        install_dir = ctx.plan.server.install_dir
+        # The directory may not exist yet, so fall back to the root filesystem it will live on.
+        free_mib = _int(_text(ctx, f"df -Pm {shlex.quote(install_dir)} 2>/dev/null || df -Pm /; true" + " | awk 'NR==2{print $4}'"))
+        found.disk_free_gib = round(free_mib / 1024, 1)
+        found.public_ip = _text(ctx, "curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}'")
+        found.ipv6 = _text(ctx, "ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2; exit}'").split("/")[0]
+
+        clock = parse_env_file(_text(ctx, "timedatectl show -p NTPSynchronized -p Timezone 2>/dev/null"))
+        found.ntp_synchronized = clock.get("NTPSynchronized") == "yes" if clock else None
+        found.timezone = clock.get("Timezone", "")
+
+        java = _text(ctx, "java -version 2>&1 | head -1")
+        match = re.search(r'"(\d+)(?:\.[\d._]+)?"', java)
+        found.java_version = match.group(0).strip('"') if match else ""
+        found.python_version = _text(ctx, "python3 --version 2>&1").replace("Python", "").strip()
+        found.venv_works = remote.run_ok(
+            'probe="$(mktemp -d)"; python3 -m venv "$probe/v" >/dev/null 2>&1 && [ -x "$probe/v/bin/pip" ]; rc=$?; rm -rf "$probe"; exit $rc',
+            timeout=180,
+        )
+
+        found.pg_installed = remote.dpkg_installed("postgresql")
+        found.pg_version = _text(ctx, "psql --version 2>/dev/null | awk '{print $3}'")
+        found.redis_installed = remote.dpkg_installed("redis-server")
+        found.clamd_installed = remote.dpkg_installed("clamav-daemon")
+        found.caddy_installed = remote.command_exists("caddy")
+        found.ufw_active = "active" in _text(ctx, "ufw status 2>/dev/null | head -1").lower()
+        found.screen_running = ctx.remote.run_ok(f"screen -list 2>/dev/null | grep -q '[.]{ctx.plan.server.screen_session}[[:space:]]'")
+        found.existing_jars = [
+            line.strip()
+            for line in _text(ctx, f"ls -1 {shlex.quote(ctx.plan.server.install_dir)}/cloud-driver-bootstrap-*.jar {shlex.quote(ctx.plan.extensions_dir)}/*.jar 2>/dev/null").splitlines()
+            if line.strip()
+        ]
+        found.aws_credentials_present = remote.exists("/root/.aws/credentials")
+        found.intelligence_installed = remote.exists("/opt/cloud-driver-intelligence/.venv/bin/uvicorn")
+        found.intelligence_env = parse_env_file(remote.read_text("/etc/cloud-driver-intelligence.env"))
+
+        found.existing_config = parse_json(remote.read_text(f"{ctx.plan.config_dir}/configuration.json"))
+        found.existing_postgres = parse_json(remote.read_text(f"{ctx.plan.config_dir}/postgres-database.json"))
+        found.existing_redis = parse_json(remote.read_text(f"{ctx.plan.config_dir}/redis-database.json"))
+        self._remember_existing_secrets(ctx)
+
+        if found.existing_config or found.existing_postgres:
+            taken = apply_existing_config(ctx.plan, found.existing_config, postgres=found.existing_postgres or None, redis=found.existing_redis or None)
+            for line in taken:
+                ctx.info(f"[Server] taken over from this server: {line}")
+
+        if not ctx.plan.app.jvm_xmx and found.ram_mib:
+            ctx.plan.app.jvm_xmx = suggest_jvm_xmx(
+                found.ram_mib,
+                postgres_local=ctx.plan.postgres.mode == "install",
+                clamav_enabled=ctx.plan.clamav.enabled,
+                intelligence_enabled=ctx.plan.intelligence.enabled,
+            )
+            ctx.info(f"[Server] suggested JVM heap -Xmx{ctx.plan.app.jvm_xmx} for {found.ram_mib} MiB of RAM")
+
+        needed_free = 15 if ctx.plan.intelligence.enabled else 10
+        if found.disk_free_gib and found.disk_free_gib < needed_free:
+            ctx.warn(f"[Server] only {found.disk_free_gib} GiB free on {install_dir} - at least {needed_free} GiB is recommended")
+
+        detail = found.summary() or "server reachable"
+        if found.existing_jars:
+            detail += f" · already provisioned ({len(found.existing_jars)} jars)"
+        if self._pending(ctx):
+            return CheckResult.needs_apply(detail + " · " + ", ".join(self._pending(ctx)))
+        return CheckResult.ok(detail)
+
+    def apply(self, ctx: Context) -> None:
+        plan, found = ctx.plan, ctx.discovered
+        ctx.remote.mkdirs(plan.server.install_dir, plan.config_dir, plan.extensions_dir, f"{plan.server.install_dir.rstrip('/')}/upload-scratch")
+        if plan.server.ntp and found.ntp_synchronized is not True:
+            self._ensure_ntp(ctx)
+        if plan.server.timezone and plan.server.timezone != found.timezone:
+            ctx.remote.run(f"timedatectl set-timezone {shlex.quote(plan.server.timezone)}", check=True)
+            ctx.info(f"[Server] timezone set to {plan.server.timezone}")
+        if plan.server.unattended_upgrades and not ctx.remote.dpkg_installed("unattended-upgrades"):
+            ctx.remote.apt_install(["unattended-upgrades"])
+            ctx.remote.run("dpkg-reconfigure -f noninteractive unattended-upgrades", check=False)
+        if plan.server.install_public_key:
+            self._install_public_key(ctx)
+        if plan.server.write_ssh_alias:
+            self._write_ssh_alias(ctx)
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        plan = ctx.plan
+        for path in (plan.server.install_dir, plan.config_dir, plan.extensions_dir):
+            if not ctx.remote.exists(path):
+                return VerifyResult(False, f"{path} was not created")
+        return VerifyResult(True, ctx.discovered.summary() or "ready")
+
+    def describe(self, plan: InstallPlan) -> str:
+        parts = [f"create {plan.server.install_dir} (config, extensions, upload-scratch)"]
+        if plan.server.ntp:
+            parts.append("ensure clock synchronisation")
+        if plan.server.timezone:
+            parts.append(f"timezone {plan.server.timezone}")
+        if plan.server.install_public_key:
+            parts.append("install your public key for root")
+        if plan.server.write_ssh_alias:
+            parts.append(f"write the ~/.ssh/config alias {plan.server.ssh_alias_name}")
+        return " · ".join(parts)
+
+    # --- internals -------------------------------------------------------------------------------
+
+    def _pending(self, ctx: Context) -> list[str]:
+        pending: list[str] = []
+        plan, found = ctx.plan, ctx.discovered
+        if plan.server.ntp and found.ntp_synchronized is not True:
+            pending.append("clock not synchronised")
+        if plan.server.timezone and plan.server.timezone != found.timezone:
+            pending.append(f"timezone {found.timezone or 'unknown'} -> {plan.server.timezone}")
+        if plan.server.install_public_key:
+            pending.append("public key")
+        if plan.server.write_ssh_alias:
+            pending.append("ssh alias")
+        if not ctx.remote.exists(plan.extensions_dir):
+            pending.append("directory layout")
+        return pending
+
+    def _remember_existing_secrets(self, ctx: Context) -> None:
+        found = ctx.discovered
+        for document, key in (
+            (found.existing_config, "jwt-signing-key"),
+            (found.existing_config, "intelligence-shared-secret"),
+            (found.existing_config, "smtp-password"),
+            (found.existing_postgres, "password"),
+            (found.existing_redis, "password"),
+        ):
+            value = document.get(key) if isinstance(document, dict) else None
+            if isinstance(value, str):
+                ctx.remember_secret(value)
+        for value in found.intelligence_env.values():
+            ctx.remember_secret(value)
+
+    def _ensure_ntp(self, ctx: Context) -> None:
+        installed = [name for name in NTP_PACKAGES if ctx.remote.dpkg_installed(name)]
+        if not installed:
+            ctx.remote.apt_install(["systemd-timesyncd"])
+            installed = ["systemd-timesyncd"]
+        unit = {"systemd-timesyncd": "systemd-timesyncd", "chrony": "chrony", "ntpsec": "ntpsec", "ntp": "ntp"}[installed[0]]
+        ctx.remote.systemctl("enable", "--now", unit, check=False)
+        ctx.remote.run("timedatectl set-ntp true", check=False)
+        ctx.info(f"[Server] clock synchronisation through {unit}")
+
+    def _install_public_key(self, ctx: Context) -> None:
+        path = Path(os.path.expanduser(ctx.plan.server.public_key_path))
+        key_line = path.read_text().strip()
+        if not key_line:
+            raise StepError(f"{path} is empty")
+        ctx.remote.run("mkdir -p /root/.ssh && chmod 700 /root/.ssh && touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys", check=True)
+        existing = ctx.remote.read_text("/root/.ssh/authorized_keys") or ""
+        if key_line.split()[1] in existing:
+            ctx.info("[Server] the public key is already in /root/.ssh/authorized_keys")
+            return
+        ctx.remote.run("cat >> /root/.ssh/authorized_keys", input=key_line + "\n", check=True)
+        ctx.info(f"[Server] added {path.name} to /root/.ssh/authorized_keys")
+
+    def _write_ssh_alias(self, ctx: Context) -> None:
+        target = ctx.plan.ssh
+        name = ctx.plan.server.ssh_alias_name
+        config = Path.home() / ".ssh" / "config"
+        current = config.read_text() if config.is_file() else ""
+        if re.search(rf"^\s*Host\s+.*\b{re.escape(name)}\b", current, re.MULTILINE):
+            ctx.warn(f"[Server] ~/.ssh/config already has a Host {name} entry - leaving it untouched")
+            return
+        block = [f"\nHost {name}", f"    HostName {target.host}", f"    User {target.user}"]
+        if target.port != 22:
+            block.append(f"    Port {target.port}")
+        if target.auth == "key" and target.key_path:
+            block.append(f"    IdentityFile {target.key_path}")
+        config.parent.mkdir(parents=True, exist_ok=True)
+        with config.open("a") as handle:
+            handle.write("\n".join(block) + "\n")
+        ctx.info(f"[Server] added Host {name} to ~/.ssh/config")
+
+
+class PackagesStep(Step):
+    """The apt packages every other step assumes."""
+
+    id = "packages"
+    title = "Base packages"
+    mandatory = True
+    depends_on = ("server",)
+
+    def packages(self, ctx: Context) -> list[str]:
+        """Base packages plus the ones this plan's options need."""
+        packages = list(BASE_PACKAGES)
+        if ctx.plan.app.backup_offsite:
+            packages.append("awscli")
+        return packages
+
+    def check(self, ctx: Context) -> CheckResult:
+        missing = [name for name in self.packages(ctx) if not ctx.remote.dpkg_installed(name)]
+        if missing:
+            return CheckResult.needs_apply(f"{len(missing)} of {len(self.packages(ctx))} missing: {', '.join(missing)}")
+        return CheckResult.ok("every base package installed")
+
+    def apply(self, ctx: Context) -> None:
+        missing = [name for name in self.packages(ctx) if not ctx.remote.dpkg_installed(name)]
+        if missing:
+            ctx.remote.apt_install(missing)
+        ctx.remote.systemctl("enable", "--now", "cron", check=False)
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        missing = [name for name in self.packages(ctx) if not ctx.remote.dpkg_installed(name)]
+        if missing:
+            return VerifyResult(False, f"still missing: {', '.join(missing)}")
+        return VerifyResult(True, f"{len(self.packages(ctx))} packages installed")
+
+    def describe(self, plan: InstallPlan) -> str:
+        extra = " + awscli" if plan.app.backup_offsite else ""
+        return f"apt-get install {len(BASE_PACKAGES)} base packages{extra}, enable cron"
+
+
+class JavaStep(Step):
+    """JDK 21 - the only version the backend builds and runs against."""
+
+    id = "java"
+    title = "Java 21"
+    mandatory = True
+    depends_on = ("server",)
+
+    def check(self, ctx: Context) -> CheckResult:
+        version = ctx.discovered.java_version or _text(ctx, "java -version 2>&1 | head -1")
+        if version.startswith("21"):
+            return CheckResult.ok(f"OpenJDK {version}")
+        return CheckResult.needs_apply("not installed" if not version else f"Java {version} - 21 is required")
+
+    def apply(self, ctx: Context) -> None:
+        ctx.remote.apt_install(["openjdk-21-jdk-headless"])
+        if not _text(ctx, "java -version 2>&1 | head -1").count("21"):
+            ctx.remote.run("update-alternatives --set java $(ls -1 /usr/lib/jvm/java-21-openjdk-*/bin/java | head -1)", check=False)
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        line = _text(ctx, "java -version 2>&1 | head -1")
+        match = re.search(r'"(\d+)', line)
+        ctx.discovered.java_version = (re.search(r'"([\d._]+)"', line).group(1) if re.search(r'"([\d._]+)"', line) else "")
+        if match and match.group(1) == "21":
+            return VerifyResult(True, line)
+        return VerifyResult(False, f"java -version reports {line or 'nothing'}")
+
+    def describe(self, plan: InstallPlan) -> str:
+        return "apt-get install openjdk-21-jdk-headless"
+
+
+class PythonStep(Step):
+    """Python 3 with a working ``venv`` - the intelligence service is built from it."""
+
+    id = "python"
+    title = "Python 3"
+    mandatory = True
+    depends_on = ("server",)
+
+    def check(self, ctx: Context) -> CheckResult:
+        version = ctx.discovered.python_version
+        works = ctx.discovered.venv_works
+        if ctx.plan.intelligence.enabled and ctx.plan.intelligence.enable_encryption and version:
+            if tuple(int(p) for p in re.findall(r"\d+", version)[:2]) < (3, 11):
+                raise StepError(
+                    f"the encrypted vector store needs Python 3.11+, this server has {version} - "
+                    "install a newer interpreter or switch the intelligence encryption off"
+                )
+        if version and works:
+            return CheckResult.ok(f"Python {version}, venv works")
+        if not version:
+            return CheckResult.needs_apply("python3 not installed")
+        return CheckResult.needs_apply(f"Python {version} but venv/ensurepip is missing")
+
+    def apply(self, ctx: Context) -> None:
+        ctx.remote.apt_install(["python3", "python3-venv", "python3-pip"])
+        if not self._venv_works(ctx):
+            version = _text(ctx, "python3 --version 2>&1").replace("Python", "").strip()
+            short = ".".join(version.split(".")[:2])
+            if short:
+                ctx.remote.apt_install([f"python{short}-venv"])
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        ctx.discovered.python_version = _text(ctx, "python3 --version 2>&1").replace("Python", "").strip()
+        ctx.discovered.venv_works = self._venv_works(ctx)
+        if ctx.discovered.venv_works:
+            return VerifyResult(True, f"Python {ctx.discovered.python_version}, venv works")
+        return VerifyResult(False, "python3 -m venv still cannot create a working environment")
+
+    def describe(self, plan: InstallPlan) -> str:
+        return "apt-get install python3, python3-venv, python3-pip"
+
+    @staticmethod
+    def _venv_works(ctx: Context) -> bool:
+        return ctx.remote.run_ok(
+            'probe="$(mktemp -d)"; python3 -m venv "$probe/v" >/dev/null 2>&1 && [ -x "$probe/v/bin/pip" ]; rc=$?; rm -rf "$probe"; exit $rc',
+            timeout=180,
+        )
+
+
+class FirewallStep(Step):
+    """``ufw``: SSH, 80 and 443 in, everything else denied (the app manages no firewall of its own)."""
+
+    id = "firewall"
+    title = "Firewall (ufw)"
+    depends_on = ("packages",)
+
+    def enabled(self, plan: InstallPlan) -> bool:
+        return plan.server.firewall
+
+    def ssh_ports(self, ctx: Context) -> list[str]:
+        """Every port sshd listens on, plus the port this session uses - opened before enabling."""
+        configured = [p for p in _text(ctx, "sshd -T 2>/dev/null | awk '/^port /{print $2}'").split() if p.isdigit()]
+        ports = configured or ["22"]
+        session_port = str(ctx.plan.ssh.port)
+        if session_port not in ports:
+            ports.append(session_port)
+        return ports
+
+    def rules(self, ctx: Context) -> list[str]:
+        """Allow rules in the order they are added."""
+        rules = [f"{port}/tcp" for port in self.ssh_ports(ctx)] + ["80/tcp", "443/tcp"]
+        extra = [item for item in re.split(r"[,\s]+", ctx.plan.server.firewall_extra_ports or "") if item]
+        return rules + [item if "/" in item else f"{item}/tcp" for item in extra]
+
+    def check(self, ctx: Context) -> CheckResult:
+        if not ctx.remote.dpkg_installed("ufw"):
+            return CheckResult.needs_apply("ufw not installed - this host has no firewall at all")
+        status = _text(ctx, "ufw status 2>/dev/null")
+        active = "status: active" in status.lower()
+        missing = [rule for rule in self.rules(ctx) if rule.split("/")[0] not in status]
+        if active and not missing:
+            return CheckResult.ok("ufw active · " + ", ".join(self.rules(ctx)))
+        return CheckResult.needs_apply(("inactive" if not active else "active") + (f" · missing {', '.join(missing)}" if missing else ""))
+
+    def apply(self, ctx: Context) -> None:
+        if not ctx.remote.dpkg_installed("ufw"):
+            ctx.remote.apt_install(["ufw"])
+        rules = self.rules(ctx)
+        session_rule = f"{ctx.plan.ssh.port}/tcp"
+        if session_rule not in rules:
+            raise StepError(f"refusing to enable the firewall: this session's SSH port {ctx.plan.ssh.port} is not in the allow list")
+        for rule in rules:  # SSH first, so enabling can never lock the operator out
+            ctx.remote.run(f"ufw allow {shlex.quote(rule)}", check=True)
+        ctx.remote.run("ufw default deny incoming && ufw default allow outgoing", check=True)
+        ctx.remote.run("ufw --force enable", check=True)
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        status = _text(ctx, "ufw status verbose 2>/dev/null")
+        ctx.discovered.ufw_active = "status: active" in status.lower()
+        if not ctx.discovered.ufw_active:
+            return VerifyResult(False, "ufw is not active")
+        return VerifyResult(True, "ufw active · " + ", ".join(self.rules(ctx)))
+
+    def describe(self, plan: InstallPlan) -> str:
+        return "ufw: allow SSH, 80, 443 (plus extras), deny incoming, enable"
+
+
+class SwapStep(Step):
+    """A swapfile as the kernel-OOM safety net under the JVM heap."""
+
+    id = "swap"
+    title = "Swap"
+    depends_on = ("server",)
+
+    def enabled(self, plan: InstallPlan) -> bool:
+        return plan.server.swap_mb > 0
+
+    def check(self, ctx: Context) -> CheckResult:
+        active = _text(ctx, "swapon --show=NAME,SIZE --noheadings 2>/dev/null")
+        if active:
+            return CheckResult.ok(f"existing swap kept: {' '.join(active.split())}")
+        return CheckResult.needs_apply(f"no swap · {ctx.plan.server.swap_mb} MB planned")
+
+    def apply(self, ctx: Context) -> None:
+        size = ctx.plan.server.swap_mb
+        ctx.remote.run(
+            "set -e; "
+            f"fallocate -l {size}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count={size}; "
+            "chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; "
+            "grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab",
+            check=True,
+            timeout=900,
+        )
+
+    def verify(self, ctx: Context) -> VerifyResult:
+        active = _text(ctx, "swapon --show=NAME,SIZE --noheadings 2>/dev/null")
+        ctx.discovered.swap_mib = _int(_text(ctx, "free -m | awk '/^Swap:/{print $2}'"))
+        return VerifyResult(bool(active), f"swap active: {' '.join(active.split())}" if active else "no swap is active")
+
+    def describe(self, plan: InstallPlan) -> str:
+        return f"create a {plan.server.swap_mb} MB /swapfile (kept as-is when swap already exists)"

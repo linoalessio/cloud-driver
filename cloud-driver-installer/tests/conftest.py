@@ -10,7 +10,7 @@ from cloud_driver_installer.engine import Context
 from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan
 from cloud_driver_installer.secrets import Redactor
 
-from .fake_remote import FakeRemote
+from fake_remote import FakeRemote
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def plan(tmp_path: Path) -> InstallPlan:
     (repo / "cloud-driver-bootstrap" / "target").mkdir(parents=True)
     (repo / "cloud-driver-bootstrap" / "target" / "cloud-driver-bootstrap-1.0.7.jar").write_bytes(b"PK-bootstrap")
     (repo / "cloud-driver-bootstrap" / "target" / "original-cloud-driver-bootstrap-1.0.7.jar").write_bytes(b"PK-original")
-    for name in ("rest", "terminal", "scan", "intelligence"):
+    for name in ("rest", "terminal", "watcher", "backup", "scan", "intelligence"):
         target = repo / "cloud-driver-extensions" / f"cloud-driver-extensions-{name}" / "target"
         target.mkdir(parents=True)
         (target / f"cloud-driver-extensions-{name}-1.0.7.jar").write_bytes(b"PK-" + name.encode())
