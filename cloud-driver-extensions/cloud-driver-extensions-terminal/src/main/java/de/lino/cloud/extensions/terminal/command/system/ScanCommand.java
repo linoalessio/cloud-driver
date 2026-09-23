@@ -68,7 +68,7 @@ public class ScanCommand implements Command {
         final Terminal terminal = this.terminal();
         final ContentScanService contentScanService = CloudDriver.getInstance().getServiceContainer().getContentScanService();
 
-        if (contentScanService == null) {
+        if (contentScanService == null || !contentScanService.isRunning()) {
             terminal.displayApproved("&cContent scanning is not running &7on this deployment.");
             terminal.displayApproved("&7Every upload is being accepted &cunscanned&7.");
             return;

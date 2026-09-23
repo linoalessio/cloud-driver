@@ -84,6 +84,9 @@ final class DefaultContentScanService implements ContentScanService {
     private final ExecutorService executor;
     private final ScheduledExecutorService retryScheduler;
 
+    /** Flipped to {@code false} by {@link #shutdown()}; read through {@link #isRunning()}. */
+    private volatile boolean running = true;
+
     DefaultContentScanService(@NotNull final DataFactory dataFactory, @NotNull final FileFactory fileFactory,
                                @NotNull final Logger logger, @NotNull final String clamdHost, final int clamdPort,
                                @NotNull final Duration clamdTimeout, final long maxScannableBytes) {
@@ -106,8 +109,15 @@ final class DefaultContentScanService implements ContentScanService {
 
     /** Shuts {@link #executor}/{@link #retryScheduler} down - called by {@code CloudScanExtension#onEnding}/{@code #onException}. */
     void shutdown() {
+        this.running = false;
         this.executor.shutdown();
         this.retryScheduler.shutdown();
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean isRunning() {
+        return this.running;
     }
 
     /**

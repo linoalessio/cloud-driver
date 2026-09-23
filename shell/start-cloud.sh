@@ -32,6 +32,11 @@
 #
 # A sibling start-cloud.env (written by cloud-driver-installer, see docs/deployment.md) overrides
 # JVM_XMX, SCREEN_SESSION and SCREEN_LOG_FILE (and optionally JAR_NAME) without editing this script.
+#
+# Refuses to start at all when extensions/ holds two jars for one module: every jar in that folder
+# is registered before anything starts, so two of them claiming one extension name kills the boot -
+# and the restart loop below would then repeat that crash every three seconds inside a screen
+# session with no scrollback.
 
 set -uo pipefail
 
@@ -102,6 +107,27 @@ if [ ! -f "$SCRIPT_DIR/$JAR_NAME" ]; then
     echo "start-cloud.sh: $JAR_NAME not found in $SCRIPT_DIR" >&2
     exit 1
 fi
+
+seen_extension_stems=()
+
+for extension_jar in "$SCRIPT_DIR"/extensions/*.jar; do
+    [ -e "$extension_jar" ] || continue
+    extension_name="$(basename "$extension_jar")"
+    # A file-name heuristic, not the extension name out of the jar's manifest - a shell script
+    # cannot read that. It catches the reported case (two versions of one module); the boot-time
+    # check inside the process is the authoritative guard and still fires for anything else.
+    extension_stem="${extension_name%-*.jar}"
+    for seen_extension_stem in ${seen_extension_stems[@]+"${seen_extension_stems[@]}"}; do
+        if [ "$seen_extension_stem" = "$extension_stem" ]; then
+            echo "start-cloud.sh: two jars for the same extension module in $SCRIPT_DIR/extensions - the server refuses to start with both; remove the older one:" >&2
+            for other_extension_jar in "$SCRIPT_DIR"/extensions/"$extension_stem"-*.jar; do
+                [ -e "$other_extension_jar" ] && echo "  $other_extension_jar" >&2
+            done
+            exit 1
+        fi
+    done
+    seen_extension_stems+=("$extension_stem")
+done
 
 if screen -list 2>/dev/null | grep -q "\.${SESSION_NAME}[[:space:]]"; then
     echo "start-cloud.sh: screen session '$SESSION_NAME' is already running"

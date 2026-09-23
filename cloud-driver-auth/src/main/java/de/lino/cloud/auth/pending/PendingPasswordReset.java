@@ -1,10 +1,12 @@
 package de.lino.cloud.auth.pending;
 
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.security.hash.LookupKeyDigest;
 import de.lino.cloud.auth.AuthService;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import lombok.NonNull;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
 
@@ -13,11 +15,13 @@ import java.util.Objects;
 
 /**
  * A not-yet-confirmed password reset waiting on e-mail verification - the intermediate state
- * {@link AuthService#requestPasswordReset} leaves behind. {@code emailAddress} doubles as this
- * entity's own primary key, so a repeated {@code POST /auth/reset-password} for the same address
- * simply overwrites the previous attempt (a fresh code/expiry) via {@code
- * EntityDatabaseClient#store}'s insert-then-update-on-collision fallback, the same shape {@link
- * PendingRegistration} already uses.
+ * {@link AuthService#requestPasswordReset} leaves behind. Keyed on the <em>digest</em> of {@code
+ * emailAddress} (see {@link #keyOf(String)}), which is still one key per address, so a repeated
+ * {@code POST /auth/reset-password} for the same address simply overwrites the previous attempt
+ * (a fresh code/expiry) via {@code EntityDatabaseClient#store}'s insert-then-update-on-collision
+ * fallback, the same shape {@link PendingRegistration} already uses - while the row's {@code id}
+ * column, which the persistence layer writes as plain text, no longer reveals which addresses
+ * have a reset in flight.
  *
  * <p>Unlike {@link PendingRegistration}, this row carries no password of its own (hashed or
  * otherwise) - the caller's chosen new password is only ever supplied once, directly to {@link
@@ -32,7 +36,10 @@ import java.util.Objects;
 @EqualsAndHashCode(callSuper = false)
 public final class PendingPasswordReset extends Serialized {
 
-    /** The address this pending reset is for; also this entity's primary key. */
+    /**
+     * The address this pending reset is for, held inside the encrypted payload. The primary key
+     * is its digest, never the address itself - see {@link #keyOf(String)}.
+     */
     private final String emailAddress;
 
     /** The code e-mailed to {@link #emailAddress}, expected back verbatim at {@link AuthService#confirmPasswordReset}. */
@@ -62,7 +69,8 @@ public final class PendingPasswordReset extends Serialized {
     }
 
     /**
-     * @param emailAddress the address this pending reset is for, also its {@link #primaryKey()}
+     * @param emailAddress the address this pending reset is for; its digest is this row's
+     *     {@link #primaryKey()}
      * @param verificationCode the code sent to {@code emailAddress}, expected back verbatim at
      *     {@link AuthService#confirmPasswordReset}
      * @param expiresAtEpochMillis the instant (epoch millis) after which {@link #isExpired()}
@@ -77,7 +85,7 @@ public final class PendingPasswordReset extends Serialized {
      * The full constructor, carrying an explicit failed-attempt count - used by {@link
      * #withFailedAttempt()} and by Gson rehydration.
      *
-     * @param emailAddress the address the reset was requested for, also this entity's primary key
+     * @param emailAddress the address the reset was requested for; its digest is this entity's primary key
      * @param verificationCode the code e-mailed to {@code emailAddress}
      * @param expiresAtEpochMillis when this pending reset stops being usable
      * @param failedAttempts how many wrong codes have been presented against this row
@@ -102,11 +110,36 @@ public final class PendingPasswordReset extends Serialized {
         return System.currentTimeMillis() > this.expiresAtEpochMillis;
     }
 
-    /** @return this entity's primary key, {@link #emailAddress} */
+    /**
+     * @return this entity's primary key: the digest of {@link #emailAddress}, never the address
+     * itself - see {@link #keyOf(String)}
+     */
     @NotNull
     @Override
     public List<String> keysOf() {
-        return List.of(this.emailAddress);
+        return List.of(keyOf(this.emailAddress));
+    }
+
+    /**
+     * The primary key a pending password reset for {@code emailAddress} is stored under - its
+     * lowercase-hex SHA-256.
+     *
+     * <p>An entity's primary key lands in the row's {@code id} column verbatim, and that column
+     * is plain text: envelope encryption covers the payload, not the key. Keying on the address
+     * itself listed every account with a reset in flight in the clear, in the database and in
+     * every backup archive. The digest keeps the lookup a single O(1) point read - the caller
+     * supplies the address and the server hashes it - while the stored key says nothing.
+     *
+     * <p>Digests the address verbatim: no lower-casing and no trimming. {@link
+     * AuthService#requestPasswordReset} stores the address exactly as supplied and looks it up
+     * case-sensitively, so normalising here would silently change which rows match.
+     *
+     * @param emailAddress the address, exactly as the caller supplied it
+     * @return the primary key that address's pending reset is stored under
+     */
+    @NotNull
+    public static String keyOf(@NonNull final String emailAddress) {
+        return LookupKeyDigest.hexOf(emailAddress);
     }
 
 }

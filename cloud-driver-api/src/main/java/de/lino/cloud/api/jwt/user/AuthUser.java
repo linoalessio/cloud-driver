@@ -118,11 +118,30 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      */
     public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash,
                      final boolean isAdmin, final boolean suspended) {
+        this(id, emailAddress, passwordHash, isAdmin, suspended, 0);
+    }
+
+    /**
+     * Canonical constructor, carrying the session generation - used by {@link
+     * #withNextTokenVersion()} and by any caller reconstructing an existing account that must
+     * carry every flag forward rather than silently resetting one.
+     *
+     * @param id this account's id
+     * @param emailAddress this account's e-mail address
+     * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password
+     * @param isAdmin this account's admin flag
+     * @param suspended whether this account is currently suspended - see {@link #isSuspended()}
+     * @param tokenVersion this account's session generation - see {@link #getTokenVersion()}
+     * @throws NullPointerException if {@code id}/{@code emailAddress}/{@code passwordHash} is {@code null}
+     */
+    public AuthUser(@NotNull final String id, @NotNull final String emailAddress, @NotNull final String passwordHash,
+                     final boolean isAdmin, final boolean suspended, final int tokenVersion) {
         this.id = Objects.requireNonNull(id, "@AuthUser.init: id cannot be null");
         this.emailAddress = Objects.requireNonNull(emailAddress, "@AuthUser.init: username cannot be null");
         this.passwordHash = Objects.requireNonNull(passwordHash, "@AuthUser.init: passwordHash cannot be null");
         this.isAdmin = isAdmin;
         this.suspended = suspended;
+        this.tokenVersion = tokenVersion;
     }
 
     /**
@@ -137,6 +156,21 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      * login. {@code false} for rows written before this field existed.
      */
     private final boolean suspended;
+
+    /**
+     * How many times this account's sessions have been ended.
+     *
+     * <p>Bumped by every credential change (a password reset, an e-mail change), by a suspension
+     * and by an operator's forced sign-out, and embedded in every access token issued afterwards.
+     * An access token whose claim differs from this value is refused, so ending an account's
+     * sessions takes effect on the very next request rather than whenever the current access
+     * token happens to expire.
+     *
+     * <p>{@code 0} for rows written before this field existed, which is also where a freshly
+     * registered account starts - so a token already in a client's hands keeps working until it
+     * expires.
+     */
+    private final int tokenVersion;
 
     /**
      * @return {@code true} if this account is suspended and must be refused access
@@ -154,7 +188,7 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      */
     @NotNull
     public AuthUser withSuspended(final boolean suspended) {
-        return new AuthUser(this.id, this.emailAddress, this.passwordHash, this.isAdmin, suspended);
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, this.isAdmin, suspended, this.tokenVersion);
     }
 
     /**
@@ -168,7 +202,20 @@ public final class AuthUser extends Serialized implements SecondaryIndexed {
      */
     @NotNull
     public AuthUser withAdmin(final boolean isAdmin) {
-        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin, this.suspended);
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, isAdmin, this.suspended, this.tokenVersion);
+    }
+
+    /**
+     * Returns a copy of this account at the next session generation, so every access token issued
+     * so far stops validating - the same immutable convention {@link #withAdmin(boolean)}
+     * follows. The caller persists the returned copy via {@code DataFactory#update}.
+     *
+     * @return a copy of this account whose access tokens issued so far no longer validate
+     */
+    @NotNull
+    public AuthUser withNextTokenVersion() {
+        return new AuthUser(this.id, this.emailAddress, this.passwordHash, this.isAdmin, this.suspended,
+                this.tokenVersion + 1);
     }
 
     /** @return this entity's primary key, {@link #id} */

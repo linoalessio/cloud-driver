@@ -9,6 +9,7 @@ import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.utility.task.SchedulerTickGuard;
 import de.lino.cloud.auth.CloudUserService;
 import de.lino.cloud.auth.pending.PendingPresignedUpload;
 import de.lino.database.json.JsonDocument;
@@ -205,6 +206,8 @@ public final class PendingPresignedUploadPurgeScheduler {
      * elapsed. Calling this again while already running is a no-op - call {@link #stop()} first
      * to change the period.
      *
+     * <p>A tick that fails is logged and the schedule continues.
+     *
      * @param tickPeriod how often to sweep for abandoned tickets
      * @throws NullPointerException if {@code tickPeriod} is {@code null}
      */
@@ -215,7 +218,8 @@ public final class PendingPresignedUploadPurgeScheduler {
         }
         this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
-                this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
+                SchedulerTickGuard.guard("pending-presigned-upload-purge-scheduler", this::tick),
+                tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
         );
     }
 

@@ -1,6 +1,7 @@
 package de.lino.cloud.extensions.terminal;
 
 import de.lino.cloud.api.extension.Extension;
+import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.terminal.service.CommandService;
 import de.lino.cloud.extensions.terminal.command.*;
 import de.lino.cloud.extensions.terminal.command.system.*;
@@ -23,11 +24,22 @@ import java.util.logging.Level;
  * mail sender that delivers nothing, an unpublished facet - and every one of those failures is
  * otherwise silent. Several were written directly in response to real incidents on this
  * deployment; each command's own Javadoc names the one it answers.
+ *
+ * <p>Every registration is released again on stop, so this extension can be restarted: the names
+ * and aliases it claimed are freed, and a later start registers a fresh set rather than failing on
+ * the first duplicate.
  */
 public class CloudTerminalExtension extends Extension {
 
     /** The host terminal's service registry, resolved once at construction. */
     private final CommandService commandService = this.cloudDriver().getTerminal().getCommandService();
+
+    /**
+     * Every command instance this extension registered, held so {@link #onEnding()} can hand the
+     * exact same instances back to {@link CommandService#unregister(Command...)}. {@code null}
+     * until {@link #onRunning(String[])} has built them.
+     */
+    private Command[] registeredCommands;
 
     /** No-op. */
     @Override
@@ -43,7 +55,7 @@ public class CloudTerminalExtension extends Extension {
     @Override
     public void onRunning(String[] args) {
 
-        this.commandService.register(
+        final Command[] commands = {
                 new ExitCommand(), new HelpCommand(), new MoreCommand(), new ClearCommand()
                 , new ExtensionCommand(), new StatisticsCommand(), new LeaveCommand()
                 , new DispatchCommand(), new CloudUserCommand(), new HardResetCommand()
@@ -59,13 +71,29 @@ public class CloudTerminalExtension extends Extension {
                 , new RateLimitCommand(), new ConfigCommand(), new BackupCommand()
                 , new TrashCommand(), new FileCommand(), new SessionCommand()
                 , new ShareCommand(), new ReloadCommand()
-        );
+        };
+        // Recorded before registration, so a partially-completed register still releases whatever
+        // did get registered when onException runs.
+        this.registeredCommands = commands;
+        this.commandService.register(commands);
 
     }
 
-    /** No-op. */
+    /**
+     * Unregisters every command this extension registered, freeing each name and alias so a later
+     * start can register a fresh set. Without this the console keeps answering commands owned by a
+     * stopped extension, and the next start fails on the first duplicate name.
+     */
     @Override
     public void onEnding() {
+        this.releaseCommands();
+    }
+
+    /** Unregisters {@link #registeredCommands}, if any were ever registered; idempotent. */
+    private void releaseCommands() {
+        if (this.registeredCommands == null) return;
+        this.commandService.unregister(this.registeredCommands);
+        this.registeredCommands = null;
     }
 
     /**
@@ -76,6 +104,7 @@ public class CloudTerminalExtension extends Extension {
     @Override
     public void onException(RuntimeException reason) {
 
+        this.releaseCommands();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud terminal extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 

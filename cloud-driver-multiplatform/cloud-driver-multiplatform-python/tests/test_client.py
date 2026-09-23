@@ -602,3 +602,22 @@ def test_download_version_to_path_if_changed_hits_the_version_route(client: Clou
     assert result.not_modified is True
     assert (tmp_path / "v3.bin").exists() is False
     assert route.calls.last.request.headers["If-None-Match"] == '"v3"'
+
+
+@respx.mock
+def test_download_to_path_if_changed_writes_an_empty_body_over_a_stale_copy(
+    client: CloudDriverClient, tmp_path
+) -> None:
+    """A 200 with no bytes is still content: only a 304 may leave the destination alone."""
+    client._access_token = "token"
+    destination = tmp_path / "f.bin"
+    destination.write_bytes(b"the copy we used to have")
+    respx.get(f"{BASE_URL}/files/f1/content").mock(
+        return_value=httpx.Response(200, content=b"", headers={"ETag": '"empty"'})
+    )
+
+    result = client.files.download_to_path_if_changed("f1", destination, entity_tag='"abc"')
+
+    assert result.not_modified is False
+    assert result.path == destination
+    assert destination.read_bytes() == b""

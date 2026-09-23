@@ -2,6 +2,7 @@ package de.lino.cloud.extensions;
 
 import de.lino.cloud.api.CloudDriver;
 import de.lino.cloud.api.utility.UnitParser;
+import de.lino.cloud.api.utility.task.SchedulerTickGuard;
 import de.lino.database.database.DatabaseType;
 import de.lino.database.database.auth.Credentials;
 import de.lino.database.database.sql.SQLExecution;
@@ -182,7 +183,8 @@ public final class DatabaseBackupScheduler {
         this.lockWindow = period;
 
         this.scheduledFuture = this.scheduledExecutorService.scheduleAtFixedRate(
-                this::tick, 0L, period.toMillis(), TimeUnit.MILLISECONDS
+                SchedulerTickGuard.guard("postgres-backup-scheduler", this::tick),
+                0L, period.toMillis(), TimeUnit.MILLISECONDS
         );
 
     }
@@ -243,7 +245,7 @@ public final class DatabaseBackupScheduler {
         // Multi-instance: exactly one instance runs this tick per window - every instance runs
         // when no Redis is configured or Redis fails (see RedisSchedulerLock).
         if (!de.lino.cloud.plugin.redis.RedisSchedulerLock.tryAcquireProcessWide("database-backup", this.lockWindow)) {
-            CloudDriver.getInstance().getTerminal().displayApproved(
+            notifyOperator(
                     "Backup tick skipped - this window's backup was already taken (window: &b%s&7). Run '&bbackup now&7' to force one.",
                     this.lockWindow
             );
@@ -255,6 +257,26 @@ public final class DatabaseBackupScheduler {
     }
 
     /**
+     * Prints an operator notice if a {@link de.lino.cloud.api.terminal.Terminal} is published, and
+     * silently skips it otherwise - the first tick fires with no initial delay, so it can run
+     * before the terminal extension is up.
+     *
+     * @param message the notice, in the terminal's own colour-coded format
+     * @param arguments the format arguments
+     */
+    private static void notifyOperator(final String message, final Object... arguments) {
+        try {
+            final CloudDriver cloudDriver = CloudDriver.getInstance();
+            if (cloudDriver.getTerminal() == null) {
+                return;
+            }
+            cloudDriver.getTerminal().displayApproved(message, arguments);
+        } catch (final Throwable terminalUnavailable) {
+            // An operator notice must never be the reason a backup tick fails.
+        }
+    }
+
+    /**
      * Runs one backup cycle on the calling thread, without the distributed window lock: skips if
      * a previous cycle is still running, otherwise runs {@link #runBackupCycle()} and logs
      * (rather than propagates) any failure - this runs on the scheduler's own thread, and an
@@ -263,7 +285,7 @@ public final class DatabaseBackupScheduler {
     private void executeCycle() {
 
         if (!this.cycleRunning.compareAndSet(false, true)) {
-            CloudDriver.getInstance().getTerminal().displayApproved("Backup tick skipped since the there is a remaining cycle running");
+            notifyOperator("Backup tick skipped since the there is a remaining cycle running");
             return;
         }
 

@@ -313,12 +313,19 @@ public interface ICloudUserService {
      * malformed) checksum simply skips the precheck and behaves exactly like the checksum-less
      * overload.
      *
+     * <p>The declared size is reserved against the account's quota for as long as the ticket
+     * lives, alongside every other pending upload the account holds, and the reservation
+     * disappears with the ticket's own row when the upload completes, is aborted, or is aged out.
+     *
      * @param authUserId the uploading user's id
      * @param fileName the file's name
      * @param sizeBytes the plaintext size the client declares it will upload
      * @param checksumSha256Hex the content's SHA-256 (lowercase hex), or {@code null} to skip the dedup precheck
      * @param folderId the folder to place the file in, or {@code null} for the root
      * @return either the registered dedup alias, or the ticket to upload through - never both
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the declared size,
+     *     added to the declared sizes of the account's still-open pending uploads, exceeds its
+     *     upload limit
      */
     @NotNull
     de.lino.cloud.api.file.PresignedUploadBegin beginPresignedUpload(@NotNull String authUserId, @NotNull String fileName,
@@ -335,6 +342,11 @@ public interface ICloudUserService {
      * and can ask {@link #getResumableUploadStatus} after any interruption which parts the
      * store already holds - re-sending only the missing ones.
      *
+     * <p>An open session's declared size is reserved against the account's quota for as long as
+     * the session lives, counted alongside every other pending upload the account holds, and the
+     * reservation disappears with the session's own row when it completes, is aborted, or is aged
+     * out.
+     *
      * @param authUserId the uploading user's id
      * @param fileName the file's name
      * @param sizeBytes the plaintext size the client declares it will upload
@@ -343,6 +355,11 @@ public interface ICloudUserService {
      *     session, binding it to that one content for its whole lifetime
      * @param folderId the folder to place the file in, or {@code null} for the root
      * @return either the registered dedup alias, or the session ticket - never both
+     * @throws IllegalStateException if the account already holds the configured maximum number of
+     *     open upload sessions
+     * @throws de.lino.cloud.api.file.exception.UploadQuotaExceededException if the declared size,
+     *     added to the declared sizes of the account's still-open pending uploads, exceeds its
+     *     upload limit
      */
     @NotNull
     de.lino.cloud.api.file.ResumableUploadBegin beginResumableUpload(@NotNull String authUserId, @NotNull String fileName,
@@ -369,12 +386,18 @@ public interface ICloudUserService {
      * Presigns one part's upload URL for an open session - asked per part (or small batches) as
      * the client goes, rather than all up front. Only the session's own issuer may ask.
      *
+     * <p>The part number is bounded by the session's own part count, so a URL is only ever issued
+     * for a part the session can actually hold - a presigned part URL carries no signed content
+     * length, so one issued outside that range would accept bytes nothing accounts for.
+     *
      * @param authUserId the caller - must be the account the session was issued to
      * @param fileId the session's id
      * @param partNumber the 1-based part number, within the ticket's {@code partCount}
      * @return the presigned part upload
-     * @throws IllegalArgumentException if no such session exists, it isn't {@code authUserId}'s,
-     *     or {@code partNumber} is outside the session's part range
+     * @throws IllegalArgumentException if no such session exists, or it isn't {@code authUserId}'s
+     * @throws de.lino.cloud.api.file.exception.ResumableUploadPartRangeException if {@code
+     *     partNumber} is outside 1..{@code partCount} of the geometry the begin/status responses
+     *     report
      */
     @NotNull
     de.lino.cloud.api.s3storage.PresignedUpload presignResumableUploadPart(@NotNull String authUserId, @NotNull String fileId, int partNumber);

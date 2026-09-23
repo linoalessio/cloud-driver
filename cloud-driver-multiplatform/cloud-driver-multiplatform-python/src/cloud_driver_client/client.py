@@ -85,6 +85,10 @@ DEFAULT_TIMEOUT = 30.0
 TRANSFER_TIMEOUT = 600.0
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
+# The status a conditional content request gets when the caller's entity tag still matches - no
+# body follows, and the destination must be left exactly as it was.
+_NOT_MODIFIED_STATUS = 304
+
 # Sentinel distinguishing "folderId query param omitted" (list every owned file, GET /files'
 # pre-folders default) from `folder_id=None` (list only the root folder's own files, "?folderId=root").
 UNSCOPED = object()
@@ -111,10 +115,20 @@ class _LazyFileWriter:
         self._opened = False
 
     def write(self, chunk: bytes) -> None:
+        self.open_for_writing()
+        assert self._handle is not None
+        self._handle.write(chunk)
+
+    def open_for_writing(self) -> None:
+        """Creates (and truncates) the destination, even with no chunk to write.
+
+        Called explicitly on a real response whose body turned out to be empty - a zero-byte file
+        is still content, and leaving whatever was already at ``destination`` in place would report
+        a download that never happened while the caller went on reading a stale copy.
+        """
         if self._handle is None:
             self._handle = self._destination.open("wb")
             self._opened = True
-        self._handle.write(chunk)
 
     def close(self) -> None:
         if self._handle is not None:
@@ -256,7 +270,7 @@ class CloudDriverClient:
                     # raise_for_status can still extract the error message afterward.
                     resp.read()
                     return resp
-                if not_modified_ok and resp.status_code == 304:
+                if not_modified_ok and resp.status_code == _NOT_MODIFIED_STATUS:
                     # A 304 carries no body - returned before iter_bytes, so `on_chunk` is never
                     # called and nothing downstream opens or truncates a destination file.
                     return resp
@@ -295,10 +309,15 @@ class CloudDriverClient:
                 extra_headers=headers,
                 not_modified_ok=True,
             )
+            if resp.status_code != _NOT_MODIFIED_STATUS and not writer.opened:
+                # A real response whose body was empty: the file's content genuinely is zero bytes
+                # now, so the destination has to be created/truncated all the same. Only a 304 is
+                # allowed to leave it alone.
+                writer.open_for_writing()
         finally:
             writer.close()
         server_tag = resp.headers.get("ETag")
-        if resp.status_code == 304:
+        if resp.status_code == _NOT_MODIFIED_STATUS:
             return ConditionalDownload(not_modified=True, path=None, entity_tag=server_tag or entity_tag)
         return ConditionalDownload(not_modified=False, path=destination, entity_tag=server_tag)
 

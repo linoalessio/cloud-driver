@@ -191,6 +191,73 @@ public final class ResumableUploadSample {
                     !store.multipartParts.containsKey(foreign.fileId()));
             check("the purge sweep removed the abandoned session's row",
                     dataFactory.findById(foreign.fileId(), PendingPresignedUpload.class).isEmpty());
+
+            // --- a part number past the session's part count is rejected ---
+            final ResumableUploadTicket ranged = cloudUserService.beginResumableUpload(
+                    userId, "ranged.bin", content.length, sha256Hex(new byte[]{7, 7}), null).ticket();
+            int reportedPartCount = -1;
+            try {
+                cloudUserService.presignResumableUploadPart(userId, ranged.fileId(), ranged.partCount() + 1);
+            } catch (final de.lino.cloud.api.file.exception.ResumableUploadPartRangeException expected) {
+                reportedPartCount = expected.partCount();
+            }
+            check("a part number past the session's part count is rejected", reportedPartCount == ranged.partCount());
+            check("the session's real geometry is 3 parts", ranged.partCount() == 3);
+            boolean farPastRejected = false;
+            try {
+                cloudUserService.presignResumableUploadPart(userId, ranged.fileId(), 10_001);
+            } catch (final de.lino.cloud.api.file.exception.ResumableUploadPartRangeException expected) {
+                farPastRejected = true;
+            }
+            check("part 10,001 is rejected the same way", farPastRejected);
+            cloudUserService.abortResumableUpload(userId, ranged.fileId());
+
+            // --- an account may not hold more open sessions than the cap ---
+            final java.util.List<String> capped = new java.util.ArrayList<>();
+            boolean capReached = false;
+            for (int attempt = 0; attempt < 9; attempt++) {
+                try {
+                    capped.add(cloudUserService.beginResumableUpload(
+                            userId, "capped-" + attempt + ".bin", 1024,
+                            sha256Hex(new byte[]{(byte) 0x50, (byte) attempt}), null).ticket().fileId());
+                } catch (final IllegalStateException expected) {
+                    capReached = true;
+                    break;
+                }
+            }
+            check("an account may not hold more open sessions than the cap", capReached && capped.size() == 8);
+            cloudUserService.abortResumableUpload(userId, capped.remove(capped.size() - 1));
+            boolean beginsAfterAbort = false;
+            try {
+                capped.add(cloudUserService.beginResumableUpload(
+                        userId, "capped-again.bin", 1024, sha256Hex(new byte[]{(byte) 0x51}), null).ticket().fileId());
+                beginsAfterAbort = true;
+            } catch (final IllegalStateException unexpected) {
+                beginsAfterAbort = false;
+            }
+            check("aborting one session frees a slot for the next", beginsAfterAbort);
+            for (final String openSession : capped) {
+                cloudUserService.abortResumableUpload(userId, openSession);
+            }
+
+            // --- an open session's declared size is reserved against the quota ---
+            final de.lino.cloud.api.user.ICloudUser quotaUser = cloudUserService.getOrCreate(userId);
+            final long remainingBytes = quotaUser.getMaxBytesToUpload() - quotaUser.getCurrentUploadedBytes();
+            final String reservingFileId = cloudUserService.beginResumableUpload(
+                    userId, "reserving.bin", remainingBytes - 2, sha256Hex(new byte[]{(byte) 0x60}), null).ticket().fileId();
+            boolean reservationRefused = false;
+            try {
+                cloudUserService.beginResumableUpload(
+                        userId, "over-quota.bin", 2, sha256Hex(new byte[]{(byte) 0x61}), null);
+            } catch (final de.lino.cloud.api.file.exception.UploadQuotaExceededException expected) {
+                reservationRefused = true;
+            }
+            check("an open session's declared size is reserved against the quota", reservationRefused);
+            cloudUserService.abortResumableUpload(userId, reservingFileId);
+            final ResumableUploadTicket afterRelease = cloudUserService.beginResumableUpload(
+                    userId, "over-quota.bin", 2, sha256Hex(new byte[]{(byte) 0x61}), null).ticket();
+            check("aborting the reserving session releases its claim", afterRelease != null);
+            cloudUserService.abortResumableUpload(userId, afterRelease.fileId());
         } finally {
             deleteRecursivelyQuietly(sampleDirectory);
         }

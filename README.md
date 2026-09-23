@@ -562,10 +562,13 @@ flowchart LR
     TOKENS --> APIUSE["Authenticated REST requests"]
     APIUSE -->|access token expires| REFRESH["POST /auth/refresh"]
     REFRESH -->|rotates: old refresh token invalidated| TOKENS
+    CHANGE["Password reset /<br/>e-mail change"] -->|ends every session| TOKENS
 ```
 
-- **Access tokens** are HMAC-SHA256 JWTs with a 12-hour lifetime; the bearer filter also verifies
-  the account still exists, so a deleted account's leftover token is rejected.
+- **Access tokens** are HMAC-SHA256 JWTs with a 12-hour lifetime; the bearer filter verifies that
+  the account still exists *and* that the token's session generation still matches the account's,
+  so a deleted account's leftover token is rejected — and so is every token issued before a
+  credential change or a forced sign-out, from that account's very next request on.
 - **Refresh tokens** are opaque, single-use, and rotate on every use; logout revokes them
   server-side.
 - **Passwords** are Argon2id-hashed and format-validated at registration; login never

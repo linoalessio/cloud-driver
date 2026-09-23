@@ -190,6 +190,9 @@ secrets (JWT signing key, SMTP password if SMTP is used).
 | `aws-s3-max-concurrency` | `50` | `S3ObjectStorageService` — concurrent-connection cap of the shared async S3 client. With several instances against one bucket, size it per instance, not per process |
 | `presigned-upload-ticket-retention-hours` | `6` | `PendingPresignedUploadPurgeScheduler` — how long an unfinished **single-`PUT` presigned ticket** survives before it is dropped and its orphaned object deleted. Comfortably longer than the presigned URL's own 15-minute expiry. S3 deployments only |
 | `resumable-upload-session-retention-hours` | `72` | `PendingPresignedUploadPurgeScheduler` — how long an idle resumable multipart **session** survives, measured from its last activity rather than its creation, before the row is aged out and its multipart upload aborted (S3 bills for uploaded parts until then). Deliberately a separate, longer window than `presigned-upload-ticket-retention-hours`: a session can legitimately span days of a large file moving over a slow link. S3 deployments only |
+| `resumable-upload-max-open-sessions-per-account` | `8` | `CloudUserService` — how many resumable upload sessions one account may hold open at once; each open session also reserves its declared size against that account's upload quota until it completes, is aborted or is aged out. Floored at `1`, so a `0` cannot disable the cap |
+| `upload-session-rate-limit-max-requests` | `1200` | `DefaultRestFactory` — per-identity budget for the `/files/upload-session…` routes, in its own bucket so it neither consumes nor is consumed by the general read budget |
+| `upload-session-rate-limit-window-seconds` | `60` | `DefaultRestFactory` — window for the upload-session budget |
 | `webhook-dispatch-pool-size` | `4` | `DefaultWebhookService` — first-attempt delivery concurrency; queue depth is observable as the `cloud_driver_webhook_dispatch_queue_depth` gauge |
 | `intelligence-shared-secret` | **no default** — `cloud-driver-extensions-intelligence` refuses to load without it | The semantic-search bridge (secret) |
 | `intelligence-host` | `127.0.0.1` | same |
@@ -470,7 +473,11 @@ dedicated bucket is a cron line outside the JVM — see [deployment.md](deployme
   `https://` URLs).
 - **`trust-proxy-headers`** (see §3.2) must stay `false` unless that reverse proxy is the *only*
   way to reach the app — enabling it without a genuinely trusted single hop lets a client spoof its
-  own rate-limit identity via `X-Forwarded-For`.
+  own rate-limit identity via `X-Forwarded-For`. The converse matters just as much, so `false` is
+  not "always safest": on the reference shape (loopback bind, the proxy the only way in) both keys
+  **must** be set, or the auth limiter degenerates into one window shared by every client on the
+  internet and a single caller can hold everybody at `429`. `trusted-proxy-addresses` is the key
+  that expresses it precisely — its row in §3.2 describes the precedence.
 - **AWS credentials, SMTP password (if used), JWT signing key, and Postgres password** are all real
   secrets — none of `cloud-driver/*.json` is ever committed to git (`.gitignore` excludes the whole
   `cloud-driver/` directory by individual filename).

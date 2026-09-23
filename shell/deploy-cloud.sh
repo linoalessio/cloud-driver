@@ -35,6 +35,14 @@
 #      restored afterwards (scp does not reliably preserve it) - previously had to be scp'd by
 #      hand; a process already running under an older copy of it is untouched (see the restart
 #      note above) but will run the new copy on its next manual restart
+#   5. after every upload has verified, the previous release's jars are pruned from $REMOTE_DIR
+#      and $REMOTE_EXTENSIONS_DIR - last, deliberately, so a failed run never leaves the host
+#      with neither release
+#
+# Refuses to touch the remote at all when the local build output is ambiguous: the bootstrap jar
+# is resolved from cloud-driver-bootstrap/target rather than trusted from a literal below, every
+# extension jar's name must carry that bootstrap jar's version, and two jars for the same module
+# in the upload set are an error (the server refuses to start with both).
 #
 # Lives in the repo's top-level "shell" folder, one level up from the cloud-driver-bootstrap
 # module itself - jars are looked up relative to this script's own location, not the caller's cwd.
@@ -51,8 +59,10 @@ REMOTE_EXTENSIONS_DIR="$REMOTE_DIR/extensions"
 REMOTE_CONFIG_DIR="$REMOTE_DIR/cloud-driver"
 MAX_PARALLEL=6
 
+# The name the release script rewrites. Only the *expected* name: the jar actually deployed is
+# resolved from the build output below, so a lost rewrite cannot make this script delete a live
+# remote jar it then fails to replace.
 BOOTSTRAP_JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
-LOCAL_BOOTSTRAP_JAR="$REPO_ROOT/cloud-driver-bootstrap/target/$BOOTSTRAP_JAR_NAME"
 LOCAL_CONFIGURATION_JSON="$REPO_ROOT/cloud-driver/configuration.json"
 LOCAL_START_SCRIPT="$SCRIPT_DIR/start-cloud.sh"
 
@@ -118,42 +128,70 @@ deploy_file() {
 }
 
 shopt -s nullglob
-extension_jars=("$REPO_ROOT"/cloud-driver-extensions/*/target/*.jar)
-shopt -u nullglob
-if [ ${#extension_jars[@]} -eq 0 ]; then
-    echo "deploy-cloud.sh: no extension jars found under cloud-driver-extensions/*/target - build them first (see this script's own header comment)" >&2
-    exit 1
-fi
-
-echo "deploy-cloud.sh: ensuring remote directories exist"
-if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR' '$REMOTE_EXTENSIONS_DIR' '$REMOTE_CONFIG_DIR'"; then
-    echo "deploy-cloud.sh: failed to create remote directories on $REMOTE_HOST" >&2
-    exit 1
-fi
-
-# Prune first. The extensions folder is additive and every jar in it carries a version-suffixed
-# name, so a release bump leaves the previous release's jars beside the new ones - and the
-# bootstrap registers every jar it finds, refusing to start when two claim the same extension
-# name. The documented deploy sequence therefore produced a server that could not boot, with no
-# step anywhere telling the operator to delete anything. Nothing outside these two name patterns
-# is ever touched: config files and the runtime directory stay exactly as they are.
-keep_names=()
-for jar in "$LOCAL_BOOTSTRAP_JAR" "${extension_jars[@]}"; do
-    keep_names+=("$(basename "$jar")")
+bootstrap_candidates=()
+for candidate in "$REPO_ROOT"/cloud-driver-bootstrap/target/cloud-driver-bootstrap-*.jar; do
+    candidate_name="$(basename "$candidate")"
+    case "$candidate_name" in
+        original-*) continue ;;
+    esac
+    bootstrap_candidates+=("$candidate")
 done
-keep_list="$(printf '%s\n' "${keep_names[@]}")"
-echo "deploy-cloud.sh: pruning jars from previous releases"
-if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "
-    keep=\"\$(cat)\"
-    for existing in '$REMOTE_DIR'/cloud-driver-bootstrap-*.jar '$REMOTE_EXTENSIONS_DIR'/*.jar; do
-        [ -e \"\$existing\" ] || continue
-        if ! printf '%s\n' \"\$keep\" | grep -qxF \"\$(basename \"\$existing\")\"; then
-            echo \"deploy-cloud.sh: removing stale \$existing\"
-            rm -f \"\$existing\"
+all_extension_jars=("$REPO_ROOT"/cloud-driver-extensions/*/target/*.jar)
+shopt -u nullglob
+
+if [ ${#bootstrap_candidates[@]} -eq 0 ]; then
+    echo "deploy-cloud.sh: no bootstrap jar in cloud-driver-bootstrap/target - run 'mvn clean install'" >&2
+    exit 1
+fi
+if [ ${#bootstrap_candidates[@]} -gt 1 ]; then
+    echo "deploy-cloud.sh: more than one bootstrap jar in cloud-driver-bootstrap/target - run 'mvn clean install':" >&2
+    for candidate in "${bootstrap_candidates[@]}"; do
+        echo "  - $candidate" >&2
+    done
+    exit 1
+fi
+LOCAL_BOOTSTRAP_JAR="${bootstrap_candidates[0]}"
+resolved_bootstrap_name="$(basename "$LOCAL_BOOTSTRAP_JAR")"
+if [ "$resolved_bootstrap_name" != "$BOOTSTRAP_JAR_NAME" ]; then
+    echo "deploy-cloud.sh: deploying the built jar '$resolved_bootstrap_name' - this script still names '$BOOTSTRAP_JAR_NAME'" >&2
+fi
+BOOTSTRAP_VERSION="${resolved_bootstrap_name#cloud-driver-bootstrap-}"
+BOOTSTRAP_VERSION="${BOOTSTRAP_VERSION%.jar}"
+
+# Only real, current-build extension jars reach the upload set. Both shapes below actually occur:
+# a `mvn package` without `clean` after a version bump leaves two versions in one target/, and a
+# Finder/rsync copy leaves a "... 2.jar". Uploading both would leave two jars declaring one
+# extension name, which the server refuses to start with - and the remote prune cannot help,
+# because both names would be in its keep-list.
+extension_jars=()
+seen_module_stems=()
+for jar in ${all_extension_jars[@]+"${all_extension_jars[@]}"}; do
+    name="$(basename "$jar")"
+    case "$name" in
+        original-*|*-sources.jar|*-javadoc.jar) continue ;;
+    esac
+    if [[ "$name" != cloud-driver-extensions-*-"$BOOTSTRAP_VERSION".jar ]]; then
+        echo "deploy-cloud.sh: $name does not carry the bootstrap version $BOOTSTRAP_VERSION - run 'mvn clean install'; jars from two builds crash the process at startup" >&2
+        exit 1
+    fi
+    stem="${name%-$BOOTSTRAP_VERSION.jar}"
+    for seen in ${seen_module_stems[@]+"${seen_module_stems[@]}"}; do
+        if [ "$seen" = "$stem" ]; then
+            echo "deploy-cloud.sh: two jars for the same module in the upload set - the server refuses to start with both; 'mvn clean install' clears the stale one:" >&2
+            for other in ${extension_jars[@]+"${extension_jars[@]}"} "$jar"; do
+                case "$(basename "$other")" in
+                    "$stem"-*) echo "  - $other" >&2 ;;
+                esac
+            done
+            exit 1
         fi
     done
-" <<< "$keep_list"; then
-    echo "deploy-cloud.sh: failed to prune stale jars on $REMOTE_HOST" >&2
+    seen_module_stems+=("$stem")
+    extension_jars+=("$jar")
+done
+
+if [ ${#extension_jars[@]} -eq 0 ]; then
+    echo "deploy-cloud.sh: no extension jars found under cloud-driver-extensions/*/target - build them first (see this script's own header comment)" >&2
     exit 1
 fi
 
@@ -163,6 +201,21 @@ for _ in "${extension_jars[@]}"; do
     targets_dirs+=("$REMOTE_EXTENSIONS_DIR")
 done
 targets_dirs+=("$REMOTE_CONFIG_DIR" "$REMOTE_DIR")
+
+# Every local file is checked before the first remote mutation, so a rejected run leaves the
+# server exactly as it was rather than half-pruned.
+for target in "${targets_files[@]}"; do
+    if [ ! -f "$target" ]; then
+        echo "deploy-cloud.sh: $target does not exist - nothing was changed on $REMOTE_HOST" >&2
+        exit 1
+    fi
+done
+
+echo "deploy-cloud.sh: ensuring remote directories exist"
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR' '$REMOTE_EXTENSIONS_DIR' '$REMOTE_CONFIG_DIR'"; then
+    echo "deploy-cloud.sh: failed to create remote directories on $REMOTE_HOST" >&2
+    exit 1
+fi
 
 echo "deploy-cloud.sh: deploying ${#targets_files[@]} files (bootstrap, ${#extension_jars[@]} extension jar(s), configuration.json, start-cloud.sh), up to $MAX_PARALLEL at once"
 
@@ -187,6 +240,33 @@ if compgen -G "$FAILURE_MARKER_DIR/*.failed" > /dev/null; then
     for f in "$FAILURE_MARKER_DIR"/*.failed; do
         echo "  - $(basename "$f" .failed)" >&2
     done
+    exit 1
+fi
+
+# Pruned last, on purpose. The extensions folder is additive and every jar in it carries a
+# version-suffixed name, so a release bump leaves the previous release's jars beside the new ones
+# - and the bootstrap registers every jar it finds, refusing to start when two claim the same
+# extension name. So the previous release must go; but it must go only once its replacement is on
+# disk and checksum-verified, or a failed run leaves the host with neither release. Nothing
+# outside these two name patterns is ever touched: config files and the runtime directory stay
+# exactly as they are.
+keep_names=()
+for jar in "$LOCAL_BOOTSTRAP_JAR" "${extension_jars[@]}"; do
+    keep_names+=("$(basename "$jar")")
+done
+keep_list="$(printf '%s\n' "${keep_names[@]}")"
+echo "deploy-cloud.sh: pruning jars from previous releases"
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "
+    keep=\"\$(cat)\"
+    for existing in '$REMOTE_DIR'/cloud-driver-bootstrap-*.jar '$REMOTE_EXTENSIONS_DIR'/*.jar; do
+        [ -e \"\$existing\" ] || continue
+        if ! printf '%s\n' \"\$keep\" | grep -qxF \"\$(basename \"\$existing\")\"; then
+            echo \"deploy-cloud.sh: removing stale \$existing\"
+            rm -f \"\$existing\"
+        fi
+    done
+" <<< "$keep_list"; then
+    echo "deploy-cloud.sh: failed to prune stale jars on $REMOTE_HOST" >&2
     exit 1
 fi
 

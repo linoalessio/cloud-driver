@@ -406,6 +406,20 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final int DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_MAX_REQUESTS = 30;
     /** Default public-download rate-limit window, in seconds. */
     private static final long DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS = 60L;
+    /** {@code configuration.json} key for {@link #resolveUploadSessionRateLimitMaxRequests}. */
+    private static final String UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY = "upload-session-rate-limit-max-requests";
+    /** {@code configuration.json} key for {@link #resolveUploadSessionRateLimitWindowSeconds}. */
+    private static final String UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY = "upload-session-rate-limit-window-seconds";
+    /**
+     * Default request cap for the resumable upload-session routes, per {@link
+     * #DEFAULT_UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS}-second window. Sized for a real
+     * part-by-part upload rather than for a read burst: at the 8 MiB part size this allows roughly
+     * 9 GiB of parts per minute per identity, above any realistic single-account link, while
+     * holding a bare presign loop to about twenty requests a second.
+     */
+    private static final int DEFAULT_UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS = 1200;
+    /** Default upload-session rate-limit window, in seconds. */
+    private static final long DEFAULT_UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60L;
     /** How often {@link #requireWithinApiRateLimit} opportunistically sweeps {@link #apiRateLimitBuckets} - same reasoning/value as {@link #AUTH_RATE_LIMIT_SWEEP_INTERVAL_MILLIS}. */
     private static final long API_RATE_LIMIT_SWEEP_INTERVAL_MILLIS = Duration.ofMinutes(10).toMillis();
     /**
@@ -420,6 +434,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
     private static final String API_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:api-read:";
     /** Redis key prefix the anonymous public-download counters live under - kept apart from the {@code READ}-class prefix so the two budgets can never share a counter. */
     private static final String PUBLIC_DOWNLOAD_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:public-download:";
+    /** Redis key prefix the resumable upload-session counters live under - its own space, so session traffic and ordinary reads never consume each other's budget. */
+    private static final String UPLOAD_SESSION_RATE_LIMIT_REDIS_KEY_PREFIX = "cloud-driver:ratelimit:upload-session:";
     /** {@link #incrementRedisWindow}'s return value meaning "Redis is unavailable or the command failed - fall back to the in-process bucket". */
     private static final long REDIS_WINDOW_UNAVAILABLE = -1L;
     /** Path prefix every admin-only route is mounted under - checked by {@link #requireAdmin}. */
@@ -1207,23 +1223,17 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * Owned}-scoping checks in {@link #bindRegister}/{@link #bindFetch}/
      * {@link #bindUpdate}/{@link #bindDelete} to read.
      *
-     * <p><b>Fixed a real bug (2026-09-08):</b> {@link AuthService#validate} only checks a JWT's
-     * signature and expiry - it never looks the embedded id back up against the database, since a
-     * JWT is deliberately stateless. That meant a still-unexpired access token (issued with a 12h
-     * lifetime) kept working for the rest of that window even after its underlying {@link
-     * de.lino.cloud.api.jwt.user.AuthUser} account was gone (a hard reset, an admin/operator
-     * delete, or simply the account never really existing on this deployment) - concretely, a
-     * desktop/mobile client with a still-persisted session (see {@code SessionManager#tryRestoreSession})
-     * would silently "log in" to a deleted account on relaunch, since its one lightweight probe
-     * call only needed a token {@link AuthService#validate} still accepted, not a real account
-     * behind it. This filter now also resolves the validated id via {@link
-     * AuthService#getAuthUser}, the same cheap, per-id-cached lookup {@link #requireAdmin} already
-     * performs off this same attribute - a miss is treated identically to an invalid/expired
-     * token (same message, same {@code 401}), so a client's existing "log out on 401" handling
-     * (already required to react to a rotated/invalidated refresh token) closes this gap with no
-     * client-side change needed.
+     * <p>A token is more than a signature here. {@link AuthService#validate} itself refuses a
+     * token whose account is gone, and one whose session generation has moved on since it was
+     * signed - so a password reset, an e-mail change, a suspension or an operator's forced
+     * sign-out invalidates every access token already issued, on its very next request rather
+     * than whenever its 12h lifetime happens to run out. This filter then adds one check of its
+     * own: a suspended account is refused with its own distinct message, which is a documented
+     * client contract and deliberately not folded into the generic rejection.
      *
-     * @throws UnauthorizedResponse if no token is present, it is malformed/invalid/expired, or its account no longer exists
+     * @throws UnauthorizedResponse if no token is present, it is malformed/invalid/expired, its
+     *     account no longer exists, its account's sessions have been ended since it was signed, or
+     *     its account is suspended
      */
     private void requireValidBearerToken(@NotNull final Context ctx) {
         if (LOGIN_PATH.equals(ctx.path()) || REGISTER_PATH.equals(ctx.path()) || REGISTER_CONFIRM_PATH.equals(ctx.path())
@@ -1420,6 +1430,16 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * gone), that account's own upload byte quota ({@code ICloudUser#isUploadLimitReached}), and
      * (for a file write) the content-scan pipeline.
      *
+     * <p>The resumable upload-session routes ({@link #FILES_UPLOAD_SESSION_PATH} and everything
+     * under it - begin, status, part URL, complete, abort) form a third class, with their own
+     * configured budget and their own key space. They are neither low-volume nor rare: a part URL
+     * is asked for per part, and each such request costs the server a data-key wrap and a row
+     * write, so leaving them unmetered lets one cheap authenticated request buy both without any
+     * cap. They are kept out of the {@code READ} budget in both directions, so an upload in
+     * progress never starves a file listing and a busy browser never throttles an upload. The
+     * single-{@code PUT} route ({@link #FILES_UPLOAD_URL_PATH}) is a different path and is not
+     * captured by the prefix.
+     *
      * <p>Applies the {@code READ}-class configured fixed-window cap to everything else - same
      * "fixed window, not a sliding one/token bucket, for simplicity" trade-off {@link
      * AuthRateLimitBucket}'s own Javadoc already documents (allows a burst of up to 2x the
@@ -1427,7 +1447,8 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * not a hard security perimeter" reasoning).
      *
      * @throws TooManyRequestsResponse if this identity has exceeded the configured cap of its
-     *     class ({@code READ}, or public download) within that class's current window
+     *     class ({@code READ}, upload session, or public download) within that class's current
+     *     window
      */
     private void requireWithinApiRateLimit(@NotNull final Context ctx) {
         if (ctx.path().startsWith(AUTH_PATH_PREFIX)) {
@@ -1435,26 +1456,37 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
         }
         final boolean publicDownload = ctx.path().startsWith(PUBLIC_PATH_PREFIX);
         final boolean lowVolumeWrite = isLowVolumeWrite(ctx);
-        if (!publicDownload && !lowVolumeWrite
+        // Evaluated before the generic non-GET early return: the session routes are mostly POSTs,
+        // so classifying them afterwards would leave them unmetered exactly as before.
+        final boolean uploadSession = ctx.path().startsWith(FILES_UPLOAD_SESSION_PATH);
+        if (!publicDownload && !lowVolumeWrite && !uploadSession
                 && ctx.method() != HandlerType.GET && ctx.method() != HandlerType.HEAD) {
             return;
         }
         if (ctx.path().startsWith(FILES_PATH + "/") && ctx.path().endsWith(THUMBNAIL_PATH_SUFFIX)) {
             return;
         }
-        final long windowSeconds = publicDownload
-                ? resolvePublicDownloadRateLimitWindowSeconds() : resolveApiRateLimitReadWindowSeconds();
+        final long windowSeconds = uploadSession
+                ? resolveUploadSessionRateLimitWindowSeconds()
+                : publicDownload
+                        ? resolvePublicDownloadRateLimitWindowSeconds() : resolveApiRateLimitReadWindowSeconds();
         final long windowMillis = windowSeconds * 1000L;
-        final int maxRequests = publicDownload
-                ? resolvePublicDownloadRateLimitMaxRequests() : resolveApiRateLimitReadMaxRequests();
+        final int maxRequests = uploadSession
+                ? resolveUploadSessionRateLimitMaxRequests()
+                : publicDownload
+                        ? resolvePublicDownloadRateLimitMaxRequests() : resolveApiRateLimitReadMaxRequests();
         // The public prefix is the only surface with no account behind it, so it is keyed on the
         // client address *and* the token: one shared link cannot then exhaust the allowance of
         // every other link, and one client cannot exhaust a popular link's for everyone else.
-        final String bucketKey = publicDownload
-                ? "public:" + resolveRateLimitKey(ctx) + ":" + ctx.path()
-                : resolveApiRateLimitIdentity(ctx);
-        final String redisKeyPrefix = publicDownload
-                ? PUBLIC_DOWNLOAD_RATE_LIMIT_REDIS_KEY_PREFIX : API_RATE_LIMIT_REDIS_KEY_PREFIX;
+        final String bucketKey = uploadSession
+                ? "session:" + resolveApiRateLimitIdentity(ctx)
+                : publicDownload
+                        ? "public:" + resolveRateLimitKey(ctx) + ":" + ctx.path()
+                        : resolveApiRateLimitIdentity(ctx);
+        final String redisKeyPrefix = uploadSession
+                ? UPLOAD_SESSION_RATE_LIMIT_REDIS_KEY_PREFIX
+                : publicDownload
+                        ? PUBLIC_DOWNLOAD_RATE_LIMIT_REDIS_KEY_PREFIX : API_RATE_LIMIT_REDIS_KEY_PREFIX;
 
         final long redisCount = incrementRedisWindow(redisKeyPrefix + bucketKey, windowSeconds);
         if (redisCount != REDIS_WINDOW_UNAVAILABLE) {
@@ -1476,10 +1508,10 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 throw new TooManyRequestsResponse("Too many requests - try again later");
             }
         }
-        // Both classes share one bucket map, so the sweep must age entries out on the longer of
-        // the two windows - sweeping on the shorter one would evict the other class's live buckets.
-        maybeSweepApiRateLimitBuckets(Math.max(
-                resolveApiRateLimitReadWindowSeconds(), resolvePublicDownloadRateLimitWindowSeconds()) * 1000L);
+        // All three classes share one bucket map, so the sweep must age entries out on the longest
+        // of the windows - sweeping on a shorter one would evict a wider class's live buckets.
+        maybeSweepApiRateLimitBuckets(Math.max(resolveUploadSessionRateLimitWindowSeconds(), Math.max(
+                resolveApiRateLimitReadWindowSeconds(), resolvePublicDownloadRateLimitWindowSeconds())) * 1000L);
     }
 
     /**
@@ -1604,6 +1636,22 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
                 : DEFAULT_PUBLIC_DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS;
     }
 
+    /** Reads {@link #UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY}, defaulting to {@link #DEFAULT_UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS} if unset. */
+    private static int resolveUploadSessionRateLimitMaxRequests() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                ? configuration.getInteger(UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS_CONFIG_KEY)
+                : DEFAULT_UPLOAD_SESSION_RATE_LIMIT_MAX_REQUESTS;
+    }
+
+    /** Reads {@link #UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY}, defaulting to {@link #DEFAULT_UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS} if unset. */
+    private static long resolveUploadSessionRateLimitWindowSeconds() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                ? configuration.getLong(UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS_CONFIG_KEY)
+                : DEFAULT_UPLOAD_SESSION_RATE_LIMIT_WINDOW_SECONDS;
+    }
+
     /**
      * Resolves the address the rate limiters key their per-client bucket on.
      *
@@ -1722,6 +1770,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@code authUserId} (stashed on the {@link WsContext} itself under {@link
      * #USER_ID_ATTRIBUTE}, mirroring {@link #requireValidBearerToken}'s own HTTP-side
      * convention), and untracked again in {@code onClose} regardless of why the connection ended.
+     *
+     * <p>The handshake inherits the same account and session-generation checks the HTTP filter
+     * gets, because both go through {@link AuthService#validate}. So a credential change both
+     * closes the account's open sockets and refuses the reconnect, instead of closing a socket a
+     * still-valid access token could immediately re-open.
      *
      * @param ws the Javalin WebSocket handler registry for {@link #LIVE_UPDATES_PATH}
      */
@@ -2199,21 +2252,34 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * is <b>not</b> exempted from {@link #requireValidBearerToken} - it changes an already
      * authenticated account's own address, identified from the caller's own bearer token (via
      * {@link #requireUserId}), not from anything in the request body. Reads {@code {"newEmail":
-     * ...}} and starts the change via {@link AuthService#requestEmailChange} - which e-mails a
-     * verification code to {@code newEmail} rather than applying the change outright. Does
-     * <b>not</b> return a JWT; the caller must follow up with {@link #handleConfirmEmailChange}
-     * once it has the code. Dispatched off the Jetty worker thread since this runs a live MX
-     * lookup/database I/O/an e-mail send. {@code 202 Accepted} on success.
+     * ..., "currentPassword": ...}} and starts the change via {@link
+     * AuthService#requestEmailChange} - which e-mails a verification code to {@code newEmail}
+     * rather than applying the change outright, and a notice to the address the account is
+     * leaving. Does <b>not</b> return a JWT; the caller must follow up with {@link
+     * #handleConfirmEmailChange} once it has the code. Dispatched off the Jetty worker thread
+     * since this runs a live MX lookup/database I/O/an e-mail send. {@code 202 Accepted} on
+     * success.
+     *
+     * <p>The caller's current password is re-verified server-side before anything is persisted or
+     * e-mailed: a bearer token alone must never be able to move an account to an address its
+     * holder controls. A missing or blank field and a wrong password both answer {@code 400} -
+     * deliberately not {@code 401}, which every client treats as "log in again" and would turn a
+     * mistyped password into a silent sign-out. Both field checks run on the Jetty thread, before
+     * the task is dispatched: neither does any I/O, and a deliberate {@code 400} raised inside the
+     * async body would otherwise travel through {@link #registrationFailureOrPropagate}.
      */
     private void handleRequestEmailChange(@NotNull final Context ctx) {
         final String userId = requireUserId(ctx);
         final ChangeEmailRequest request = this.gson.fromJson(ctx.body(), ChangeEmailRequest.class);
+        if (request == null || request.newEmail() == null || request.newEmail().isBlank()) {
+            throw new BadRequestResponse("newEmail is required");
+        }
+        if (request.currentPassword() == null || request.currentPassword().isBlank()) {
+            throw new BadRequestResponse("currentPassword is required");
+        }
         ctx.future(() -> MultiTaskingFactory.getInstance()
                 .runAsync(() -> {
                     try {
-                        if (request.currentPassword() == null || request.currentPassword().isBlank()) {
-                            throw new BadRequestResponse("currentPassword is required");
-                        }
                         this.authService.requestEmailChange(userId, request.newEmail(), request.currentPassword().toCharArray());
                     } catch (final DatabaseClientException | KeyWrapException e) {
                         throw new RuntimeException(
@@ -2242,11 +2308,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@code POST /auth/change-email/confirm}: bearer-gated like {@link #handleRequestEmailChange}
      * - the account being changed is the caller's own, from {@link #requireUserId}, not the
      * request body. Reads {@code {"code": ...}} and completes the change via {@link
-     * AuthService#confirmEmailChange} - replacing the account's e-mail address. No fresh JWT is
-     * returned (unlike {@link #handleConfirmRegistration}/{@link #handleConfirmPasswordReset}): a
-     * token's subject is the account's id, never its e-mail address, so the caller's existing
-     * token remains valid across this change. Dispatched off the Jetty worker thread since this
-     * runs database I/O. {@code 200 OK} on success.
+     * AuthService#confirmEmailChange} - replacing the account's e-mail address. Confirming ends
+     * every session: every refresh token is revoked and every access token already issued is
+     * refused from the caller's next request on, so the client's next {@code /auth/refresh}
+     * answers {@code 401} and it must sign in again with the new address. No fresh JWT is
+     * returned (unlike {@link #handleConfirmRegistration}/{@link #handleConfirmPasswordReset}),
+     * and the response shape is unchanged - {@code 200} plus a {@link MessageResponse}.
+     * Dispatched off the Jetty worker thread since this runs database I/O.
      */
     private void handleConfirmEmailChange(@NotNull final Context ctx) {
         final String userId = requireUserId(ctx);
@@ -2769,6 +2837,11 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * checksumSha256} echoing the digest the session is bound to) - part URLs are
      * fetched one at a time via the part-url route as the upload proceeds. {@code 503} when
      * resumable sessions aren't configured on this deployment.
+     *
+     * <p>{@code 409} when the account already holds the maximum number of open sessions (see
+     * {@code resumable-upload-max-open-sessions-per-account}); {@code 413} when the declared size,
+     * added to everything the account's still-open pending uploads have already reserved, exceeds
+     * its quota.
      */
     private void handleBeginResumableUpload(@NotNull final Context ctx) {
         final BeginUploadRequest request = this.gson.fromJson(ctx.body(), BeginUploadRequest.class);
@@ -2825,6 +2898,12 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * {@code POST /files/upload-session/{id}/parts/{partNumber}/url} - presigns one part's
      * upload URL: {@code {"partNumber", "url", "requiredHeaders", "expiresAtEpochMilli"}}. The
      * client {@code PUT}s that part's byte range of its object stream there directly.
+     *
+     * <p>{@code 400} for a part number outside the session's own part count (re-read the session
+     * rather than restarting the upload - it is still open); {@code 404} for an unknown or
+     * foreign session; {@code 429} when the upload-session request budget is exhausted, which
+     * loses nothing - the session and every part already uploaded survive, so poll the status and
+     * continue.
      */
     private void handlePresignResumableUploadPart(@NotNull final Context ctx) {
         final String id = ctx.pathParam("id");
@@ -5001,6 +5080,13 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      */
     private static RuntimeException notFoundOrPropagate(final Throwable failure, final Class<?> type, final String id) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        // Ahead of the IllegalArgumentException branch it subclasses. The session's existence and
+        // ownership are already confirmed before that range check runs, so answering 400 here
+        // confirms nothing the caller did not already know - and a client whose geometry has
+        // drifted must re-read the session rather than treat it as gone and restart the upload.
+        if (cause instanceof de.lino.cloud.api.file.exception.ResumableUploadPartRangeException partRange) {
+            return new BadRequestResponse(partRange.getMessage());
+        }
         if (cause instanceof DatabaseClientException || cause instanceof IllegalArgumentException) {
             return new NotFoundResponse("No " + type.getSimpleName() + " with id " + id);
         }
@@ -5136,9 +5222,17 @@ public final class DefaultRestFactory extends RestFactory implements LiveUpdateP
      * EmailAlreadyRegisteredException} (it has no code to check and never rejects on existing
      * state) - it shares this helper purely to get the same unmapped-failure logging/500 fallback
      * as every other auth handler, not because those two branches are reachable from it.
+     *
+     * <p>A deliberate {@link HttpResponseException} thrown inside an auth handler's async body is
+     * passed through untouched rather than treated as an unmapped failure: it already carries the
+     * status and message the client is meant to see, so logging it as a server error and printing
+     * a stack trace for it is pure noise on a console that keeps no scrollback.
      */
     private static RuntimeException registrationFailureOrPropagate(final Throwable failure) {
         final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+        if (cause instanceof HttpResponseException httpResponse) {
+            return httpResponse;
+        }
         if (cause instanceof EmailAlreadyRegisteredException emailAlreadyRegistered) {
             return new ConflictResponse(emailAlreadyRegistered.getMessage());
         }

@@ -115,20 +115,29 @@ public class CloudSearchExtension extends Extension {
     /** Nothing to shut down - the Postgres index runs over the database provider's own shared pool, which the provider owns. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.search.SearchIndexService.class);
+        this.withdrawPublishedServices();
         // No resources of this extension's own to release.
     }
 
     /**
-     * Nothing to shut down (see {@link #onEnding()}) - only logs the failure.
+     * Withdraws the published facet (there is nothing else to shut down, see {@link #onEnding()})
+     * and logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(final RuntimeException reason) {
+        this.withdrawPublishedServices();
         this.getLogger().log(java.util.logging.Level.SEVERE, "An error occurred while running the search extension.", reason);
+    }
+
+    /**
+     * Takes this extension's facet back off the shared service container, on an ordinary stop and
+     * on a failed start alike - a consumer that reads it afterwards must see it absent, not
+     * stopped-but-present.
+     */
+    private void withdrawPublishedServices() {
+        this.cloudDriver().getServiceContainer().withdrawService(SearchIndexService.class);
     }
 
 }

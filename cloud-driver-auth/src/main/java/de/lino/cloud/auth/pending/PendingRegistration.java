@@ -1,10 +1,12 @@
 package de.lino.cloud.auth.pending;
 
 import de.lino.cloud.api.jwt.user.AuthUser;
+import de.lino.cloud.api.security.hash.LookupKeyDigest;
 import de.lino.cloud.auth.AuthService;
 import de.lino.database.database.entity.Serialized;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import lombok.NonNull;
 import lombok.ToString;
 import org.jetbrains.annotations.NotNull;
 
@@ -14,10 +16,12 @@ import java.util.Objects;
 /**
  * A not-yet-created account waiting on e-mail verification - the intermediate state {@link
  * AuthService#register} now leaves behind instead of persisting an {@link AuthUser} directly.
- * {@code emailAddress} doubles as this entity's own primary key, so a repeated {@code
- * POST /auth/register} for the same address simply overwrites the previous attempt (a fresh
- * code/password/expiry) via {@code EntityDatabaseClient#store}'s insert-then-update-on-collision
- * fallback, rather than piling up stale rows.
+ * Keyed on the <em>digest</em> of {@code emailAddress} (see {@link #keyOf(String)}), which is
+ * still one key per address, so a repeated {@code POST /auth/register} for the same address
+ * simply overwrites the previous attempt (a fresh code/password/expiry) via {@code
+ * EntityDatabaseClient#store}'s insert-then-update-on-collision fallback, rather than piling up
+ * stale rows - while the row's {@code id} column, which the persistence layer writes as plain
+ * text, no longer reveals which addresses are mid-signup.
  *
  * <p>{@code passwordHash} is already hashed by the time this entity is constructed - {@link
  * AuthService#register} hashes it before ever building this row, so no plaintext password is
@@ -34,7 +38,10 @@ import java.util.Objects;
 @EqualsAndHashCode(callSuper = false)
 public final class PendingRegistration extends Serialized {
 
-    /** The address this pending registration is for; also this entity's primary key. */
+    /**
+     * The address this pending registration is for, held inside the encrypted payload. The
+     * primary key is its digest, never the address itself - see {@link #keyOf(String)}.
+     */
     private final String emailAddress;
 
     /** A PHC-style Argon2id string produced by {@code PasswordHasher#hash} - never the raw password. */
@@ -67,8 +74,8 @@ public final class PendingRegistration extends Serialized {
     }
 
     /**
-     * @param emailAddress the address this pending registration is for, also its {@link
-     *     #primaryKey()}
+     * @param emailAddress the address this pending registration is for; its digest is this
+     *     row's {@link #primaryKey()}
      * @param passwordHash a PHC-style Argon2id string produced by {@code PasswordHasher#hash} -
      *     never the raw password
      * @param verificationCode the code sent to {@code emailAddress}, expected back verbatim at
@@ -85,7 +92,7 @@ public final class PendingRegistration extends Serialized {
      * The full constructor, carrying an explicit failed-attempt count - used by {@link
      * #withFailedAttempt()} and by Gson rehydration.
      *
-     * @param emailAddress the address being registered, also this entity's primary key
+     * @param emailAddress the address being registered; its digest is this entity's primary key
      * @param passwordHash the Argon2id hash of the password this registration will create the account with
      * @param verificationCode the code e-mailed to {@code emailAddress}
      * @param expiresAtEpochMillis when this pending registration stops being usable
@@ -113,11 +120,36 @@ public final class PendingRegistration extends Serialized {
         return System.currentTimeMillis() > this.expiresAtEpochMillis;
     }
 
-    /** @return this entity's primary key, {@link #emailAddress} */
+    /**
+     * @return this entity's primary key: the digest of {@link #emailAddress}, never the address
+     * itself - see {@link #keyOf(String)}
+     */
     @NotNull
     @Override
     public List<String> keysOf() {
-        return List.of(this.emailAddress);
+        return List.of(keyOf(this.emailAddress));
+    }
+
+    /**
+     * The primary key a pending registration for {@code emailAddress} is stored under - its
+     * lowercase-hex SHA-256.
+     *
+     * <p>An entity's primary key lands in the row's {@code id} column verbatim, and that column
+     * is plain text: envelope encryption covers the payload, not the key. Keying on the address
+     * itself listed every account mid-signup in the clear, in the database and in every backup
+     * archive. The digest keeps the lookup a single O(1) point read - the caller supplies the
+     * address and the server hashes it - while the stored key says nothing.
+     *
+     * <p>Digests the address verbatim: no lower-casing and no trimming. {@link
+     * AuthService#register} stores the address exactly as supplied and looks it up
+     * case-sensitively, so normalising here would silently change which rows match.
+     *
+     * @param emailAddress the address, exactly as the caller supplied it
+     * @return the primary key that address's pending registration is stored under
+     */
+    @NotNull
+    public static String keyOf(@NonNull final String emailAddress) {
+        return LookupKeyDigest.hexOf(emailAddress);
     }
 
 }

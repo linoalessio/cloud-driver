@@ -9,6 +9,7 @@ import de.lino.cloud.api.file.pending.PendingUploadCache;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.api.utility.task.SchedulerTickGuard;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
@@ -105,6 +106,8 @@ public final class PendingUploadScheduler {
      * no-op - call {@link #stop()} first to change the period.
      *
      * @param period how often to check the pending cache
+     * <p>A tick that fails is logged and the schedule continues.
+     *
      * @throws NullPointerException if {@code period} is {@code null}
      */
     public synchronized void start(@NotNull final Duration period) {
@@ -114,7 +117,8 @@ public final class PendingUploadScheduler {
         }
         this.lockWindow = period;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
-                this::tick, period.toMillis(), period.toMillis(), TimeUnit.MILLISECONDS
+                SchedulerTickGuard.guard("pending-upload-scheduler", this::tick),
+                period.toMillis(), period.toMillis(), TimeUnit.MILLISECONDS
         );
     }
 

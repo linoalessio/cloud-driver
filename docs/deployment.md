@@ -23,7 +23,7 @@ etc.) involved. A handful of shell scripts under [`shell/`](../shell/) handle th
 | Script | Runs where | Purpose |
 |---|---|---|
 | `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
-| `deploy-cloud.sh` | Locally | Uploads the already-built shaded bootstrap jar, every built extension jar, the local `cloud-driver/configuration.json` and `start-cloud.sh` itself (executable bit restored) over one multiplexed SSH connection, up to 6 in parallel, each verified with SHA-256 on both ends. Prunes previous releases' jars first, since the bootstrap refuses to start when two jars claim the same extension name. Files are sent uncompressed on purpose — jars are already DEFLATE-compressed. It builds nothing and never restarts the running instance |
+| `deploy-cloud.sh` | Locally | Uploads the already-built shaded bootstrap jar, every built extension jar, the local `cloud-driver/configuration.json` and `start-cloud.sh` itself (executable bit restored) over one multiplexed SSH connection, up to 6 in parallel, each verified with SHA-256 on both ends. Prunes previous releases' jars once every upload has verified, and refuses an extension jar whose name does not carry the bootstrap jar's version, or two jars for the same module — the bootstrap refuses to start when two jars claim the same extension name. Files are sent uncompressed on purpose — jars are already DEFLATE-compressed. It builds nothing and never restarts the running instance |
 | `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX` — or with a sibling `start-cloud.env`, see §"GUI installer"), auto-restarting it if it ever exits. The bootstrap jar is the single `cloud-driver-bootstrap-*.jar` in the script's own directory, so a version bump needs no edit. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
 | `release-and-package.sh` | Locally | One-shot release automation: bumps the version references it lists — every `pom.xml`, the desktop Gradle build, the iOS `project.yml` and the Python SDK, plus six of the twelve `extension.json` manifests (the bootstrap's, and `rest`, `backup`, `terminal`, `metrics`, `watcher`); the other six extensions' manifests are not in that hardcoded list and keep their previous version, so check them by hand after a release. Then rebuilds the reactor with `mvn clean install`, commits, tags, pushes, cuts a GitHub Release and waits for the publish workflow. Operator-local — one of the two scripts deliberately kept out of version control (the other is `deploy-homepage.sh`) |
 | `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
@@ -64,6 +64,34 @@ loopback with a generated password, Caddy (installed always; a reverse-proxy sit
 one in too, or the operator terminal's `cloudUser` and `statistics` commands fail on it) — never
 overwriting files that already exist.
 
+The API site block it writes is the shape the backend is configured against:
+
+```caddyfile
+api.example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-For {remote_host}
+    }
+}
+```
+
+The header is **overwritten**, not appended, so no client-supplied value survives the hop — the
+backend reads the address Caddy itself observed. The scaffolded `configuration.json` pairs with
+that by setting `trust-proxy-headers`/`trusted-proxy-addresses` to that same loopback peer, which
+is what lets the rate limiter key on the real client instead of collapsing every caller on the
+internet into the proxy's own address.
+
+**Upgrading a host provisioned before this shape:** the script leaves an existing
+`configuration.json` untouched on a re-run, so it will not add the two keys. Add them by hand and
+restart, or the auth limiter stays one window shared by everybody:
+
+```json
+"trust-proxy-headers": true,
+"trusted-proxy-addresses": "127.0.0.1",
+```
+
+Confirm afterwards with `rateLimit status` in the operator terminal; `rateLimit reset 127.0.0.1`
+clears a leftover shared window immediately.
+
 It deliberately stops short of anything requiring your AWS account or an already-built jar; the
 script prints the remaining manual checklist on completion:
 
@@ -84,7 +112,11 @@ if the alias name is kept the same and `/home/cloud` is the deploy target on bot
 **A rebuilt feature-module jar must always be redeployed together with a bootstrap jar built from
 the same commit.** Feature-module jars resolve shared types off the running bootstrap jar's own
 classpath at load time — mixing versions crashes the process at startup, and the auto-restart loop
-will simply repeat that crash indefinitely rather than recovering.
+will simply repeat that crash indefinitely rather than recovering. Two jars in `extensions/`
+declaring the same extension name abort the boot before any extension starts, naming both files,
+so nothing serves and the launcher repeats the crash. Both deploy paths therefore remove the
+previous release's jars — and they do it only after the replacement has landed and verified, so a
+failed run never leaves the host with neither release.
 
 ## GUI installer (`cloud-driver-installer`)
 
@@ -121,9 +153,9 @@ Sixteen steps run in the order the server needs them:
 | 9 | Swap | A swapfile (an existing one is kept, never switched off under a running JVM) |
 | 10 | AWS | KMS key + alias, the content bucket, a separate backup bucket, a least-privilege IAM user, and that user's access key in `/root/.aws/credentials` |
 | 11 | E-mail | The SES identity (domain with Easy DKIM, or a single address) or the SMTP settings |
-| 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded. The API domain is optional: with one, Caddy obtains a Let's Encrypt certificate for it; left empty, the site block is the plain-HTTP `:80` form serving whatever address the request arrived on (which also replaces Caddy's packaged placeholder site) |
+| 12 | Reverse proxy | Caddy, the API site block, validated before the swap and reloaded, writing `header_up X-Forwarded-For {remote_host}` so the header carries the real peer and never a client-supplied value. The API domain is optional: with one, Caddy obtains a Let's Encrypt certificate for it; left empty, the site block is the plain-HTTP `:80` form serving whatever address the request arrived on (which also replaces Caddy's packaged placeholder site) |
 | 13 | Configuration files | `configuration.json`, `postgres-database.json`, `redis-database.json`, `start-cloud.env` — and the same `configuration.json` back into the checkout |
-| 14 | Application | Optionally runs `mvn clean install` in the checkout first (*Build with Maven*), then uploads the bootstrap jar and only the extension jars this plan enables (`scan` follows ClamAV, `intelligence` the intelligence service), refusing any jar whose name does not carry the bootstrap's version and aborting when `rest`, `watcher` or `terminal` is not built; prunes the previous release's jars, then `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
+| 14 | Application | Optionally runs `mvn clean install` in the checkout first (*Build with Maven*), then uploads the bootstrap jar and only the extension jars this plan enables (`scan` follows ClamAV, `intelligence` the intelligence service), refusing any jar whose name does not carry the bootstrap's version and aborting when `rest`, `watcher` or `terminal` is not built; prunes the previous release's jars — including an extension jar built against a different bootstrap version, even when this run deploys no replacement for it — then `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
 | 15 | Intelligence service | `/opt/cloud-driver-intelligence`, its virtual environment, env file and systemd unit |
 | 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL — `https://<domain>`, or `http://<server address>` without one, or `http://<server address>:<REST port>` with no proxy at all |
 
@@ -193,7 +225,8 @@ server's own address, and the summary says out loud that such a deployment has n
 passwords and tokens cross the network unencrypted and the shipped apps (HTTPS-only) cannot
 connect. Switching the reverse proxy off entirely is the other domain-free shape: the JVM is then
 the public listener itself, which needs a non-loopback `rest-server-bind-host` (the firewall step
-opens that port, and `trust-proxy-headers` stays off — there is no proxy to trust). Filling the
+opens that port, and `trust-proxy-headers`/`trusted-proxy-addresses` both stay unset — there is no
+proxy to trust, and setting either would let a client choose its own rate-limit identity). Filling the
 domain in later and re-running step 12 writes a TLS site block for that name, but does not rewrite
 the domain-less one: the site address changed, so the new block is appended and the old `:80` block
 stays in the Caddyfile until it is removed by hand (or by removing the step before re-applying it).

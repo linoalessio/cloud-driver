@@ -460,9 +460,18 @@ class ApplicationStep(Step):
         return ctx.remote.sha256(f"{ctx.plan.server.install_dir.rstrip('/')}/start-cloud.sh") != self._sha(launcher)
 
     def _prune(self, ctx: Context, uploads: dict[Path, str]) -> None:
-        """Remove superseded versions of the jars just uploaded; never a jar nothing replaced."""
+        """Remove superseded versions of the jars just uploaded, and any extension jar built
+        against a different bootstrap version; leave current-version jars this run did not upload.
+
+        An extension jar resolves the shared classes it needs off the running bootstrap jar's
+        classpath, so one from another build crashes the process at startup - leaving it because
+        this run happens to deploy no replacement for that module is never the safer choice.
+        """
         keep = {Path(remote).name for remote in uploads.values()}
         stems = {re.sub(r"-\d[\d.]*\.jar$", "", name) for name in keep}
+        bootstrap = next((name for name in keep if name.startswith("cloud-driver-bootstrap-")), None)
+        version = re.sub(r"^cloud-driver-bootstrap-|\.jar$", "", bootstrap) if bootstrap else None
+        extensions_dir = ctx.plan.extensions_dir.rstrip("/")
         listing = ctx.remote.run(
             f"ls -1 {shlex.quote(ctx.plan.server.install_dir.rstrip('/'))}/cloud-driver-bootstrap-*.jar {shlex.quote(ctx.plan.extensions_dir)}/*.jar 2>/dev/null",
             quiet=True,
@@ -474,6 +483,13 @@ class ApplicationStep(Step):
             if re.sub(r"-\d[\d.]*\.jar$", "", name) in stems:
                 ctx.remote.run(f"rm -f {shlex.quote(path)}", check=True, quiet=True)
                 ctx.info(f"[Application] removed superseded {name}")
+                continue
+            if version is None or str(Path(path).parent).rstrip("/") != extensions_dir:
+                continue
+            match = re.fullmatch(r"cloud-driver-extensions-.+-(\d[\d.]*)\.jar", name)
+            if match is not None and match.group(1) != version:
+                ctx.remote.run(f"rm -f {shlex.quote(path)}", check=True, quiet=True)
+                ctx.info(f"[Application] removed {name} - it predates the {version} bootstrap jar")
 
     def _cron_current(self, ctx: Context) -> bool:
         existing = ctx.remote.run("crontab -l 2>/dev/null", quiet=True).out

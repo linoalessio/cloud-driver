@@ -40,16 +40,19 @@ public final class DefaultFileChangeListenerRegistry implements FileChangeListen
      * <p>Iterates a snapshot of {@link #listeners} (inherent to {@link CopyOnWriteArrayList}'s
      * own iterator, so a concurrent {@link #register}/{@link #unregister} during this call is
      * safe and never throws {@link java.util.ConcurrentModificationException}) and catches each
-     * listener's own {@link RuntimeException} individually, so one broken listener never stops a
-     * later one in the list from being notified.
+     * listener's failure of any kind individually, so one broken listener never stops a later one
+     * in the list from being notified - matching {@code FileChangeListenerRegistry#notifyChange}'s
+     * own unqualified "never throws" contract. An {@link Error} is logged at {@link Level#SEVERE},
+     * because the process may be poisoned even though the fan-out carries on.
      */
     @Override
     public void notifyChange(@NonNull final String storedFileId, @NonNull final String operation) {
         for (final FileChangeListener listener : this.listeners) {
             try {
                 listener.onFileChanged(storedFileId, operation);
-            } catch (final RuntimeException e) {
-                LOGGER.log(Level.WARNING, "@DefaultFileChangeListenerRegistry.notifyChange: listener "
+            } catch (final Throwable e) {
+                LOGGER.log(e instanceof Error ? Level.SEVERE : Level.WARNING,
+                        "@DefaultFileChangeListenerRegistry.notifyChange: listener "
                         + listener.getClass().getName() + " failed for file '" + storedFileId + "'", e);
             }
         }

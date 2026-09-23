@@ -20,6 +20,7 @@ import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.file.exception.FileScanBlockedException;
 import de.lino.cloud.api.file.exception.PublicShareLinkInvalidException;
 import de.lino.cloud.api.file.exception.SyncConflictException;
+import de.lino.cloud.api.file.exception.ResumableUploadPartRangeException;
 import de.lino.cloud.api.file.exception.UploadQuotaExceededException;
 import de.lino.cloud.api.file.meta.FileChecksum;
 import de.lino.cloud.api.file.PublicFileLinkSummary;
@@ -1120,12 +1121,12 @@ public final class CloudUserService implements ICloudUserService {
 
         final ICloudUser cloudUser = this.getOrCreate(authUserId);
         // Soft check only - the client's own declared sizeBytes, not yet verified against the
-        // real uploaded object (that happens in completePresignedUpload, once it's knowable).
-        if (cloudUser.isUploadLimitReached(sizeBytes)) {
-            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
-            throw new UploadQuotaExceededException(
-                    authUserId, cloudUser.getCurrentUploadedBytes(), sizeBytes, cloudUser.getMaxBytesToUpload());
-        }
+        // real uploaded object (that happens in completePresignedUpload, once it's knowable) -
+        // but counted alongside everything this account has already reserved, so concurrent
+        // tickets cannot each pass a check the others invalidate. Deliberately no count cap here:
+        // the batch paths legitimately hold several tickets at once, and each ticket's URL is
+        // already presigned for one exact object length.
+        this.requireQuotaForReservation(authUserId, cloudUser, this.pendingUploadsOf(authUserId), sizeBytes);
         // Sharing: deliberately owner-only - a grantee can never upload into a shared folder.
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
@@ -1514,24 +1515,22 @@ public final class CloudUserService implements ICloudUserService {
         // calls. Counting and summing them here is what makes the quota mean anything on this
         // path, and it needs no refund bookkeeping - a completed, aborted or purged session drops
         // its row, and with it its reservation.
-        final List<PendingPresignedUpload> openSessions = this.openSessionsOf(authUserId);
-        if (openSessions.size() >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+        final List<PendingPresignedUpload> pending = this.pendingUploadsOf(authUserId);
+        final List<PendingPresignedUpload> openSessions = pending.stream()
+                .filter(row -> row.getMultipartUploadId() != null)
+                .toList();
+        final int maxOpenSessions = resolveMaxOpenSessionsPerAccount();
+        if (openSessions.size() >= maxOpenSessions) {
             throw new IllegalStateException("@CloudUserService.beginResumableUpload: " + authUserId + " already has "
-                    + openSessions.size() + " open upload session(s) - finish or abort one before starting another");
+                    + openSessions.size() + " open upload session(s), the maximum is " + maxOpenSessions
+                    + " - finish or abort one before starting another");
         }
-        final long reservedBytes = openSessions.stream()
-                .mapToLong(row -> row.getDeclaredSizeBytes() == null ? 0 : row.getDeclaredSizeBytes())
-                .sum();
 
         final ICloudUser cloudUser = this.getOrCreate(authUserId);
         // Soft check only, exactly like beginPresignedUpload's - completion re-verifies against
         // the store's confirmed object length - but counting what this account has already
-        // reserved, so N concurrent sessions cannot each pass a check the others invalidate.
-        if (cloudUser.isUploadLimitReached(reservedBytes + sizeBytes)) {
-            recordMetric(MetricsRecorder::recordUploadQuotaRejected);
-            throw new UploadQuotaExceededException(
-                    authUserId, cloudUser.getCurrentUploadedBytes(), reservedBytes + sizeBytes, cloudUser.getMaxBytesToUpload());
-        }
+        // reserved, so N concurrent uploads cannot each pass a check the others invalidate.
+        this.requireQuotaForReservation(authUserId, cloudUser, pending, sizeBytes);
         if (folderId != null) this.requireOwnedFolder(authUserId, folderId);
 
         final String fileId = UUID.randomUUID().toString();
@@ -1637,8 +1636,7 @@ public final class CloudUserService implements ICloudUserService {
         // that are never charged, because the attacker simply never calls complete.
         final int partCount = partCountFor(this.totalObjectBytesFor(session));
         if (partNumber < 1 || partNumber > partCount) {
-            throw new IllegalArgumentException("@CloudUserService.presignResumableUploadPart: partNumber must be between 1 and "
-                    + partCount + " for session '" + fileId + "', got " + partNumber);
+            throw new ResumableUploadPartRangeException(partNumber, partCount);
         }
         return resumable.presignPart(fileId, session.getMultipartUploadId(), partNumber, PRESIGNED_URL_EXPIRY);
     }
@@ -1720,9 +1718,18 @@ public final class CloudUserService implements ICloudUserService {
      * write must never fail the part presign or status poll that triggered it. The worst outcome
      * of a lost update is that the session ages from a slightly older stamp.
      *
+     * <p>Throttled to {@link #SESSION_ACTIVITY_REFRESH_INTERVAL_MILLIS}. Each stamp write wraps a
+     * fresh data key and issues a row update, so refreshing it on every part presign and every
+     * status poll would turn one cheap request into one key-wrap call and one database write. The
+     * stamp only has to be fresh relative to the retention window, which is measured in days.
+     *
      * @param session the session row to stamp
      */
     private void touchSessionQuietly(final PendingPresignedUpload session) {
+        final long now = System.currentTimeMillis();
+        if (now - session.lastActivityOrCreatedAtEpochMillis() < SESSION_ACTIVITY_REFRESH_INTERVAL_MILLIS) {
+            return;
+        }
         try {
             this.dataFactory.update(session.withLastActivityAt(System.currentTimeMillis()));
         } catch (final DatabaseClientException | KeyWrapException | RuntimeException touchFailed) {
@@ -1730,6 +1737,12 @@ public final class CloudUserService implements ICloudUserService {
                     "@CloudUserService: failed to refresh the activity stamp of upload session '" + session.getFileId() + "'", touchFailed);
         }
     }
+
+    /**
+     * Coarsest granularity the activity stamp is worth persisting at; the session retention window
+     * is orders of magnitude longer.
+     */
+    private static final long SESSION_ACTIVITY_REFRESH_INTERVAL_MILLIS = 60_000L;
 
     /** How many {@link #RESUMABLE_PART_SIZE_BYTES}-sized parts {@code totalObjectBytes} splits into - at least one, even for an empty object. */
     private static int partCountFor(final long totalObjectBytes) {
@@ -1744,11 +1757,34 @@ public final class CloudUserService implements ICloudUserService {
     private static final int MAX_MULTIPART_PARTS = 10_000;
 
     /**
-     * How many resumable sessions one account may hold open at once. A real client has one, or a
-     * few when uploading in parallel; an unbounded number is how a single account can park an
-     * arbitrary volume of billed, un-quota-counted parts in the bucket.
+     * {@code configuration.json} key overriding {@link #DEFAULT_MAX_OPEN_SESSIONS_PER_ACCOUNT}.
      */
-    private static final int MAX_OPEN_SESSIONS_PER_ACCOUNT = 8;
+    private static final String MAX_OPEN_SESSIONS_CONFIG_KEY = "resumable-upload-max-open-sessions-per-account";
+
+    /**
+     * How many resumable sessions one account may hold open at once, unless {@link
+     * #MAX_OPEN_SESSIONS_CONFIG_KEY} says otherwise. A real client has one, or a few when
+     * uploading in parallel; an unbounded number is how a single account can park an arbitrary
+     * volume of billed, un-quota-counted parts in the bucket.
+     */
+    private static final int DEFAULT_MAX_OPEN_SESSIONS_PER_ACCOUNT = 8;
+
+    /**
+     * Resolves the configured session cap, falling back to {@link
+     * #DEFAULT_MAX_OPEN_SESSIONS_PER_ACCOUNT}. Floored at one, so a {@code 0} or a negative value
+     * cannot disable the cap outright.
+     *
+     * <p>Reads the configuration file, so it is resolved once per begin and never per part
+     * presign.
+     *
+     * @return how many sessions one account may hold open at once
+     */
+    private static int resolveMaxOpenSessionsPerAccount() {
+        final JsonDocument configuration = CloudDriver.getInstance().getConfiguration();
+        return configuration.contains(MAX_OPEN_SESSIONS_CONFIG_KEY)
+                ? Math.max(1, configuration.getInteger(MAX_OPEN_SESSIONS_CONFIG_KEY))
+                : DEFAULT_MAX_OPEN_SESSIONS_PER_ACCOUNT;
+    }
 
     /**
      * The stored object's total length for a session row - the ciphertext length under the issued
@@ -1775,23 +1811,87 @@ public final class CloudUserService implements ICloudUserService {
     }
 
     /**
-     * Every still-open resumable session belonging to {@code authUserId} - an indexed lookup, not
-     * a scan over every pending upload in the deployment.
+     * Every outstanding pending upload belonging to {@code authUserId} - resumable sessions and
+     * single-{@code PUT} tickets alike, an indexed lookup rather than a scan over every pending
+     * upload in the deployment.
      *
      * @param authUserId the account to look up
-     * @return that account's open sessions, never {@code null}
+     * @return that account's pending uploads, never {@code null}
      */
     @NonNull
-    private List<PendingPresignedUpload> openSessionsOf(final String authUserId) {
+    private List<PendingPresignedUpload> pendingUploadsOf(final String authUserId) {
         try {
             return this.dataFactory
-                    .getEntitiesByIndex(PendingPresignedUpload.class, PendingPresignedUpload.INDEX_AUTH_USER_ID, authUserId)
-                    .stream()
-                    .filter(row -> row.getMultipartUploadId() != null)
-                    .toList();
+                    .getEntitiesByIndex(PendingPresignedUpload.class, PendingPresignedUpload.INDEX_AUTH_USER_ID, authUserId);
         } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException e) {
-            throw new RuntimeException("@CloudUserService: failed to list open upload sessions for " + authUserId, e);
+            throw new RuntimeException("@CloudUserService: failed to list pending uploads for " + authUserId, e);
         }
+    }
+
+    /**
+     * What {@code pending} claims against the account's quota: the sum of the declared sizes.
+     *
+     * <p>The reservation is the account's outstanding claim on the store, derived purely from the
+     * live tracking rows - it never enters the usage counter, so the physical, dedup-aware
+     * accounting and its recompute path are untouched and cannot drift. A row written before a
+     * declared size was recorded contributes zero, so a legacy row can only under-reserve, never
+     * lock an account out.
+     *
+     * @param pending the account's outstanding pending uploads
+     * @return the reserved byte total
+     */
+    private long reservedBytesOf(@NonNull final List<PendingPresignedUpload> pending) {
+        return pending.stream()
+                .mapToLong(row -> row.getDeclaredSizeBytes() == null ? 0 : row.getDeclaredSizeBytes())
+                .sum();
+    }
+
+    /**
+     * The same sum as {@link #reservedBytesOf(List)}, skipping any row whose file already exists.
+     *
+     * <p>Only ever called on the rejection path. A completion deletes its tracking row
+     * best-effort, so a lost delete would otherwise hold quota hostage until the purge sweep
+     * catches it - re-summing without those rows turns that into nothing at all, at the cost of
+     * one metadata lookup per outstanding row, paid only when the cheap check has already
+     * tripped.
+     *
+     * @param pending the account's outstanding pending uploads
+     * @return the reserved byte total, counting only rows whose upload has not already landed
+     */
+    private long liveReservedBytesOf(@NonNull final List<PendingPresignedUpload> pending) {
+        return pending.stream()
+                .filter(row -> this.findStoredFileMetadata(row.getFileId()).isEmpty())
+                .mapToLong(row -> row.getDeclaredSizeBytes() == null ? 0 : row.getDeclaredSizeBytes())
+                .sum();
+    }
+
+    /**
+     * Whether {@code sizeBytes} still fits {@code authUserId}'s quota once everything the account
+     * has already reserved is counted alongside it.
+     *
+     * <p>Two-stage on purpose: the cheap sum decides the common case, and only a rejection pays
+     * for re-summing without the rows whose upload has already landed. That is what stops a
+     * tracking row that outlived its own upload from refusing an upload that should succeed.
+     *
+     * @param authUserId the account uploading
+     * @param cloudUser that account's quota record
+     * @param pending the account's outstanding pending uploads
+     * @param sizeBytes the declared size of the upload being started
+     * @throws UploadQuotaExceededException if it does not fit
+     */
+    private void requireQuotaForReservation(final String authUserId, final ICloudUser cloudUser,
+                                             final List<PendingPresignedUpload> pending, final long sizeBytes) {
+        final long reservedBytes = this.reservedBytesOf(pending);
+        if (!cloudUser.isUploadLimitReached(reservedBytes + sizeBytes)) {
+            return;
+        }
+        final long liveReservedBytes = reservedBytes == 0 ? 0 : this.liveReservedBytesOf(pending);
+        if (reservedBytes != 0 && !cloudUser.isUploadLimitReached(liveReservedBytes + sizeBytes)) {
+            return;
+        }
+        recordMetric(MetricsRecorder::recordUploadQuotaRejected);
+        throw new UploadQuotaExceededException(
+                authUserId, cloudUser.getCurrentUploadedBytes(), liveReservedBytes + sizeBytes, cloudUser.getMaxBytesToUpload());
     }
 
     /**
@@ -3718,13 +3818,21 @@ public final class CloudUserService implements ICloudUserService {
 
     /**
      * @return {@code true} if {@code cloud-driver-extensions-scan} has published a {@link
-     * ContentScanService} - see {@link #uploadFile(String, String, byte[], String)}'s own use of
-     * this for why it's checked once, up front, rather than let a missing service simply no-op
-     * later (it decides the file's *initial* scan status, not a follow-up action).
+     * ContentScanService} <em>and</em> that service is still running - see {@link
+     * #uploadFile(String, String, byte[], String)}'s own use of this for why it's checked once,
+     * up front, rather than let a missing service simply no-op later (it decides the file's
+     * *initial* scan status, not a follow-up action)
+     *
+     * <p>Published is not enough on its own: a service whose extension has stopped has no workers
+     * left, so recording an upload as awaiting a verdict on the strength of its mere presence
+     * would leave that file permanently unreadable. Asking whether it is running is the second
+     * line of defence behind the extension withdrawing its facet on stop.
      */
     private static boolean isContentScanServicePublished() {
         try {
-            return CloudDriver.getInstance().getServiceContainer().getContentScanService() != null;
+            final ContentScanService contentScanService =
+                    CloudDriver.getInstance().getServiceContainer().getContentScanService();
+            return contentScanService != null && contentScanService.isRunning();
         } catch (final RuntimeException e) {
             return false;
         }
@@ -3748,7 +3856,7 @@ public final class CloudUserService implements ICloudUserService {
         } catch (final RuntimeException serviceUnavailable) {
             return;
         }
-        if (contentScanService == null) return;
+        if (contentScanService == null || !contentScanService.isRunning()) return;
         try {
             contentScanService.scanAsync(storedFileId);
         } catch (final RuntimeException scanSchedulingFailed) {

@@ -272,6 +272,9 @@ else
   "rest-server-port": "8080",
   "rest-server-bind-host": "127.0.0.1",
 
+  "trust-proxy-headers": true,
+  "trusted-proxy-addresses": "127.0.0.1",
+
   "metrics-port": 9404,
   "metrics-bind-host": "127.0.0.1",
 
@@ -294,7 +297,7 @@ else
 }
 JSON
     ssh "$REMOTE_HOST" "chmod 600 '$REMOTE_CONFIG_DIR/configuration.json'"
-    log "wrote $REMOTE_CONFIG_DIR/configuration.json (jwt-signing-key generated; AWS keys are REPLACE-ME placeholders)"
+    log "wrote $REMOTE_CONFIG_DIR/configuration.json (jwt-signing-key generated; AWS keys are REPLACE-ME placeholders; rate-limit identity trusts X-Forwarded-For only from the loopback reverse proxy this script configures in step 9)"
 fi
 
 # --- 9. Caddy site block -----------------------------------------------------------------------------
@@ -321,6 +324,7 @@ CADDY
     fi
 else
     warn "no api-domain given - Caddy is installed but has no site block yet; add one manually or re-run with an argument"
+    warn "with no site block there is no proxy, but the REST bind stays 127.0.0.1, so nothing external reaches the JVM directly and the two proxy-trust keys stay harmless; if rest-server-bind-host is ever widened past 127.0.0.1 so clients connect to the JVM directly, remove trust-proxy-headers and trusted-proxy-addresses first"
 fi
 
 cat <<NEXT
@@ -362,7 +366,17 @@ scripted without your AWS account and an already-built jar):
      shell/deploy-homepage.sh) at this server's IP before Caddy can issue a
      real TLS certificate for it.
 
-  6. Build and deploy the application itself, from your local checkout:
+  6. Forwarded-header trust on a host provisioned BEFORE this script wrote the
+     two keys: this script never rewrites an existing configuration.json, so a
+     re-run will not add them. Add by hand and restart:
+       "trust-proxy-headers": true,
+       "trusted-proxy-addresses": "127.0.0.1",
+     Without them every request behind the proxy keys on 127.0.0.1, so all of
+     /auth/* shares ONE rate-limit window and a single caller can hold everybody
+     at 429. Verify from the operator terminal with 'rateLimit status', and clear
+     a leftover window with 'rateLimit reset 127.0.0.1'.
+
+  7. Build and deploy the application itself, from your local checkout:
        mvn clean install
        # point shell/deploy-cloud.sh's REMOTE_HOST at "$REMOTE_HOST" (or add an
        # ssh alias with that exact name in ~/.ssh/config), then:
@@ -371,11 +385,11 @@ scripted without your AWS account and an already-built jar):
      (deploy-cloud.sh ships the jars, configuration.json, and start-cloud.sh itself,
      restoring its executable bit - nothing needs to be copied to $REMOTE_DIR by hand.)
 
-  7. If content scanning matters immediately: wait for freshclam's first
+  8. If content scanning matters immediately: wait for freshclam's first
      database sync to finish (systemctl status clamav-freshclam) before
      trusting scan results.
 
-  8. Optional: cloud-driver-intelligence (semantic search) - a separate step,
+  9. Optional: cloud-driver-intelligence (semantic search) - a separate step,
      see cloud-driver-intelligence/deploy/install-on-server.sh.
 
 Generated secrets (also already written into the remote config files):

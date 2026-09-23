@@ -5,8 +5,13 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.factory.RestFactory;
+import de.lino.cloud.api.factory.service.IServiceContainer;
 import de.lino.cloud.api.jwt.JwtSigner;
+import de.lino.cloud.api.jwt.auth.IAuthService;
 import de.lino.cloud.api.mail.EmailSender;
+import de.lino.cloud.api.push.LiveUpdatePublisher;
+import de.lino.cloud.api.ratelimit.RateLimitAdmin;
+import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.security.password.PasswordHasher;
 import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.s3storage.PresignedTransferService;
@@ -78,28 +83,48 @@ public class CloudRestExtension extends Extension {
     }
 
     /**
-     * Stops the REST server and logs the failure.
+     * Withdraws every published facet, stops the REST server and logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(RuntimeException reason) {
 
+        this.withdrawPublishedServices();
         if (REST_FACTORY != null) REST_FACTORY.stop();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud rest extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
 
     }
 
-    /** Stops the REST server. */
+    /** Withdraws every published facet, then stops the REST server. */
     @Override
     public void onEnding() {
 
+        this.withdrawPublishedServices();
         if (REST_FACTORY != null) {
             this.cloudDriver().getTerminal().displayApproved("&3Rest endpoint &7successfully &cclosed&7.");
             REST_FACTORY.stop();
+            // Cleared so a later start can never stop a stale instance instead of the live one.
+            REST_FACTORY = null;
         }
 
+    }
+
+    /**
+     * Takes every facet this extension published back off the shared service container, so a
+     * consumer that reads one while the REST layer is stopping sees it absent rather than
+     * present-but-dead. Called before the server itself is stopped, on both the ordinary stop and
+     * the failed-start path.
+     */
+    private void withdrawPublishedServices() {
+        final IServiceContainer serviceContainer = this.cloudDriver().getServiceContainer();
+        serviceContainer.withdrawService(IAuthService.class);
+        serviceContainer.withdrawService(ICloudUserService.class);
+        serviceContainer.withdrawService(AuditLogService.class);
+        serviceContainer.withdrawService(EmailSender.class);
+        serviceContainer.withdrawService(LiveUpdatePublisher.class);
+        serviceContainer.withdrawService(RateLimitAdmin.class);
     }
 
     /**

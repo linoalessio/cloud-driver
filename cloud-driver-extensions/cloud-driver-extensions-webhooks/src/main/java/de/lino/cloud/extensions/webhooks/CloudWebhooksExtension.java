@@ -2,6 +2,7 @@ package de.lino.cloud.extensions.webhooks;
 
 import de.lino.cloud.api.extension.Extension;
 
+import de.lino.cloud.api.webhook.WebhookService;
 import java.util.logging.Level;
 
 /**
@@ -49,9 +50,7 @@ public class CloudWebhooksExtension extends Extension {
     /** Shuts {@link #webhookService}'s dispatch workers down, if it was ever built. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.webhook.WebhookService.class);
+        this.withdrawPublishedServices();
         if (this.webhookService != null) {
             this.cloudDriver().getTerminal().displayApproved("&3Webhooks endpoint &7successfully &cclosed&7.");
             this.webhookService.shutdown();
@@ -59,14 +58,25 @@ public class CloudWebhooksExtension extends Extension {
     }
 
     /**
-     * Shuts {@link #webhookService}'s dispatch workers down, if it was ever built, and logs the failure.
+     * Withdraws the published facet, shuts {@link #webhookService}'s dispatch workers down if it
+     * was ever built, and logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(final RuntimeException reason) {
+        this.withdrawPublishedServices();
         if (this.webhookService != null) this.webhookService.shutdown();
         this.getLogger().log(Level.SEVERE, "An error occurred while running the webhooks extension.", reason);
+    }
+
+    /**
+     * Takes this extension's facet back off the shared service container, on an ordinary stop and
+     * on a failed start alike - a consumer that reads it afterwards must see it absent, not
+     * stopped-but-present.
+     */
+    private void withdrawPublishedServices() {
+        this.cloudDriver().getServiceContainer().withdrawService(WebhookService.class);
     }
 
 }

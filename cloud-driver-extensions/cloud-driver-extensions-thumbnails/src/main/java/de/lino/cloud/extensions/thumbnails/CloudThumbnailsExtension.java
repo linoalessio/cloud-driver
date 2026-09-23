@@ -10,6 +10,7 @@ import de.lino.cloud.api.file.exception.FileIntegrityException;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.thumbnail.ThumbnailService;
 import de.lino.cloud.api.thumbnail.ThumbnailSize;
 import de.lino.database.json.JsonDocument;
 import lombok.NonNull;
@@ -229,14 +230,12 @@ public class CloudThumbnailsExtension extends Extension {
     /** Unregisters {@link #listener} and shuts {@link #executor} down. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.thumbnail.ThumbnailService.class);
         this.shutdown();
     }
 
     /**
-     * Unregisters {@link #listener} and shuts {@link #executor} down, then logs the failure.
+     * Withdraws the published facet, unregisters {@link #listener} and shuts {@link #executor}
+     * down, then logs the failure.
      *
      * @param reason the exception that occurred
      */
@@ -246,7 +245,13 @@ public class CloudThumbnailsExtension extends Extension {
         this.getLogger().log(Level.SEVERE, "An error occurred while running the thumbnails extension.", reason);
     }
 
+    /**
+     * Withdraws the published facet, then releases this extension's own resources - the withdraw
+     * comes first, so a consumer that reads the facet while this runs sees it absent rather than
+     * stopped-but-present. Shared by both the ordinary stop and the failed-start path.
+     */
     private void shutdown() {
+        this.cloudDriver().getServiceContainer().withdrawService(ThumbnailService.class);
         if (this.listener != null) {
             this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry().unregister(this.listener);
         }

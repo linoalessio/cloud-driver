@@ -9,6 +9,7 @@ import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.api.user.ICloudUserService;
 import de.lino.cloud.api.utility.Asserts;
+import de.lino.cloud.api.utility.task.SchedulerTickGuard;
 import de.lino.cloud.auth.entity.CloudUser;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
 import de.lino.database.json.JsonDocument;
@@ -104,6 +105,8 @@ public final class TrashPurgeScheduler {
      * elapsed. Calling this again while already running is a no-op - call {@link #stop()} first
      * to change the period.
      *
+     * <p>A tick that fails is logged and the schedule continues.
+     *
      * @param tickPeriod how often to sweep for expired trash
      * @throws NullPointerException if {@code tickPeriod} is {@code null}
      */
@@ -114,7 +117,8 @@ public final class TrashPurgeScheduler {
         }
         this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
-                this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
+                SchedulerTickGuard.guard("trash-purge-scheduler", this::tick),
+                tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS
         );
     }
 

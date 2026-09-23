@@ -74,11 +74,11 @@ public class DatabaseWatchEvent extends Event {
                 dataFactory.reload(StoredFile.class);
                 uploadedFile = dataFactory.findById(id, StoredFile.class);
             }
-        } catch (final Exception lookupFailed) {
-            // Existence could not be established. The listeners below still need to run - a scan
-            // or a live push matters more than this method's warning line - so carry on as though
-            // the row were present and say why it could not be confirmed.
-            this.cloudDriver().getLogger().log(java.util.logging.Level.WARNING,
+        } catch (final Throwable lookupFailed) {
+            // Existence could not be established, by any failure at all. The listeners below still
+            // need to run - a scan or a live push matters more than this method's warning line -
+            // so carry on as though the row were present and say why it could not be confirmed.
+            this.cloudDriver().getLogger().log(Level.WARNING,
                     String.format("Could not confirm whether file id '%s' exists while handling a change notification", id), lookupFailed);
             uploadedFile = Optional.empty();
             this.pushLiveUpdate(properties, id);
@@ -105,11 +105,11 @@ public class DatabaseWatchEvent extends Event {
      * or missed) - a client's live-refresh trigger doesn't need this event's own re-fetch to have
      * succeeded, only to know that *something* changed for its account.
      *
-     * <p>Deliberately never lets a failure here escape into the caller: this method runs inside a
-     * Postgres {@code LISTEN}/{@code NOTIFY}-driven listener thread with no tolerance for an
-     * uncaught exception (see {@code CloudWatcherExtension}'s own {@code dispatch}-callback
+     * <p>Deliberately never lets a failure of any kind escape into the caller: this method runs
+     * inside a Postgres {@code LISTEN}/{@code NOTIFY}-driven listener thread with no tolerance for
+     * anything uncaught (see {@code CloudWatcherExtension}'s own {@code dispatch}-callback
      * try/catch for the same reasoning) - a broken push must never take down change-notification
-     * handling itself.
+     * handling itself, and must never skip the listener fan-out that follows it.
      *
      * @param properties this event's own notification payload
      * @param id the changed {@link StoredFile}'s id, already extracted by the caller
@@ -124,7 +124,7 @@ public class DatabaseWatchEvent extends Event {
             cloudUserService.resolveOwnerAuthUserId(id).ifPresent(authUserId ->
                     publisher.publish(authUserId, properties.getString("table"), properties.getString("operation"), id));
 
-        } catch (final RuntimeException e) {
+        } catch (final Throwable e) {
             this.cloudDriver().getLogger().log(Level.WARNING, "Failed to push live update for file id '" + id + "'", e);
         }
     }
@@ -139,10 +139,10 @@ public class DatabaseWatchEvent extends Event {
      * whatever content it actually needs itself.
      *
      * <p>{@link FileChangeListenerRegistry#notifyChange} itself never throws (it catches and
-     * logs each listener's own failure individually) - this method's own try/catch is
+     * logs each listener's own failure individually, of any kind) - this method's own try/catch is
      * defense-in-depth on top of that, matching {@link #pushLiveUpdate}'s own reasoning: this
      * runs inside a Postgres {@code LISTEN}/{@code NOTIFY}-driven listener thread with zero
-     * tolerance for an uncaught exception.
+     * tolerance for anything uncaught.
      *
      * @param properties this event's own notification payload
      * @param id the changed {@link StoredFile}'s id, already extracted by the caller
@@ -151,7 +151,7 @@ public class DatabaseWatchEvent extends Event {
         try {
             this.cloudDriver().getFactoryContainer().getFileChangeListenerRegistry()
                     .notifyChange(id, properties.getString("operation"));
-        } catch (final RuntimeException e) {
+        } catch (final Throwable e) {
             this.cloudDriver().getLogger().log(Level.WARNING, "Failed to notify file change listeners for file id '" + id + "'", e);
         }
     }

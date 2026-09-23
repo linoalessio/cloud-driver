@@ -4,6 +4,7 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.factory.DataFactory;
 import de.lino.cloud.api.factory.FileFactory;
 
+import de.lino.cloud.api.versioning.FileVersioningService;
 import java.time.Duration;
 import java.util.logging.Level;
 
@@ -54,9 +55,7 @@ public class CloudVersioningExtension extends Extension {
     /** Shuts {@link #purgeScheduler} down, if it was ever built. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.versioning.FileVersioningService.class);
+        this.withdrawPublishedServices();
         if (this.purgeScheduler != null) {
             this.purgeScheduler.shutdown();
             this.cloudDriver().getTerminal().displayApproved("&3File versioning endpoint &7successfully &cclosed&7.");
@@ -64,14 +63,25 @@ public class CloudVersioningExtension extends Extension {
     }
 
     /**
-     * Shuts {@link #purgeScheduler} down, if it was ever built, and logs the failure.
+     * Withdraws the published facet, shuts {@link #purgeScheduler} down if it was ever built, and
+     * logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(final RuntimeException reason) {
+        this.withdrawPublishedServices();
         if (this.purgeScheduler != null) this.purgeScheduler.shutdown();
         this.getLogger().log(Level.SEVERE, "An error occurred while running the versioning extension.", reason);
+    }
+
+    /**
+     * Takes this extension's facet back off the shared service container, on an ordinary stop and
+     * on a failed start alike - a consumer that reads it afterwards must see it absent, not
+     * stopped-but-present.
+     */
+    private void withdrawPublishedServices() {
+        this.cloudDriver().getServiceContainer().withdrawService(FileVersioningService.class);
     }
 
 }

@@ -6,6 +6,7 @@ import de.lino.cloud.api.factory.FileFactory;
 import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
 import de.lino.cloud.api.security.database.DatabaseClientException;
 import de.lino.cloud.api.security.keys.KeyWrapException;
+import de.lino.cloud.api.utility.task.SchedulerTickGuard;
 import de.lino.database.json.JsonDocument;
 import org.jetbrains.annotations.NotNull;
 
@@ -96,12 +97,13 @@ final class FileVersionPurgeScheduler {
         return new FileVersionPurgeScheduler(dataFactory, fileFactory, maxVersions, Duration.ofDays(retentionDays), logger);
     }
 
-    /** Starts ticking every {@code tickPeriod}. A no-op if already running - call {@link #stop()} first to change the period. */
+    /** Starts ticking every {@code tickPeriod}. A no-op if already running - call {@link #stop()} first to change the period. A tick that fails is logged and the schedule continues. */
     synchronized void start(@NotNull final Duration tickPeriod) {
         if (this.scheduledFuture != null) return;
         this.lockWindow = tickPeriod;
         this.scheduledFuture = this.scheduledExecutorService.scheduleWithFixedDelay(
-                this::tick, tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS);
+                SchedulerTickGuard.guard("file-version-purge-scheduler", this::tick),
+                tickPeriod.toMillis(), tickPeriod.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /** Stops ticking; the underlying executor stays alive so {@link #start(Duration)} can restart it. A no-op if not running. */

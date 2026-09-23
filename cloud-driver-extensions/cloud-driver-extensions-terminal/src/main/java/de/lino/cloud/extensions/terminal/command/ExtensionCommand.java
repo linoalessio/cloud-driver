@@ -24,6 +24,18 @@ import java.util.Optional;
  */
 public class ExtensionCommand implements Command {
 
+    /** The host extension, excluded from {@code start}/{@code stop} so this process is never torn down by its own console. */
+    private static final String BOOTSTRAP_EXTENSION_NAME = "cloud-driver-bootstrap";
+
+    /** The extension owning every command, including this one - restartable, but never stoppable on its own. */
+    private static final String TERMINAL_EXTENSION_NAME = "cloud-driver-terminal";
+
+    /** How long {@code start} waits for the restarted extension to leave {@link ExtensionStatus#LOADING} before reporting its state. */
+    private static final long START_REPORT_TIMEOUT_MILLIS = 3_000L;
+
+    /** Poll interval while waiting in {@link #awaitSettledStatus(Extension)}. */
+    private static final long START_REPORT_POLL_MILLIS = 25L;
+
     /** @return {@code "extensions"} */
     @Override
     public @NotNull String name() {
@@ -48,7 +60,7 @@ public class ExtensionCommand implements Command {
         return List.of(
                 CommandUsage.of("extensions list", "Every loaded extension and its state"),
                 CommandUsage.of("extensions info <name>", "Details about one extension"),
-                CommandUsage.of("extensions start <name>", "Start one extension at runtime"),
+                CommandUsage.of("extensions start <name>", "Start one extension, restarting it if it is already running"),
                 CommandUsage.of("extensions stop <name>", "Stop one extension at runtime")
         );
     }
@@ -60,10 +72,12 @@ public class ExtensionCommand implements Command {
      * info <name>} prints one extension's full detail; {@code start <name>}/{@code stop <name>}
      * drive that extension through {@link ExtensionFactory#start}/{@link ExtensionFactory#stop}
      * and dispatch the matching {@link ExtensionRegisterEvent}/{@link ExtensionUnregisterEvent}
-     * (the host bootstrap extension itself, {@code "cloud-driver-bootstrap"}, is excluded from
-     * {@code start}/{@code stop} to avoid tearing down the process that hosts this very command).
-     * Sub-command tokens are matched case-insensitively, like every other command's, and {@code
-     * start}/{@code stop} report the state the extension is left in rather than returning silently.
+     * (the host bootstrap extension itself, {@code "cloud-driver-bootstrap"}, is refused for both
+     * {@code start} and {@code stop} to avoid tearing down the process that hosts this very
+     * command; {@code "cloud-driver-terminal"} is refused for {@code stop} alone, because it owns
+     * every command including this one, while {@code start} restarts it and works). Sub-command
+     * tokens are matched case-insensitively, like every other command's, and {@code start}/{@code
+     * stop} report the state the extension actually settled in rather than asserting success.
      *
      * @param arguments the sub-command and its own arguments, split on whitespace
      */
@@ -137,16 +151,32 @@ public class ExtensionCommand implements Command {
                 return;
             }
 
-            if (extensionName.equalsIgnoreCase("cloud-driver-bootstrap")) {
-                terminal.displayApproved("Extension '&b%s&7' cannot be modified.", extensionName);
+            // Resolved from the extension itself, never the typed token: the guards below must
+            // hold however the operator spelled the name.
+            final String resolvedName = extension.get().getExtensionProperties().getExtensionName();
+
+            if (BOOTSTRAP_EXTENSION_NAME.equalsIgnoreCase(resolvedName)) {
+                terminal.displayApproved("Extension '&b%s&7' cannot be modified.", resolvedName);
+                return;
+            }
+
+            if (!starting && TERMINAL_EXTENSION_NAME.equalsIgnoreCase(resolvedName)) {
+                terminal.displayApproved("Extension '&b%s&7' cannot be stopped - it owns every command, this one included.", resolvedName);
+                terminal.displayApproved("&7Use '&bextensions start %s&7' to restart it.", resolvedName);
                 return;
             }
 
             if (starting) {
                 extensionFactory.stop(extension.get());
                 extensionFactory.start(extension.get(), new String[0]);
-                CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
-                terminal.displayApproved("Extension '&b%s&7' is now &arunning", extensionName);
+                final ExtensionStatus settled = this.awaitSettledStatus(extension.get());
+                if (settled == ExtensionStatus.RUNNING) {
+                    CloudDriver.getInstance().getFactoryContainer().getEventFactory().dispatch(ExtensionRegisterEvent.class, new JsonDocument().append("extensionName", extensionName));
+                    terminal.displayApproved("Extension '&b%s&7' is now &arunning", resolvedName);
+                    return;
+                }
+                terminal.displayApproved("Extension '&b%s&7' &cfailed to start &7- see the log (status: %s)",
+                        resolvedName, extensionStatusOf(settled));
                 return;
             }
 
@@ -164,6 +194,29 @@ public class ExtensionCommand implements Command {
 
         this.sendUsage();
 
+    }
+
+    /**
+     * Polls {@code extension}'s status until it leaves {@link ExtensionStatus#LOADING} or {@link
+     * #START_REPORT_TIMEOUT_MILLIS} elapses - {@link ExtensionFactory#start} returns as soon as
+     * the worker thread exists, so the status right after it is not yet the outcome.
+     *
+     * @param extension the extension just started
+     * @return the status it settled on, or its current status if it did not settle in time
+     */
+    private ExtensionStatus awaitSettledStatus(@NonNull final Extension extension) {
+        final long deadline = System.currentTimeMillis() + START_REPORT_TIMEOUT_MILLIS;
+        ExtensionStatus status = extension.getExtensionProperties().getExtensionStatus();
+        while (status == ExtensionStatus.LOADING && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(START_REPORT_POLL_MILLIS);
+            } catch (final InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            status = extension.getExtensionProperties().getExtensionStatus();
+        }
+        return status;
     }
 
     /**

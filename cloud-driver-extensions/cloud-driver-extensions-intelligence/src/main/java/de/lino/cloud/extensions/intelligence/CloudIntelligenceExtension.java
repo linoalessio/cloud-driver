@@ -141,14 +141,12 @@ public class CloudIntelligenceExtension extends Extension {
     /** Shuts {@link #intelligenceService} down. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.intelligence.IntelligenceService.class);
         this.shutdown();
     }
 
     /**
-     * Shuts {@link #intelligenceService} down, then logs the failure.
+     * Withdraws the published facet, shuts {@link #intelligenceService} down, then logs the
+     * failure.
      *
      * @param reason the exception that occurred
      */
@@ -158,7 +156,13 @@ public class CloudIntelligenceExtension extends Extension {
         this.getLogger().log(Level.SEVERE, "An error occurred while running the semantic-search extension.", reason);
     }
 
+    /**
+     * Withdraws the published facet, then releases this extension's own resources - the withdraw
+     * comes first, so a consumer that reads the facet while this runs sees it absent rather than
+     * stopped-but-present. Shared by both the ordinary stop and the failed-start path.
+     */
     private void shutdown() {
+        this.cloudDriver().getServiceContainer().withdrawService(IntelligenceService.class);
         if (this.intelligenceService != null) {
             this.intelligenceService.shutdown();
             this.cloudDriver().getTerminal().displayApproved("&3Semantic search &7successfully &cclosed&7.");

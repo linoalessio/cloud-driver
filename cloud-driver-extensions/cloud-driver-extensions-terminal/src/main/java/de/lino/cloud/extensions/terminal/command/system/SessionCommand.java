@@ -7,6 +7,9 @@ import de.lino.cloud.api.jwt.user.AuthUser;
 import de.lino.cloud.api.terminal.Terminal;
 import de.lino.cloud.api.terminal.service.Command;
 import de.lino.cloud.api.terminal.service.CommandUsage;
+import de.lino.cloud.api.security.crypto.AuthenticationFailedException;
+import de.lino.cloud.api.security.database.DatabaseClientException;
+import de.lino.cloud.api.security.keys.KeyWrapException;
 import de.lino.cloud.auth.entity.RefreshToken;
 import org.jetbrains.annotations.NotNull;
 
@@ -22,17 +25,16 @@ import java.util.Optional;
  * <h2>What this can and cannot do</h2>
  *
  * A session is two tokens: a short-lived access JWT (12 hours) and a long-lived refresh token (30
- * days). Only the refresh token is stored server-side, so only it can be revoked - the access JWT
- * is stateless by design and is validated by signature alone.
+ * days). Only the refresh token is stored server-side, so only it can be listed - the access JWT
+ * is stateless and never persisted.
  *
- * <p>The practical consequence, and it must not be glossed over: <b>revoking does not sign
- * anybody out instantly.</b> An already-issued access token keeps working until it expires, up to
- * twelve hours later. What revocation guarantees is that no <em>new</em> access token can be
- * minted - so the session ends within that window and cannot be extended past it.
+ * <p><b>Revoking signs the account out at once.</b> Every access token carries the account's
+ * session generation as a signed claim, and a forced sign-out advances it, so every token already
+ * issued is refused on its very next request rather than living out its twelve hours. The refresh
+ * tokens are revoked in the same step, and the account's live-update sockets are closed, so
+ * nothing the account holds can be renewed or kept open.
  *
- * <p>The one case where that gap is already closed is a deleted account: bearer validation
- * additionally confirms the account still exists, so a token for a deleted account is rejected
- * immediately. For a still-existing account being locked out, the twelve-hour ceiling applies.
+ * <p>The way back in is an ordinary sign-in: no password is changed and no data is touched.
  */
 public class SessionCommand implements Command {
 
@@ -63,7 +65,7 @@ public class SessionCommand implements Command {
     public @NotNull List<CommandUsage> usages() {
         return List.of(
                 CommandUsage.of("session list <email>", "That account's refresh tokens, never their values"),
-                CommandUsage.of("session revoke <email>", "Revoke them all - signs the account out everywhere")
+                CommandUsage.of("session revoke <email>", "End every session - signs the account out everywhere, at once")
         );
     }
 
@@ -95,15 +97,13 @@ public class SessionCommand implements Command {
             return;
         }
 
-        final List<RefreshToken> tokens = this.tokensFor(authUser.get().getId());
-
         if (arguments.hasCommand(0, "list")) {
-            this.list(terminal, email, tokens);
+            this.list(terminal, email, this.tokensFor(authUser.get().getId()));
             return;
         }
 
         if (arguments.hasCommand(0, "revoke")) {
-            this.revoke(terminal, authService, email, tokens);
+            this.revoke(terminal, authService, email, authUser.get().getId());
             return;
         }
 
@@ -126,23 +126,27 @@ public class SessionCommand implements Command {
         terminal.emptyLine();
     }
 
-    /** Revokes every still-usable refresh token for one account. */
-    private void revoke(final Terminal terminal, final IAuthService authService, final String email, final List<RefreshToken> tokens) {
-        int revoked = 0;
-        for (final RefreshToken token : tokens) {
-            if (token.isRevoked() || token.isExpired()) continue;
-            try {
-                authService.revokeRefreshToken(token.getToken());
-                revoked++;
-            } catch (final RuntimeException ignored) {
-                // revokeRefreshToken is already idempotent on an absent/revoked token, so a failure
-                // here is a genuine persistence problem - counted as not-revoked rather than
-                // aborting the rest, so one bad row cannot leave the other sessions alive.
-            }
+    /**
+     * Ends every session of one account - refresh tokens revoked, already-issued access tokens
+     * refused, live-update sockets closed - in one call.
+     *
+     * @param terminal where the outcome is printed
+     * @param authService the published account service
+     * @param email the address the operator named, for the output
+     * @param authUserId the resolved account whose sessions to end
+     */
+    private void revoke(final Terminal terminal, final IAuthService authService, final String email, final String authUserId) {
+        final int revoked;
+        try {
+            revoked = authService.endAllSessions(authUserId);
+        } catch (final RuntimeException failed) {
+            terminal.displayApproved("&cCould not end the sessions of &b%s&c: %s", email, failed.getMessage());
+            return;
         }
 
         terminal.displayApproved("Revoked &b%s &7refresh token(s) for &b%s&7.", revoked, email);
-        terminal.displayApproved("&e! &7Already-issued access tokens stay valid for up to &b12 hours&7 - see this command's own docs.");
+        terminal.displayApproved("&7The sign-out takes effect on that account's &bnext request&7 - every access token "
+                + "already issued is refused from now on.");
     }
 
     /** Resolves an account by e-mail, case-insensitively - the same lookup shape the other commands use. */
@@ -155,18 +159,18 @@ public class SessionCommand implements Command {
     /**
      * Every {@link RefreshToken} belonging to one account.
      *
-     * <p>A full section scan filtered in memory: {@code RefreshToken} is primary-keyed on the token
-     * itself (so that a refresh is an O(1) point lookup, which is the operation that actually
-     * happens constantly), which leaves no index on the account id. The same trade-off every other
-     * non-primary-key lookup in this codebase accepts, and this one runs by hand, rarely.
+     * <p>An indexed lookup through {@link RefreshToken#INDEX_AUTH_USER_ID}, not a scan - the same
+     * index a credential change uses to end an account's sessions. An account with no sessions at
+     * all resolves to an empty list rather than an error.
+     *
+     * @param authUserId the account whose sessions to list
+     * @return that account's refresh tokens, or an empty list if they cannot be read
      */
     private List<RefreshToken> tokensFor(final String authUserId) {
         try {
             final DataFactory dataFactory = CloudDriver.getInstance().getFactoryContainer().getDataFactory();
-            return dataFactory.getEntitiesAsync(RefreshToken.class).join().stream()
-                    .filter(token -> authUserId.equals(token.getAuthUserId()))
-                    .toList();
-        } catch (final RuntimeException failed) {
+            return dataFactory.getEntitiesByIndex(RefreshToken.class, RefreshToken.INDEX_AUTH_USER_ID, authUserId);
+        } catch (final DatabaseClientException | KeyWrapException | AuthenticationFailedException | RuntimeException failed) {
             return List.of();
         }
     }

@@ -526,6 +526,47 @@ def test_application_upload_set_skips_features_that_are_off(ctx: Context) -> Non
     assert not any("scan" in name or "intelligence" in name for name in names)
 
 
+def test_application_prune_removes_an_extension_jar_from_an_older_build(ctx: Context) -> None:
+    """A jar built against another bootstrap version goes, even with no replacement in this run."""
+    uploads = ApplicationStep().upload_set(ctx)
+    ctx.remote.ok(
+        "ls -1",
+        f"{ctx.plan.server.install_dir}/cloud-driver-bootstrap-1.0.7.jar\n"
+        f"{ctx.plan.extensions_dir}/cloud-driver-extensions-scan-1.0.6.jar\n",
+    )
+    ctx.remote.ok("rm -f")
+    ApplicationStep()._prune(ctx, uploads)
+    assert ctx.remote.ran(f"rm -f {ctx.plan.extensions_dir}/cloud-driver-extensions-scan-1.0.6.jar")
+
+
+def test_application_prune_keeps_a_current_version_jar_it_did_not_upload(ctx: Context) -> None:
+    """Same version as the bootstrap jar, so it can load - a hand-deployed one stays."""
+    ctx.plan.clamav.enabled = False
+    uploads = ApplicationStep().upload_set(ctx)
+    ctx.remote.ok(
+        "ls -1",
+        f"{ctx.plan.server.install_dir}/cloud-driver-bootstrap-1.0.7.jar\n"
+        f"{ctx.plan.extensions_dir}/cloud-driver-extensions-scan-1.0.7.jar\n",
+    )
+    ctx.remote.ok("rm -f")
+    ApplicationStep()._prune(ctx, uploads)
+    assert not ctx.remote.ran("cloud-driver-extensions-scan-1.0.7.jar")
+
+
+def test_application_prune_still_removes_a_superseded_same_stem_jar(ctx: Context) -> None:
+    """The original behaviour, pinned: an older version of a module this run does upload goes."""
+    uploads = ApplicationStep().upload_set(ctx)
+    ctx.remote.ok(
+        "ls -1",
+        f"{ctx.plan.server.install_dir}/cloud-driver-bootstrap-1.0.6.jar\n"
+        f"{ctx.plan.extensions_dir}/cloud-driver-extensions-rest-1.0.6.jar\n",
+    )
+    ctx.remote.ok("rm -f")
+    ApplicationStep()._prune(ctx, uploads)
+    assert ctx.remote.ran(f"rm -f {ctx.plan.extensions_dir}/cloud-driver-extensions-rest-1.0.6.jar")
+    assert ctx.remote.ran(f"rm -f {ctx.plan.server.install_dir}/cloud-driver-bootstrap-1.0.6.jar")
+
+
 def test_intelligence_env_merge_never_drops_the_encryption_key() -> None:
     existing = "CLOUD_DRIVER_INTELLIGENCE_SECRET=old\nCLOUD_DRIVER_INTELLIGENCE_ENCRYPTION_KEY=keep-me\nOTHER=1\n"
     merged = merge_env(existing, {"CLOUD_DRIVER_INTELLIGENCE_SECRET": "new"}, ("CLOUD_DRIVER_INTELLIGENCE_OCR",))

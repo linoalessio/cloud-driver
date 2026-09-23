@@ -110,9 +110,16 @@ public interface IAuthService {
     /**
      * Validates a JWT from the {@code Authorization} header, returning the embedded user id.
      *
+     * <p>More than a signature check: the embedded id is looked back up, and the token's session
+     * generation is compared against the account's current one, so a token for an account that no
+     * longer exists - and a token issued before that account's sessions were ended - are both
+     * refused. Every caller inherits that, the live-update handshake included.
+     *
      * @param jwt the encoded JWT to validate
      * @return the user id embedded in {@code jwt} at signing time
-     * @throws InvalidJwtException if the token's signature is invalid, it is malformed, or it has expired
+     * @throws InvalidJwtException if the token's signature is invalid, it is malformed, it has
+     *     expired, its account no longer exists, or that account's sessions have been ended since
+     *     the token was signed - deliberately the same exception and message for every case
      */
     @NonNull
     String validate(@NonNull final String jwt) throws InvalidJwtException;
@@ -229,6 +236,21 @@ public interface IAuthService {
     void revokeRefreshToken(@NonNull final String refreshToken);
 
     /**
+     * Ends every session of {@code authUserId} at once: revokes every outstanding refresh token,
+     * advances the account's session generation so every access token already issued stops
+     * validating on its very next request, and closes the account's live-update connections.
+     *
+     * <p>The single entry point for a forced sign-out. A credential change - a password reset, an
+     * e-mail change - performs it, as does suspending an account and an operator's forced
+     * sign-out from the console. Ending only the refresh tokens would leave a stolen access token
+     * alive for the rest of its lifetime, so the two halves are never done separately.
+     *
+     * @param authUserId the account whose sessions to end
+     * @return how many refresh tokens were revoked
+     */
+    int endAllSessions(@NonNull final String authUserId);
+
+    /**
      * Starts an e-mail address change for the already-authenticated account {@code authUserId}:
      * checks that no other account already exists under {@code newEmailAddress}, then persists a
      * pending change (a freshly generated verification code, valid for a short window) and
@@ -238,9 +260,11 @@ public interface IAuthService {
      * #register}, this deliberately confirms whether {@code newEmailAddress} is already taken
      * (via {@link EmailAlreadyRegisteredException}) rather than hiding it - the caller is already
      * an authenticated account holder at this point, not an anonymous visitor, so this isn't a
-     * login-enumeration risk the way {@link #requestPasswordReset} has to guard against. Exposed
-     * over HTTP as {@code POST /auth/change-email} by {@code cloud-driver-plugin}'s {@code
-     * DefaultRestFactory} whenever it's constructed with an {@code AuthService}.
+     * login-enumeration risk the way {@link #requestPasswordReset} has to guard against. The
+     * previous address is notified of the pending change, so the real owner is told about a
+     * request that was not theirs while they can still act on it. Exposed over HTTP as {@code
+     * POST /auth/change-email} by {@code cloud-driver-plugin}'s {@code DefaultRestFactory}
+     * whenever it's constructed with an {@code AuthService}.
      *
      * @param authUserId the already-authenticated account requesting the change (from its own bearer token, not user input)
      * @param currentPassword the caller's current password, re-verified before anything is persisted or e-mailed - an access token alone must not be able to move the account
@@ -257,9 +281,13 @@ public interface IAuthService {
      * Completes an e-mail change previously started by {@link #requestEmailChange}: verifies
      * {@code code} against the pending change stored under {@code authUserId} (and that it hasn't
      * expired), then replaces the account's e-mail address with the pending change's own {@code
-     * newEmailAddress}. Does not return a fresh JWT - a signed token's subject is the account's
-     * id, never its e-mail address, so an already-authenticated caller's existing token remains
-     * valid across this change. Exposed over HTTP as {@code POST /auth/change-email/confirm}.
+     * newEmailAddress}. <b>Ends every session:</b> an address change moves where every future
+     * recovery mail goes, so every outstanding refresh token is revoked and every access token
+     * already issued is refused from the caller's next request on - each device must sign in
+     * again with the new address. No fresh JWT is returned, so a client must handle its next
+     * refresh failing with {@code 401} by prompting for a login rather than treating it as an
+     * error. The previous address, and the new one, are both notified that the move completed.
+     * Exposed over HTTP as {@code POST /auth/change-email/confirm}.
      *
      * @param authUserId the already-authenticated account confirming the change (from its own bearer token, not user input)
      * @param code the verification code e-mailed to the pending change's new address

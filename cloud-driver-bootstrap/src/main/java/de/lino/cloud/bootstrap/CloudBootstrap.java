@@ -22,6 +22,7 @@ import de.lino.cloud.api.s3storage.ObjectStorageService;
 import de.lino.cloud.api.utility.Asserts;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.cloud.api.utility.task.MultiTaskingFactory;
+import de.lino.cloud.auth.LegacyRowKeyMigration;
 import de.lino.cloud.auth.entity.StoredFileOwnership;
 import de.lino.cloud.plugin.DefaultCloudDriver;
 import de.lino.cloud.plugin.extension.ExtensionFolderScanner;
@@ -44,12 +45,16 @@ import lombok.NonNull;
 import software.amazon.awssdk.regions.Region;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -91,6 +96,8 @@ public final class CloudBootstrap {
                     , startPresignedUploadPurgeScheduler()
 
                     , startEventScheduler(DatabaseWatchEvent.class, ExtensionRegisterEvent.class, ExtensionUnregisterEvent.class)
+
+                    , migrateLegacyRowKeys()
 
                     , startExtensionsBootstrapScheduler(args)
 
@@ -336,10 +343,44 @@ public final class CloudBootstrap {
     }
 
     /**
-     * Registers every {@link Extension} found under {@code user.dir} (where {@link
-     * CloudBootstrapExtension} lives) and {@link Constraints#EXTENSIONS_PATH}, fires an {@link
+     * Moves any {@link de.lino.cloud.auth.entity.RefreshToken}/pending-registration/pending-reset
+     * row that is still filed under the value it is looked up by onto that value's digest - see
+     * {@link LegacyRowKeyMigration} for why only this process can do it.
+     *
+     * <p>Runs synchronously, and its position in {@link #main}'s startup array is the point: the
+     * array's elements are evaluated left to right on the calling thread, and {@link
+     * #startExtensionsBootstrapScheduler(String[])} is what brings the REST extension up. Running
+     * before it means the pass has finished before any route can serve a token refresh; running
+     * after it would race the first one.
+     *
+     * <p>Never fails the boot. A pass that could not finish leaves rows behind, and {@code
+     * AuthService} still resolves a presented value against its own key, so a session stays
+     * usable and the next boot finishes the job.
+     *
+     * @return a no-op shutdown action
+     */
+    private static Runnable migrateLegacyRowKeys() {
+        try {
+            LegacyRowKeyMigration.migrate(CLOUD_DRIVER.getFactoryContainer().getDataFactory());
+        } catch (final RuntimeException migrationFailed) {
+            Logger.getLogger(CloudBootstrap.class.getSimpleName()).log(Level.WARNING,
+                    "@CloudBootstrap.migrateLegacyRowKeys: could not re-key legacy rows - they stay resolvable "
+                            + "and the next boot retries", migrationFailed);
+        }
+        return () -> {};
+    }
+
+    /**
+     * Registers {@link CloudBootstrapExtension} directly, then every {@link Extension} found in
+     * {@link Constraints#EXTENSIONS_PATH} in file-name order, fires an {@link
      * ExtensionRegisterEvent} per registered extension, then starts all of them via {@link
      * ExtensionFactory#startAllAsync}.
+     *
+     * <p>Aborts the boot when two jars declare the same extension name, naming both files. The
+     * extensions folder is additive and every jar in it is version-suffixed, so a deploy that did
+     * not remove the previous release leaves two jars claiming one name; every jar found is
+     * registered before anything starts, so the process would otherwise come up dead with nothing
+     * an operator could act on.
      *
      * @param args arguments forwarded to each extension's {@code onRunning}
      * @return {@link ExtensionFactory#stopAll} as the shutdown action
@@ -355,19 +396,28 @@ public final class CloudBootstrap {
         // the JDBC driver) into metaspace on every boot, permanently, to find this one class that
         // was already on the classpath.
         extensionFactory.register(new CloudBootstrapExtension());
-        ExtensionFolderScanner.scan(Constraints.EXTENSIONS_PATH).forEach(extension -> {
-            try {
+
+        // Seeded from what is already registered, so a jar colliding with the host's own
+        // extension is reported the same way any other collision is.
+        final Map<String, String> declaringJarByName = new LinkedHashMap<>();
+        extensionFactory.getExtensions().forEach(registered ->
+                declaringJarByName.put(registered.getExtensionProperties().getExtensionName(), "the running bootstrap jar itself"));
+
+        for (final Map.Entry<Path, List<Extension>> jarEntry : ExtensionFolderScanner.scanByJar(Constraints.EXTENSIONS_PATH).entrySet()) {
+            final Path jarPath = jarEntry.getKey();
+            for (final Extension extension : jarEntry.getValue()) {
+                final String extensionName = extension.getExtensionProperties().getExtensionName();
+                final String previous = declaringJarByName.putIfAbsent(extensionName, jarPath.toString());
+                if (previous != null) {
+                    throw new IllegalStateException("@CloudBootstrap.startExtensionsBootstrapScheduler: the extension '"
+                            + extensionName + "' is declared twice - by " + previous + " and by " + jarPath
+                            + ". Two releases' jars are in " + Constraints.EXTENSIONS_PATH
+                            + " at once; delete the older one and restart. Every jar in that folder must come from the "
+                            + "same build as the bootstrap jar.");
+                }
                 extensionFactory.register(extension);
-            } catch (final IllegalStateException duplicateName) {
-                // Almost always a previous release's jar left beside the current one: the
-                // extensions folder is additive, so a deploy that does not prune leaves two jars
-                // claiming the same extension name. Say which name collided - the bare state
-                // exception gives an operator nothing to act on, and this happens before any
-                // extension starts, so the whole process comes up dead.
-                throw new IllegalStateException("@CloudBootstrap: two extension jars in " + Constraints.EXTENSIONS_PATH
-                        + " claim the same extension name - remove the stale release's jar. " + duplicateName.getMessage(), duplicateName);
             }
-        });
+        }
 
         CloudDriver.getInstance().getTerminal().emptyLine();
         extensionFactory.startAllAsync(args);

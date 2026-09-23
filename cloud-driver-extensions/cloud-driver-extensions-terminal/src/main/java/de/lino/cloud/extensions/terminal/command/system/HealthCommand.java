@@ -154,9 +154,12 @@ public class HealthCommand implements Command {
     }
 
     private void probeContentScan(final Terminal terminal, final ContentScanService contentScanService) {
-        this.probe(terminal, "ClamAV (clamd)", contentScanService != null,
+        // Published is not the same as live: a service whose extension has stopped has no workers
+        // left, so it reports as absent rather than as a scanner that simply cannot be reached.
+        final boolean live = contentScanService != null && contentScanService.isRunning();
+        this.probe(terminal, "ClamAV (clamd)", live,
                 () -> contentScanService.isScannerReachable());
-        if (contentScanService != null && !contentScanService.isScannerReachable()) {
+        if (live && !contentScanService.isScannerReachable()) {
             // Worth stating outright rather than leaving to be inferred: this is the one failure
             // here that silently removes a security control instead of a convenience.
             terminal.displayApproved("  &c! &7Uploads are being marked &fCLEAN &7without ever being scanned.");

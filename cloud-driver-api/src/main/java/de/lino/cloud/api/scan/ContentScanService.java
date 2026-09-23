@@ -60,4 +60,19 @@ public interface ContentScanService {
         return false;
     }
 
+    /**
+     * Whether this service is still accepting work. A service whose owning extension has been
+     * stopped answers {@code false}: its worker pool is gone, so a scan scheduled against it would
+     * never resolve, and a caller that stamps a file as awaiting a verdict on the strength of this
+     * service merely existing would make that file permanently unreadable.
+     *
+     * <p>Defaults to {@code true}, so an implementation with no lifecycle of its own keeps being
+     * treated as live.
+     *
+     * @return {@code true} while this service can still run scans
+     */
+    default boolean isRunning() {
+        return true;
+    }
+
 }

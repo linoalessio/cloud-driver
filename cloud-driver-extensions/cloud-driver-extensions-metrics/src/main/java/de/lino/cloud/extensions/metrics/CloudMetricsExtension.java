@@ -4,6 +4,8 @@ import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.extension.info.ExtensionStatus;
 import de.lino.cloud.api.factory.ExtensionFactory;
 import de.lino.cloud.api.factory.FileFactory;
+import de.lino.cloud.api.metrics.MetricsRecorder;
+import de.lino.cloud.api.metrics.MetricsSnapshotProvider;
 import de.lino.cloud.plugin.factory.DefaultFileFactory;
 import de.lino.database.json.JsonDocument;
 import io.micrometer.core.instrument.Gauge;
@@ -160,10 +162,7 @@ public class CloudMetricsExtension extends Extension {
     /** Stops {@link MetricsHttpServer}, if it was ever started. */
     @Override
     public void onEnding() {
-        // Withdraw before tearing anything down: a consumer that reads this facet while
-        // the extension is stopping must see it absent, not stopped-but-present.
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.metrics.MetricsRecorder.class);
-        this.cloudDriver().getServiceContainer().withdrawService(de.lino.cloud.api.metrics.MetricsSnapshotProvider.class);
+        this.withdrawPublishedServices();
         if (this.httpServer != null) {
             this.httpServer.stop();
             this.cloudDriver().getTerminal().displayApproved("&3Metrics endpoint &7successfully &cclosed&7.");
@@ -171,15 +170,27 @@ public class CloudMetricsExtension extends Extension {
     }
 
     /**
-     * Stops {@link MetricsHttpServer}, if it was ever started, and logs the failure.
+     * Withdraws the published facets, stops {@link MetricsHttpServer} if it was ever started, and
+     * logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(RuntimeException reason) {
+        this.withdrawPublishedServices();
         if (this.httpServer != null) this.httpServer.stop();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud metrics extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);
+    }
+
+    /**
+     * Takes this extension's facets back off the shared service container, on an ordinary stop and
+     * on a failed start alike - a consumer that reads one afterwards must see it absent, not
+     * stopped-but-present.
+     */
+    private void withdrawPublishedServices() {
+        this.cloudDriver().getServiceContainer().withdrawService(MetricsRecorder.class);
+        this.cloudDriver().getServiceContainer().withdrawService(MetricsSnapshotProvider.class);
     }
 
 }

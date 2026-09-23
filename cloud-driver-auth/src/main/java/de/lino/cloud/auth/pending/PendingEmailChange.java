@@ -17,11 +17,16 @@ import java.util.Objects;
  * already-authenticated account's own id), <b>not</b> {@code newEmailAddress} - the caller is
  * already identified via their bearer token by the time {@link AuthService#requestEmailChange}
  * runs, unlike {@link PendingRegistration}/{@link PendingPasswordReset}, which both key on the
- * address itself since neither has any other identity to key on yet. A repeated {@code
+ * digest of the address because the address is all their caller has yet. A repeated {@code
  * POST /auth/change-email} for the same account simply overwrites the previous attempt (a fresh
  * target address/code/expiry) via {@code EntityDatabaseClient#store}'s insert-then-update-on-
  * collision fallback, the same shape {@link PendingRegistration}/{@link PendingPasswordReset}
  * already use.
+ *
+ * <p>This key needs no digest of its own, and must not be given one: {@code authUserId} is a
+ * randomly generated account id, neither a credential nor personal data, so the plain-text {@code
+ * id} column the persistence layer writes reveals nothing an attacker could present or correlate
+ * - unlike the address the sibling rows would otherwise expose there.
  *
  * <p>Envelope-encrypted like every other {@link Serialized} entity, so the still-plaintext
  * verification code sitting here for up to {@link AuthService}'s configured TTL is protected at

@@ -27,7 +27,10 @@ implementation detail, the source (and its Javadoc) of the module in question is
 The backend is **one JVM process** (`cloud-driver-bootstrap`), not a fleet of independently deployed
 services. What look like separate "services" are `cloud-driver-extensions-*` modules: each one is a
 plain, unshaded jar dropped into an `extensions/` folder next to the running bootstrap jar, scanned
-and loaded into that same process at startup, and run on its own dedicated thread inside it. This
+(in file-name order, so the load order is the same on every host) and loaded into that same process
+at startup, and run on its own dedicated thread inside it. Two jars declaring the same extension
+name abort the boot before any extension starts — which is why an extension jar and the bootstrap
+jar must always be deployed from the same build. This
 gives most of the benefit of modular services — a feature can be built, versioned, and reasoned
 about independently — without the operational overhead of running and coordinating separate
 processes.
@@ -128,11 +131,13 @@ The codebase follows one rule almost everywhere: **`cloud-driver-api` defines th
 - **Optional facets are `null` until an extension publishes them.** `IServiceContainer` starts out
   empty: `CloudRestExtension` publishes the auth/cloud-user/audit/e-mail/live-update/rate-limit
   facets (and only when a `jwt-signing-key` is configured at all), and each feature extension
-  publishes its own on load — every one but the backup extension also withdrawing it again on
-  stop (`IServiceContainer#withdrawService`), so a stopped extension's facet reads as absent
-  rather than stopped-but-present. Every getter can therefore return `null`, and a consumer
-  reached before or without that extension must degrade rather than assume non-null — which is
-  what lets a deployment run with any subset of the eleven extension jars present.
+  publishes its own on load — **every** publishing extension withdrawing it again on stop *and* on
+  a failed start (`IServiceContainer#withdrawService`), so a stopped extension's facet reads as
+  absent rather than stopped-but-present. Every getter can therefore return `null`, and a consumer
+  must degrade rather than assume non-null **at runtime, not only at boot** — a facet that was
+  there on the previous request can be gone on this one. That is what lets a deployment run with
+  any subset of the eleven extension jars present, and what lets one be stopped and started again
+  without restarting the process.
 - **Abstract primitives + generic concrete async methods.** Every factory-shaped contract
   (`DataFactory`, `FileFactory`, `ExtensionFactory`, `EventFactory`, `RestFactory`) shares one
   shape: a handful of abstract synchronous primitives a concrete class must implement, plus every
@@ -189,7 +194,11 @@ same HTTP/WebSocket API).
   the live WebSocket push and the registered `FileChangeListener`s (malware scanning, thumbnail
   generation). A reload is attempted only as a fallback, when a first no-reload `findById` misses
   — reloading unconditionally on every notification once re-read the whole content-bearing table
-  per upload and exhausted the heap during a bulk extract.
+  per upload and exhausted the heap during a bulk extract. Dispatch sits behind a failure
+  boundary: anything handling a notification throws, an error included, is logged with the payload
+  and goes no further, because the notification listener is one long-lived thread whose loss would
+  silently end live push, content scanning and thumbnail generation together for the rest of the
+  process's life. Each registered listener is isolated from its siblings the same way.
 - **The offline-upload queue exists, but this deployment never uses it.** `DefaultFileFactory#upload`
   will queue a file into a `PendingUploadCache` when its `ConnectivityChecker` reports
   unavailable, and `PendingUploadScheduler` retries the queue every minute. `CloudBootstrap`
@@ -270,7 +279,11 @@ same HTTP/WebSocket API).
   single-instance — Redis is never a hard dependency. The lock window is the tick interval, so a
   restart inside a window whose work is already done is refused (and says so on the console)
   rather than repeating it; the backup job's `backup now` command deliberately bypasses the lock,
-  since an explicit operator backup must never be a silent no-op.
+  since an explicit operator backup must never be a silent no-op. Every periodic tick runs inside
+  the same failure boundary: a failing tick is logged (an error at `SEVERE`, since the process may
+  be poisoned) and the schedule keeps running — a `ScheduledExecutorService` otherwise cancels a
+  repeating task permanently the first time its body throws, and a cancelled schedule cannot be
+  restarted from the outside.
 - Hot per-user/per-file lookups (login by email, an account's file/folder listings, share and
   version resolution) go through keyed in-memory secondary indexes (`SecondaryIndexed` /
   `DataFactory.getEntitiesByIndex`), not full scans: each entity hand-declares its index keys (no

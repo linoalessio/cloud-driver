@@ -2,6 +2,8 @@ package de.lino.cloud.auth.jwt;
 
 import de.lino.cloud.api.jwt.InvalidJwtException;
 import de.lino.cloud.api.jwt.JwtSigner;
+import de.lino.cloud.api.jwt.VerifiedAccessToken;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -23,6 +25,12 @@ import java.util.Date;
  */
 public final class JjwtSigner implements JwtSigner {
 
+    /**
+     * Name of the claim carrying the account's session generation. Lives in the signed payload,
+     * never a header, so it cannot be stripped or rewritten without breaking the signature.
+     */
+    public static final String TOKEN_VERSION_CLAIM = "tv";
+
     /** The HMAC-SHA256 key derived from the signing key material passed to the constructor. */
     private final SecretKey key;
 
@@ -40,19 +48,23 @@ public final class JjwtSigner implements JwtSigner {
     }
 
     /**
-     * Issues a JWT asserting {@code subject}, signed with this instance's HMAC-SHA256 key and
-     * carrying {@code issuedAt}/{@code expiration} claims computed from the current instant.
+     * Issues a JWT asserting {@code subject} at session generation {@code tokenVersion}, signed
+     * with this instance's HMAC-SHA256 key and carrying {@code issuedAt}/{@code expiration}
+     * claims computed from the current instant.
      *
      * @param subject the identity to embed (e.g. {@link de.lino.cloud.api.jwt.user.AuthUser#getId()})
+     * @param tokenVersion the account's session generation at signing time, carried as {@link
+     *     #TOKEN_VERSION_CLAIM}
      * @param ttlSeconds how many seconds from now the token expires
      * @return the signed, compact JWT string
      */
     @Override
     @NotNull
-    public String sign(@NotNull final String subject, final long ttlSeconds) {
+    public String sign(@NotNull final String subject, final int tokenVersion, final long ttlSeconds) {
         final Instant now = Instant.now();
         return Jwts.builder()
                 .subject(subject)
+                .claim(TOKEN_VERSION_CLAIM, tokenVersion)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusSeconds(ttlSeconds)))
                 .signWith(this.key)
@@ -60,23 +72,36 @@ public final class JjwtSigner implements JwtSigner {
     }
 
     /**
-     * Verifies {@code token}'s signature and expiry against this instance's key, returning its subject.
+     * Verifies {@code token}'s signature and expiry against this instance's key, returning what it
+     * asserts.
      *
      * @param token the compact JWT string to verify
-     * @return the subject embedded in {@code token}
+     * @return the subject and session generation embedded in {@code token}
      * @throws InvalidJwtException if jjwt reports a bad signature, malformed token, or expiry
-     *     (wraps the underlying {@link JwtException})
+     *     (wraps the underlying {@link JwtException}), or the token carries no subject
      */
     @Override
     @NotNull
-    public String verify(@NotNull final String token) {
+    public VerifiedAccessToken verify(@NotNull final String token) {
         try {
-            return Jwts.parser()
+            final Claims claims = Jwts.parser()
                     .verifyWith(this.key)
                     .build()
                     .parseSignedClaims(token)
-                    .getPayload()
-                    .getSubject();
+                    .getPayload();
+
+            final String subject = claims.getSubject();
+            if (subject == null) {
+                throw new InvalidJwtException("@JjwtSigner.verify: invalid or expired token");
+            }
+
+            final Object rawVersion = claims.get(TOKEN_VERSION_CLAIM);
+            // Absent on a token signed before this claim existed - read as 0, the version every
+            // account starts at, so a token already in a client's hands keeps working until it
+            // expires. Read as a Number rather than a fixed type: the deserializer may hand back
+            // either an Integer or a Long.
+            final int tokenVersion = rawVersion instanceof Number number ? number.intValue() : 0;
+            return new VerifiedAccessToken(subject, tokenVersion);
         } catch (final JwtException e) {
             throw new InvalidJwtException("@JjwtSigner.verify: invalid or expired token", e);
         }

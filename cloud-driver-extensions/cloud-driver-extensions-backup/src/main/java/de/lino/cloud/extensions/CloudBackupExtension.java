@@ -1,5 +1,6 @@
 package de.lino.cloud.extensions;
 
+import de.lino.cloud.api.backup.BackupService;
 import de.lino.cloud.api.extension.Extension;
 import de.lino.cloud.api.utility.Constraints;
 import de.lino.database.database.auth.Credentials;
@@ -57,22 +58,28 @@ public class CloudBackupExtension extends Extension {
 
     }
 
-    /** Shuts the backup scheduler down, if it was ever constructed. */
+    /**
+     * Withdraws the published backup facet and shuts the backup scheduler down, if it was ever
+     * constructed - in that order, so nothing can reach a scheduler whose executor is gone.
+     */
     @Override
     public void onEnding() {
 
+        this.cloudDriver().getServiceContainer().withdrawService(BackupService.class);
         if (this.backupScheduler != null) this.backupScheduler.shutdown();
 
     }
 
     /**
-     * Shuts the backup scheduler down, if it was ever constructed, and logs the failure.
+     * Withdraws the published backup facet, shuts the backup scheduler down if it was ever
+     * constructed, and logs the failure.
      *
      * @param reason the exception that occurred
      */
     @Override
     public void onException(RuntimeException reason) {
 
+        this.cloudDriver().getServiceContainer().withdrawService(BackupService.class);
         if (this.backupScheduler != null) this.backupScheduler.shutdown();
         this.cloudDriver().getLogger().severe("An error occurred while trying to start the cloud backup extension.");
         this.cloudDriver().getLogger().log(Level.SEVERE, reason.getMessage(), reason);

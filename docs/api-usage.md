@@ -164,7 +164,7 @@ public final class DemoExtension extends Extension {
     @Override public void onRunning(String[] args) {
         this.cloudDriver().getTerminal().getCommandService().register(new MyCommand());
     }
-    @Override public void onEnding() { /* release resources */ }
+    @Override public void onEnding() { /* release resources and withdraw any service this extension published */ }
     @Override public void onException(RuntimeException reason) { /* report/recover */ }
 }
 ```
@@ -283,7 +283,8 @@ an actual request/response for the flows a client goes through most often. Every
 (`/auth/reset-password`, `/auth/reset-password/confirm`) — and the public-link download route, each
 of which carries its own authority in the request itself. The e-mail-change pair
 (`POST /auth/change-email`, `/auth/change-email/confirm`) and `GET /auth/me` are *not* exempt: they
-identify the account from the bearer token.
+identify the account from the bearer token. `POST /auth/change-email` additionally re-verifies the
+caller's current password, so the bearer token is necessary but not sufficient there — see §2.7.
 
 ### 2.1 Register, confirm, log in
 
@@ -400,6 +401,14 @@ curl -X DELETE "https://api.cloud-driver.de/files/upload-session/<fileId>" \
      -H "Authorization: Bearer $TOKEN"
 ```
 
+**Bounds.** Part numbers are `1..partCount` — a number outside that answers `400`; re-read
+`GET /files/upload-session/{id}` and continue rather than restarting, the session is untouched. An
+account may hold only so many sessions open at once (`409` at begin, configurable). Begin reserves
+the declared size against the account's quota alongside every other open pending upload (`413`),
+and the reservation is released by completion, by an abort, or by the retention sweep. The session
+routes have their own request budget, so a `429` means slow down — nothing uploaded is lost: poll
+the status and continue.
+
 The `encryption` object on the begin/status responses is not optional bookkeeping: the client
 must chunk-encrypt its content into the same v2 layout the server writes, using the
 server-issued (KEK-wrapped) content key, before uploading any part. Completion verifies the
@@ -436,6 +445,29 @@ the file's **owner**. Folder, share, webhook and account writes push nothing, an
 notified when a file shared with them changes. Server-side, the `cloud-driver-extensions-watcher`
 feature module installs a Postgres `LISTEN`/`NOTIFY` trigger on that one table. A logout or a
 server-side session revocation closes the socket rather than leaving it live.
+
+### 2.7 Change the account e-mail address
+
+```bash
+# Step 1: bearer token AND the current password. A code goes to the new address,
+# a notice to the old one.
+curl -X POST https://api.cloud-driver.de/auth/change-email \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"newEmail":"jane@newhost.com","currentPassword":"Str0ng!Pass9"}'
+# -> 202 Accepted  {"message": "..."}
+
+# Step 2: confirm the code the new address received.
+curl -X POST https://api.cloud-driver.de/auth/change-email/confirm \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"code":"123456"}'
+# -> 200 OK  {"message": "..."}
+```
+
+A missing field or a wrong current password answers `400`, never `401` — a client that treats
+`401` as "log in again" must not be signed out by a typo. Confirming ends every session: sign in
+again with the new address and the unchanged password.
 
 ## 3. Java client library (`cloud-driver-multiplatform-java`)
 
@@ -549,7 +581,7 @@ code:
 | `clear` | `clc`, `reset` | Clear the terminal window and reprint the banner. `reset` resolves here, so the word an operator reaches for at a console that has stopped redrawing repairs the screen |
 | `more` / `more all` / `more drop` | `m`, `next` | Print the next page of a command whose output did not fit on one screen (see "Paged output" below) |
 | `screen-leave` | `l`, `sl` | Detach the terminal session without killing the process |
-| `extensions` | `extension`, `ext` | List every registered extension and its status |
+| `extensions` | `extension`, `ext` | `extensions list` / `info <name>` / `start <name>` / `stop <name>` — list, inspect, start and stop extensions at runtime. `start` restarts one that is already running and reports the state it actually settled in. `cloud-driver-bootstrap` is refused for both (it hosts the process); `cloud-driver-terminal` is refused for `stop` (it owns every command, this one included) but can be restarted with `start`. Stopping an extension takes its published services back off the service container, so the subsystems behind them report as absent until it is started again |
 | `dispatch <service> [args...]` / `dispatch stream …` / `dispatch status` / `dispatch cancel <id>` or `cancel all` | `exec`, `d` | Run a system-level command as the server process. Its standard input is closed, so a child that prompts fails fast instead of hanging; its output is paged when it exits (`dispatch stream …` prints it live instead); `dispatch status` and `dispatch cancel` list and stop what is still running; every dispatched line is recorded in the audit trail |
 | `statistics` | `stats` | Basic counts (accounts, files, uploaded bytes) — computed from row metadata only, never by fetching file content. One caveat: the first run against a corpus migrated to S3 before 2026-09-10 resolves each still-sizeless row's content once and backfills its size onto the row, so that run is slow and every later one fast |
 | `cloudUser list` / `info <email>` / `reset <email> [confirm]` / `delete <email> [confirm]` / `limit <email> <bytes> <unit>` (unit: `B`/`KB`/`MB`/`GB`) | `cu`, `user` | Inspect/manage one or every account. `reset` and `delete` are armed, then confirmed within 15s; `reset` destroys every file and folder the account owns, bypassing the trash entirely |
@@ -570,7 +602,7 @@ useful answer:
 | `config` | `cfg`, `configuration` | The configuration this process is *running with*, secrets redacted — not what the file on disk currently says |
 | `reload` | `refresh` | Re-read one entity type's section from the database, discarding this process's cached mirror (a row written by another process is otherwise invisible indefinitely) |
 | `file <id>` | `storedFile` | Everything known about one file in one place — the `StoredFile`, its ownership row, trash state, scan verdict, versions, shares |
-| `session list <email>` / `revoke …` | `sessions` | List and revoke an account's refresh tokens. Only refresh tokens are revocable; the access JWT is stateless and lives out its 12 hours |
+| `session list <email>` / `revoke …` | `sessions` | List an account's refresh tokens, or end its sessions outright. `revoke` revokes every refresh token *and* advances the account's session generation, so every already-issued access token is refused on its next request rather than living out its 12 hours; the account's live-update sockets are closed too |
 | `share list <email>` / `share links [email]` / `share revoke-link[s] …` | `shares` | What an account has shared — grants to other accounts, and public links (the one unauthenticated read path in the system); `revoke-link`/`revoke-links` kill a leaked link, armed then confirmed within 15s |
 | `trash` | `recycleBin` | Deployment-wide recycle-bin view: trashed items still occupy storage and still count against quota until the retention window elapses |
 | `backup now` / `backup status` | `db` | Take a backup on demand (deliberately bypassing the Redis scheduler lock, so an explicit operator backup is never a silent no-op) and check whether the scheduled one is actually running |
@@ -580,6 +612,12 @@ useful answer:
 | `scan` | `contentScan` | Content-scan visibility and on-demand rescans — scanning fails open, so files marked clean unscanned need a way to be revisited |
 | `mail` | `email` | Send a test message through whichever `EmailSender` the startup fallback actually selected (SES → SMTP → log-only) |
 | `s3` / `s3 purge` / `s3 purge confirm` | `objectStorage` | Reconcile the bucket against the `StoredFile` rows that reference it. `s3` alone is read-only; `s3 purge` arms deleting the objects nothing references and `s3 purge confirm`, within 15 seconds, performs it and records what was removed |
+
+Stopping an extension is reversible, but not free while it is down. A file uploaded while
+`cloud-driver-scan` was running is recorded as awaiting a verdict, and a file in that state stays
+unreadable until some scan resolves it — so stopping that extension leaves those files
+inaccessible until it is back. The way out is `extensions start cloud-driver-scan` followed by
+`scan rescan all`.
 
 ### Interrupt and shutdown
 

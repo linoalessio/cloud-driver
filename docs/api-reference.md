@@ -37,9 +37,9 @@ prefer the header wherever one can be set.
 | `/auth/refresh` | POST | Exchange a still-valid refresh token for a fresh pair (rotates on use) |
 | `/auth/logout` | POST | Invalidate a refresh token |
 | `/auth/reset-password` | POST | Start a forgotten-password reset — e-mails a code |
-| `/auth/reset-password/confirm` | POST | Confirm the code and set a new password |
-| `/auth/change-email` | POST | Start an e-mail change (bearer-gated) — e-mails a code to the new address |
-| `/auth/change-email/confirm` | POST | Confirm the code and apply the change |
+| `/auth/reset-password/confirm` | POST | Confirm the code and set a new password — **ends every other session immediately** (refresh tokens revoked, already-issued access tokens refused on their next request); the caller keeps the fresh pair this call returns |
+| `/auth/change-email` | POST | Start an e-mail change (bearer-gated). Body `{"newEmail", "currentPassword"}` — the caller's **current password** is re-verified before anything is persisted or e-mailed, so a stolen access token alone cannot move an account. `400` if either field is missing or the password is wrong (deliberately not `401`, which clients treat as "log in again"); `409` if another account already holds the address. On success a code is e-mailed to the new address and a notice to the current one |
+| `/auth/change-email/confirm` | POST | Confirm the code and apply the change. **Every session ends**: refresh tokens are revoked and every already-issued access token is refused on its next request, so each device must sign in again with the new address. Both the previous and the new address are notified that the move completed. Response is `200` + `{"message"}` — no token pair is returned, so a client must handle its next `/auth/refresh` `401` by prompting for a login |
 | `/auth/me` | GET | The caller's own account id, email, and admin flag |
 
 How the token pair moves through a session:
@@ -172,11 +172,14 @@ Available when the webhooks extension is running (`503` otherwise).
 | `/files/upload-url` | POST | Get a presigned upload URL, bypassing the backend for the data itself. Body may carry `checksumSha256` (plaintext SHA-256, lowercase hex) to opt into the dedup precheck: a match against content the account already stores answers `{"alreadyStored": <summary>}` instead of a ticket — nothing to upload |
 | `/files/{id}/complete-upload` | POST | Finalize a presigned upload |
 | `/files/{id}/download-url` | GET | Get a presigned download URL |
-| `/files/upload-session` | POST | Begin a **resumable multipart upload session** (large files): same body as `/files/upload-url` but `checksumSha256` required; answers `{"alreadyStored": ...}` on a dedup hit, otherwise the session's geometry (`fileId`, `partSizeBytes` = 8 MiB, `partCount`, `totalObjectBytes`, `encryption`, `checksumSha256`). The declared `checksumSha256` is recorded on the session and echoed back in that geometry — the session is bound to that one content for its whole lifetime. `503` when not configured |
+| `/files/upload-session` | POST | Begin a **resumable multipart upload session** (large files): same body as `/files/upload-url` but `checksumSha256` required; answers `{"alreadyStored": ...}` on a dedup hit, otherwise the session's geometry (`fileId`, `partSizeBytes` = 8 MiB, `partCount`, `totalObjectBytes`, `encryption`, `checksumSha256`). The declared `checksumSha256` is recorded on the session and echoed back in that geometry — the session is bound to that one content for its whole lifetime. `503` when not configured. The declared size is reserved against the account's quota alongside every other open pending upload for as long as the session lives (`413` when it does not fit); `409` when the account already holds the maximum number of open sessions (configurable, see [configuration.md](configuration.md)); a declared size needing more than 10,000 parts at the 8 MiB part size is refused up front |
 | `/files/upload-session/{id}` | GET | The session's durable progress: geometry + `uploadedPartNumbers` (asked of the object store itself) + recovered `encryption` + `checksumSha256`, the digest the session was begun for — a crashed client resumes with nothing but the session id, re-sending only missing parts. A resume must present that exact content; a client whose local file no longer matches aborts the session and begins a new one |
-| `/files/upload-session/{id}/parts/{n}/url` | POST | Presign one part's upload URL — the client `PUT`s that part's byte range of its object stream there directly |
+| `/files/upload-session/{id}/parts/{n}/url` | POST | Presign one part's upload URL — the client `PUT`s that part's byte range of its object stream there directly. `n` must lie within `1..partCount` from the begin/status geometry; outside that range answers `400` (the session is untouched — re-read it and continue), an unknown or foreign session `404`. The session routes share their own rate-limit budget (`429`), separate from the general read budget |
 | `/files/upload-session/{id}/complete` | POST | Assemble the parts and run the standard completion (same body/response/verification as `/files/{id}/complete-upload`). A `checksumSha256` other than the one the session was begun for is refused with `409`, before anything is assembled — abort and start a new session |
 | `/files/upload-session/{id}` | DELETE | Abort the session — the store discards uploaded parts (it bills for them until told). Idempotent |
+
+The quota reservation is released by completion, by an abort, and by the retention sweep, so an
+abandoned session never permanently consumes quota.
 
 Clients fall back to the ordinary upload/download routes automatically if this isn't configured on
 a given deployment (surfaced as a `503` response).
@@ -221,7 +224,14 @@ client. Both begin responses carry an `encryption` object alongside the URL:
   suspended by an operator (`This account is suspended`). A suspension takes effect on the
   account's very next request rather than when its current access token expires, so a client must
   treat any `401` as "log in again". A suspended account's `POST /auth/login` is refused with the
-  same error as a wrong password, so suspension is never observable from outside.
+  same error as a wrong password, so suspension is never observable from outside. A `401` also
+  follows a password reset, an e-mail change or an operator's forced sign-out performed on any
+  other device: every access token carries the account's session generation, and those actions
+  advance it, so tokens issued before the change stop validating at once instead of living out
+  their 12 hours.
+- `400` on `POST /auth/change-email` means the body is incomplete or the current password is
+  wrong. A failed re-authentication is deliberately **not** `401`, because `401` is reserved for
+  "this session is over" and would sign the user out of a client that mistyped a password.
 - Reading a record the caller doesn't own yields `404`, never `403` — existence is not confirmed.
 - A file that hasn't finished malware scanning yields `409` on download; a flagged file yields
   `403`.

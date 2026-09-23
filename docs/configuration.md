@@ -53,7 +53,7 @@ any of them.
 | `thumbnail-max-source-bytes` | long | 64 MiB | Preview generation (`cloud-driver-extensions-thumbnails`) — a larger file simply gets no thumbnail |
 | `thumbnail-max-decoded-pixels` | long | `50000000` | Raster budget the image decoder and the PDF renderer both refuse to exceed, checked against the image header and the PDF crop box before any raster is allocated |
 | `thumbnail-render-timeout-seconds` | long | `20` | A decode or render that runs longer is abandoned and logged; the file keeps no thumbnail |
-| `api-rate-limit-read-max-requests` | int | `300` | Per-identity limit — the authenticated account when there is one, otherwise the client address. Covers every GET/HEAD **and** the low-volume writes: any method under `/webhooks`, and any path ending in `/share` or `/public-link`. `GET /files/{id}/thumbnail` is exempt; `/public/…` is not covered by this budget at all — it has the two dedicated keys below |
+| `api-rate-limit-read-max-requests` | int | `300` | Per-identity limit — the authenticated account when there is one, otherwise the client address. Covers every GET/HEAD **and** the low-volume writes: any method under `/webhooks`, and any path ending in `/share` or `/public-link`. `GET /files/{id}/thumbnail` is exempt; `/public/…` is not covered by this budget at all — it has the two dedicated keys below, and `/files/upload-session…` is metered under its own budget instead |
 | `api-rate-limit-read-window-seconds` | long | `60` | Per-user read rate limit window |
 | `public-download-rate-limit-max-requests` | int | `30` | Anonymous public-link downloads (`GET /public/files/{token}`) — their own, tighter budget, in a bucket keyed on the client address **and** the link token, so neither one link nor one client can exhaust the allowance of the others |
 | `public-download-rate-limit-window-seconds` | long | `60` | Public-link download rate limit window |
@@ -61,6 +61,9 @@ any of them.
 | `file-versioning-retention-days` | long | `30` | Version pruning by age |
 | `presigned-upload-ticket-retention-hours` | long | `6` | Orphaned presigned-upload cleanup (S3 deployments only) |
 | `resumable-upload-session-retention-hours` | long | `72` | How long an unfinished resumable upload session survives before it is dropped and its multipart upload aborted |
+| `resumable-upload-max-open-sessions-per-account` | int | `8` | How many resumable upload sessions one account may hold open at once; each open session also reserves its declared size against the account's upload quota until it completes, is aborted, or is aged out |
+| `upload-session-rate-limit-max-requests` | int | `1200` | Per-identity budget for the `/files/upload-session…` routes (begin, status, part URL, complete, abort), in its own bucket so it neither consumes nor is consumed by the general read budget |
+| `upload-session-rate-limit-window-seconds` | long | `60` | Window for the upload-session budget |
 | `cloud-server-max-bytes-available` | long | **no default** — the terminal's `cloudUser limit`/`stats` commands fail without it | Operator terminal storage commands |
 
 Where the three files live, who reads them, and what a missing value costs:
@@ -127,9 +130,19 @@ flowchart TD
   resolve through the AWS SDK's own default credential provider chain (environment, shared config
   file, instance role, etc.), deliberately keeping a third place a secret could be committed by
   mistake out of the picture.
-- `trust-proxy-headers` is only safe to enable behind a deployment topology where exactly one
-  trusted reverse-proxy hop sits in front of the backend and no client can reach it directly.
-  Enabling it otherwise lets a client spoof its own rate-limit identity.
+- Behind exactly one reverse proxy that is the only way to reach the backend, set
+  `trusted-proxy-addresses` to the address the proxy connects from (`127.0.0.1` in the reference
+  deployment) and leave `trust-proxy-headers` on for consistency. Only the rightmost entry of the
+  header is read.
+- Leaving both unset behind a proxy is not the safe default it looks like: every request then keys
+  on the proxy's own address, so all callers share one `/auth/*` window (10 requests per 5 minutes
+  by default) and a single host can hold everyone at `429`.
+- Setting either while clients can reach the JVM directly — a non-loopback `rest-server-bind-host`
+  with no proxy in front — lets a client choose its own rate-limit identity. The two keys belong
+  only with a loopback bind behind a proxy.
+- A deployment carrying only the older boolean keeps working unchanged: it means "trust a loopback
+  peer". The allowlist makes that explicit and takes precedence whenever it is present and
+  non-blank.
 - Widening `metrics-bind-host` beyond loopback is a real access-control decision — the metrics
   endpoint carries no authentication of its own.
 - `intelligence-shared-secret` must match `CLOUD_DRIVER_INTELLIGENCE_SECRET` on the Python
