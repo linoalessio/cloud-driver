@@ -12,7 +12,7 @@ import shlex
 
 from cloud_driver_installer.config_files import render_postgres_credentials, render_redis_credentials, to_json
 from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
-from cloud_driver_installer.model import InstallPlan
+from cloud_driver_installer.model import LOOPBACK_HOSTS, InstallPlan
 from cloud_driver_installer.credentials import generate_hex
 
 #: Dollar-quoting tag for passwords inside SQL: hex passwords can never contain it.
@@ -292,7 +292,7 @@ class RedisStep(Step):
         plan = ctx.plan.redis
         if self._ping(ctx, ctx.secrets.redis_password):
             return VerifyResult(True, f"PING answered on {plan.host}:{plan.port}")
-        return VerifyResult(False, f"no PONG from {plan.host}:{plan.port} - check the password and the bind address")
+        return VerifyResult(False, f"no PONG from {plan.host}:{plan.port} - {self._ping_problem(ctx)}")
 
     def describe(self, plan: InstallPlan) -> str:
         redis = plan.redis
@@ -332,6 +332,27 @@ class RedisStep(Step):
 
         current = parse_json(ctx.remote.read_text(f"{ctx.plan.config_dir}/redis-database.json"))
         return current == render_redis_credentials(ctx.plan, password)
+
+    def _ping_problem(self, ctx: Context) -> str:
+        """Why the PING went unanswered, in terms of what the operator can change here.
+
+        The common one is a host that is not loopback while redis-server on this very machine is
+        bound to it: the address answers nothing, and the same address would have been written
+        into ``redis-database.json`` for the backend to fail on next.
+        """
+        plan = ctx.plan.redis
+        if not ctx.remote.command_exists("redis-cli"):
+            return "redis-cli is not installed on the server, so nothing can be probed from it"
+        if plan.host not in LOOPBACK_HOSTS and ctx.remote.dpkg_installed("redis-server"):
+            config = ctx.remote.read_text("/etc/redis/redis.conf") or ""
+            if any(line.strip().startswith("bind 127.0.0.1") for line in config.splitlines()):
+                return (
+                    f"redis-server on this host listens on 127.0.0.1 only, so {plan.host} can never answer - "
+                    "set the host to 127.0.0.1 and the mode to 'Install on this server'"
+                )
+        if plan.mode == "external":
+            return "check the password, that server's bind address and any firewall between this server and it"
+        return "check the password and the bind address"
 
     def _ping(self, ctx: Context, password: str) -> bool:
         plan = ctx.plan.redis

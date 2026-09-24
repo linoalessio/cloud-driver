@@ -107,6 +107,57 @@ def test_summary_lists_every_step_and_the_next_steps(window) -> None:
     assert "admin grant" in summary.next_steps.cget("text")
 
 
+def test_the_window_offers_one_button_for_the_whole_deployment(window) -> None:
+    assert str(window.remove_all_button.cget("text")).startswith("Remove everything")
+
+
+def test_the_removal_dialog_arms_only_on_this_server_s_address(window) -> None:
+    """The typed host is what separates a misplaced click from a wiped production server."""
+    from cloud_driver_installer.gui.removal import RemoveEverythingDialog
+    from cloud_driver_installer.removal import removal_steps
+
+    window.state.plan.ssh.host = "203.0.113.10"
+    dialog = RemoveEverythingDialog(window.root, window.state)
+    try:
+        assert len(dialog.items) == len(removal_steps())
+        assert "disabled" in dialog.remove_button.state()
+        dialog.typed.set("203.0.113.1")
+        assert "disabled" in dialog.remove_button.state(), "a prefix of the host must not arm it"
+        dialog.typed.set("203.0.113.10")
+        assert "disabled" not in dialog.remove_button.state()
+        dialog._accept()
+        assert dialog.confirmed
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_an_unfinished_plan_still_lets_the_server_be_wiped(window, monkeypatch) -> None:
+    """Removal must not need a plan that could be installed - only fields that still parse."""
+    from cloud_driver_installer.gui import app as app_module
+
+    removals: list[str] = []
+    window.pages["application"].repo_root.set("")  # "repository root is required" blocks an install
+    monkeypatch.setattr(window.worker, "remove_all", lambda: removals.append("wipe"))
+    monkeypatch.setattr(app_module, "ask_remove_everything", lambda parent, state: True)
+    window.remove_everything()
+    assert removals == ["wipe"]
+    assert not window.store_pages(), "the same plan is still refused for an install"
+
+
+def test_a_cancelled_removal_deletes_nothing(window, monkeypatch) -> None:
+    from cloud_driver_installer.gui import app as app_module
+
+    removals: list[str] = []
+    monkeypatch.setattr(window.worker, "remove_all", lambda: removals.append("wipe"))
+    monkeypatch.setattr(app_module, "ask_remove_everything", lambda parent, state: False)
+    window.remove_everything()
+    assert removals == []
+    monkeypatch.setattr(app_module, "ask_remove_everything", lambda parent, state: True)
+    window.remove_everything()
+    assert removals == ["wipe"]
+
+
 def test_worker_redacts_before_the_log(plan: InstallPlan) -> None:
     state = AppState(plan=plan)
     state.remote = FakeRemote(default_ok=True)

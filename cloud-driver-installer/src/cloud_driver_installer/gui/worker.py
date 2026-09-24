@@ -112,6 +112,10 @@ class Worker:
         """Delete a single step's footprint from the server, then re-check it."""
         self._start("remove", lambda ctx: self.runner.remove_one(ctx, self.runner.by_id[step_id]))
 
+    def remove_all(self) -> None:
+        """Delete every step's footprint from the server, newest first, past any single failure."""
+        self._start("remove", lambda ctx: self.runner.remove_all(ctx))
+
     def run_all(self, *, start_at: str | None = None) -> None:
         """Run every selected step in order."""
         self._start("install", lambda ctx: self.runner.run(ctx, set(self.state.included), start_at=start_at))

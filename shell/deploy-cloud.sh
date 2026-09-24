@@ -74,9 +74,14 @@ sha256_of() {
     fi
 }
 
-SSH_CONTROL_DIR="$(mktemp -d)"
+# The control socket must live at a short path: a Unix domain socket path is capped (104 bytes on
+# macOS, 108 on Linux), and macOS' default $TMPDIR is a ~50-character /var/folders/... path, so
+# `mktemp -d` plus a "cm-user@host:port" name overflows it and every ssh call fails with
+# "unix_listener: path ... too long for Unix domain socket". Hence a fixed short base and %C (a
+# hash of the connection's user/host/port/local-user) instead of the expanded names.
+SSH_CONTROL_DIR="$(mktemp -d /tmp/cd-deploy.XXXXXX)"
 FAILURE_MARKER_DIR="$(mktemp -d)"
-SSH_OPTS=(-o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_DIR/cm-%r@%h:%p" -o "ControlPersist=60s")
+SSH_OPTS=(-o "ControlMaster=auto" -o "ControlPath=$SSH_CONTROL_DIR/cm-%C" -o "ControlPersist=60s")
 
 cleanup() {
     ssh "${SSH_OPTS[@]}" -O exit "$REMOTE_HOST" >/dev/null 2>&1 || true

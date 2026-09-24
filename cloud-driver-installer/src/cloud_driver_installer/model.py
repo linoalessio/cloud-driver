@@ -47,6 +47,11 @@ _KMS_ALIAS_RE = re.compile(r"^alias/[A-Za-z0-9/_-]{1,250}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PG_IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
+#: Addresses that mean "this very machine". A data store the installer sets up itself is bound to
+#: loopback, so its host has to be one of these - naming the server's own public address instead
+#: writes that address into the credentials file and nothing can then answer on it.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]", "0:0:0:0:0:0:0:1")
+
 
 # --- settings groups ---------------------------------------------------------------------------
 
@@ -321,6 +326,11 @@ class InstallPlan:
             problems.append("PostgreSQL: username must be a simple lowercase identifier")
         if pg.mode == "external" and not pg.password:
             problems.append("PostgreSQL: a password is required for an external server")
+        if pg.mode == "install" and pg.host and pg.host not in LOOPBACK_HOSTS:
+            problems.append(
+                f"PostgreSQL: a server installed here only listens on loopback, so the host must be 127.0.0.1, not {pg.host} - "
+                "choose 'Use an external server' if the database really runs somewhere else"
+            )
 
         rd = self.redis
         if rd.enabled:
@@ -336,6 +346,12 @@ class InstallPlan:
                 problems.append("Redis: database must be a numeric index (the backend parses it as an integer)")
             if rd.mode == "external" and not rd.password:
                 problems.append("Redis: a password is required for an external server")
+            if rd.mode == "install" and rd.host and rd.host not in LOOPBACK_HOSTS:
+                problems.append(
+                    f"Redis: this step binds redis-server to 127.0.0.1, so the host must be 127.0.0.1, not {rd.host} - "
+                    "the server's own public address can never answer, and it would be written into redis-database.json as well; "
+                    "choose 'Use an external server' if Redis really runs somewhere else"
+                )
 
         cl = self.clamav
         if cl.enabled:
@@ -781,7 +797,7 @@ def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgr
                     setattr(plan.postgres, attr, kind(postgres[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.postgres.host not in ("127.0.0.1", "localhost", "::1"):
+        if plan.postgres.host not in LOOPBACK_HOSTS:
             plan.postgres.mode = "external"
         taken.append(f"PostgreSQL {plan.postgres.username}@{plan.postgres.host}:{plan.postgres.port}/{plan.postgres.database}")
     if redis:
@@ -792,7 +808,7 @@ def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgr
                     setattr(plan.redis, attr, kind(redis[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.redis.host not in ("127.0.0.1", "localhost", "::1"):
+        if plan.redis.host not in LOOPBACK_HOSTS:
             plan.redis.mode = "external"
         taken.append(f"Redis {plan.redis.host}:{plan.redis.port}")
     return taken

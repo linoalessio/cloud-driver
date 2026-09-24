@@ -341,6 +341,34 @@ class Runner:
         self.check_one(ctx, step)
         return True
 
+    def remove_all(self, ctx: Context, steps: Iterable[Step] | None = None) -> bool:
+        """Delete every step's footprint, newest first; returns whether all of them succeeded.
+
+        Unlike :meth:`run` this does not stop at the first failure. A wipe that gave up halfway
+        would leave the server in a state neither a later run nor the operator can reason about
+        ("is the jar still there? was the database dropped?"), so every remaining step is removed
+        anyway and the failures are reported together at the end.
+
+        The selection is deliberately ignored - see
+        :func:`~cloud_driver_installer.removal.removal_steps`.
+        """
+        from cloud_driver_installer.removal import removal_steps, retained_items
+
+        order = list(steps) if steps is not None else removal_steps(self.steps)
+        ctx.log("WARN", f"removing {len(order)} steps, newest first: " + " → ".join(step.title for step in order))
+        failed: list[str] = []
+        for step in order:
+            ctx.check_cancelled()
+            if not self.remove_one(ctx, step):
+                failed.append(step.title)
+        for line in retained_items(ctx.plan):
+            ctx.log("INFO", f"kept: {line}")
+        if failed:
+            ctx.log("ERROR", f"removal finished with {len(failed)} failed step(s): {', '.join(failed)} - re-run it, every remove is idempotent")
+        else:
+            ctx.log("OK", f"removed {len(order)} steps - nothing this installer deployed is left on the server")
+        return not failed
+
     def run(self, ctx: Context, included: set[str], *, start_at: str | None = None) -> bool:
         """Run every selected step in order; stops at the first failure. ``start_at`` resumes."""
         selected, reasons = self.effective_selection(ctx, included)

@@ -94,6 +94,8 @@ PROBLEM_CASES: list[tuple[str, Mutator, str]] = [
     ("redis-database-alpha", set_fields("redis", database="cache"), "Redis: database must be a numeric index"),
     ("redis-database-blank", set_fields("redis", database=""), "Redis: database must be a numeric index"),
     ("redis-external-password", set_fields("redis", mode="external", password=""), "Redis: a password is required for an external server"),
+    ("redis-install-public-host", set_fields("redis", host="82.165.48.39"), "the host must be 127.0.0.1, not 82.165.48.39"),
+    ("postgres-install-public-host", set_fields("postgres", host="82.165.48.39"), "the host must be 127.0.0.1, not 82.165.48.39"),
     ("clamav-port", set_fields("clamav", port=0), "ClamAV: port must be 1-65535"),
     ("clamav-stream-max-below-scan-max", set_fields("clamav", stream_max_length="64M"), "StreamMaxLength (64M) must not be below content-scan-max-bytes"),
     ("clamav-max-file-size-below-scan-max", set_fields("clamav", max_file_size="64M"), "MaxFileSize (64M) must not be below content-scan-max-bytes"),
@@ -192,6 +194,13 @@ class TestValidate:
     def test_disabled_feature_is_not_validated(self, plan: InstallPlan, mutate: Mutator) -> None:
         """Fields of a switched-off feature may hold anything."""
         mutate(plan)
+        assert plan.validate() == []
+
+    @pytest.mark.parametrize("group", ["postgres", "redis"])
+    def test_an_external_store_may_live_anywhere(self, plan: InstallPlan, group: str) -> None:
+        """The loopback rule is about what this installer binds itself, not about someone else's server."""
+        settings = getattr(plan, group)
+        settings.mode, settings.host, settings.password = "external", "store.example.com", "secret"
         assert plan.validate() == []
 
     def test_max_scan_size_is_exempt_from_the_scan_limit_check(self, plan: InstallPlan) -> None:

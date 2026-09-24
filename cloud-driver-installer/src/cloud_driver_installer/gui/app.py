@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from cloud_driver_installer.engine import StepEvent, StepStatus
 from cloud_driver_installer.gui.log import LogPane
 from cloud_driver_installer.gui.pages import PAGES, PageActions, page_ids
+from cloud_driver_installer.gui.removal import ask_remove_everything
 from cloud_driver_installer.gui.state import AppState
 from cloud_driver_installer.gui.widgets import COLORS, FONTS, SPACE, Check, ScrollFrame, StatusDot, install_wheel_router
 from cloud_driver_installer.gui.worker import JobDone, LogEvent, ProbeResult, ProgressEvent, Worker
@@ -111,6 +112,8 @@ class MainWindow(ttk.Frame):
         server_menu.add_command(label="Check all", command=self.check_all)
         server_menu.add_command(label="Install selected steps", command=self.install)
         server_menu.add_command(label="Stop", command=self.worker.cancel)
+        server_menu.add_separator()
+        server_menu.add_command(label="Remove everything from the server…", command=self.remove_everything)
         menubar.add_cascade(label="Server", menu=server_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.about)
@@ -130,6 +133,10 @@ class MainWindow(ttk.Frame):
         secondary.pack(fill="x", pady=(SPACE["sm"], 0))
         ttk.Button(secondary, text="Check all", command=self.check_all).pack(side="left", fill="x", expand=True)
         ttk.Button(secondary, text="Stop", style="Ghost.TButton", command=self.worker.cancel).pack(side="left", padx=(SPACE["sm"], 0))
+        # Furthest from the primary action, and the only button in the window that undoes a whole
+        # deployment - it opens the confirmation dialog, never the removal itself.
+        self.remove_all_button = ttk.Button(buttons, text="Remove everything…", style="Danger.TButton", command=self.remove_everything)
+        self.remove_all_button.pack(fill="x", pady=(SPACE["md"], 0))
         ttk.Label(self.sidebar, text="STEPS", style="Faint.TLabel").pack(anchor="w", padx=SPACE["md"], pady=(SPACE["md"], SPACE["xs"]))
         scroller = ScrollFrame(self.sidebar)
         scroller.canvas.configure(background=COLORS["paper"])
@@ -209,8 +216,14 @@ class MainWindow(ttk.Frame):
             page.load(self.state.plan)
             page.refresh(self.state)
 
-    def store_pages(self) -> bool:
-        """Pull every page into the plan; shows the first problem and jumps to its page."""
+    def store_pages(self, *, validate: bool = True) -> bool:
+        """Pull every page into the plan; shows the first problem and jumps to its page.
+
+        ``validate=False`` keeps the per-field parsing (a port that is not a number must never
+        reach the plan) but skips :meth:`InstallPlan.validate`: removing something does not need a
+        plan that could be installed, and a missing repository root or an unverified SES identity
+        must not stand between the operator and deleting what is already on the server.
+        """
         for page_id, page in self.pages.items():
             try:
                 page.store(self.state.plan)
@@ -219,7 +232,7 @@ class MainWindow(ttk.Frame):
                 self.show(page_id)
                 page.show_error(str(exc))
                 return False
-        problems = self.state.plan.validate(self.state.discovered)
+        problems = self.state.plan.validate(self.state.discovered) if validate else []
         if problems:
             messagebox.showerror("Fix these first", "\n\n".join(f"• {problem}" for problem in problems))
             return False
@@ -252,7 +265,7 @@ class MainWindow(ttk.Frame):
         directory, which site block), and the dialog quotes the step's own ``describe_removal`` -
         this is the operator's last look at exactly what is about to be deleted.
         """
-        if not self.store_pages():
+        if not self.store_pages(validate=False):
             return
         step = self.worker.runner.by_id[step_id]
         if not step.removable:
@@ -270,6 +283,25 @@ class MainWindow(ttk.Frame):
             return
         self.started_at = time.monotonic()
         self.worker.remove_one(step_id)
+
+    def remove_everything(self) -> None:
+        """Wipe the whole deployment off the server, after the operator confirms every part of it.
+
+        Removal reads the plan (which database, which install directory, which site block), so the
+        pages are stored first; the dialog then lists every step's own ``describe_removal`` in
+        removal order and only arms its button once the server's address has been typed.
+        """
+        if not self.store_pages(validate=False):
+            return
+        if self.worker.busy:
+            messagebox.showinfo("Still running", "A job is still running - wait for it to finish or press Stop first.")
+            return
+        if not ask_remove_everything(self.root, self.state):
+            self.log.append("INFO", "removal cancelled - nothing was deleted")
+            return
+        self.log.append("WARN", f"removing every step from {self.state.plan.ssh.label()}")
+        self.started_at = time.monotonic()
+        self.worker.remove_all()
 
     def install(self) -> None:
         """Run every selected step in order."""

@@ -259,6 +259,26 @@ def test_redis_apply_writes_credentials_without_leaking_them(ctx: Context, remot
     assert no_secret_in_commands(ctx, remote, ctx.secrets.redis_password)
 
 
+def test_a_failed_ping_names_the_loopback_bind_rather_than_the_password(ctx: Context, remote: FakeRemote) -> None:
+    """The usual cause of a silent PING is a host that is not loopback while Redis only binds it."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("redis-cli", (0, ""))  # answers, but with no PONG
+    remote.files["/etc/redis/redis.conf"] = "bind 127.0.0.1 -::1\nrequirepass x\n"
+    ctx.plan.redis.host = "82.165.48.39"
+    result = RedisStep().verify(ctx)
+    assert not result.ok
+    assert "listens on 127.0.0.1 only" in result.detail and "82.165.48.39" in result.detail
+
+
+def test_a_failed_ping_on_a_loopback_host_stays_about_the_password(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("redis-cli", (0, ""))
+    remote.files["/etc/redis/redis.conf"] = "bind 127.0.0.1 -::1\n"
+    assert "password" in RedisStep().verify(ctx).detail
+
+
 # --- daemons ------------------------------------------------------------------------------------
 
 

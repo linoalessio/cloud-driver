@@ -147,7 +147,7 @@ Sixteen steps run in the order the server needs them:
 | 3 | Java 21 | `openjdk-21-jdk-headless`, verified to report 21 |
 | 4 | Python 3 | `python3`, `python3-venv`, `python3-pip`, verified by actually building a throwaway virtual environment |
 | 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects |
-| 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING` |
+| 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING`. A local install is bound to `127.0.0.1`, so its host has to be that address — naming the server's own public IP is rejected before the run, because nothing would answer on it and the same address would be written into `redis-database.json` for the backend to fail on next (the same rule holds for a locally installed PostgreSQL) |
 | 7 | ClamAV | `clamav-daemon` + `freshclam`, the systemd socket drop-in on `127.0.0.1:3310`, raised size limits |
 | 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443 (plus the REST port itself when the reverse proxy is switched off and the JVM is the public listener), then deny-incoming and enable |
 | 9 | Swap | A swapfile (an existing one is kept, never switched off under a running JVM) |
@@ -208,6 +208,26 @@ content itself — those are console decisions, made once, knowing the data goes
 **base packages** and **Python** steps keep what a Debian host needs to keep working (`cron`,
 `curl`, `ca-certificates`, `python3` itself). Each button first shows the step's own description of
 what it is about to delete; the run then re-checks the step, so the sidebar shows what is left.
+
+**Removing the whole deployment.** *Remove everything…* at the bottom of the step list (also
+*Server → Remove everything from the server…*) undoes the entire installation in one run: it walks
+the catalog **backwards** — the intelligence service, the application, the configuration files, the
+reverse proxy, the mail keys, the AWS credentials file, swap, the firewall, ClamAV, Redis,
+PostgreSQL, Python, Java, the base packages, and the directory layout last, when everything that
+lived in it is already gone. It runs against *every* removable step, not only the ticked ones: a
+step switched off in the plan may still be installed from an earlier run, and every `remove` is a
+no-op when its footprint is not there. Unlike an install it does **not** stop at the first failure
+— a wipe that gave up halfway would leave a server nobody can reason about — so the remaining
+steps are still removed and the failures are listed together at the end; re-running it is safe,
+every removal is idempotent. The confirmation is not a yes/no box: it lists all fifteen steps with
+their own removal descriptions, names everything the wipe cannot reach (the KMS key, the buckets,
+the IAM user, the SES identity, an external database server, the host's own settings, the packages
+Debian needs, any other Caddy site), and arms its button only once the server's address has been
+typed. What survives is logged again as `kept: …` lines when the run finishes.
+
+Nothing local is deleted: the installer is a client on the operator's laptop and every removal
+happens over the same SSH session that installed it. The one exception is the `~/.ssh/config`
+alias the *Server* step wrote there, which that step removes again.
 
 **Export setup (`Setup.md`).** *File → Export setup*, or the button beside the generated secrets on
 the summary page, writes one markdown document describing the whole deployment: the endpoint, every
@@ -303,13 +323,21 @@ freshness — roughly 10% of the time since `Last-Modified` — and reuse a cach
 old CSS, and new markup lands unstyled. `no-cache` still lets the browser cache; it just forces
 a revalidation that answers `304 Not Modified` when nothing changed.
 
-As a second layer, the HTML links its assets with a version query — `style.css?v=20260912-2`,
-`script.js?v=20260912-2` (the deploy date, plus a `-N` counter for further changes the same
+As a second layer, the HTML links its assets with a version query — `style.css?v=20260924`,
+`script.js?v=20260924` (the deploy date, plus a `-N` counter for further changes the same
 day). Bump that stamp in all three pages whenever `style.css` or `script.js` changes: a new URL cannot be served from an old cache entry, in any browser or intermediary,
 regardless of headers.
 
-The pages state facts about the running system (version number, route count, extension count) —
-when those change in a release, update `homepage/index.html` in the same change.
+The pages state facts about the running system (version number, route count, extension count,
+installer step count) — when those change in a release, update `homepage/index.html` in the same
+change. The route count is every `config.routes.<method>(…)` registration in `DefaultRestFactory`
+(79 today; the metrics port's own `/metrics` route is not part of the API and is not counted).
+
+Its diagrams are inline SVG with a `<title>`/`<desc>` pair each, wrapped in a `.figure` that
+scrolls sideways below its `min-width` — a viewBox shrinks its own labels with the column, which is
+why the architecture diagram is HTML boxes instead. For the same reason no effect may start from an
+invisible state (a zero-width bar, `opacity: 0`): a renderer that does not advance CSS animations
+must still show the whole page.
 
 ## Continuous integration
 
