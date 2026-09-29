@@ -18,10 +18,13 @@ from cloud_driver_installer.config_files import SCREEN_LOG_FILE, masked, render_
 from cloud_driver_installer.engine import StepStatus
 from cloud_driver_installer.gui.state import AppState
 from cloud_driver_installer.gui.widgets import COLORS, SPACE, STATUS_BADGES, Check, FactGrid, Form, ScrollFrame, note, section
-from cloud_driver_installer.model import CLIENT_HARDCODED_API_HOST, InstallPlan
+from cloud_driver_installer.model import CLIENT_HARDCODED_API_HOST, LOOPBACK_HOSTS, InstallPlan
 from cloud_driver_installer.credentials import generate_base64, generate_hex
 from cloud_driver_installer.sizing import GIB, format_bytes, suggest_jvm_xmx
 from cloud_driver_installer.steps import STEP_ORDER
+
+#: What a locally installed data store is reachable at - the *server's* loopback, not this laptop's.
+LOCAL_STORE_HOST = "127.0.0.1"
 
 
 @dataclass
@@ -110,6 +113,33 @@ class Page(ttk.Frame):
         """Re-render anything derived from the discovered state."""
 
     # --- shared ----------------------------------------------------------------------------------
+
+    def _bind_store_host(self, mode: tk.StringVar, host: tk.StringVar, entry: ttk.Entry) -> None:
+        """Wire a data store's Host field to its mode, and keep both honest.
+
+        The field is not an address on *this* machine: every command the installer runs, and the
+        credentials file the backend later reads, live on the server at the other end of the SSH
+        session. So a store this step installs is reachable at the server's own loopback and
+        nowhere else - the field says so and cannot be edited. Choosing *external* hands it back,
+        pre-filled with the host you connected to, because that is the address you already typed.
+        """
+        self._host_mode, self._host_var, self._host_entry = mode, host, entry
+        self._host_typed = ""  # the last external address, so a look at 'install' does not lose it
+        mode.trace_add("write", lambda *_args: self._sync_host_field())
+        self._sync_host_field()
+
+    def _sync_host_field(self) -> None:
+        """Lock the host to the server's loopback for an installed store, release it otherwise."""
+        current = self._host_var.get().strip()
+        if self._host_mode.get() != "external":
+            if current and current not in LOOPBACK_HOSTS:
+                self._host_typed = current
+            self._host_var.set(LOCAL_STORE_HOST)
+            self._host_entry.state(["readonly"])
+            return
+        if not current or current in LOOPBACK_HOSTS:
+            self._host_var.set(self._host_typed or self.state.plan.ssh.host or "")
+        self._host_entry.state(["!readonly"])
 
     def _step(self):
         """This page's step, for the things only the step knows (whether it can be removed)."""
@@ -282,12 +312,20 @@ class PostgresPage(Page):
         self.password = tk.StringVar()
         self.rotate = tk.BooleanVar()
         form.radios("Mode", self.mode, [("install", "Install on this server"), ("external", "Use an external server")])
-        form.entry("Host", self.host, "127.0.0.1 for a local install - a server installed here listens on loopback only.", width=24)
-        form.entry("Port", self.port, width=8)
+        self.host_entry = form.entry(
+            "Host",
+            self.host,
+            "Resolved on the server you are connected to, never on this machine: a database installed there answers on "
+            "its own 127.0.0.1, and that is the address written into postgres-database.json for the backend beside it. "
+            "Switch to 'Use an external server' to type an address of your own.",
+            width=24,
+        )
+        form.entry("Port", self.port, "The port on that host - read back from the server's own postgres-database.json when you run Check all.", width=8)
         form.entry("Database", self.database, width=24)
         form.entry("Username", self.username, "The role becomes the database owner, so no missing grant can surface later as a silent failure.", width=24)
         form.secret("Password", self.password, "Left empty, the value already on the server is kept; otherwise a 48-character hex secret is generated.", generate=lambda: generate_hex(24))
         form.check("Rotate the existing password (rewrites the role and the file together)", self.rotate)
+        self._bind_store_host(self.mode, self.host, self.host_entry)
 
     def load(self, plan: InstallPlan) -> None:
         self.mode.set(plan.postgres.mode)
@@ -297,6 +335,7 @@ class PostgresPage(Page):
         self.username.set(plan.postgres.username)
         self.password.set(plan.postgres.password)
         self.rotate.set(plan.postgres.rotate)
+        self._sync_host_field()
 
     def store(self, plan: InstallPlan) -> None:
         plan.postgres.mode = self.mode.get()
@@ -330,13 +369,21 @@ class RedisPage(Page):
         self.rotate = tk.BooleanVar()
         form.check("Enable Redis (rate-limit counters, webhook history, scheduler locks)", self.enabled)
         form.radios("Mode", self.mode, [("install", "Install on this server"), ("external", "Use an external server")], command=self._toggle_username)
-        form.entry("Host", self.host, "127.0.0.1 for a local install - it is bound to loopback, so the server's own public address answers nothing and would break the backend too.", width=24)
+        self.host_entry = form.entry(
+            "Host",
+            self.host,
+            "Resolved on the server you are connected to, never on this machine: this step binds redis-server to that "
+            "server's own 127.0.0.1, and the same address goes into redis-database.json for the backend beside it. "
+            "Switch to 'Use an external server' to type an address of your own.",
+            width=24,
+        )
         form.entry("Port", self.port, width=8)
         form.entry("Database", self.database, "A numeric index - the backend parses it as an integer.", width=8)
         self.username_row = form.entry("Username (external only)", self.username, "A local install uses requirepass only; a username would make AUTH fail and switch Redis off silently.", width=24)
         form.secret("Password", self.password, generate=lambda: generate_hex(24))
         form.check("Rotate the existing password", self.rotate)
         note(body, "Redis must never hold file content or names: everything in it is a counter, a lock or an identifier.")
+        self._bind_store_host(self.mode, self.host, self.host_entry)
 
     def _toggle_username(self) -> None:
         self.username_row.configure(state="normal" if self.mode.get() == "external" else "disabled")
@@ -351,6 +398,7 @@ class RedisPage(Page):
         self.password.set(plan.redis.password)
         self.rotate.set(plan.redis.rotate)
         self._toggle_username()
+        self._sync_host_field()
 
     def store(self, plan: InstallPlan) -> None:
         plan.redis.enabled = self.enabled.get()

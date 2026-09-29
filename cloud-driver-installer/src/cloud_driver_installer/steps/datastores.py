@@ -64,6 +64,12 @@ class PostgresStep(Step):
         if plan.mode == "external":
             reachable = self._login_works(ctx, password)
             detail = f"external {plan.username}@{plan.host}:{plan.port}/{plan.database} · {note}"
+            if not reachable:
+                # A loopback "external" server is one this step can actually look at, so say what
+                # is wrong with it here rather than leaving it to a failed verify after the write.
+                hint = self._local_server_hint(ctx)
+                if hint:
+                    detail += f" · {hint}"
             return CheckResult.ok(detail) if reachable and self._file_current(ctx, password) else CheckResult.needs_apply(detail)
 
         if not ctx.remote.dpkg_installed("postgresql"):
@@ -85,6 +91,7 @@ class PostgresStep(Step):
             if not ctx.remote.dpkg_installed("postgresql"):
                 ctx.remote.apt_install(["postgresql", "postgresql-contrib"])
             ctx.remote.systemctl("enable", "--now", "postgresql")
+            self._ensure_cluster_port(ctx)
             # The file is written first: if anything below fails, the recorded password is the one
             # the role will have after a retry, never a value that exists only in this process.
             self._write_file(ctx, password)
@@ -189,13 +196,22 @@ class PostgresStep(Step):
         return current == render_postgres_credentials(ctx.plan, password)
 
     def _psql(self, ctx: Context, sql: str) -> str:
-        """Run ``sql`` as the local ``postgres`` superuser and return the single scalar."""
-        result = ctx.remote.run(f"runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tAc {shlex.quote(sql)}", quiet=True)
+        """Run ``sql`` as the local ``postgres`` superuser and return the single scalar.
+
+        The port is always passed: psql otherwise talks to the socket of the *default* port, so on
+        a host whose cluster was set up on another port every one of these probes would come back
+        empty and the step would report a missing role and database that are both there.
+        """
+        result = ctx.remote.run(
+            f"runuser -u postgres -- psql -p {ctx.plan.postgres.port} -v ON_ERROR_STOP=1 -tAc {shlex.quote(sql)}", quiet=True
+        )
         return result.out.strip() if result.ok else ""
 
     def _run_sql(self, ctx: Context, sql: str) -> None:
         """Feed ``sql`` (which may contain a password) to psql over stdin, never on the command line."""
-        result = ctx.remote.run("runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q", input=sql + "\n", quiet=True)
+        result = ctx.remote.run(
+            f"runuser -u postgres -- psql -p {ctx.plan.postgres.port} -v ON_ERROR_STOP=1 -q", input=sql + "\n", quiet=True
+        )
         if not result.ok:
             raise StepError(f"psql failed: {ctx.redactor.redact((result.err or result.out).strip().splitlines()[-1] if (result.err or result.out).strip() else 'unknown error')}")
 
@@ -210,6 +226,89 @@ class PostgresStep(Step):
 
     def _login_works(self, ctx: Context, password: str) -> bool:
         return self._login_query(ctx, password, "SELECT 1") == "1"
+
+    def _local_server_hint(self, ctx: Context) -> str:
+        """Why a connection to a *loopback* host failed, or ``""`` when this cannot be the reason.
+
+        ``external`` means "a server somebody else runs": the step writes the credentials file and
+        nothing else. Pointed at this machine with no server installed, it can therefore never
+        succeed, and psql's "connection refused" sends the operator off to check listen_addresses,
+        pg_hba.conf and firewalls that do not exist yet. Name the actual cause instead.
+        """
+        plan = ctx.plan.postgres
+        own_address = bool(ctx.discovered.public_ip) and plan.host == ctx.discovered.public_ip
+        if plan.host not in LOOPBACK_HOSTS and not own_address:
+            return ""  # somebody else's server: nothing on this host can explain it
+        if not ctx.remote.dpkg_installed("postgresql"):
+            if plan.mode == "external":
+                return (
+                    "no PostgreSQL server is installed on this host, and 'Use an external server' never installs one - "
+                    "switch the mode to 'Install on this server' and apply this step again"
+                )
+            return "no PostgreSQL server is installed on this host yet"
+        clusters = self._local_clusters(ctx)
+        if clusters is None:
+            if not ctx.remote.service_active("postgresql"):
+                return "postgresql is installed on this host but not running (systemctl start postgresql)"
+        else:
+            online = [port for port, status in clusters if status.startswith("online")]
+            if not online:
+                return "postgresql is installed on this host but no cluster is online (systemctl start postgresql)"
+            if str(plan.port) not in online:
+                return (
+                    f"the PostgreSQL server on this host listens on port {' and '.join(online)}, not {plan.port} - "
+                    "run Check all to take the port from the server's own postgres-database.json, or correct it here"
+                )
+        if own_address:
+            return (
+                f"the server's PostgreSQL accepts connections on its loopback interface only, so {plan.host} can never "
+                "answer it - this field is resolved on the server, not on your machine, so 127.0.0.1 is the address you want"
+            )
+        return ""
+
+    def _ensure_cluster_port(self, ctx: Context) -> None:
+        """Make the local cluster listen on the port the plan names.
+
+        A freshly installed Debian cluster is on 5432, so a deployment that records any other port
+        (this installer never invents one - it is taken over from the server's own
+        ``postgres-database.json``) would otherwise be pointed at a cluster that is not there,
+        and every probe, role and database below it would fail against nothing.
+        """
+        plan = ctx.plan.postgres
+        clusters = self._local_clusters(ctx)
+        if clusters is None or any(port == str(plan.port) for port, _status in clusters):
+            return
+        if len(clusters) > 1:
+            raise StepError(
+                f"this host runs {len(clusters)} PostgreSQL clusters (ports {', '.join(port for port, _ in clusters)}) - "
+                f"point the plan at one of them, or leave a single cluster, before this step can set port {plan.port}"
+            )
+        current = clusters[0][0] if clusters else "?"
+        result = ctx.remote.run(f"pg_conftool set port {plan.port}", quiet=True)
+        if not result.ok:
+            raise StepError(
+                f"could not move the cluster from port {current} to {plan.port}: "
+                f"{(result.err or result.out).strip().splitlines()[-1] if (result.err or result.out).strip() else 'pg_conftool failed'}"
+            )
+        ctx.remote.systemctl("restart", "postgresql")
+        ctx.info(f"[PostgreSQL] cluster moved from port {current} to {plan.port}")
+
+    @staticmethod
+    def _local_clusters(ctx: Context) -> "list[tuple[str, str]] | None":
+        """``(port, status)`` per Debian cluster on the host, or ``None`` if that cannot be asked.
+
+        ``pg_lsclusters`` is the only thing here that knows a cluster's real port without being
+        able to connect to it first, which is exactly the situation a refused connection leaves.
+        """
+        result = ctx.remote.run("pg_lsclusters --no-header", quiet=True, timeout=60)
+        if not result.ok:
+            return None
+        rows: list[tuple[str, str]] = []
+        for line in result.out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2].isdigit():
+                rows.append((parts[2], parts[3]))
+        return rows
 
     def _login_problem(self, ctx: Context, password: str) -> str:
         """``""`` when the login works, else why it did not, in the operator's terms.
@@ -240,6 +339,9 @@ class PostgresStep(Step):
         if "does not exist" in lowered and "role" in lowered:
             return f"the role {plan.username} does not exist on that server"
         if any(text in lowered for text in ("could not connect", "connection refused", "no route to host", "timeout expired", "could not translate")):
+            hint = self._local_server_hint(ctx)
+            if hint:
+                return f"nothing answers on {plan.host}:{plan.port} - {hint}"
             return f"nothing answers on {plan.host}:{plan.port} - check the address, the server's listen_addresses and pg_hba.conf, and any firewall between here and it"
         if "no pg_hba.conf entry" in lowered:
             return f"the server refuses connections from this host for {plan.username} - it needs a pg_hba.conf entry for it"
@@ -281,11 +383,15 @@ class RedisStep(Step):
             if not ctx.remote.dpkg_installed("redis-server"):
                 ctx.remote.apt_install(["redis-server"])
             config = ctx.remote.read_text("/etc/redis/redis.conf") or ""
-            ctx.remote.put_text("/etc/redis/redis.conf", rewrite_redis_conf(config, password), mode=0o640)
+            ctx.remote.put_text("/etc/redis/redis.conf", rewrite_redis_conf(config, password, plan.port), mode=0o640)
             self._write_file(ctx, password)
             ctx.remote.systemctl("enable", "redis-server", check=False)
             ctx.remote.systemctl("restart", "redis-server")
         else:
+            # Same as the external PostgreSQL branch installing postgresql-client: the probe runs
+            # on the server, so the server needs a client for a store it does not host itself.
+            if not ctx.remote.command_exists("redis-cli"):
+                ctx.remote.apt_install(["redis-tools"])
             self._write_file(ctx, password)
 
     def verify(self, ctx: Context) -> VerifyResult:
@@ -341,15 +447,27 @@ class RedisStep(Step):
         into ``redis-database.json`` for the backend to fail on next.
         """
         plan = ctx.plan.redis
-        if not ctx.remote.command_exists("redis-cli"):
-            return "redis-cli is not installed on the server, so nothing can be probed from it"
-        if plan.host not in LOOPBACK_HOSTS and ctx.remote.dpkg_installed("redis-server"):
+        own_address = bool(ctx.discovered.public_ip) and plan.host == ctx.discovered.public_ip
+        on_this_host = plan.host in LOOPBACK_HOSTS or own_address
+        installed = ctx.remote.dpkg_installed("redis-server")
+        # Most actionable first: "nothing is installed here" beats "redis-cli is missing", which is
+        # only a fact about the probe and leaves the operator to work out the cause themselves.
+        if on_this_host and not installed:
+            if plan.mode == "external":
+                return (
+                    "no Redis is installed on this host, and 'Use an external server' never installs one - "
+                    "switch the mode to 'Install on this server' and apply this step again"
+                )
+            return "no Redis is installed on this host yet"
+        if own_address and installed:
             config = ctx.remote.read_text("/etc/redis/redis.conf") or ""
             if any(line.strip().startswith("bind 127.0.0.1") for line in config.splitlines()):
                 return (
-                    f"redis-server on this host listens on 127.0.0.1 only, so {plan.host} can never answer - "
-                    "set the host to 127.0.0.1 and the mode to 'Install on this server'"
+                    f"redis-server on this host listens on 127.0.0.1 only, so {plan.host} can never answer it - "
+                    "this field is resolved on the server, not on your machine, so 127.0.0.1 is the address you want"
                 )
+        if not ctx.remote.command_exists("redis-cli"):
+            return "redis-cli is not installed on the server, so nothing can be probed from it"
         if plan.mode == "external":
             return "check the password, that server's bind address and any firewall between this server and it"
         return "check the password and the bind address"
@@ -365,10 +483,15 @@ class RedisStep(Step):
         return "PONG" in result.out
 
 
-def rewrite_redis_conf(config: str, password: str) -> str:
-    """Return ``config`` with a loopback ``bind`` and ``requirepass`` set (other lines untouched)."""
+def rewrite_redis_conf(config: str, password: str, port: int = 6379) -> str:
+    """Return ``config`` with a loopback ``bind``, ``requirepass`` and ``port`` set.
+
+    The port is written for the same reason the PostgreSQL step moves its cluster: the plan's port
+    is what goes into ``redis-database.json`` for the backend to dial, so the server has to be
+    listening there. Every other line is left exactly as the package shipped it.
+    """
     lines = config.splitlines()
-    replaced_bind = replaced_pass = False
+    replaced_bind = replaced_pass = replaced_port = False
     out: list[str] = []
     for line in lines:
         stripped = line.strip()
@@ -378,12 +501,14 @@ def rewrite_redis_conf(config: str, password: str) -> str:
         elif stripped.startswith("requirepass ") and not replaced_pass:
             out.append(f"requirepass {password}")
             replaced_pass = True
-        elif stripped.startswith("bind ") or stripped.startswith("requirepass "):
+        elif stripped.startswith("port ") and not replaced_port:
+            out.append(f"port {port}")
+            replaced_port = True
+        elif stripped.startswith(("bind ", "requirepass ", "port ")):
             continue  # drop further duplicates so the last one cannot win
         else:
             out.append(line)
-    if not replaced_bind:
-        out.append("bind 127.0.0.1 -::1")
-    if not replaced_pass:
-        out.append(f"requirepass {password}")
+    for written, line in ((replaced_bind, "bind 127.0.0.1 -::1"), (replaced_pass, f"requirepass {password}"), (replaced_port, f"port {port}")):
+        if not written:
+            out.append(line)
     return "\n".join(out).rstrip("\n") + "\n"

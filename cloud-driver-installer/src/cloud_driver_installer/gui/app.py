@@ -346,6 +346,12 @@ class MainWindow(ttk.Frame):
                 self.handle_probe(event)
             elif isinstance(event, JobDone):
                 self.log.append("OK" if event.ok else "ERROR", f"{event.job} finished" + ("" if event.ok else f": {event.error}"))
+                # The run may have changed the plan - the Server step takes the server's own files
+                # over (a store's mode, host and port, the KMS key, the bucket, a suggested heap).
+                # The pages were stored into the plan right before the job started, so pushing the
+                # plan back is the only way those values reach the widgets; without it, the next
+                # store_pages() quietly reverts every one of them to what the page still showed.
+                self.load_pages()
                 self.refresh_sidebar()
                 self.show(self.current)
         if self.worker.busy:

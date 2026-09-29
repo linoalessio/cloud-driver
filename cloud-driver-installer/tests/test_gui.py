@@ -107,6 +107,51 @@ def test_summary_lists_every_step_and_the_next_steps(window) -> None:
     assert "admin grant" in summary.next_steps.cget("text")
 
 
+def test_what_a_run_takes_over_from_the_server_reaches_the_page(window) -> None:
+    """Adoption changes the plan mid-job; the widgets must follow, or the next store reverts it."""
+    from cloud_driver_installer.gui.worker import JobDone
+
+    page = window.pages["postgres"]
+    page.mode.set("external")
+    page.host.set("82.165.48.39")
+    page.port.set("5432")
+    assert window.store_pages(validate=False)
+    # what ServerStep.check does when it finds the server's own postgres-database.json
+    window.state.plan.postgres.mode, window.state.plan.postgres.host, window.state.plan.postgres.port = "install", "127.0.0.1", 20411
+    window.worker.events.put(JobDone("check", True))
+    window.drain()
+    assert page.mode.get() == "install" and page.host.get() == "127.0.0.1" and page.port.get() == "20411"
+    assert "readonly" in page.host_entry.state()
+    assert window.store_pages(validate=False)
+    assert window.state.plan.postgres.mode == "install", "a second store must not undo the adoption"
+
+
+def test_an_installed_store_is_locked_to_the_server_s_own_loopback(window) -> None:
+    """The field is resolved on the server, so 'install' cannot be pointed anywhere else."""
+    page = window.pages["postgres"]
+    page.mode.set("install")
+    assert page.host.get() == "127.0.0.1"
+    assert "readonly" in page.host_entry.state()
+    page.host.set("82.165.48.39")  # even a direct write is corrected on the next sync
+    page._sync_host_field()
+    assert page.host.get() == "127.0.0.1"
+
+
+def test_switching_to_external_offers_the_host_you_logged_in_to(window) -> None:
+    """The address the operator already typed at the SSH prompt, rather than a second blank field."""
+    window.state.plan.ssh.host = "203.0.113.10"
+    for page_id in ("postgres", "redis"):
+        page = window.pages[page_id]
+        page.mode.set("install")
+        page.mode.set("external")
+        assert page.host.get() == "203.0.113.10"
+        assert "readonly" not in page.host_entry.state()
+        page.host.set("db.example.com")
+        page.mode.set("install")
+        page.mode.set("external")
+        assert page.host.get() == "db.example.com", "a typed address is never overwritten"
+
+
 def test_the_window_offers_one_button_for_the_whole_deployment(window) -> None:
     assert str(window.remove_all_button.cget("text")).startswith("Remove everything")
 

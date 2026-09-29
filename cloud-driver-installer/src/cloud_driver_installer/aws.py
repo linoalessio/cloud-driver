@@ -483,14 +483,23 @@ class AwsProvisioner:
             status = "SUCCESS"
         return SesIdentity(identity=identity, kind=kind, status=status, created=created, dkim_records=records)
 
-    def ses_configuration_set_exists(self, name: str, *, region: str | None = None) -> bool:
-        """``get_configuration_set`` succeeds."""
+    def ses_configuration_set_exists(self, name: str, *, region: str | None = None) -> "bool | None":
+        """Whether ``get_configuration_set`` finds it - ``None`` when these credentials may not look.
+
+        This is a verification probe, so a *read* permission the operator's own credentials lack is
+        not a reason to abandon a deployment. Saying "missing" would refuse a set that is really
+        there; saying "present" would hide a typo that makes every send fail. So the answer is
+        unknown, and the caller reports it as unknown.
+        """
         try:
             self.client("sesv2", region).get_configuration_set(ConfigurationSetName=name)
             return True
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "NotFoundException":
+            code = exc.response.get("Error", {}).get("Code") or ""
+            if code == "NotFoundException":
                 return False
+            if "AccessDenied" in code or code in ("UnauthorizedException", "NotAuthorized"):
+                return None
             raise _wrap(exc, f"looking up SES configuration set {name}") from exc
         except BotoCoreError as exc:
             raise _wrap(exc, f"looking up SES configuration set {name}") from exc

@@ -142,12 +142,12 @@ Sixteen steps run in the order the server needs them:
 
 | # | Step | Does |
 |---|---|---|
-| 1 | Server | Refuses a non-root, non-apt or non-systemd host; discovers OS, RAM, disk, clock, versions and everything already installed; takes the existing `configuration.json` over; creates the directory layout; optionally installs your public key and writes an `~/.ssh/config` alias |
+| 1 | Server | Refuses a non-root, non-apt or non-systemd host; discovers OS, RAM, disk, clock, versions and everything already installed; takes the existing `configuration.json` over (a `postgres-`/`redis-database.json` naming this server's own address — its public IP, the host you connected to, anything in `hostname -I` — or loopback is adopted as an *installed* store at `127.0.0.1`, never as an external one); creates the directory layout; optionally installs your public key and writes an `~/.ssh/config` alias |
 | 2 | Base packages | `screen`, `curl`, `gnupg`, `ca-certificates`, `apt-transport-https`, `openssl`, `unzip`, `cron`, `logrotate`, `fonts-dejavu-core` (+ `awscli` for off-site backups) |
 | 3 | Java 21 | `openjdk-21-jdk-headless`, verified to report 21 |
 | 4 | Python 3 | `python3`, `python3-venv`, `python3-pip`, verified by actually building a throwaway virtual environment |
-| 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects |
-| 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING`. A local install is bound to `127.0.0.1`, so its host has to be that address — naming the server's own public IP is rejected before the run, because nothing would answer on it and the same address would be written into `redis-database.json` for the backend to fail on next (the same rule holds for a locally installed PostgreSQL) |
+| 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects. *Install on this server* and *Use an external server* are two different contracts: the first owns the server and must be given a loopback host, the second only ever writes the credentials file — pointed at this machine it installs nothing, which the step says in as many words instead of letting a refused connection read as a firewall problem. The *Host* field is read-only at `127.0.0.1` in install mode: it is resolved on the server at the far end of the SSH session, not on the machine running the installer, and *external* releases it pre-filled with the host you connected to |
+| 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING` (an external store gets `redis-tools` on the server to be probed with, exactly as an external PostgreSQL gets `postgresql-client`). A local install is bound to `127.0.0.1`, so its host has to be that address — naming the server's own public IP is rejected before the run, because nothing would answer on it and the same address would be written into `redis-database.json` for the backend to fail on next (the same rule holds for a locally installed PostgreSQL), and the opposite mistake — *external* pointed at loopback — is warned about on the summary page |
 | 7 | ClamAV | `clamav-daemon` + `freshclam`, the systemd socket drop-in on `127.0.0.1:3310`, raised size limits |
 | 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443 (plus the REST port itself when the reverse proxy is switched off and the JVM is the public listener), then deny-incoming and enable |
 | 9 | Swap | A swapfile (an existing one is kept, never switched off under a running JVM) |
@@ -158,6 +158,10 @@ Sixteen steps run in the order the server needs them:
 | 14 | Application | Optionally runs `mvn clean install` in the checkout first (*Build with Maven*), then uploads the bootstrap jar and only the extension jars this plan enables (`scan` follows ClamAV, `intelligence` the intelligence service), refusing any jar whose name does not carry the bootstrap's version and aborting when `rest`, `watcher` or `terminal` is not built; prunes the previous release's jars — including an extension jar built against a different bootstrap version, even when this run deploys no replacement for it — then `start-cloud.sh`, the managed cron block, the logrotate stanza, and a clean restart |
 | 15 | Intelligence service | `/opt/cloud-driver-intelligence`, its virtual environment, env file and systemd unit |
 | 16 | Smoke test | The API, the metrics port, the daemons, the reboot autostart and the public URL — `https://<domain>`, or `http://<server address>` without one, or `http://<server address>:<REST port>` with no proxy at all |
+
+What a run takes over from the server lands in the pages as soon as the job finishes, so the
+*PostgreSQL* and *Redis* pages show the mode, host and port the server itself records rather than
+whatever was typed before the check.
 
 Every step is **check → apply → verify** (plus **remove**, see below): the check only reads, the
 apply is idempotent, and the verify probes the real thing (a `psql` login, a Redis `PING`, clamd's

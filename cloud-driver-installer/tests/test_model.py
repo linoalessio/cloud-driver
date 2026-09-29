@@ -203,6 +203,40 @@ class TestValidate:
         settings.mode, settings.host, settings.password = "external", "store.example.com", "secret"
         assert plan.validate() == []
 
+    @pytest.mark.parametrize("address", ["127.0.0.1", "82.165.48.39", "10.0.0.7"])
+    def test_a_store_at_this_server_s_own_address_is_taken_over_as_local(self, plan: InstallPlan, address: str) -> None:
+        """A credentials file naming this very host describes a store the installer owns.
+
+        Reading it as 'external' is what makes a failed run self-perpetuating: the step then
+        installs nothing, writes the same address back, and the next run adopts it again.
+        """
+        from cloud_driver_installer.model import apply_existing_config
+
+        apply_existing_config(
+            plan,
+            {},
+            postgres={"address": address, "port": 20411, "database": "cloud_driver", "userName": "cloud_driver_postgres"},
+            redis={"address": address, "port": 6379},
+            own_addresses=["82.165.48.39", "10.0.0.7"],
+        )
+        assert plan.postgres.mode == "install" and plan.postgres.host == "127.0.0.1"
+        assert plan.redis.mode == "install" and plan.redis.host == "127.0.0.1"
+        assert plan.postgres.port == 20411, "the recorded port is still taken over"
+
+    def test_a_store_somewhere_else_is_still_external(self, plan: InstallPlan) -> None:
+        from cloud_driver_installer.model import apply_existing_config
+
+        apply_existing_config(plan, {}, postgres={"address": "db.example.com"}, own_addresses=["82.165.48.39"])
+        assert plan.postgres.mode == "external" and plan.postgres.host == "db.example.com"
+
+    @pytest.mark.parametrize(("group", "label"), [("postgres", "PostgreSQL"), ("redis", "Redis")])
+    def test_an_external_store_pointed_at_this_host_is_warned_about(self, plan: InstallPlan, group: str, label: str) -> None:
+        """Legal, but almost always a mistake: that mode installs nothing, so nothing would listen."""
+        settings = getattr(plan, group)
+        settings.mode, settings.password = "external", "secret"
+        assert plan.validate() == [], "a warning, not a refusal - a hand-managed local server is allowed"
+        assert any(line.startswith(f"{label} is set to 'external'") for line in plan.warnings())
+
     def test_max_scan_size_is_exempt_from_the_scan_limit_check(self, plan: InstallPlan) -> None:
         """Only StreamMaxLength and MaxFileSize are compared against content-scan-max-bytes."""
         plan.clamav.max_scan_size = "64M"

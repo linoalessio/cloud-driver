@@ -16,7 +16,7 @@ import os
 import re
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from cloud_driver_installer.sizing import GIB, parse_xmx_mib
 from cloud_driver_installer.ssh import SshTarget
@@ -535,6 +535,13 @@ class InstallPlan:
             notes.append("SES: a new account is in the sandbox (200 mails/day, every recipient must be verified) until AWS grants production access.")
             if self.email.ses_identity_mode == "domain":
                 notes.append("SES: publish the three DKIM CNAME records shown after the run, or mail from this domain lands in spam.")
+        for label, settings in (("PostgreSQL", self.postgres), ("Redis", self.redis)):
+            if getattr(settings, "enabled", True) and settings.mode == "external" and settings.host in LOOPBACK_HOSTS:
+                notes.append(
+                    f"{label} is set to 'external' but points at {settings.host}: that mode only writes the credentials file - "
+                    f"it never installs, configures or starts a server on this host. Choose 'Install on this server' unless "
+                    f"you set that {label} up yourself."
+                )
         if not self.proxy.enabled:
             notes.append("No reverse proxy: the API is served as plain HTTP on the bind address; the shipped clients only speak https://.")
             if self.app.rest_bind_host in LOOPBACK_HOSTS:
@@ -720,11 +727,25 @@ def _prefill_from_local_config(plan: InstallPlan, path: Path) -> None:
             pass
 
 
-def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgres: dict[str, Any] | None = None, redis: dict[str, Any] | None = None) -> list[str]:
+def apply_existing_config(
+    plan: InstallPlan,
+    existing: dict[str, Any],
+    *,
+    postgres: dict[str, Any] | None = None,
+    redis: dict[str, Any] | None = None,
+    own_addresses: "Iterable[str]" = (),
+) -> list[str]:
     """Pre-fill ``plan`` from the files already on the server, so a re-run keeps what is there.
 
     Only non-secret settings are copied (regions, ids, bucket, ports, addresses, capacities); a
     value that is a scaffold placeholder is ignored. Returns one line per setting taken over.
+
+    ``own_addresses`` are the addresses that *are* this server (its public IP, whatever else it
+    answers to). An address in that set, or a loopback one, describes a store on the machine being
+    installed, so it is taken over as ``install`` at ``127.0.0.1`` - the address every command and
+    the backend itself resolve it by. Without that, a credentials file left holding the server's
+    public IP reads as "somebody else's server" on every later run, which switches the step to a
+    mode that installs nothing and then cannot explain why nothing answers.
     """
     from cloud_driver_installer.config_files import real_value
 
@@ -790,6 +811,7 @@ def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgr
                 setattr(plan.clamav, attr, kind(v))
             except (TypeError, ValueError):
                 pass
+    here = {address for address in own_addresses if address} | set(LOOPBACK_HOSTS)
     if postgres:
         for key, attr, kind in (("address", "host", str), ("port", "port", int), ("database", "database", str), ("userName", "username", str)):
             if postgres.get(key) not in (None, ""):
@@ -797,7 +819,9 @@ def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgr
                     setattr(plan.postgres, attr, kind(postgres[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.postgres.host not in LOOPBACK_HOSTS:
+        if plan.postgres.host in here:
+            plan.postgres.mode, plan.postgres.host = "install", "127.0.0.1"
+        else:
             plan.postgres.mode = "external"
         taken.append(f"PostgreSQL {plan.postgres.username}@{plan.postgres.host}:{plan.postgres.port}/{plan.postgres.database}")
     if redis:
@@ -808,7 +832,9 @@ def apply_existing_config(plan: InstallPlan, existing: dict[str, Any], *, postgr
                     setattr(plan.redis, attr, kind(redis[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.redis.host not in LOOPBACK_HOSTS:
+        if plan.redis.host in here:
+            plan.redis.mode, plan.redis.host = "install", "127.0.0.1"
+        else:
             plan.redis.mode = "external"
         taken.append(f"Redis {plan.redis.host}:{plan.redis.port}")
     return taken

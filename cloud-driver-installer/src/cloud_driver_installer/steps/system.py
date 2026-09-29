@@ -146,7 +146,13 @@ class ServerStep(Step):
         self._remember_existing_secrets(ctx)
 
         if found.existing_config or found.existing_postgres:
-            taken = apply_existing_config(ctx.plan, found.existing_config, postgres=found.existing_postgres or None, redis=found.existing_redis or None)
+            taken = apply_existing_config(
+                ctx.plan,
+                found.existing_config,
+                postgres=found.existing_postgres or None,
+                redis=found.existing_redis or None,
+                own_addresses=self._own_addresses(ctx),
+            )
             for line in taken:
                 ctx.info(f"[Server] taken over from this server: {line}")
 
@@ -204,6 +210,17 @@ class ServerStep(Step):
         if plan.server.write_ssh_alias:
             parts.append(f"write the ~/.ssh/config alias {plan.server.ssh_alias_name}")
         return " · ".join(parts)
+
+    @staticmethod
+    def _own_addresses(ctx: Context) -> list[str]:
+        """Every address this host answers to, so a credentials file naming one reads as local.
+
+        The public address the step already discovered, plus whatever is bound locally - a box
+        behind NAT records the private address in its files, and both must be recognised.
+        """
+        addresses = [ctx.discovered.public_ip, ctx.plan.ssh.host]
+        addresses.extend(_text(ctx, "hostname -I 2>/dev/null").split())
+        return [address for address in addresses if address]
 
     def remove(self, ctx: Context) -> None:
         """Delete the directory layout and the operator-side alias; leave the host's own settings."""

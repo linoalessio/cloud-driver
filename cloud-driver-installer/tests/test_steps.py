@@ -242,11 +242,59 @@ def test_postgres_verify_requires_ownership_or_create(ctx: Context, remote: Fake
     assert PostgresStep().verify(ctx).ok
 
 
+def test_a_fresh_cluster_is_moved_to_the_port_the_plan_names(ctx: Context, remote: FakeRemote) -> None:
+    """apt gives you 5432; a deployment recorded on 20411 needs the cluster to follow."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "17  main  5432  online  postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("SELECT 1", (0, "1"))
+    ctx.plan.postgres.port = 20411
+    PostgresStep().apply(ctx)
+    assert remote.ran("pg_conftool set port 20411")
+    assert ("restart", "postgresql") in remote.systemctl_calls
+
+
+def test_a_cluster_already_on_the_right_port_is_left_alone(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "17  main  20411  online  postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("SELECT 1", (0, "1"))
+    ctx.plan.postgres.port = 20411
+    PostgresStep().apply(ctx)
+    assert not remote.ran("pg_conftool")
+
+
+def test_two_clusters_are_refused_rather_than_guessed(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "16  main  5432  online  postgres  /a  /b\n17  main  5433  online  postgres  /c  /d"))
+    ctx.plan.postgres.port = 20411
+    with pytest.raises(StepError, match="2 PostgreSQL clusters"):
+        PostgresStep().apply(ctx)
+
+
+def test_redis_conf_carries_the_planned_port(ctx: Context) -> None:
+    config = "port 6379\nbind 0.0.0.0\n"
+    rewritten = rewrite_redis_conf(config, "hexpassword", 6380)
+    assert "port 6380" in rewritten and "port 6379" not in rewritten
+
+
 def test_redis_conf_is_rewritten_idempotently() -> None:
     config = "port 6379\nbind 0.0.0.0 ::1\n# requirepass foo\nsave 900 1\n"
     once = rewrite_redis_conf(config, "hexpassword")
     assert "bind 127.0.0.1 -::1" in once and "requirepass hexpassword" in once and "save 900 1" in once
     assert rewrite_redis_conf(once, "hexpassword") == once
+
+
+def test_an_external_redis_gets_a_client_on_the_server_to_probe_it_with(ctx: Context, remote: FakeRemote) -> None:
+    """The probe runs on the server, so an external store still needs redis-cli there."""
+    remote.default_ok = True
+    remote.on("command -v redis-cli", (1, ""))
+    ctx.plan.redis.mode = "external"
+    ctx.plan.redis.host = "cache.example.com"
+    RedisStep().apply(ctx)
+    assert "redis-tools" in remote.apt_installed
+    assert "redis-server" not in remote.apt_installed, "an external store is never installed here"
 
 
 def test_redis_apply_writes_credentials_without_leaking_them(ctx: Context, remote: FakeRemote) -> None:
@@ -259,16 +307,95 @@ def test_redis_apply_writes_credentials_without_leaking_them(ctx: Context, remot
     assert no_secret_in_commands(ctx, remote, ctx.secrets.redis_password)
 
 
+def test_an_external_postgres_on_this_host_says_nothing_installs_it(ctx: Context, remote: FakeRemote) -> None:
+    """'external' + 127.0.0.1 with no server is the one refusal psql's own wording misexplains."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))  # nothing installed
+    remote.on("psql", (2, "", 'psql: error: connection to server at "127.0.0.1", port 5432 failed: Connection refused'))
+    ctx.plan.postgres.mode = "external"
+    ctx.plan.postgres.password = "secret"
+    result = PostgresStep().verify(ctx)
+    assert not result.ok
+    assert "never installs one" in result.detail and "Install on this server" in result.detail
+    assert "pg_hba.conf" not in result.detail, "the generic advice must not survive here"
+
+
+def test_a_stopped_local_postgres_is_named_as_stopped(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "17  main  5432  down   postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("psql", (2, "", "psql: error: connection to server at \"127.0.0.1\", port 5432 failed: Connection refused"))
+    assert "no cluster is online" in PostgresStep().verify(ctx).detail
+
+
+def test_a_cluster_on_another_port_is_named_with_its_real_port(ctx: Context, remote: FakeRemote) -> None:
+    """The plan's 5432 against a cluster the server actually runs on 20411 - psql just says refused."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "17  main  20411  online  postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("psql", (2, "", "psql: error: connection to server at \"127.0.0.1\", port 5432 failed: Connection refused"))
+    detail = PostgresStep().verify(ctx).detail
+    assert "port 20411, not 5432" in detail and "Check all" in detail
+
+
+def test_the_server_s_own_public_address_is_explained_not_blamed_on_a_firewall(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.plan.postgres.host, ctx.plan.postgres.port = ctx.discovered.public_ip, 20411
+    remote.on("dpkg-query", (0, "install ok installed"))
+    remote.on("pg_lsclusters", (0, "17  main  20411  online  postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("psql", (2, "", "psql: error: connection to server failed: Connection refused"))
+    detail = PostgresStep().verify(ctx).detail
+    assert "loopback interface only" in detail and "127.0.0.1 is the address you want" in detail
+
+
+def test_the_superuser_psql_talks_to_the_port_the_plan_names(ctx: Context, remote: FakeRemote) -> None:
+    """A cluster on 20411 answers nothing on the default socket, so every probe must carry -p."""
+    remote.default_ok = True
+    ctx.plan.postgres.port = 20411
+    PostgresStep()._psql(ctx, "SELECT 1")
+    assert any("runuser -u postgres" in command and "-p 20411" in command for command in remote.commands)
+
+
+def test_an_uninstalled_redis_says_so_before_blaming_the_probe(ctx: Context, remote: FakeRemote) -> None:
+    """"redis-cli is missing" is a fact about the probe; "nothing is installed here" is the cause."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))
+    remote.on("command -v redis-cli", (1, ""))
+    ctx.plan.redis.mode = "external"
+    ctx.plan.redis.host = ctx.discovered.public_ip
+    detail = RedisStep().verify(ctx).detail
+    assert "no Redis is installed on this host" in detail and "Install on this server" in detail
+
+
+def test_an_unreachable_external_server_keeps_the_general_advice(ctx: Context, remote: FakeRemote) -> None:
+    """Somewhere else's server is one this step cannot look at, so the checklist is all it has."""
+    remote.default_ok = True
+    ctx.plan.postgres.mode = "external"
+    ctx.plan.postgres.host = "db.example.com"
+    ctx.plan.postgres.password = "secret"
+    remote.on("psql", (2, "", "psql: error: connection to server at \"db.example.com\" failed: Connection refused"))
+    assert "pg_hba.conf" in PostgresStep().verify(ctx).detail
+
+
+def test_an_external_redis_on_this_host_says_nothing_installs_it(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))
+    remote.on("redis-cli", (0, ""))
+    ctx.plan.redis.mode = "external"
+    assert "never installs one" in RedisStep().verify(ctx).detail
+
+
 def test_a_failed_ping_names_the_loopback_bind_rather_than_the_password(ctx: Context, remote: FakeRemote) -> None:
     """The usual cause of a silent PING is a host that is not loopback while Redis only binds it."""
     remote.default_ok = True
     remote.on("dpkg-query", (0, "install ok installed"))
     remote.on("redis-cli", (0, ""))  # answers, but with no PONG
     remote.files["/etc/redis/redis.conf"] = "bind 127.0.0.1 -::1\nrequirepass x\n"
-    ctx.plan.redis.host = "82.165.48.39"
+    ctx.plan.redis.host = ctx.discovered.public_ip
     result = RedisStep().verify(ctx)
     assert not result.ok
-    assert "listens on 127.0.0.1 only" in result.detail and "82.165.48.39" in result.detail
+    assert "listens on 127.0.0.1 only" in result.detail and ctx.discovered.public_ip in result.detail
 
 
 def test_a_failed_ping_on_a_loopback_host_stays_about_the_password(ctx: Context, remote: FakeRemote) -> None:
@@ -277,6 +404,40 @@ def test_a_failed_ping_on_a_loopback_host_stays_about_the_password(ctx: Context,
     remote.on("redis-cli", (0, ""))
     remote.files["/etc/redis/redis.conf"] = "bind 127.0.0.1 -::1\n"
     assert "password" in RedisStep().verify(ctx).detail
+
+
+class _SesAnswer:
+    """The one AWS call the e-mail step makes before it touches an identity."""
+
+    def __init__(self, answer: "bool | None") -> None:
+        self.answer = answer
+
+    def ses_configuration_set_exists(self, name: str, *, region: str | None = None) -> "bool | None":
+        return self.answer
+
+
+def test_a_denied_ses_read_warns_and_lets_the_run_continue(ctx: Context) -> None:
+    """A read permission the operator's own policy lacks must not strand a deployment."""
+    from cloud_driver_installer.steps.awsresources import EmailStep
+
+    ctx.plan.email.mode = "ses"
+    ctx.plan.email.ses_configuration_set = "cloud-driver-transactional"
+    ctx.aws_factory = lambda: _SesAnswer(None)
+    assert EmailStep()._configuration_set_missing(ctx) is False
+    assert any("cannot verify the SES configuration set" in message for _level, message in ctx.captured_log)
+
+
+def test_a_configuration_set_that_is_really_absent_still_stops_the_step(ctx: Context) -> None:
+    """Every send would fail against a name that does not exist, so that one is not a warning."""
+    from cloud_driver_installer.steps.awsresources import EmailStep
+
+    ctx.plan.email.mode = "ses"
+    ctx.plan.email.ses_configuration_set = "typo-set"
+    ctx.aws_factory = lambda: _SesAnswer(False)
+    assert EmailStep()._configuration_set_missing(ctx) is True
+    ctx.aws_factory = lambda: _SesAnswer(True)
+    ctx._aws = None  # type: ignore[attr-defined]  - re-resolve against the new answer
+    assert EmailStep()._configuration_set_missing(ctx) is False
 
 
 # --- daemons ------------------------------------------------------------------------------------

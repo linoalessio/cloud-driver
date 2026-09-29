@@ -304,7 +304,7 @@ class EmailStep(Step):
             return CheckResult.ok(f"SMTP relay {plan.smtp_host}:{plan.smtp_port} as {plan.smtp_username}")
         identity = self.identity(ctx.plan)
         try:
-            if plan.ses_configuration_set and not ctx.aws.ses_configuration_set_exists(plan.ses_configuration_set, region=ctx.plan.ses_region):
+            if self._configuration_set_missing(ctx):
                 return CheckResult.needs_apply(f"configuration set {plan.ses_configuration_set} does not exist in {ctx.plan.ses_region} - every send would fail")
             state = ctx.aws.get_ses_identity(identity, region=ctx.plan.ses_region)
         except AwsError as exc:
@@ -320,7 +320,7 @@ class EmailStep(Step):
         plan = ctx.plan.email
         if plan.mode == "smtp":
             return
-        if plan.ses_configuration_set and not ctx.aws.ses_configuration_set_exists(plan.ses_configuration_set, region=ctx.plan.ses_region):
+        if self._configuration_set_missing(ctx):
             raise StepError(f"SES configuration set {plan.ses_configuration_set} does not exist in {ctx.plan.ses_region} - create it first or clear the field")
         if not plan.ses_verify_identity:
             return
@@ -354,6 +354,26 @@ class EmailStep(Step):
         if plan.email.mode == "smtp":
             return f"write the smtp-* keys for {plan.email.smtp_host}:{plan.email.smtp_port}"
         return f"verify the SES identity {self.identity(plan)} in {plan.ses_region} and write the aws-ses-* keys"
+
+    @staticmethod
+    def _configuration_set_missing(ctx: Context) -> bool:
+        """Whether the named configuration set is known to be absent (an unknown answer is not).
+
+        A denied ``ses:GetConfigurationSet`` says nothing about the set, only about the operator's
+        own policy, so it is logged and the run continues - the alternative is a deployment that
+        cannot be finished because of a read permission nothing else needs.
+        """
+        name = ctx.plan.email.ses_configuration_set
+        if not name:
+            return False
+        known = ctx.aws.ses_configuration_set_exists(name, region=ctx.plan.ses_region)
+        if known is None:
+            ctx.warn(
+                f"[E-mail] cannot verify the SES configuration set {name}: these credentials have no "
+                "ses:GetConfigurationSet. Continuing - but if that name is wrong, every mail the backend sends fails"
+            )
+            return False
+        return not known
 
     def remove(self, ctx: Context) -> None:
         """Strip the mail keys from the server's configuration.json; leave the SES identity alone.
