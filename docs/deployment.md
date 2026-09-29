@@ -161,7 +161,7 @@ Sixteen steps run in the order the server needs them:
 | 2 | Base packages | `screen`, `curl`, `gnupg`, `ca-certificates`, `apt-transport-https`, `openssl`, `unzip`, `cron`, `logrotate`, `fonts-dejavu-core` (+ `awscli` for off-site backups) |
 | 3 | Java 21 | `openjdk-21-jdk-headless`, verified to report 21 |
 | 4 | Python 3 | `python3`, `python3-venv`, `python3-pip`, verified by actually building a throwaway virtual environment |
-| 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects. *Install on this server* and *Use an external server* are two different contracts: the first owns the server and must be given a loopback host, the second only ever writes the credentials file — pointed at this machine it installs nothing, which the step says in as many words instead of letting a refused connection read as a firewall problem. The *Host* field is read-only at `127.0.0.1` in install mode: it is resolved on the server at the far end of the SSH session, not on the machine running the installer, and *external* releases it pre-filled with the host you connected to |
+| 5 | PostgreSQL | Server, role, database owned by the role, `postgres-database.json`; verifies the login *and* that the role can create objects. What the two modes differ in is *which host*, not whether a server gets installed: **any** host that is this server — loopback, or an address the box answers to — is installed, started, moved to the planned port, populated and (on removal) purged by this step, whichever mode is selected, and the server's own public address is recorded as `127.0.0.1` because a local cluster listens nowhere else. *Use an external server* leaves things alone only when the host really is somebody else's machine, and then it writes the credentials file plus a `postgresql-client` to probe with. A refused connection to a local host is explained as such rather than read as a firewall problem. The *Host* field is read-only at `127.0.0.1` in install mode: it is resolved on the server at the far end of the SSH session, not on the machine running the installer, and *external* releases it pre-filled with the host you connected to |
 | 6 | Redis | Loopback bind, `requirepass`, `redis-database.json`, verified with a `PING` (an external store gets `redis-tools` on the server to be probed with, exactly as an external PostgreSQL gets `postgresql-client`). A local install is bound to `127.0.0.1`, so its host has to be that address — naming the server's own public IP is rejected before the run, because nothing would answer on it and the same address would be written into `redis-database.json` for the backend to fail on next (the same rule holds for a locally installed PostgreSQL), and the opposite mistake — *external* pointed at loopback — is warned about on the summary page |
 | 7 | ClamAV | `clamav-daemon` + `freshclam`, the systemd socket drop-in on `127.0.0.1:3310`, raised size limits |
 | 8 | Firewall | `ufw`: the real sshd port(s) first, then 80 and 443 (plus the REST port itself when the reverse proxy is switched off and the JVM is the public listener), then deny-incoming and enable |
@@ -183,7 +183,7 @@ apply is idempotent, and the verify probes the real thing (a `psql` login, a Red
 socket, the API answering `401` on `/auth/me`) and says what a failure means rather than repeating
 the tool's wording — a refused `psql` login names the password, the missing database, the missing
 `pg_hba.conf` entry or the unreachable address, and says which of those this step can fix itself
-(on an external server it never creates or changes a role). Re-running against a provisioned box is the normal
+(on somebody else's server it never creates or changes a role). Re-running against a provisioned box is the normal
 case, so:
 
 - a credential is only ever rotated together with the file that records it, and a password already
@@ -217,8 +217,9 @@ switched off and the next routine deploy reverts the server to whatever the chec
 
 **Removing a step again.** Every step that installs something carries a *Remove…* button next to
 its *Check* and *Apply* buttons, and undoes exactly what that step did: PostgreSQL purges the
-server and deletes `/var/lib/postgresql` (an external server only loses this deployment's
-database), Caddy loses its site block — and the package too, but only when no other site, the apex
+server and deletes `/var/lib/postgresql` whenever the database is on this box — including when
+*external* named it — while a database on somebody else's server only loses this deployment's own
+database, Caddy loses its site block — and the package too, but only when no other site, the apex
 homepage included, is left in the Caddyfile — ClamAV takes its signature database with it, the
 application step stops the JVM and clears the managed crontab region, and the configuration files
 are copied into `/var/backups/cloud-driver-installer/` before they go. Two deliberate exceptions:

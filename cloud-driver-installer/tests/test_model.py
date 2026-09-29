@@ -230,12 +230,33 @@ class TestValidate:
         assert plan.postgres.mode == "external" and plan.postgres.host == "db.example.com"
 
     @pytest.mark.parametrize(("group", "label"), [("postgres", "PostgreSQL"), ("redis", "Redis")])
-    def test_an_external_store_pointed_at_this_host_is_warned_about(self, plan: InstallPlan, group: str, label: str) -> None:
-        """Legal, but almost always a mistake: that mode installs nothing, so nothing would listen."""
+    def test_an_external_store_pointed_at_this_host_is_explained(self, plan: InstallPlan, group: str, label: str) -> None:
+        """Legal either way, and the note has to say which of the two things actually happens."""
         settings = getattr(plan, group)
         settings.mode, settings.password = "external", "secret"
-        assert plan.validate() == [], "a warning, not a refusal - a hand-managed local server is allowed"
+        assert plan.validate() == [], "a warning, not a refusal"
         assert any(line.startswith(f"{label} is set to 'external'") for line in plan.warnings())
+
+    def test_an_external_postgres_at_this_host_is_told_it_is_installed_anyway(self, plan: InstallPlan) -> None:
+        """The host decides for PostgreSQL: this address is this server, so the step installs it."""
+        plan.postgres.mode, plan.postgres.password = "external", "secret"
+        note = next(line for line in plan.warnings() if line.startswith("PostgreSQL is set to 'external'"))
+        assert "installs and manages the server there anyway" in note and "purges it" in note
+
+    def test_an_external_redis_at_this_host_still_installs_nothing(self, plan: InstallPlan) -> None:
+        """Redis has not been given that behaviour, so its note must not claim PostgreSQL's."""
+        plan.redis.mode, plan.redis.password = "external", "secret"
+        note = next(line for line in plan.warnings() if line.startswith("Redis is set to 'external'"))
+        assert "only writes the credentials file" in note
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [("127.0.0.1", True), ("localhost", True), ("0:0:0:0:0:0:0:1", True), ("82.165.48.39", True), ("db.example.com", False), ("", False)],
+    )
+    def test_host_is_this_server_recognises_every_way_of_naming_this_box(self, host: str, expected: bool) -> None:
+        from cloud_driver_installer.model import host_is_this_server
+
+        assert host_is_this_server(host, ["82.165.48.39", "10.0.0.7"]) is expected
 
     def test_max_scan_size_is_exempt_from_the_scan_limit_check(self, plan: InstallPlan) -> None:
         """Only StreamMaxLength and MaxFileSize are compared against content-scan-max-bytes."""

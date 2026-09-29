@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
+from cloud_driver_installer.model import LOOPBACK_HOSTS
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cloud_driver_installer.engine import Step
     from cloud_driver_installer.model import InstallPlan
@@ -70,7 +72,7 @@ def retained_items(plan: "InstallPlan") -> list[str]:
         items.append(f"AWS: the IAM user {aws.iam_user_name} - only its access key on the server is deleted")
     if plan.email.mode == "ses":
         items.append(f"AWS: the verified SES identity for {plan.email.ses_from_address} - remove it in the SES console if you want it gone")
-    if plan.postgres.mode == "external":
+    if plan.postgres.mode == "external" and plan.postgres.host not in LOOPBACK_HOSTS:
         items.append(f"the external PostgreSQL server {plan.postgres.host}:{plan.postgres.port} - only this deployment's database is dropped, never the server or its role")
     if plan.redis.enabled and plan.redis.mode == "external":
         items.append(f"the external Redis at {plan.redis.host}:{plan.redis.port} - only this deployment's credentials file is deleted")

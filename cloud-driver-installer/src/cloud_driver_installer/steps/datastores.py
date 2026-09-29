@@ -12,7 +12,7 @@ import shlex
 
 from cloud_driver_installer.config_files import render_postgres_credentials, render_redis_credentials, to_json
 from cloud_driver_installer.engine import CheckResult, Context, Step, StepError, VerifyResult
-from cloud_driver_installer.model import LOOPBACK_HOSTS, InstallPlan
+from cloud_driver_installer.model import LOOPBACK_HOSTS, InstallPlan, host_is_this_server
 from cloud_driver_installer.credentials import generate_hex
 
 #: Dollar-quoting tag for passwords inside SQL: hex passwords can never contain it.
@@ -49,7 +49,17 @@ def resolve_password(ctx: Context, *, kind: str) -> tuple[str, bool]:
 
 
 class PostgresStep(Step):
-    """The system of record: role, database (owned by the role) and ``postgres-database.json``."""
+    """The system of record: role, database (owned by the role) and ``postgres-database.json``.
+
+    **The host decides, not the mode.** A host that is this server - loopback, or any address the
+    server answers to - is a database *on the machine being installed*, so this step installs,
+    starts, ports, populates and (on removal) purges the server there, whether the operator picked
+    *Install on this server* or *Use an external server*. Only a host that is genuinely somebody
+    else's machine is left alone, and then the step writes the credentials file and a client to
+    probe with, nothing more. A mode that pointed at this server and installed nothing could never
+    succeed: the file would name an address with no server behind it, and the next run would read
+    the same file and conclude the same thing again.
+    """
 
     id = "postgres"
     title = "PostgreSQL"
@@ -59,14 +69,15 @@ class PostgresStep(Step):
 
     def check(self, ctx: Context) -> CheckResult:
         plan = ctx.plan.postgres
+        self._adopt_local_host(ctx)
         password, kept = resolve_password(ctx, kind="postgres")
         note = "password kept from postgres-database.json" if kept else ("password from the plan" if plan.password else "password generated")
-        if plan.mode == "external":
+        if not self._server_is_here(ctx):
             reachable = self._login_works(ctx, password)
             detail = f"external {plan.username}@{plan.host}:{plan.port}/{plan.database} · {note}"
             if not reachable:
-                # A loopback "external" server is one this step can actually look at, so say what
-                # is wrong with it here rather than leaving it to a failed verify after the write.
+                # Somebody else's server is one this step cannot look at, so the checklist in
+                # _login_problem is all there is; the local cases are handled by the branch below.
                 hint = self._local_server_hint(ctx)
                 if hint:
                     detail += f" · {hint}"
@@ -86,8 +97,14 @@ class PostgresStep(Step):
 
     def apply(self, ctx: Context) -> None:
         plan = ctx.plan.postgres
+        self._adopt_local_host(ctx)
         password, kept = resolve_password(ctx, kind="postgres")
-        if plan.mode == "install":
+        if self._server_is_here(ctx):
+            if plan.mode == "external":
+                ctx.info(
+                    f"[PostgreSQL] {plan.host} is this server, so the server itself is installed and managed here - "
+                    "'Use an external server' only leaves somebody else's machine alone"
+                )
             if not ctx.remote.dpkg_installed("postgresql"):
                 ctx.remote.apt_install(["postgresql", "postgresql-contrib"])
             ctx.remote.systemctl("enable", "--now", "postgresql")
@@ -115,6 +132,8 @@ class PostgresStep(Step):
                 self._run_sql(ctx, f"CREATE DATABASE {plan.database} OWNER {plan.username};")
             self._run_sql(ctx, f"ALTER DATABASE {plan.database} OWNER TO {plan.username};")
         else:
+            # Somebody else's server: the credentials file, and a client so the probe below can run
+            # from the server rather than from the operator's machine. Nothing else is ours to touch.
             if not ctx.remote.command_exists("psql"):
                 ctx.remote.apt_install(["postgresql-client"])
             self._write_file(ctx, password)
@@ -138,20 +157,24 @@ class PostgresStep(Step):
 
     def describe(self, plan: InstallPlan) -> str:
         pg = plan.postgres
-        if pg.mode == "external":
-            return f"write postgres-database.json for {pg.username}@{pg.host}:{pg.port}/{pg.database} (external server)"
+        if pg.mode == "external" and pg.host not in LOOPBACK_HOSTS:
+            return (
+                f"write postgres-database.json for {pg.username}@{pg.host}:{pg.port}/{pg.database} (external server) - "
+                f"or install the server here first, if {pg.host} turns out to be this machine"
+            )
         return f"install postgresql, create role {pg.username} and database {pg.database} (owner), write postgres-database.json"
 
     def remove(self, ctx: Context) -> None:
         """Delete the deployment's database. Every file ever uploaded is in it, and it is gone.
 
-        Locally installed: the server, its clusters under ``/var/lib/postgresql`` and its
-        configuration are purged. External: only the database this deployment owns is dropped -
-        the server belongs to someone else, and dropping its login role needs a superuser this
-        installer does not have.
+        On this server - whichever mode named it - the server, its clusters under
+        ``/var/lib/postgresql`` and its configuration are purged, because this step is what put them
+        there. On somebody else's machine only the database this deployment owns is dropped: the
+        server is not ours, and dropping its login role needs a superuser this installer does not
+        have.
         """
         plan = ctx.plan.postgres
-        if plan.mode == "install":
+        if self._server_is_here(ctx):
             ctx.remote.systemctl("stop", "postgresql", check=False)
             ctx.remote.systemctl("disable", "postgresql", check=False)
             ctx.remote.apt_purge(["postgresql", "postgresql-contrib", "postgresql-common", "postgresql-client-common"])
@@ -173,7 +196,7 @@ class PostgresStep(Step):
 
     def describe_removal(self, plan: InstallPlan) -> str:
         pg = plan.postgres
-        if pg.mode == "install":
+        if pg.mode == "install" or pg.host in LOOPBACK_HOSTS:
             return (
                 f"stop and purge postgresql, then delete /var/lib/postgresql, /etc/postgresql and /var/log/postgresql, "
                 f"and {plan.config_dir}/postgres-database.json · THE DATABASE {pg.database} AND EVERY FILE, USER AND SHARE IN IT IS DELETED PERMANENTLY, "
@@ -185,6 +208,45 @@ class PostgresStep(Step):
         )
 
     # --- internals -------------------------------------------------------------------------------
+
+    @staticmethod
+    def _this_server_addresses(ctx: Context) -> list[str]:
+        """Every address that is this server, whether or not the preflight step has run yet.
+
+        ``Discovered.own_addresses`` is the full list, but it is only filled once the *Server* step
+        has checked; a single step applied on its own must reach the same conclusion, so the public
+        address and the host the SSH session dialled stand in for it. Answering "not this server"
+        because nothing has been discovered yet is the one wrong answer available here: it would
+        install nothing and write an address with no server behind it.
+        """
+        return [address for address in (*ctx.discovered.own_addresses, ctx.discovered.public_ip, ctx.plan.ssh.host) if address]
+
+    def _server_is_here(self, ctx: Context) -> bool:
+        """Whether the database this plan names lives on the server we are connected to.
+
+        The single question every branch of this step turns on. ``install`` mode always does (its
+        host is validated as loopback); ``external`` mode does too whenever the host the operator
+        typed is one of this server's own addresses, and then the server is this step's to install
+        and to purge.
+        """
+        plan = ctx.plan.postgres
+        return plan.mode == "install" or host_is_this_server(plan.host, self._this_server_addresses(ctx))
+
+    def _adopt_local_host(self, ctx: Context) -> None:
+        """Rewrite a host that is this server's *public* address to loopback.
+
+        A server this step installs listens on loopback, so the public address the operator typed
+        can never answer on it - and it is the backend, running on this same machine, that has to
+        dial whatever the credentials file records. Normalising it here is the same rule
+        ``apply_existing_config`` applies to an address it finds in an existing file; doing it in
+        ``check`` as well as ``apply`` keeps the plan, the sidebar and the removal dialog agreeing
+        about which machine the database is on.
+        """
+        plan = ctx.plan.postgres
+        if plan.host in LOOPBACK_HOSTS or not host_is_this_server(plan.host, self._this_server_addresses(ctx)):
+            return
+        ctx.info(f"[PostgreSQL] {plan.host} is this server's own address - recording the database as 127.0.0.1, which is how it is reached")
+        plan.host = "127.0.0.1"
 
     def _write_file(self, ctx: Context, password: str) -> None:
         ctx.remote.put_text(f"{ctx.plan.config_dir}/postgres-database.json", to_json(render_postgres_credentials(ctx.plan, password)), mode=0o600)
@@ -228,24 +290,18 @@ class PostgresStep(Step):
         return self._login_query(ctx, password, "SELECT 1") == "1"
 
     def _local_server_hint(self, ctx: Context) -> str:
-        """Why a connection to a *loopback* host failed, or ``""`` when this cannot be the reason.
+        """Why a connection to a host that is *this server* failed, or ``""`` if that is not the reason.
 
-        ``external`` means "a server somebody else runs": the step writes the credentials file and
-        nothing else. Pointed at this machine with no server installed, it can therefore never
-        succeed, and psql's "connection refused" sends the operator off to check listen_addresses,
-        pg_hba.conf and firewalls that do not exist yet. Name the actual cause instead.
+        psql's "connection refused" sends the operator off to check listen_addresses, pg_hba.conf
+        and firewalls, none of which exists yet on a host with no server on it. Name the actual
+        cause instead - and only for a host this step can actually look at.
         """
         plan = ctx.plan.postgres
-        own_address = bool(ctx.discovered.public_ip) and plan.host == ctx.discovered.public_ip
+        own_address = host_is_this_server(plan.host, self._this_server_addresses(ctx)) and plan.host not in LOOPBACK_HOSTS
         if plan.host not in LOOPBACK_HOSTS and not own_address:
             return ""  # somebody else's server: nothing on this host can explain it
         if not ctx.remote.dpkg_installed("postgresql"):
-            if plan.mode == "external":
-                return (
-                    "no PostgreSQL server is installed on this host, and 'Use an external server' never installs one - "
-                    "switch the mode to 'Install on this server' and apply this step again"
-                )
-            return "no PostgreSQL server is installed on this host yet"
+            return "no PostgreSQL server is installed on this host yet - applying this step installs one"
         clusters = self._local_clusters(ctx)
         if clusters is None:
             if not ctx.remote.service_active("postgresql"):
@@ -262,7 +318,8 @@ class PostgresStep(Step):
         if own_address:
             return (
                 f"the server's PostgreSQL accepts connections on its loopback interface only, so {plan.host} can never "
-                "answer it - this field is resolved on the server, not on your machine, so 127.0.0.1 is the address you want"
+                "answer it - this field is resolved on the server, not on your machine, so 127.0.0.1 is the address you "
+                "want, and applying this step records it that way"
             )
         return ""
 

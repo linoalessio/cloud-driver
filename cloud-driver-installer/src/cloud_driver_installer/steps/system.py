@@ -140,6 +140,7 @@ class ServerStep(Step):
         found.intelligence_installed = remote.exists("/opt/cloud-driver-intelligence/.venv/bin/uvicorn")
         found.intelligence_env = parse_env_file(remote.read_text("/etc/cloud-driver-intelligence.env"))
 
+        found.own_addresses = self._own_addresses(ctx)
         found.existing_config = parse_json(remote.read_text(f"{ctx.plan.config_dir}/configuration.json"))
         found.existing_postgres = parse_json(remote.read_text(f"{ctx.plan.config_dir}/postgres-database.json"))
         found.existing_redis = parse_json(remote.read_text(f"{ctx.plan.config_dir}/redis-database.json"))
@@ -151,7 +152,7 @@ class ServerStep(Step):
                 found.existing_config,
                 postgres=found.existing_postgres or None,
                 redis=found.existing_redis or None,
-                own_addresses=self._own_addresses(ctx),
+                own_addresses=found.own_addresses,
             )
             for line in taken:
                 ctx.info(f"[Server] taken over from this server: {line}")
@@ -216,7 +217,9 @@ class ServerStep(Step):
         """Every address this host answers to, so a credentials file naming one reads as local.
 
         The public address the step already discovered, plus whatever is bound locally - a box
-        behind NAT records the private address in its files, and both must be recognised.
+        behind NAT records the private address in its files, and both must be recognised. Recorded
+        on :class:`Discovered` because the PostgreSQL step asks the same question about the host the
+        operator typed, and the two must never disagree about what "this server" means.
         """
         addresses = [ctx.discovered.public_ip, ctx.plan.ssh.host]
         addresses.extend(_text(ctx, "hostname -I 2>/dev/null").split())

@@ -317,7 +317,8 @@ class PostgresPage(Page):
             self.host,
             "Resolved on the server you are connected to, never on this machine: a database installed there answers on "
             "its own 127.0.0.1, and that is the address written into postgres-database.json for the backend beside it. "
-            "Switch to 'Use an external server' to type an address of your own.",
+            "Switch to 'Use an external server' to type an address of your own - an address that is still this server "
+            "installs PostgreSQL there just the same, and is recorded as 127.0.0.1.",
             width=24,
         )
         form.entry("Port", self.port, "The port on that host - read back from the server's own postgres-database.json when you run Check all.", width=8)

@@ -87,6 +87,13 @@ def test_an_external_data_store_is_named_as_kept(plan: InstallPlan) -> None:
     assert "db.example.com" in text and "cache.example.com" in text
 
 
+def test_an_external_postgres_on_this_server_is_not_promised_as_kept(plan: InstallPlan) -> None:
+    """This list is what a wipe cannot reach; a database on this box is purged, so it is not on it."""
+    plan.postgres.mode = "external"
+    plan.postgres.host = "127.0.0.1"
+    assert not any("PostgreSQL server" in item for item in retained_items(plan))
+
+
 # --- the run --------------------------------------------------------------------------------------
 
 

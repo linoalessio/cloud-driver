@@ -25,9 +25,6 @@ from cloud_driver_installer.ssh import SshTarget
 #: Swift ``APIClient.shared``); a different API domain means those apps must be rebuilt.
 CLIENT_HARDCODED_API_HOST = "api.cloud-driver.de"
 
-#: Bind addresses that are only reachable from the server itself.
-LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
-
 #: Field names whose values are secrets: never written to a profile, always redacted in the log.
 SECRET_FIELD_NAMES = frozenset(
     {
@@ -47,10 +44,26 @@ _KMS_ALIAS_RE = re.compile(r"^alias/[A-Za-z0-9/_-]{1,250}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PG_IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
-#: Addresses that mean "this very machine". A data store the installer sets up itself is bound to
-#: loopback, so its host has to be one of these - naming the server's own public address instead
-#: writes that address into the credentials file and nothing can then answer on it.
+#: Addresses that mean "this very machine", and the only ones reachable from the server itself. A
+#: data store the installer sets up is bound to loopback, so its host has to be one of these -
+#: naming the server's own public address instead writes that address into the credentials file and
+#: nothing can then answer on it.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]", "0:0:0:0:0:0:0:1")
+
+
+def host_is_this_server(host: str, own_addresses: "Iterable[str]" = ()) -> bool:
+    """Whether ``host`` names the server this installer is connected to.
+
+    Loopback always does; so does any address the server itself answers to (its public address, the
+    name the SSH session dialled, whatever is bound locally - see ``ServerStep._own_addresses``). A
+    store at such an address is one *on this machine*, whichever mode the operator picked for it,
+    and is therefore the installer's to install, configure and remove. Reading it as somebody
+    else's server is self-perpetuating: nothing gets installed, the same address is written back,
+    and the next run concludes the same thing again.
+    """
+    if not host:
+        return False
+    return host in ({address for address in own_addresses if address} | set(LOOPBACK_HOSTS))
 
 
 # --- settings groups ---------------------------------------------------------------------------
@@ -535,13 +548,18 @@ class InstallPlan:
             notes.append("SES: a new account is in the sandbox (200 mails/day, every recipient must be verified) until AWS grants production access.")
             if self.email.ses_identity_mode == "domain":
                 notes.append("SES: publish the three DKIM CNAME records shown after the run, or mail from this domain lands in spam.")
-        for label, settings in (("PostgreSQL", self.postgres), ("Redis", self.redis)):
-            if getattr(settings, "enabled", True) and settings.mode == "external" and settings.host in LOOPBACK_HOSTS:
-                notes.append(
-                    f"{label} is set to 'external' but points at {settings.host}: that mode only writes the credentials file - "
-                    f"it never installs, configures or starts a server on this host. Choose 'Install on this server' unless "
-                    f"you set that {label} up yourself."
-                )
+        if self.postgres.mode == "external" and self.postgres.host in LOOPBACK_HOSTS:
+            notes.append(
+                f"PostgreSQL is set to 'external' but points at {self.postgres.host}, which is this server: the step "
+                "installs and manages the server there anyway, exactly as 'Install on this server' would, and a removal "
+                "purges it. Only a host that is somebody else's machine is left alone."
+            )
+        if self.redis.enabled and self.redis.mode == "external" and self.redis.host in LOOPBACK_HOSTS:
+            notes.append(
+                f"Redis is set to 'external' but points at {self.redis.host}: that mode only writes the credentials file - "
+                "it never installs, configures or starts a server on this host. Choose 'Install on this server' unless "
+                "you set that Redis up yourself."
+            )
         if not self.proxy.enabled:
             notes.append("No reverse proxy: the API is served as plain HTTP on the bind address; the shipped clients only speak https://.")
             if self.app.rest_bind_host in LOOPBACK_HOSTS:
@@ -608,6 +626,7 @@ class Discovered:
     disk_free_gib: float = 0.0
     public_ip: str = ""
     ipv6: str = ""
+    own_addresses: list[str] = field(default_factory=list)  # every address that IS this server
     ntp_synchronized: bool | None = None
     timezone: str = ""
     is_root: bool = False
@@ -811,7 +830,6 @@ def apply_existing_config(
                 setattr(plan.clamav, attr, kind(v))
             except (TypeError, ValueError):
                 pass
-    here = {address for address in own_addresses if address} | set(LOOPBACK_HOSTS)
     if postgres:
         for key, attr, kind in (("address", "host", str), ("port", "port", int), ("database", "database", str), ("userName", "username", str)):
             if postgres.get(key) not in (None, ""):
@@ -819,7 +837,7 @@ def apply_existing_config(
                     setattr(plan.postgres, attr, kind(postgres[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.postgres.host in here:
+        if host_is_this_server(plan.postgres.host, own_addresses):
             plan.postgres.mode, plan.postgres.host = "install", "127.0.0.1"
         else:
             plan.postgres.mode = "external"
@@ -832,7 +850,7 @@ def apply_existing_config(
                     setattr(plan.redis, attr, kind(redis[key]))
                 except (TypeError, ValueError):
                     pass
-        if plan.redis.host in here:
+        if host_is_this_server(plan.redis.host, own_addresses):
             plan.redis.mode, plan.redis.host = "install", "127.0.0.1"
         else:
             plan.redis.mode = "external"

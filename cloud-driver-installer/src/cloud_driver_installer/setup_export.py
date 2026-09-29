@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from cloud_driver_installer.config_files import SCREEN_LOG_FILE
-from cloud_driver_installer.model import Discovered, GeneratedSecrets, InstallPlan
+from cloud_driver_installer.model import LOOPBACK_HOSTS, Discovered, GeneratedSecrets, InstallPlan
 from cloud_driver_installer.sizing import format_bytes
 
 #: The line every export carries at the top, so nobody mistakes it for a redacted report.
@@ -130,7 +130,7 @@ def render_setup_markdown(
 
     pg = plan.postgres
     lines += _section("PostgreSQL", [
-        ("Mode", Note("installed on this server" if pg.mode == "install" else "external server")),
+        ("Mode", Note("installed on this server" if pg.mode == "install" or pg.host in LOOPBACK_HOSTS else "external server")),
         ("Host", pg.host),
         ("Port", pg.port),
         ("Database", pg.database),

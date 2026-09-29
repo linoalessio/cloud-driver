@@ -307,8 +307,8 @@ def test_redis_apply_writes_credentials_without_leaking_them(ctx: Context, remot
     assert no_secret_in_commands(ctx, remote, ctx.secrets.redis_password)
 
 
-def test_an_external_postgres_on_this_host_says_nothing_installs_it(ctx: Context, remote: FakeRemote) -> None:
-    """'external' + 127.0.0.1 with no server is the one refusal psql's own wording misexplains."""
+def test_an_external_postgres_on_this_host_is_told_it_will_be_installed(ctx: Context, remote: FakeRemote) -> None:
+    """'external' + 127.0.0.1 with no server: name the cause, not the firewall psql blames."""
     remote.default_ok = True
     remote.on("dpkg-query", (1, ""))  # nothing installed
     remote.on("psql", (2, "", 'psql: error: connection to server at "127.0.0.1", port 5432 failed: Connection refused'))
@@ -316,8 +316,88 @@ def test_an_external_postgres_on_this_host_says_nothing_installs_it(ctx: Context
     ctx.plan.postgres.password = "secret"
     result = PostgresStep().verify(ctx)
     assert not result.ok
-    assert "never installs one" in result.detail and "Install on this server" in result.detail
+    assert "no PostgreSQL server is installed on this host yet" in result.detail
+    assert "applying this step installs one" in result.detail
     assert "pg_hba.conf" not in result.detail, "the generic advice must not survive here"
+
+
+def test_an_external_postgres_on_this_host_installs_the_server_anyway(ctx: Context, remote: FakeRemote) -> None:
+    """The host decides, not the mode: 127.0.0.1 is this machine, so the server is ours to install.
+
+    A mode that wrote a credentials file naming a host with no server behind it could never succeed,
+    and the next run would read that same file and conclude the same thing again.
+    """
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))  # no server yet
+    remote.on("SELECT 1", (0, "1"))
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    PostgresStep().apply(ctx)
+    assert "postgresql" in remote.apt_installed and "postgresql-contrib" in remote.apt_installed
+    assert ("enable", "--now", "postgresql") in remote.systemctl_calls
+    assert any("CREATE ROLE" in (value or "") for value in remote.inputs), "the role is created here too"
+    assert "postgresql-client" not in remote.apt_installed, "the server package brings its own client"
+    assert ctx.secrets.pg_password in remote.files[f"{ctx.plan.config_dir}/postgres-database.json"]
+
+
+def test_an_external_postgres_at_the_server_s_own_address_is_recorded_as_loopback(ctx: Context, remote: FakeRemote) -> None:
+    """A locally installed server listens on loopback, so that is the address the file must carry."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))
+    remote.on("SELECT 1", (0, "1"))
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.plan.postgres.host, ctx.plan.postgres.port = ctx.discovered.public_ip, 20411
+    PostgresStep().apply(ctx)
+    assert ctx.plan.postgres.host == "127.0.0.1", "the public address can never answer a loopback bind"
+    assert ctx.plan.postgres.port == 20411, "the port the operator chose is kept"
+    assert "postgresql" in remote.apt_installed
+    assert '"address": "127.0.0.1"' in remote.files[f"{ctx.plan.config_dir}/postgres-database.json"]
+
+
+def test_an_external_postgres_on_this_host_gets_its_cluster_moved_too(ctx: Context, remote: FakeRemote) -> None:
+    """The port in the credentials file is the one the backend dials, whichever mode recorded it."""
+    remote.default_ok = True
+    remote.on("dpkg-query", (1, ""))
+    remote.on("pg_lsclusters", (0, "17  main  5432  online  postgres  /var/lib/postgresql/17/main  /var/log/x"))
+    remote.on("SELECT 1", (0, "1"))
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.plan.postgres.host, ctx.plan.postgres.port = ctx.discovered.public_ip, 20411
+    PostgresStep().apply(ctx)
+    assert remote.ran("pg_conftool set port 20411")
+
+
+def test_an_external_postgres_somewhere_else_is_still_left_alone(ctx: Context, remote: FakeRemote) -> None:
+    """Somebody else's machine is the one case that installs nothing - only a client to probe with."""
+    remote.default_ok = True
+    remote.on("command -v psql", (1, ""))
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.plan.postgres.host = "db.example.com"
+    PostgresStep().apply(ctx)
+    assert remote.apt_installed == ["postgresql-client"]
+    assert not remote.systemctl_calls, "nothing on this host is started for someone else's database"
+    assert ctx.plan.postgres.host == "db.example.com"
+    assert ctx.secrets.pg_password in remote.files[f"{ctx.plan.config_dir}/postgres-database.json"]
+
+
+def test_removing_an_external_postgres_on_this_host_purges_the_server(ctx: Context, remote: FakeRemote) -> None:
+    """Whatever this step installed, it also removes - and the dialog has to say which it is."""
+    remote.default_ok = True
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.secrets.pg_password = "secret"
+    described = PostgresStep().describe_removal(ctx.plan)
+    assert "purge postgresql" in described and "/var/lib/postgresql" in described
+    PostgresStep().remove(ctx)
+    assert "postgresql" in remote.apt_purged
+    assert not remote.ran("dropdb"), "a local server is purged whole, not dropped database by database"
+
+
+def test_removing_an_external_postgres_elsewhere_only_drops_the_database(ctx: Context, remote: FakeRemote) -> None:
+    remote.default_ok = True
+    ctx.plan.postgres.mode, ctx.plan.postgres.password = "external", "secret"
+    ctx.plan.postgres.host = "db.example.com"
+    ctx.secrets.pg_password = "secret"
+    assert "the server itself are left alone" in PostgresStep().describe_removal(ctx.plan)
+    PostgresStep().remove(ctx)
+    assert remote.ran("dropdb") and "postgresql" not in remote.apt_purged
 
 
 def test_a_stopped_local_postgres_is_named_as_stopped(ctx: Context, remote: FakeRemote) -> None:
