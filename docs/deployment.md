@@ -22,11 +22,11 @@ etc.) involved. A handful of shell scripts under [`shell/`](../shell/) handle th
 
 | Script | Runs where | Purpose |
 |---|---|---|
-| `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud` directory layout `deploy-cloud.sh` expects, and scaffolded (mostly placeholder) config JSON files. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
-| `deploy-cloud.sh` | Locally | Uploads the already-built shaded bootstrap jar, every built extension jar, the local `cloud-driver/configuration.json` and `start-cloud.sh` itself (executable bit restored) over one multiplexed SSH connection, up to 6 in parallel, each verified with SHA-256 on both ends. Prunes previous releases' jars once every upload has verified, and refuses an extension jar whose name does not carry the bootstrap jar's version, or two jars for the same module — the bootstrap refuses to start when two jars claim the same extension name. Files are sent uncompressed on purpose — jars are already DEFLATE-compressed. It builds nothing and never restarts the running instance |
-| `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX` — or with a sibling `start-cloud.env`, see §"GUI installer"), auto-restarting it if it ever exits. The bootstrap jar is the single `cloud-driver-bootstrap-*.jar` in the script's own directory, so a version bump needs no edit. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
-| `release-and-package.sh` | Locally | One-shot release automation: bumps the version references it lists — every `pom.xml`, the desktop Gradle build, the iOS `project.yml` and the Python SDK, plus six of the twelve `extension.json` manifests (the bootstrap's, and `rest`, `backup`, `terminal`, `metrics`, `watcher`); the other six extensions' manifests are not in that hardcoded list and keep their previous version, so check them by hand after a release. Then rebuilds the reactor with `mvn clean install`, commits, tags, pushes, cuts a GitHub Release and waits for the publish workflow. Operator-local — one of the two scripts deliberately kept out of version control (the other is `deploy-homepage.sh`) |
-| `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL |
+| `provision-root-server.sh` | Locally, targets a fresh server | One-shot OS-level bring-up of a brand-new root server: JDK 21, Python 3 with a `venv` that can actually bootstrap pip (what the intelligence service is built from), PostgreSQL (role + database), Caddy, `ufw` firewall, a swapfile, hardened `clamd`, password-protected loopback-only Redis, the `/home/cloud/{cloud-driver,extensions,upload-scratch}` layout `deploy-cloud.sh` expects, scaffolded (mostly placeholder) config JSON files, `start-cloud.env` with a heap sized from the box's RAM, and a logrotate stanza for the console log. Idempotent; does not touch AWS or deploy the jar itself — see §"Provisioning a new root server" below |
+| `deploy-cloud.sh` | Locally | Uploads the already-built shaded bootstrap jar, every built extension jar, the local `cloud-driver/configuration.json` and `start-cloud.sh` itself (executable bit restored) over one multiplexed SSH connection, up to 6 in parallel, each verified with SHA-256 on both ends. Prunes previous releases' jars once every upload has verified, and refuses an extension jar whose name does not carry the bootstrap jar's version, or two jars for the same module — the bootstrap refuses to start when two jars claim the same extension name. Warns (without failing) when the built jar's version differs from the one this checkout's `pom.xml` declares, and names every extension module the run has no jar for, since an unbuilt module is indistinguishable from a deliberately excluded one once it is not on the server. The two credentials files beside `configuration.json` are deliberately never uploaded — those passwords are generated on the server — and neither is `start-cloud.env`. Files are sent uncompressed on purpose — jars are already DEFLATE-compressed. It builds nothing and never restarts the running instance |
+| `start-cloud.sh` | On the server | Starts the jar in a detached session with an explicit heap size (`-Xmx6g` by default, override with `JVM_XMX` — or with a sibling `start-cloud.env`, see §"GUI installer"), auto-restarting it if it ever exits. The bootstrap jar is the single `cloud-driver-bootstrap-*.jar` in the script's own directory, so a version bump needs no edit; no jar name is pinned anywhere, and a `JAR_NAME` found in the environment or in `start-cloud.env` is reported and ignored rather than honored. The JVM runs with `-XX:+ExitOnOutOfMemoryError`, so heap exhaustion terminates the process and the loop restarts it instead of leaving it running with threads the error killed |
+| `release-and-package.sh` | Locally | One-shot release automation: bumps every `pom.xml`, *every* `extension.json` in the tree (found by glob, not listed — a hardcoded list is what once left half the manifests a release behind), the root README, the desktop Gradle build, the iOS `project.yml`, `cloud-driver-installer` and the Python SDK, plus the version `homepage/index.html` states. A Python package already carrying a *newer* version than the one being released is left alone with a warning, since pip treats a downgrade worse than a stale number; `cloud-driver-intelligence` is versioned independently and never touched. Then rebuilds the reactor with `mvn clean install`, commits, tags, pushes, cuts a GitHub Release and waits for the publish workflow. Operator-local — one of the two scripts deliberately kept out of version control (the other is `deploy-homepage.sh`) |
+| `deploy-homepage.sh` | Locally | Uploads `homepage/` to the server (checksum-verified), points Caddy's apex `cloud-driver.de` block at it (backing up and validating the Caddyfile first), reloads Caddy, and smoke-tests the live URL. Refuses to publish a page with a `class="todo"` placeholder left in it, or an asset reference with no `?v=` stamp / three pages carrying different ones; warns when the release facts the page states (version, route count, extension count) no longer match the checkout it is deployed from |
 
 None of the deploy/run scripts build anything by themselves — always run `mvn clean install` (or
 the targeted `-pl ... -am package` form) before `deploy-cloud.sh`. `release-and-package.sh` is the
@@ -56,13 +56,21 @@ database, per requirements.md §2.1), the `ufw` firewall (this application does 
 — requirements.md §6), a 4 GB swapfile (requirements.md §7), `clamd` bound to loopback with raised
 size limits and the systemd socket-activation drop-in (requirements.md §4.3), Redis bound to
 loopback with a generated password, Caddy (installed always; a reverse-proxy site block for
-`api-domain` is added if given), and the `/home/cloud/{cloud-driver,extensions}` layout
-`deploy-cloud.sh`/`start-cloud.sh` already assume. It also scaffolds
+`api-domain` is added if given), and the `/home/cloud/{cloud-driver,extensions,upload-scratch}`
+layout `deploy-cloud.sh`/`start-cloud.sh` already assume. It also scaffolds
 `postgres-database.json`/`redis-database.json` (real, generated credentials) and
-`configuration.json` (a real generated `jwt-signing-key`, but `REPLACE-ME` placeholders for all six
-`aws-*` keys **and for `cloud-server-max-bytes-available`**, the server's total capacity — fill that
-one in too, or the operator terminal's `cloudUser` and `statistics` commands fail on it) — never
-overwriting files that already exist.
+`configuration.json` (a real generated `jwt-signing-key` and `intelligence-shared-secret`, but
+`REPLACE-ME` placeholders for all six `aws-*` keys **and for `cloud-server-max-bytes-available`**,
+the server's total capacity — fill that one in too, or the operator terminal's `cloudUser` and
+`statistics` commands fail on it) — never overwriting files that already exist.
+
+Two launcher-side files come with it, both written only when absent so a tuned value survives a
+re-run: `start-cloud.env` next to the jar (`JVM_XMX` sized from the box's RAM by the same rule
+`cloud-driver-installer` uses — see requirements.md §7 — plus `SCREEN_SESSION` and
+`SCREEN_LOG_FILE`; never a `JAR_NAME`), and `/etc/logrotate.d/cloud-driver` for that console log,
+which is root-only because it carries crash traces and, with no mail transport configured,
+verification codes. Every generated secret is printed once at the end; a re-run that kept an
+existing file says so instead of printing a value it never wrote.
 
 The API site block it writes is the shape the backend is configured against:
 
@@ -103,7 +111,14 @@ script prints the remaining manual checklist on completion:
 3. Point DNS at the new server's IP.
 4. `mvn clean install` locally, then `./shell/deploy-cloud.sh` (ships the jars, `configuration.json`,
    and `start-cloud.sh` itself, restoring its executable bit) and, on the server, `./start-cloud.sh`.
-5. Optional: `cloud-driver-intelligence/deploy/install-on-server.sh` for semantic search.
+5. Optional: a second S3 bucket for off-site database backups — never the content bucket, since the
+   operator terminal's `s3 purge` would delete the archives — plus the nightly `aws s3 sync` job and
+   the two other scheduled jobs the installer would have added (reboot autostart, hourly sweep of
+   stale `upload-scratch/` temp files). The script prints all three; none is needed for the JVM to
+   run.
+6. Optional: `cloud-driver-intelligence/deploy/install-on-server.sh` for semantic search — it reads
+   its shared secret from `CLOUD_DRIVER_INTELLIGENCE_SECRET`, which must match the
+   `intelligence-shared-secret` the script generated into `configuration.json`.
 
 Cutting production over to the new box afterward is a DNS change plus repointing whatever SSH
 alias `deploy-cloud.sh`/`deploy-homepage.sh` use at the new server — neither script needs editing
@@ -190,7 +205,8 @@ case, so:
 intelligence service), `SCREEN_SESSION`, and `SCREEN_LOG_FILE` (`/var/log/cloud-driver/cloud.log`,
 root-only and rotated weekly — the JVM writes no log of its own, and a detached `screen` has no
 scrollback). The jar name is deliberately *not* pinned, so a later `deploy-cloud.sh` release bump
-keeps working. The same run installs a managed crontab region (`# cloud-driver-installer
+keeps working — and the launcher enforces that, reporting and ignoring a `JAR_NAME` it finds here
+instead of honoring it. The same run installs a managed crontab region (`# cloud-driver-installer
 BEGIN/END`): the `@reboot` relaunch — inside `screen`, because the operator terminal needs a pty —
 an hourly sweep of abandoned upload scratch files, and the daily off-site backup copy into the
 backup bucket.

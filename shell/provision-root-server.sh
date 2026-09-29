@@ -7,12 +7,23 @@
 # real AWS credentials and an already-built jar, neither of which this script has, so they're left
 # as printed follow-up instructions rather than attempted here.
 #
+# This is the scriptable, OS-level path. cloud-driver-installer (a desktop GUI over the same SSH
+# connection) does everything below *and* everything below's printed checklist - the KMS key, both
+# S3 buckets, the least-privilege IAM user, the config files, the jars, the intelligence service
+# and an end-to-end smoke test - in sixteen re-runnable steps. Prefer it for a real deployment;
+# this script stays for a headless box, a CI-style bring-up, or when only the OS layer is wanted.
+#
 # What this script does NOT do, deliberately:
-#   - Does not touch AWS (no KMS CMK, no S3 bucket, no SES identity) - see the printed checklist.
+#   - Does not touch AWS (no KMS CMK, no S3 content bucket, no backup bucket, no IAM user, no SES
+#     identity) - see the printed checklist.
 #   - Does not build or upload the application jar - see shell/deploy-cloud.sh, which already
 #     targets $REMOTE_DIR="/home/cloud" and will work unmodified once an ssh alias points here.
 #   - Does not install cloud-driver-intelligence - see
-#     cloud-driver-intelligence/deploy/install-on-server.sh, a separate opt-in step.
+#     cloud-driver-intelligence/deploy/install-on-server.sh, a separate opt-in step. Its Python
+#     prerequisites (a python3 whose `venv` can actually bootstrap pip) *are* installed below.
+#   - Does not install any scheduled job. The JVM needs none to run; cloud-driver-installer adds
+#     three (reboot autostart, an hourly sweep of stale upload-scratch/ temp files, the nightly
+#     off-site backup sync) and the checklist below repeats them for a hand-provisioned box.
 #   - Does not touch DNS.
 #
 # Idempotent: every step checks current state first and skips (with a note) if already done, so
@@ -62,6 +73,8 @@ REMOTE_CONFIG_DIR="$REMOTE_DIR/cloud-driver"
 REMOTE_EXTENSIONS_DIR="$REMOTE_DIR/extensions"
 SWAP_FILE="/swapfile"
 SWAP_SIZE_MB=4096
+# Where start-cloud.env points screen's own console log, matching cloud-driver-installer.
+SCREEN_LOG_FILE="/var/log/cloud-driver/cloud.log"
 
 [ -n "$REMOTE_HOST" ] || die "usage: $0 <ssh-host-or-alias> [api-domain] [--rotate-credentials]"
 
@@ -75,6 +88,10 @@ ssh "$REMOTE_HOST" 'command -v apt-get >/dev/null' \
 
 # --- 1. base packages ----------------------------------------------------------------------------
 log "[1/9] Updating apt and installing base packages"
+# screen: the operator terminal needs a pty (see start-cloud.sh). cron/logrotate: what the
+# checklist's scheduled jobs and the console log need. fonts-dejavu-core: PDFBox renders thumbnails
+# of PDFs without embedded fonts through it, and without any font on the box that render fails.
+# python3/python3-venv/python3-pip: cloud-driver-intelligence builds a venv on the server.
 ssh "$REMOTE_HOST" '
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -82,12 +99,35 @@ ssh "$REMOTE_HOST" '
     apt-get install -y -qq \
         openjdk-21-jdk-headless \
         screen ufw curl gnupg2 ca-certificates apt-transport-https debian-keyring debian-archive-keyring \
+        openssl cron logrotate fonts-dejavu-core \
         postgresql postgresql-contrib \
         clamav-daemon clamav-freshclam \
         redis-server \
+        python3 python3-venv python3-pip \
         unzip
     java -version
+    python3 --version
 '
+# `import venv` succeeding is not enough: on Debian the module ships with the stdlib but ensurepip
+# lives in a separate python3.X-venv package, so `python3 -m venv` builds a tree of symlinks and
+# then fails, leaving a half-built .venv behind. Probe by actually creating one, and fall back to
+# the interpreter-specific package name when the generic one was not the right one.
+log "Checking that python3 -m venv can bootstrap pip (cloud-driver-intelligence needs it)"
+if ! ssh "$REMOTE_HOST" '
+    probe="$(mktemp -d)"
+    python3 -m venv "$probe/v" >/dev/null 2>&1 && [ -x "$probe/v/bin/pip" ]
+    rc=$?
+    rm -rf "$probe"
+    exit $rc
+'; then
+    ssh "$REMOTE_HOST" '
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        short="$(python3 -c "import sys; print(\"%d.%d\" % sys.version_info[:2])")"
+        apt-get install -y -qq "python${short}-venv"
+    ' && log "installed the interpreter-specific python3.X-venv package" \
+      || warn "python3 -m venv still cannot bootstrap pip - cloud-driver-intelligence cannot be installed until that is fixed (see cloud-driver-intelligence/deploy/install-on-server.sh)"
+fi
 
 # --- 2. Caddy --------------------------------------------------------------------------------------
 log "[2/9] Installing Caddy (reverse proxy / TLS termination)"
@@ -227,7 +267,11 @@ fi
 # --- 8. app directory + config file scaffolding -------------------------------------------------------
 log "[8/9] Scaffolding $REMOTE_DIR (matches shell/deploy-cloud.sh's expected layout)"
 JWT_KEY="$(ssh "$REMOTE_HOST" 'openssl rand -base64 32' | tr -d '\n')"
-ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_EXTENSIONS_DIR' '$REMOTE_CONFIG_DIR'"
+INTELLIGENCE_SECRET="$(ssh "$REMOTE_HOST" 'openssl rand -hex 32' | tr -d '\n')"
+# upload-scratch is where a server-mediated upload's request body is streamed to instead of being
+# buffered in heap. The JVM creates it on first use; creating it here means a hand-provisioned box
+# has the whole layout in place, with the same owner as everything else under $REMOTE_DIR.
+ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_EXTENSIONS_DIR' '$REMOTE_CONFIG_DIR' '$REMOTE_DIR/upload-scratch'"
 
 # Rewritten whenever the password was just rotated, so the file and the server can never disagree.
 if [ "$PG_PASSWORD_IS_NEW" != "1" ]; then
@@ -288,17 +332,86 @@ else
 
   "aws-s3-region": "REPLACE-ME",
   "aws-s3-bucket": "REPLACE-ME",
+  "aws-s3-key-prefix": "",
 
   "aws-ses-region": "REPLACE-ME",
   "aws-ses-from-address": "REPLACE-ME (must be a verified SES sending identity)",
 
   "clamav-host": "127.0.0.1",
-  "clamav-port": 3310
+  "clamav-port": 3310,
+
+  "intelligence-shared-secret": "$INTELLIGENCE_SECRET",
+  "intelligence-host": "127.0.0.1",
+  "intelligence-port": 8600
 }
 JSON
     ssh "$REMOTE_HOST" "chmod 600 '$REMOTE_CONFIG_DIR/configuration.json'"
-    log "wrote $REMOTE_CONFIG_DIR/configuration.json (jwt-signing-key generated; AWS keys are REPLACE-ME placeholders; rate-limit identity trusts X-Forwarded-For only from the loopback reverse proxy this script configures in step 9)"
+    # Only the values this run actually wrote are reported at the end: printing a freshly generated
+    # key that was never written down anywhere is how an operator files the wrong secret.
+    JWT_KEY_REPORTED="$JWT_KEY"
+    INTELLIGENCE_SECRET_REPORTED="$INTELLIGENCE_SECRET"
+    log "wrote $REMOTE_CONFIG_DIR/configuration.json (jwt-signing-key and intelligence-shared-secret generated; AWS keys are REPLACE-ME placeholders; rate-limit identity trusts X-Forwarded-For only from the loopback reverse proxy this script configures in step 9)"
+    log "every other key the backend reads keeps its own default - docs/configuration.md is the full reference"
 fi
+
+# start-cloud.sh reads its own settings from a sibling start-cloud.env rather than carrying them,
+# so a redeploy of the launcher cannot undo them. Written only when absent: JVM_XMX in particular is
+# the one value an operator tunes by hand after watching the box. The heap follows the rule in
+# docs/requirements.md §7 - the box's RAM minus ~1 GiB for the JVM outside its heap, ~1 GiB for the
+# co-located Postgres and ~1 GiB for clamd with its signature database loaded - and never pins a jar
+# name, which is what start-cloud.sh resolves from the directory on every start.
+if ssh "$REMOTE_HOST" "[ -f '$REMOTE_DIR/start-cloud.env' ]"; then
+    log "start-cloud.env already exists on $REMOTE_HOST - leaving it untouched"
+else
+    RAM_MIB="$(ssh "$REMOTE_HOST" "awk '/^MemTotal:/ {printf \"%d\", \$2 / 1024}' /proc/meminfo")"
+    case "${RAM_MIB:-}" in
+        ''|*[!0-9]*)
+            warn "could not read MemTotal from $REMOTE_HOST - defaulting the heap to 2g; set JVM_XMX in $REMOTE_DIR/start-cloud.env by hand"
+            JVM_XMX_G=2
+            ;;
+        *)
+            # Rounded to the nearest whole gigabyte (+512 before the divide), never below 2g: under
+            # that the in-memory path for files below 32 MiB cannot serve a handful of concurrent
+            # uploads.
+            JVM_XMX_G=$(( (RAM_MIB - 3072 + 512) / 1024 ))
+            if [ "$JVM_XMX_G" -lt 2 ]; then
+                JVM_XMX_G=2
+            fi
+            ;;
+    esac
+    ssh "$REMOTE_HOST" "cat > '$REMOTE_DIR/start-cloud.env'" <<ENV
+# Written by shell/provision-root-server.sh - read by start-cloud.sh. Safe to edit; a redeployed
+# start-cloud.sh does not overwrite this file. Never add a JAR_NAME line: the launcher resolves
+# whichever cloud-driver-bootstrap-*.jar is deployed beside it, and a pinned name breaks on the
+# next release.
+JVM_XMX=${JVM_XMX_G}g
+SCREEN_SESSION=cloud
+SCREEN_LOG_FILE=$SCREEN_LOG_FILE
+ENV
+    ssh "$REMOTE_HOST" "chmod 600 '$REMOTE_DIR/start-cloud.env'"
+    log "wrote $REMOTE_DIR/start-cloud.env (JVM_XMX=${JVM_XMX_G}g from ${RAM_MIB:-unknown} MiB of RAM, console log at $SCREEN_LOG_FILE)"
+fi
+
+# The JVM logs nothing of its own and a detached screen session has no scrollback, so the console
+# log is the only place a crash trace survives - and it can carry verification codes when no mail
+# transport is configured, hence root-only, both here and in logrotate's own re-creation.
+ssh "$REMOTE_HOST" "
+    set -e
+    mkdir -p '$(dirname "$SCREEN_LOG_FILE")'
+    chmod 700 '$(dirname "$SCREEN_LOG_FILE")'
+    cat > /etc/logrotate.d/cloud-driver <<'ROTATE'
+$SCREEN_LOG_FILE {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+    create 0600 root root
+}
+ROTATE
+"
+log "console log rotation configured (/etc/logrotate.d/cloud-driver, weekly, 8 kept, root-only)"
 
 # --- 9. Caddy site block -----------------------------------------------------------------------------
 log "[9/9] Caddy site block"
@@ -341,19 +454,36 @@ scripted without your AWS account and an already-built jar):
            --target-key-id <key-id-from-above> --region <region>
      Then fill aws-kms-region/aws-kms-key-id into
      $REMOTE_CONFIG_DIR/configuration.json.
-     IAM permissions needed on that key by the identity below: kms:Encrypt, kms:Decrypt.
+     IAM permissions needed on that key by the identity below: kms:Encrypt,
+     kms:Decrypt (kms:DescribeKey too, if a mistyped key id should fail at boot
+     rather than on the first write). Grant no ScheduleKeyDeletion: that key is
+     what every stored row is encrypted under, backups included.
 
-  2. AWS S3 (you selected this - optional but chosen):
+  2. AWS S3, for file content (optional; without it content is stored inline in
+     Postgres rows and the database grows with every upload):
        aws s3api create-bucket --bucket <your-bucket-name> --region <region> \\
            --create-bucket-configuration LocationConstraint=<region>
-     IAM permissions: s3:PutObject, s3:GetObject, s3:DeleteObject,
-     s3:AbortMultipartUpload, s3:ListBucket. Fill aws-s3-region/aws-s3-bucket in.
+     IAM permissions on arn:aws:s3:::<bucket>/* - s3:PutObject, s3:GetObject,
+     s3:DeleteObject, s3:AbortMultipartUpload, s3:ListMultipartUploadParts
+     (resumable uploads page through ListParts to resume a session; without it
+     every resume is AccessDenied); on arn:aws:s3:::<bucket> - s3:ListBucket,
+     s3:ListBucketMultipartUploads. Fill aws-s3-region/aws-s3-bucket in.
 
-  3. AWS SES (you selected this - optional but chosen):
+  2b. A SECOND bucket for off-site database backups, if you want them - never the
+     content bucket: the operator terminal's 's3 purge' deletes everything it
+     finds in the content bucket, backups included. The backup extension writes
+     rotated archives to $REMOTE_CONFIG_DIR/backup; ship them off-box with a
+     nightly job of your own:
+       30 3 * * * aws s3 sync $REMOTE_CONFIG_DIR/backup \\
+           s3://<your-bucket>-backups/\$(hostname)/ --exclude '.staging/*' --only-show-errors
+
+  3. AWS SES (optional - the preferred mail transport, tried before SMTP):
        aws ses verify-email-identity --email-address <sender@yourdomain> --region <region>
      (or verify a whole domain instead). New accounts start in the SES sandbox -
      200 emails/day, every recipient must ALSO be verified, until AWS grants
-     production access (support-case request). IAM permission: ses:SendEmail.
+     production access (support-case request). IAM permissions: ses:SendEmail
+     AND ses:SendRawEmail - the sender builds the MIME message itself (HTML,
+     plain text and the inline logo), which IAM authorizes as a raw send.
      Fill aws-ses-region/aws-ses-from-address in.
 
   4. AWS credentials on the host itself - NEVER go in configuration.json (see
@@ -382,20 +512,34 @@ scripted without your AWS account and an already-built jar):
        # ssh alias with that exact name in ~/.ssh/config), then:
        ./shell/deploy-cloud.sh
        ssh $REMOTE_HOST 'cd $REMOTE_DIR && ./start-cloud.sh'
-     (deploy-cloud.sh ships the jars, configuration.json, and start-cloud.sh itself,
-     restoring its executable bit - nothing needs to be copied to $REMOTE_DIR by hand.)
+     (deploy-cloud.sh ships the bootstrap jar, every extension jar, configuration.json
+     and start-cloud.sh itself, restoring its executable bit - nothing needs to be
+     copied to $REMOTE_DIR by hand. It leaves start-cloud.env, written above, alone.)
+
+  7b. Scheduled jobs, if you want what cloud-driver-installer would have set up
+     (none of them is needed for the JVM to run):
+       @reboot cd $REMOTE_DIR && ./start-cloud.sh
+       17 * * * * find $REMOTE_DIR/upload-scratch -name 'upload-*.tmp' -mmin +180 -delete
+     The first brings the API back after a reboot; the second clears scratch files
+     a killed JVM never got to delete (an upload's request body is streamed there
+     instead of into the heap).
 
   8. If content scanning matters immediately: wait for freshclam's first
      database sync to finish (systemctl status clamav-freshclam) before
      trusting scan results.
 
   9. Optional: cloud-driver-intelligence (semantic search) - a separate step,
-     see cloud-driver-intelligence/deploy/install-on-server.sh.
+     see cloud-driver-intelligence/deploy/install-on-server.sh. Its python3 and
+     working-venv prerequisites are already installed above. The service reads
+     its shared secret from CLOUD_DRIVER_INTELLIGENCE_SECRET and must be handed
+     exactly the intelligence-shared-secret written into configuration.json
+     (printed below) - the bridge extension refuses to load without a match.
 
 Generated secrets (also already written into the remote config files):
-  Postgres password : $PG_PASSWORD
-  Redis password     : $REDIS_PASSWORD
-  JWT signing key     : $JWT_KEY
+  Postgres password       : ${PG_PASSWORD:-(unchanged - kept from the existing postgres-database.json)}
+  Redis password           : ${REDIS_PASSWORD:-(unchanged - kept from the existing redis-database.json)}
+  JWT signing key           : ${JWT_KEY_REPORTED:-(unchanged - kept from the existing configuration.json)}
+  Intelligence shared secret : ${INTELLIGENCE_SECRET_REPORTED:-(unchanged - kept from the existing configuration.json)}
 
 Store these somewhere safe now - they are not printed again.
 ==============================================================================

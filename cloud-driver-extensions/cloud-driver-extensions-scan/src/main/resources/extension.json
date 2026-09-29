@@ -1,6 +1,6 @@
 {
   "name": "cloud-driver-scan",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Malware-scans newly uploaded file content via a clamd (ClamAV) daemon before it's downloadable",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]

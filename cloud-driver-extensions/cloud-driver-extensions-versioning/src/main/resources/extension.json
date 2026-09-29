@@ -1,6 +1,6 @@
 {
   "name": "cloud-driver-versioning",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Keeps prior versions of a file on content replacement, with a restore path",
   "authors": ["Lino Alessio Kauschinger"],
   "dependencies": ["cloud-driver-bootstrap"]

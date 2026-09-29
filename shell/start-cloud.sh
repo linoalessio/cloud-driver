@@ -1,37 +1,39 @@
 #!/usr/bin/env bash
 #
-# Starts cloud-driver-bootstrap-1.0.7.jar inside a detached `screen` session
-# named "cloud". If the process ever exits - crash or otherwise - it
-# is restarted after a 3 second countdown. Re-running this script while the
-# session is already running is a no-op.
-# JVM_XMX (default 6g, see below) is passed as -Xmx explicitly - without it, the
-# JVM's default heap-sizing ergonomics only claim ~1/4 of the machine's total RAM
-# (confirmed 2026-09-01: ~2 GB on a 7.7 GB box), which is not enough headroom for
-# a large file upload: persisting a StoredFile currently needs several separate,
-# simultaneous in-memory copies of its content (DEFLATE-compressed bytes -> base64
-# string -> full JSON document string -> JSON document as UTF-8 bytes -> envelope-
-# encrypted) before it ever reaches the database (see CLAUDE.md's "Large-file
-# upload/download streaming" section - the real fix is a streaming encrypt/persist
-# pipeline, deliberately not attempted here; this is a mitigation, not that fix).
-# A ~195 MB upload OOM'd (`java.lang.OutOfMemoryError: Java heap space` inside
-# Gson's JsonWriter, mid-persist) against the previous, unset default.
+# Starts the single cloud-driver-bootstrap-*.jar sitting in this script's own directory inside a
+# detached `screen` session (named "cloud" unless start-cloud.env says otherwise). If the process
+# ever exits - crash or otherwise - it is restarted after a 3 second countdown. Re-running this
+# script while the session is already running is a no-op.
 #
-# Raised 4g -> 6g on 2026-09-09: boot loads every table's rows into the in-memory
-# entry cache, and StoredFile alone had grown past 3 GB of payload, which no
-# longer fit under 4g even after database-driver 1.3.14 made that load streaming
-# (before 1.3.14 the JDBC driver additionally buffered the whole table up front,
-# which is what actually OOM-crashed boot in a restart loop - the visible symptom
-# was "Unexpected packet type: 102" from a connection the dying JVM left
-# half-read). The entry cache holds the full table contents for the process's
-# whole lifetime, so the resident heap floor grows with the database; a 4 GB
-# swapfile was added the same day as the kernel-OOM safety net.
+# Heap: JVM_XMX (default 6g) is passed as -Xmx explicitly, because the JVM's own ergonomics claim
+# only ~1/4 of the machine's RAM by default (confirmed 2026-09-01: ~2 GB on a 7.7 GB box). Both
+# reasons that originally forced the number that high are gone, and neither makes the explicit
+# value unnecessary:
+#   - A file's content no longer passes through the heap whole. A server-mediated upload streams
+#     its request body to a scratch file under upload-scratch/ and, above 32 MiB, is encrypted
+#     chunk by chunk straight off disk; a presigned direct-to-S3 transfer never reaches the JVM at
+#     all. Content memory is now O(chunk size) per transfer, so the requirement scales with
+#     concurrent transfers rather than with the largest file anyone uploads (a ~195 MB upload used
+#     to OOM inside Gson's JsonWriter mid-persist).
+#   - Boot no longer loads the file table. StoredFile's database section is pinned to
+#     CacheMode.NONE and, with S3-backed content, its rows carry metadata only - so the resident
+#     floor no longer grows with the stored corpus the way it did when ~3 GB of inline content
+#     OOM-crash-looped the boot (2026-09-09; a 4 GB swapfile was added the same day as the
+#     kernel-OOM safety net and is still expected to be there).
+# Every other entity type still keeps its whole decrypted table cached for the process's lifetime,
+# so the floor grows with the *number* of accounts, files, folders and shares rather than their
+# size. 6g leaves room for that plus several concurrent streamed transfers; cloud-driver-installer
+# sizes the value from the server's actual RAM and writes it into start-cloud.env instead.
 #
 # Usage: ./start-cloud.sh            (from the directory containing the jar)
 #        screen -r cloud             (to attach and watch/interact with it)
 #        screen -d cloud             (to detach again, Ctrl-A d also works)
 #
 # A sibling start-cloud.env (written by cloud-driver-installer, see docs/deployment.md) overrides
-# JVM_XMX, SCREEN_SESSION and SCREEN_LOG_FILE (and optionally JAR_NAME) without editing this script.
+# JVM_XMX, SCREEN_SESSION and SCREEN_LOG_FILE without editing this script. It must never pin a jar
+# name: the jar is resolved from this directory on every start, so a release bump shipped by
+# deploy-cloud.sh or the installer needs no edit in either file. A JAR_NAME found in the
+# environment or in that file is therefore reported and dropped rather than honored.
 #
 # Refuses to start at all when extensions/ holds two jars for one module: every jar in that folder
 # is registered before anything starts, so two of them claiming one extension name kills the boot -
@@ -43,28 +45,35 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # start-cloud.env, written by cloud-driver-installer next to this script, carries the per-box
-# choices (JVM_XMX, JAR_NAME, SCREEN_SESSION, SCREEN_LOG_FILE). It is sourced first so it survives
+# choices (JVM_XMX, SCREEN_SESSION, SCREEN_LOG_FILE). It is sourced first so it survives
 # deploy-cloud.sh re-uploading this script; every value keeps the hardcoded fallback below when
 # the file is absent, so a box provisioned by hand behaves exactly as before.
 if [ -f "$SCRIPT_DIR/start-cloud.env" ]; then
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/start-cloud.env"
 fi
-# The jar is resolved from what is actually in this directory: exactly one cloud-driver-bootstrap-*.jar
-# is expected (deploy-cloud.sh and the installer both prune older releases), so a version bump never
-# leaves this script pointing at a jar that is no longer here. JAR_NAME (env or start-cloud.env)
-# overrides the lookup; the hardcoded default below is only used when no jar is found at all.
-if [ -z "${JAR_NAME:-}" ]; then
-    jar_candidates=("$SCRIPT_DIR"/cloud-driver-bootstrap-*.jar)
-    if [ ${#jar_candidates[@]} -eq 1 ] && [ -f "${jar_candidates[0]}" ]; then
-        JAR_NAME="$(basename "${jar_candidates[0]}")"
-    elif [ ${#jar_candidates[@]} -gt 1 ]; then
-        echo "start-cloud.sh: more than one bootstrap jar in $SCRIPT_DIR - remove all but one:" >&2
-        printf '  %s\n' "${jar_candidates[@]}" >&2
-        exit 1
-    fi
+
+# The jar is resolved from what is actually in this directory - exactly one
+# cloud-driver-bootstrap-*.jar is expected, since deploy-cloud.sh and the installer both prune the
+# previous release once the new one has verified. A pinned name is deliberately not supported: it
+# is what silently breaks the launcher on the next version bump, which is the whole reason this
+# lookup exists.
+if [ -n "${JAR_NAME:-}" ]; then
+    echo "start-cloud.sh: ignoring JAR_NAME='$JAR_NAME' - the jar is resolved from $SCRIPT_DIR; drop that line from start-cloud.env" >&2
 fi
-JAR_NAME="${JAR_NAME:-cloud-driver-bootstrap-1.0.7.jar}"
+shopt -s nullglob
+jar_candidates=("$SCRIPT_DIR"/cloud-driver-bootstrap-*.jar)
+shopt -u nullglob
+if [ ${#jar_candidates[@]} -eq 0 ]; then
+    echo "start-cloud.sh: no cloud-driver-bootstrap-*.jar in $SCRIPT_DIR - deploy one first (shell/deploy-cloud.sh, or cloud-driver-installer's Application step)" >&2
+    exit 1
+fi
+if [ ${#jar_candidates[@]} -gt 1 ]; then
+    echo "start-cloud.sh: more than one bootstrap jar in $SCRIPT_DIR - remove all but one:" >&2
+    printf '  %s\n' "${jar_candidates[@]}" >&2
+    exit 1
+fi
+JAR_NAME="$(basename "${jar_candidates[0]}")"
 SESSION_NAME="${SCREEN_SESSION:-cloud}"
 JVM_XMX="${JVM_XMX:-6g}"
 # When set, screen appends everything printed to the console to this file (screen -L): the JVM
@@ -100,11 +109,6 @@ fi
 
 if ! command -v screen >/dev/null 2>&1; then
     echo "start-cloud.sh: 'screen' is not installed" >&2
-    exit 1
-fi
-
-if [ ! -f "$SCRIPT_DIR/$JAR_NAME" ]; then
-    echo "start-cloud.sh: $JAR_NAME not found in $SCRIPT_DIR" >&2
     exit 1
 fi
 

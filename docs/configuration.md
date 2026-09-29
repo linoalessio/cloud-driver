@@ -164,7 +164,9 @@ flowchart TD
   behavior.
 - `start-cloud.env` is **not** a configuration file the backend reads. It sits next to
   `start-cloud.sh` and carries the launcher's own settings (`JVM_XMX`, `SCREEN_SESSION`,
-  `SCREEN_LOG_FILE`); `cloud-driver-installer` writes it — see
+  `SCREEN_LOG_FILE`) — and never a jar name, which the launcher resolves from its own directory and
+  ignores a `JAR_NAME` for. Both `cloud-driver-installer` and `shell/provision-root-server.sh`
+  write it, neither overwriting an existing one — see
   [deployment.md](deployment.md#gui-installer-cloud-driver-installer).
 - [`requirements.md`](requirements.md) §3 covers the same keys again from the operator's
   perspective, including which ones fail loudly versus silently when misconfigured. This page is

@@ -16,25 +16,36 @@
 # shared connection.
 #
 # Does not build anything and does not restart the running instance - run `mvn clean install`
-# (or at least `mvn -pl cloud-driver-bootstrap,cloud-driver-extensions/cloud-driver-extensions-rest,cloud-driver-extensions/cloud-driver-extensions-watcher,cloud-driver-extensions/cloud-driver-extensions-terminal,cloud-driver-extensions/cloud-driver-extensions-backup -am package`
-# - CLAUDE.md's own Build section warns `-pl cloud-driver-extensions` alone does not descend into
-# its child modules) first. See start-cloud.sh for restart-on-exit behavior - a process already
-# running under it will pick up everything this script deploys on its *next* restart, which this
-# script deliberately never triggers itself; restart manually once you're ready.
+# first. A targeted `-pl <module>,<module>,... -am package` works too, but with eleven extension
+# modules the full reactor build is the only form that cannot silently leave one of them behind at
+# the previous version (and `-pl cloud-driver-extensions` alone does not descend into its child
+# modules at all - see CLAUDE.md's Build section). See start-cloud.sh for restart-on-exit behavior
+# - a process already running under it will pick up everything this script deploys on its *next*
+# restart, which this script deliberately never triggers itself; restart manually once you're
+# ready.
 #
 # Deploys, every run:
 #   1. cloud-driver-bootstrap-*.jar -> $REMOTE_DIR (unchanged from before - see CLAUDE.md: always
 #      redeploy this together with any extension jar(s) built from the same commit, never one
 #      without the other, or a mismatched extension crashes the whole process at startup)
 #   2. every cloud-driver-extensions/*/target/*.jar -> $REMOTE_DIR/extensions (created if
-#      missing) - previously left to "some other, manual means"; now handled here
-#   3. the local cloud-driver/configuration.json (gitignored - see CLAUDE.md's "Local dev
-#      secrets") -> $REMOTE_DIR/cloud-driver/configuration.json (directory created if missing) -
-#      previously not deployed by any script at all
+#      missing). Every extension module in the reactor that has no jar to upload is named in a
+#      warning: each one is a whole feature (versioning, search, thumbnails, webhooks, scan, the
+#      intelligence bridge, ...) that silently will not exist on the server, and an optional facet
+#      that is simply absent degrades quietly by design rather than failing loudly.
+#   3. the local, gitignored cloud-driver/configuration.json -> $REMOTE_DIR/cloud-driver/
+#      configuration.json (directory created if missing). The two credentials files beside it,
+#      postgres-database.json and redis-database.json, are deliberately never uploaded: those
+#      passwords are generated on the server (by provision-root-server.sh or
+#      cloud-driver-installer) and overwriting them with a local copy is what leaves the backend
+#      unable to connect to its own database.
 #   4. this script's own sibling shell/start-cloud.sh -> $REMOTE_DIR, with its executable bit
-#      restored afterwards (scp does not reliably preserve it) - previously had to be scp'd by
-#      hand; a process already running under an older copy of it is untouched (see the restart
-#      note above) but will run the new copy on its next manual restart
+#      restored afterwards (scp does not reliably preserve it); a process already running under an
+#      older copy of it is untouched (see the restart note above) but will run the new copy on its
+#      next manual restart. The launcher's sibling start-cloud.env (JVM_XMX/SCREEN_SESSION/
+#      SCREEN_LOG_FILE, written per box by cloud-driver-installer or provision-root-server.sh) is
+#      never touched here - which is exactly why start-cloud.sh reads its settings from there
+#      instead of carrying them itself.
 #   5. after every upload has verified, the previous release's jars are pruned from $REMOTE_DIR
 #      and $REMOTE_EXTENSIONS_DIR - last, deliberately, so a failed run never leaves the host
 #      with neither release
@@ -59,10 +70,12 @@ REMOTE_EXTENSIONS_DIR="$REMOTE_DIR/extensions"
 REMOTE_CONFIG_DIR="$REMOTE_DIR/cloud-driver"
 MAX_PARALLEL=6
 
-# The name the release script rewrites. Only the *expected* name: the jar actually deployed is
-# resolved from the build output below, so a lost rewrite cannot make this script delete a live
-# remote jar it then fails to replace.
-BOOTSTRAP_JAR_NAME="cloud-driver-bootstrap-1.0.7.jar"
+# The version the checkout itself declares, read from the reactor's root pom.xml rather than
+# hardcoded here - so no release bump has to remember this file, and the check below compares the
+# built jar against what this working tree actually is. Only an *expected* value: the jar that is
+# deployed is resolved from the build output below, so an unreadable pom can never make this
+# script delete a live remote jar it then fails to replace.
+EXPECTED_VERSION="$(sed -n 's:.*<version>\([0-9][0-9.]*\)</version>.*:\1:p' "$REPO_ROOT/pom.xml" | head -1)"
 LOCAL_CONFIGURATION_JSON="$REPO_ROOT/cloud-driver/configuration.json"
 LOCAL_START_SCRIPT="$SCRIPT_DIR/start-cloud.sh"
 
@@ -157,11 +170,11 @@ if [ ${#bootstrap_candidates[@]} -gt 1 ]; then
 fi
 LOCAL_BOOTSTRAP_JAR="${bootstrap_candidates[0]}"
 resolved_bootstrap_name="$(basename "$LOCAL_BOOTSTRAP_JAR")"
-if [ "$resolved_bootstrap_name" != "$BOOTSTRAP_JAR_NAME" ]; then
-    echo "deploy-cloud.sh: deploying the built jar '$resolved_bootstrap_name' - this script still names '$BOOTSTRAP_JAR_NAME'" >&2
-fi
 BOOTSTRAP_VERSION="${resolved_bootstrap_name#cloud-driver-bootstrap-}"
 BOOTSTRAP_VERSION="${BOOTSTRAP_VERSION%.jar}"
+if [ -n "$EXPECTED_VERSION" ] && [ "$BOOTSTRAP_VERSION" != "$EXPECTED_VERSION" ]; then
+    echo "deploy-cloud.sh: deploying $resolved_bootstrap_name, but this checkout's pom.xml declares $EXPECTED_VERSION - the build output predates the current tree, re-run 'mvn clean install'" >&2
+fi
 
 # Only real, current-build extension jars reach the upload set. Both shapes below actually occur:
 # a `mvn package` without `clean` after a version bump leaves two versions in one target/, and a
@@ -198,6 +211,34 @@ done
 if [ ${#extension_jars[@]} -eq 0 ]; then
     echo "deploy-cloud.sh: no extension jars found under cloud-driver-extensions/*/target - build them first (see this script's own header comment)" >&2
     exit 1
+fi
+
+# Warn - never fail - about a module in the reactor that this run has no jar for. Deploying a
+# subset is legitimate (cloud-driver-installer offers exactly that), but an unbuilt module is
+# indistinguishable from a deliberately excluded one on the server: its services are simply never
+# published, and every consumer degrades quietly. Naming them here is the only place that
+# difference is still visible.
+shopt -s nullglob
+reactor_extension_dirs=("$REPO_ROOT"/cloud-driver-extensions/cloud-driver-extensions-*/)
+shopt -u nullglob
+missing_modules=()
+for module_dir in ${reactor_extension_dirs[@]+"${reactor_extension_dirs[@]}"}; do
+    [ -f "$module_dir/pom.xml" ] || continue
+    module_name="$(basename "$module_dir")"
+    module_found=0
+    for jar in "${extension_jars[@]}"; do
+        if [ "$(basename "$jar")" = "$module_name-$BOOTSTRAP_VERSION.jar" ]; then
+            module_found=1
+            break
+        fi
+    done
+    [ "$module_found" = "1" ] || missing_modules+=("$module_name")
+done
+if [ ${#missing_modules[@]} -gt 0 ]; then
+    echo "deploy-cloud.sh: ${#missing_modules[@]} extension module(s) have no $BOOTSTRAP_VERSION jar and will be missing on the server - run 'mvn clean install' if that is not deliberate:" >&2
+    for module_name in "${missing_modules[@]}"; do
+        echo "  - $module_name" >&2
+    done
 fi
 
 targets_files=("$LOCAL_BOOTSTRAP_JAR" "${extension_jars[@]}" "$LOCAL_CONFIGURATION_JSON" "$LOCAL_START_SCRIPT")

@@ -491,9 +491,11 @@ planning around:
 
 - **JVM heap**: launch with an explicit `-Xmx` (the reference deployment uses `-Xmx6g` on a 7.7 GB
   box). `shell/start-cloud.sh` passes `JVM_XMX` (default `6g`) as `-Xmx`; the per-box value is
-  overridden in a sibling `start-cloud.env` — written by `cloud-driver-installer` alongside
-  `SCREEN_SESSION` and `SCREEN_LOG_FILE` — which the script sources before anything else, so the
-  setting survives `deploy-cloud.sh` re-uploading the script. See
+  overridden in a sibling `start-cloud.env` — written by `cloud-driver-installer` or
+  `shell/provision-root-server.sh`, alongside `SCREEN_SESSION` and `SCREEN_LOG_FILE` — which the
+  script sources before anything else, so the setting survives `deploy-cloud.sh` re-uploading the
+  script. Both size it the same way (this section's rule), and neither ever writes a jar name into
+  it. See
   [configuration.md](configuration.md) for that file. Without an explicit `-Xmx`, JVM ergonomics
   can cap the heap far below what's actually free — a real `OutOfMemoryError` was hit on exactly
   that gap persisting a ~195 MB file with no `-Xmx` set. Both root causes behind the two historical incidents have since
